@@ -45,7 +45,7 @@ await new Promise(() => {});
   expect(started.model).toBe(modelPath);
   expect(started.pid).toBeGreaterThan(0);
 
-  const status = JSON.parse(cli(project, home, ["models", "status"]));
+  const status = JSON.parse(cli(project, home, ["models", "status", "--json"]));
   expect(status).toMatchObject({ state: "ready", url: `http://127.0.0.1:${port}/v1`, model: modelPath, pid: started.pid });
   cli(project, home, ["models", "stop"]);
   for (let i = 0; i < 50; i++) {
@@ -72,7 +72,7 @@ test("Ollama CLI uses an external model and refuses shared-service shutdown", as
   mkdirSync(join(project, ".agenthub"));
   writeFileSync(join(project, ".agenthub/config.json"), JSON.stringify({ mlx: { provider: "ollama", port: server.port, model } }));
   const run = async (action: string) => {
-    const process_ = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", action], {
+    const process_ = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", action, ...(action === "status" ? ["--json"] : [])], {
       cwd: project, env: { ...process.env, AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, code] = await Promise.all([new Response(process_.stdout).text(), new Response(process_.stderr).text(), process_.exited]);
@@ -99,7 +99,7 @@ test("disabled models commands never probe or change shared Ollama", async () =>
   mkdirSync(join(project, ".agenthub"));
   writeFileSync(join(project, ".agenthub/config.json"), JSON.stringify({ mlx: { enabled: false, provider: "ollama", port: server.port } }));
   for (const action of ["status", "setup", "start", "stop"]) {
-    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", action], { cwd: project, env: { ...process.env, AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", action, ...(action === "status" ? ["--json"] : [])], { cwd: project, env: { ...process.env, AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     if (action === "status") { expect(code).toBe(0); expect(JSON.parse(stdout)).toEqual({ state: "disabled", enabled: false }); }
     else { expect(code).not.toBe(0); expect(stderr).toContain("MLX is disabled"); }

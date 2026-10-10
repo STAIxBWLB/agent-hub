@@ -1537,3 +1537,12 @@ Record the exact head and visual verdict here after the owner performs this leg.
 ## ACP cancellation settlement (#304)
 
 Not run: real Qwen and Kimi cancellation timing remains owed and does not gate the adapter fix, per issue #304. In an operator-approved ACP session for each provider, record the native version, observe prompt activity, send `session/cancel`, and measure until the correlated prompt result. Record what a new prompt receives before that result. Distinguish those measurements from the fake's ordered barrier and cancellation acknowledgement; do not spend a native turn solely to complete this implementation.
+## Remaining command output (#284 phases 2 and 3)
+
+Human visual inspection: **not run**. At the PR head, use light and dark terminals at 80 and 120 columns.
+Run `ahub projects`, `ahub status --all`, `ahub queue list`, `ahub turns`, `ahub doctor --orphans`,
+`ahub queue show <id>`, `ahub models status`, `ahub budget execution status`, `ahub report` and `ahub report --by task`.
+Inspect long Korean paths, all changed filenames, public private-delivery stubs, nested labelled fields, relative times and report coverage sentences.
+Compare `--color=never` with `--color=always`, `--full` where identifiers are shortened, and the same commands in the console.
+Confirm JSON output stays plain under `--color=always`. Record the exact head and visual verdict here after the owner performs this leg.
+
