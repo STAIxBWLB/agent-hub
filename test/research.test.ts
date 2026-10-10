@@ -135,7 +135,7 @@ test("an owner who gets a task back counts it once; a move without a reason is n
   const reopened = [...again, task(1, "proposed", "proposed")];
   expect(() => labelTarget(both, reopened, 1)).toThrow(`an earlier task #1 from before a reset is labelled with --created ${both[0]!.createdAt} or ${both[1]!.createdAt}`);
   // A record without a proposal time takes no label.
-  expect(() => labelTarget([{ ...both[0]!, createdAt: null }], [], 1)).toThrow("no research record for task #1");
+  expect(() => labelTarget([{ ...both[0]!, createdAt: null }], [], 1)).toThrow("has no proposal time");
 });
 
 test("labelling a task is a person's; reading the research measures is not", () => {

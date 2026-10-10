@@ -1989,14 +1989,21 @@ acts on the stopped state directory.
 
 - `ahub bench` runs a person's suite file (tasks with a starting commit, an optional setup and a verify command)
   against the peers attached to a hub, in a project opted in with `bench.enabled`, because every attempt resets the work
-  tree (`git checkout --force --detach <ref>`, `git clean -fdx -e .agenthub`). The runner is a console client: it
-  proposes each task as the console does and polls the board, so the task flow is unchanged and no new control request
-  exists. Attempt measures come from #247's `taskRecords` of that task.
+  tree (`git checkout --force --detach <ref>`, `git clean -fdx -e .agenthub`, then a clean-tree check). Before anything
+  changes the runner requires the project to be the root of its repository, nothing tracked under `.agenthub/` in the
+  tree or in any suite ref, every ref to be a commit, and a clean tree. The runner is a console client: it proposes each
+  task as the console does and polls the board, so the task flow is unchanged and no new control request exists.
+- `setup` and `verify` run in their own process group, bounded; the group is stopped at the bound, on an interrupt and
+  when the command exits. An approved attempt's measures come from #247's `taskRecords` for the task proposed last with
+  that id, read once the turns open at the approval have ended (at most 10 minutes); a timeout or an error has none.
 - Results go to `~/.agenthub/bench/<run>.jsonl` (ids, outcomes, exit codes, counts, times; never suite text or command
   output). A run's state comes from its end record or its runner's liveness (`processLiveness`). Comparisons are
-  derived when asked: per-arm measures and a seeded 95% bootstrap interval of each difference, inconclusive below five
-  attempts per arm.
+  derived when asked: an arm is every run of it that is over (a stopped run included), runs of different suites or
+  suite versions are not mixed unless asked, and each difference has a seeded 95% bootstrap interval, inconclusive
+  below five attempts counted for that measure per arm (errors are not counted for pass rate or wall time).
 - A task that times out stops the run, because an agent may still work in the tree the next attempt would reset.
-  ponytail: a board state to withdraw an open task would let the run continue.
+  ponytail: a board state to withdraw an open task would let the run continue. The fingerprint holds what the hub's
+  status reports (a requested model for Pi, permission modes once #242 lands); ponytail: read each peer's launch
+  settings for the rest.
 - The dashboard snapshot carries run summaries and per-arm measures only. `bench run` is a person's (identity gate);
   reading results is not. Schema and commands: [bench](../bench.md).

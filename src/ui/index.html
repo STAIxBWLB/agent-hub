@@ -273,13 +273,14 @@ function renderBench(bench) {
   $('bench-count').textContent = bench ? bench.runs.length + ' runs' : '';
   update('bench', bench || null, (target) => {
     if (!bench) return empty(target, 'No benchmark runs. In a project kept for benchmarks, run ahub bench run <suite.json> --arm <label>.');
-    for (const run of bench.runs.slice(0, 8)) {
+    for (const run of bench.runs) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
       const tone = run.state === 'running' ? 'info' : run.state === 'finished' ? 'ok' : run.state === 'unknown' ? '' : 'warn';
       head.append(el('span', run.suite + ' [' + run.arm + ']', 'label'), el('span', run.state, 'badge ' + tone));
       const bar = el('progress'); bar.max = run.total || 1; bar.value = run.done; bar.setAttribute('aria-label', run.suite + ' ' + run.arm + ': ' + run.done + ' of ' + run.total + ' attempts');
+      row.append(head);
       if (run.state === 'running') row.append(el('p', 'now: ' + (run.current || '-') + ' / running ' + dur(Date.now() - Date.parse(run.startedAt)) + ' / ' + (run.total - run.done) + ' attempts left', 'meta'));
-      row.append(head, bar, el('p', run.done + '/' + run.total + ' attempts / pass ' + pct(run.passRate) + ' (' + run.pass + ' pass, ' + run.fail + ' fail, ' + run.timeout + ' timeout, ' + run.error + ' error) / tokens p50 ' + num(run.tokensMedian) + ' / wall p50 ' + dur(run.wallMsMedian), 'meta'));
+      row.append(bar, el('p', run.done + '/' + run.total + ' attempts / pass ' + pct(run.passRate) + ' (' + run.pass + ' pass, ' + run.fail + ' fail, ' + run.timeout + ' timeout, ' + run.error + ' error) / tokens p50 ' + num(run.tokensMedian) + ' / wall p50 ' + dur(run.wallMsMedian), 'meta'));
       target.append(row);
     }
     const suites = new Map();
@@ -294,7 +295,8 @@ function renderBench(bench) {
         block.append(el('p', label, 'meta'));
         for (const arm of arms) {
           const value = arm.measures[key];
-          const line = el('p', arm.arm + ': ' + fmt(value) + ' (' + arm.measures.attempts + ' attempts, ' + arm.runs + ' runs)' + (arm.measures.attempts < 5 ? ', too few to compare' : ''), 'meta');
+          const scored = arm.measures.attempts - arm.measures.error;
+          const line = el('p', arm.arm + ': ' + fmt(value) + ' (' + arm.measures.attempts + ' attempts, ' + arm.runs + ' runs)' + (scored < bench.minAttempts ? ', too few to compare' : ''), 'meta');
           const bar = el('progress'); bar.max = max; bar.value = value === null || value === undefined ? 0 : value; bar.setAttribute('aria-label', label + ', ' + arm.arm + ': ' + fmt(value));
           block.append(line, bar);
         }

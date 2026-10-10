@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { appendBench, BENCH_SCHEMA, benchCompare, benchCsv, benchReport, CSV_COLUMNS, MIN_ATTEMPTS, parseSuite, readRuns, runFile, runSummary, type Attempt, type Outcome } from "../src/hub/bench.ts";
+import { appendBench, armRuns, measures, BENCH_SCHEMA, benchCompare, benchCsv, benchReport, CSV_COLUMNS, MIN_ATTEMPTS, parseSuite, readRuns, runFile, runSummary, sameSuite, type Attempt, type Outcome } from "../src/hub/bench.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
-import { benchPreflight, defaultIo, runBench, type BenchIo } from "../src/cli/bench.ts";
+import { benchPreflight, defaultIo, metricsOf, runBench, type BenchIo } from "../src/cli/bench.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
 // #251: benchmark suites, runs against the attached peers, reports and arm comparisons.
@@ -56,6 +56,45 @@ test("a run refuses a project not kept for benchmarks and a dirty tree, and chan
   writeFileSync(suitePath, JSON.stringify({ name: "s", tasks: [{ id: "a", title: "t", ref: "HEAD", verify: "true", timeout_s: 60 }] }));
   const io: BenchIo = { ...defaultIo(root, root), connect: () => { throw new Error("connected"); } };
   await expect(runBench({ cwd: root, stateDir: root, suitePath, arm: "x", repeat: 1, only: ["a", "b"] }, io)).rejects.toThrow("--tasks names b, which the suite does not have");
+  // A ref that is not a commit, or that starts like an option, is refused before anything runs.
+  await expect(benchPreflight(root, true, ["no-such-ref"])).rejects.toThrow("suite ref no-such-ref is not a commit");
+  await expect(benchPreflight(root, true, ["--orphan"])).rejects.toThrow("is not a commit");
+});
+
+test("a reset never reaches outside the project or into .agenthub", async () => {
+  // A project in a subdirectory of a repository: a checkout and a clean would act on the whole repository.
+  const { root } = benchRepo();
+  mkdirSync(join(root, "proj"));
+  await expect(benchPreflight(join(root, "proj"), true)).rejects.toThrow("must be the root of its git repository");
+  // Tracked hub files would be replaced by a checkout.
+  const tracked = benchRepo().root;
+  mkdirSync(join(tracked, ".agenthub"));
+  writeFileSync(join(tracked, ".agenthub", "config.json"), "{}");
+  git(tracked, "add", "-f", ".agenthub/config.json"); git(tracked, "commit", "-qm", "track hub config");
+  await expect(benchPreflight(tracked, true)).rejects.toThrow("tracks files under .agenthub/");
+  // A ref that tracks them would write over the hub's own, even when the current tree does not track them.
+  git(tracked, "rm", "-rq", "--cached", ".agenthub"); git(tracked, "commit", "-qm", "untrack");
+  const old = git(tracked, "rev-parse", "HEAD~1");
+  await expect(benchPreflight(tracked, true)).resolves.toBe("main");
+  await expect(benchPreflight(tracked, true, [old])).rejects.toThrow(`suite ref ${old} tracks files under .agenthub/`);
+});
+
+test("a bounded command takes what it started with it, and an interrupt stops it at once", async () => {
+  const { root } = benchRepo();
+  const io = defaultIo(root, root);
+  // A verify that leaves a background writer behind, past its bound: nothing may land in the next attempt's tree.
+  const hung = await io.sh("(sleep 1; echo late > orphan.txt) & sleep 30", root, 300);
+  expect(hung).toMatchObject({ code: null, timedOut: true, interrupted: false });
+  // One that finishes but leaves a child running: the child goes too.
+  const left = await io.sh("(sleep 1; echo late > left.txt) & exit 0", root, 10_000);
+  expect(left).toMatchObject({ code: 0, timedOut: false });
+  let stop = false;
+  setTimeout(() => { stop = true; }, 200);
+  const cut = await io.sh("sleep 30", root, 60_000, () => stop);
+  expect(cut).toMatchObject({ code: null, interrupted: true });
+  await Bun.sleep(1500);
+  expect(existsSync(join(root, "orphan.txt"))).toBe(false);
+  expect(existsSync(join(root, "left.txt"))).toBe(false);
 });
 
 test("a run records pass, fail and timeout with measures, resets the tree between attempts, and bounds a hanging verify", async () => {
@@ -123,6 +162,35 @@ test("a run records pass, fail and timeout with measures, resets the tree betwee
   expect(stopped.end).toMatchObject({ stopped: "interrupted" });
 });
 
+test("an attempt's measures wait for the turn that approved the task, and belong to the task proposed last", async () => {
+  const stateDir = temp("settle");
+  const file = join(stateDir, "events.jsonl");
+  let t = Date.parse("2026-10-10T00:00:00Z");
+  const line = (e: Record<string, unknown>) => appendFileSync(file, JSON.stringify({ v: 1, at: new Date(t += 1000).toISOString(), ...e }) + "\n");
+  const taskEvent = (event: string, state: string) => line({ type: "task", id: 1, event, by: "hub", state, owner: "worker", reviewer: null, class: "plan", pii: false });
+  // An earlier task #1 (before a reset of the board) with its own cost, then the attempt's task #1.
+  taskEvent("proposed", "proposed"); taskEvent("accepted", "in_progress");
+  line({ type: "tokens", peer: "worker", n: 999, task: 1, attribution: "single_open" });
+  taskEvent("done", "approved");
+  taskEvent("proposed", "proposed"); taskEvent("accepted", "in_progress");
+  line({ type: "turn_start", peer: "worker", turn: "worker#1.1" });
+  line({ type: "tokens", peer: "worker", n: 10, task: 1, attribution: "single_open" });
+  taskEvent("done", "approved");
+  let sleeps = 0, clock = 0;
+  const io = { now: () => clock, sleep: async (ms: number) => {
+    clock += ms;
+    if (++sleeps === 2) { // the approving turn ends only after two polls
+      line({ type: "tokens", peer: "worker", n: 5, task: 1, attribution: "single_open" });
+      line({ type: "turn_end", peer: "worker", turn: "worker#1.1", ms: 4000, task: 1, attribution: "single_open" });
+    }
+  } };
+  const m = await metricsOf({ stateDir, pollMs: 100, settleMs: 10_000 }, io, "p", 1);
+  expect(sleeps).toBeGreaterThanOrEqual(3);
+  expect(m).toMatchObject({ tokens: 15, turns: 1, activeMs: 4000 });
+  // An attempt that was never approved has no measures.
+  expect(await metricsOf({ stateDir, pollMs: 1, settleMs: 10 }, io, "p", 7)).toBeNull();
+});
+
 const attempt = (run: string, task: string, outcome: Outcome, tokens: number, ms: number): Attempt => ({ schema: BENCH_SCHEMA, kind: "attempt", run, task, repeat: 1, outcome,
   verifyExit: outcome === "pass" ? 0 : 1, hubTask: 1, startedAt: "2026-10-10T00:00:00.000Z", endedAt: "2026-10-10T00:01:00.000Z", ms,
   metrics: { tokens, wallMs: ms, activeMs: ms, reviewRounds: 1, changesRequested: outcome === "pass" ? 0 : 1, checkFailed: 0, firstPass: outcome === "pass", turns: 1, filesChanged: 1, models: [] } });
@@ -154,6 +222,23 @@ test("reports and comparisons give pass rates, tokens and bootstrap intervals, i
   expect(c.differences.filter((d) => d.arm === "few").every((d) => d.inconclusive)).toBe(true);
   expect(MIN_ATTEMPTS).toBe(5);
   expect(JSON.stringify(benchCompare([group("base"), group("new")]))).toBe(JSON.stringify(benchCompare([group("base"), group("new")]))); // seeded: the same every time
+  // Errors are not counted toward the minimum for pass rate or wall time, and wall time leaves them out.
+  fixtureRun(home, "r-err", "err", ["error", "error", "error", "error", "pass"], 1);
+  const err = benchCompare([group("base"), group("err")]);
+  expect(err.differences.find((d) => d.measure === "passRate")!.inconclusive).toBe(true);
+  const quickErrors = [...[1, 2, 3].map((i) => ({ ...attempt("r-q", `e${i}`, "error", 0, 10), metrics: null })), attempt("r-q", "p", "pass", 5, 60_000)];
+  expect(measures(quickErrors).wallMsMedian).toBe(60_000);
+  // An arm is every run of it that is over: a run a timeout stopped counts with its timeout.
+  fixtureRun(home, "r-stop", "stop", ["pass", "timeout"], 1);
+  appendBench({ schema: BENCH_SCHEMA, kind: "end", run: "r-stop", endedAt: "2026-10-10T02:00:00.000Z", stopped: "timeout" }, home);
+  expect(armRuns(readRuns(home), "stop").map((r) => [r.header.run, r.state])).toEqual([["r-stop", "stopped"]]);
+  expect(benchReport(armRuns(readRuns(home), "stop")).overall).toMatchObject({ pass: 1, timeout: 1 });
+  // Runs of different suites (or suite versions) are not compared without saying so.
+  const other = temp("other-suite");
+  fixtureRun(other, "r-x", "x", ["pass"], 1);
+  const mixed = [...readRuns(home).filter((r) => r.header.arm === "base"), ...readRuns(other).map((r) => ({ ...r, header: { ...r.header, suiteHash: "other" } }))];
+  expect(sameSuite([{ arm: "a", runs: mixed }])).toContain("different suites");
+  expect(sameSuite([group("base"), group("new")])).toBeNull();
 });
 
 test("a run whose runner died without an end record reads interrupted; the dashboard snapshot carries summaries only", async () => {

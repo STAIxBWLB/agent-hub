@@ -57,7 +57,7 @@ import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
-import { benchReport, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
+import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
 import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
@@ -2389,14 +2389,21 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   /** #251: this machine's benchmark runs for the dashboard: summaries and per-arm measures, never suite text. */
-  function benchView(): { bench?: { runs: RunSummary[]; arms: { suite: string; arm: string; runs: number; measures: Measures }[] } } {
+  // ponytail: reads every run file on each dashboard poll; an index of run summaries if the store grows large.
+  function benchView(): { bench?: { runs: RunSummary[]; arms: { suite: string; arm: string; runs: number; measures: Measures }[]; minute: number; minAttempts: number } } {
     try {
-      const runs = readRuns().slice(0, 50);
+      const runs = readRuns();
       if (!runs.length) return {};
+      // An arm per suite version (name and file hash), from every run of it that is over, a stopped one included.
       const groups = new Map<string, typeof runs>();
-      for (const r of runs.filter((x) => x.state === "finished")) { const key = `${r.header.suite}\0${r.header.arm}`; groups.set(key, [...(groups.get(key) ?? []), r]); }
-      return { bench: { runs: runs.slice(0, 20).map(runSummary),
-        arms: [...groups.values()].map((rs) => ({ suite: rs[0]!.header.suite, arm: rs[0]!.header.arm, runs: rs.length, measures: benchReport(rs).overall })) } };
+      for (const r of runs.filter((x) => x.state !== "running" && x.state !== "unknown")) {
+        const key = `${r.header.suite}\0${r.header.suiteHash}\0${r.header.arm}`;
+        groups.set(key, [...(groups.get(key) ?? []), r]);
+      }
+      const versions = (suite: string) => new Set(runs.filter((r) => r.header.suite === suite).map((r) => r.header.suiteHash)).size;
+      return { bench: { runs: runs.slice(0, 20).map(runSummary), minute: Math.floor(Date.now() / 60_000), minAttempts: MIN_ATTEMPTS, // the minute keeps "running for" current
+        arms: [...groups.values()].map((rs) => ({ suite: versions(rs[0]!.header.suite) > 1 ? `${rs[0]!.header.suite} (${rs[0]!.header.suiteHash.slice(0, 8)})` : rs[0]!.header.suite,
+          arm: rs[0]!.header.arm, runs: rs.length, measures: benchReport(rs).overall })) } };
     } catch { return {}; } // an unreadable store never breaks the dashboard
   }
   function uiSnapshot(after: number) {

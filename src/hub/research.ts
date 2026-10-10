@@ -179,7 +179,7 @@ export function labelTarget(records: ResearchRecord[], events: StampedEvent[], t
       ?? fail(`task #${task} has no research record yet: it is not approved, its record still waits for the turns that approved it, or it was approved while research was off (ahub research backfill builds that one)${mine.length ? `; an earlier task #${task} from before a reset is labelled with --created ${mine.map((r) => r.createdAt).join(" or ")}` : ""}`);
   }
   if (mine.length === 1) return mine[0]!;
-  if (!mine.length) throw new Error(`no research record for task #${task}`);
+  if (!mine.length) throw new Error(records.some((r) => r.kind === "task" && r.task === task) ? `task #${task}'s research record has no proposal time (its proposal was not in the events), so it takes no label` : `no research record for task #${task}`);
   throw new Error(`task #${task} is not on this hub's board and the store has ${mine.length} records with that id; name one with --created <time>: ${mine.map((r) => r.createdAt).join(", ")}`);
 }
 const fail = (message: string): never => { throw new Error(message); };

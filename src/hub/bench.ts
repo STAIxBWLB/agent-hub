@@ -43,7 +43,7 @@ export function parseSuite(text: string): Suite {
 }
 export const suiteHash = (text: string): string => createHash("sha256").update(text).digest("hex");
 
-export interface Fingerprint { peers: { id: string; state: string; model?: string; permissionMode?: string }[]; routingHash: string | null; hubVersion: string }
+export interface Fingerprint { peers: { id: string; model?: string; permissionMode?: string }[]; routingHash: string | null; hubVersion: string }
 export interface RunHeader {
   schema: typeof BENCH_SCHEMA; kind: "run"; run: string; suite: string; suiteHash: string; arm: string; fingerprint: Fingerprint;
   version: string; startedAt: string; tasks: number; repeats: number; runner: { pid: number; signature: string | null };
@@ -80,7 +80,7 @@ export function readRuns(home = hubHome()): BenchRun[] {
   const dir = benchDir(home);
   if (!existsSync(dir)) return [];
   const runs: BenchRun[] = [];
-  for (const name of readdirSync(dir).filter((n) => n.endsWith(".jsonl"))) {
+  for (const name of readdirSync(dir).filter((n) => n.endsWith(".jsonl"))) try {
     let header: RunHeader | undefined, end: RunEnd | undefined;
     const attempts: Attempt[] = [];
     for (const line of readFileSync(join(dir, name), "utf8").split("\n")) {
@@ -90,11 +90,11 @@ export function readRuns(home = hubHome()): BenchRun[] {
       if (r?.schema !== BENCH_SCHEMA) continue;
       if (r.kind === "run") header = r; else if (r.kind === "attempt") attempts.push(r); else if (r.kind === "end") end = r;
     }
-    if (!header) continue;
+    if (!header || typeof header.startedAt !== "string" || !header.runner) continue;
     const owner = end ? undefined : processLiveness(header.runner.pid, header.runner.signature);
     const state = end ? (end.stopped ? "stopped" : "finished") : owner === "live" ? "running" : owner === "gone" ? "interrupted" : "unknown";
     runs.push({ header, attempts, ...(end ? { end } : {}), state });
-  }
+  } catch { /* a file that cannot be read or has no valid header is not a run; the others still are */ }
   return runs.sort((a, b) => b.header.startedAt.localeCompare(a.header.startedAt));
 }
 
@@ -114,7 +114,7 @@ export function measures(attempts: Attempt[]): Measures {
   return { attempts: attempts.length, pass: count("pass"), fail: count("fail"), timeout: count("timeout"), error: count("error"),
     passRate: scored.length ? count("pass") / scored.length : null,
     firstPassRate: withMetrics.length ? withMetrics.filter((m) => m.firstPass).length / withMetrics.length : null,
-    tokensMedian: median(withMetrics.map((m) => m.tokens)), wallMsMedian: median(attempts.map((a) => a.ms)),
+    tokensMedian: median(withMetrics.map((m) => m.tokens)), wallMsMedian: median(scored.map((a) => a.ms)),
     reworkMean: withMetrics.length ? withMetrics.reduce((n, m) => n + m.changesRequested, 0) / withMetrics.length : null };
 }
 export interface RunSummary extends Measures { run: string; suite: string; arm: string; state: BenchRun["state"]; startedAt: string; done: number; total: number; current?: string }
@@ -157,21 +157,33 @@ export function benchCompare(groups: { arm: string; runs: BenchRun[] }[], resamp
       for (const n of names) if (a[n] !== null && b[n] !== null) samples[n].push(b[n]! - a[n]!);
     }
     const ma = measures(base.attempts), mb = measures(other.attempts);
+    // What each measure is computed over: pass rate and wall time over attempts that did not end in an error, the
+    // #247 measures over attempts that have them. Below MIN_ATTEMPTS of those in either arm a difference is inconclusive.
+    const counted = (xs: Attempt[], n: MeasureName) => n === "passRate" || n === "wallMsMedian" ? xs.filter((a) => a.outcome !== "error").length : xs.filter((a) => a.metrics).length;
     for (const n of names) {
       const s = samples[n].sort((x, y) => x - y);
       const diff = ma[n] !== null && mb[n] !== null ? mb[n]! - ma[n]! : null;
-      differences.push({ arm: other.arm, measure: n, diff, low: s.length ? s[Math.floor(0.025 * s.length)]! : null, high: s.length ? s[Math.min(s.length - 1, Math.floor(0.975 * s.length))]! : null,
-        inconclusive: base.attempts.length < MIN_ATTEMPTS || other.attempts.length < MIN_ATTEMPTS || diff === null });
+      const rank = (q: number) => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))]!; // nearest rank
+      differences.push({ arm: other.arm, measure: n, diff, low: s.length ? rank(0.025) : null, high: s.length ? rank(0.975) : null,
+        inconclusive: counted(base.attempts, n) < MIN_ATTEMPTS || counted(other.attempts, n) < MIN_ATTEMPTS || diff === null });
     }
   }
   return { arms: arms.map((a) => ({ arm: a.arm, runs: a.runs, measures: measures(a.attempts) })), differences };
 }
 
+/** The runs an arm label stands for: every run of it that is over, a stopped one included (its attempts carry their own outcomes). */
+export const armRuns = (runs: BenchRun[], arm: string): BenchRun[] => runs.filter((r) => r.header.arm === arm && r.state !== "running" && r.state !== "unknown");
+/** Groups to compare must run the same suite (name and file hash), or their numbers measure different work. */
+export function sameSuite(groups: { arm: string; runs: BenchRun[] }[]): string | null {
+  const keys = new Set(groups.flatMap((g) => g.runs.map((r) => `${r.header.suite} (${r.header.suiteHash.slice(0, 12)})`)));
+  return keys.size > 1 ? `these runs come from different suites or suite versions: ${[...keys].join(", ")}` : null;
+}
+
 const pct = (v: number | null) => v === null ? "-" : `${Math.round(v * 100)}%`;
 const num = (v: number | null) => v === null ? "-" : String(Math.round(v));
 const dur = (ms: number | null) => ms === null ? "-" : ms < 120_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`;
-const row = (name: string, m: Measures) => `${name.padEnd(28)} ${String(m.attempts).padStart(8)}  ${pct(m.passRate).padStart(5)}  ${`${m.pass}/${m.fail}/${m.timeout}/${m.error}`.padStart(11)}  ${pct(m.firstPassRate).padStart(10)}  ${num(m.tokensMedian).padStart(10)}  ${dur(m.wallMsMedian).padStart(8)}`;
-const HEAD = `${"".padEnd(28)} ${"attempts".padStart(8)}  ${"pass".padStart(5)}  ${"p/f/t/e".padStart(11)}  ${"first pass".padStart(10)}  ${"tokens p50".padStart(10)}  ${"wall p50".padStart(8)}`;
+const row = (name: string, m: Measures) => `${name.padEnd(28)} ${String(m.attempts).padStart(8)}  ${pct(m.passRate).padStart(5)}  ${`${m.pass}/${m.fail}/${m.timeout}/${m.error}`.padStart(11)}  ${pct(m.firstPassRate).padStart(10)}  ${(m.reworkMean === null ? "-" : m.reworkMean.toFixed(2)).padStart(6)}  ${num(m.tokensMedian).padStart(10)}  ${dur(m.wallMsMedian).padStart(8)}`;
+const HEAD = `${"".padEnd(28)} ${"attempts".padStart(8)}  ${"pass".padStart(5)}  ${"p/f/t/e".padStart(11)}  ${"first pass".padStart(10)}  ${"rework".padStart(6)}  ${"tokens p50".padStart(10)}  ${"wall p50".padStart(8)}`;
 export function formatRuns(runs: BenchRun[]): string[] {
   if (!runs.length) return ["no benchmark runs on this machine (ahub bench run <suite.json> --arm <label>)"];
   return runs.map(runSummary).map((s) => `${s.run}  ${s.state.padEnd(11)} ${s.suite} [${s.arm}]  ${s.done}/${s.total}  pass ${pct(s.passRate)}  tokens p50 ${num(s.tokensMedian)}  wall p50 ${dur(s.wallMsMedian)}  ${s.startedAt}`);
