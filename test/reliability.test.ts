@@ -308,9 +308,12 @@ test("#297 a saved escalation whose assignment publish fails is noticed as uncon
   try {
     await h.op("hub_task_propose", { title: "give up", class: "implement", owner: "local" });
     await until(() => h.notices.some((n) => n.includes("task #1 give up") && n.includes("delivery is not confirmed") && n.includes("ahub task assign 1 kimi")), 8000);
+    // A control round trip proves every microtask of the failed escalation settled; only then the absence of a
+    // contradicting line is an assertion, not a race.
+    expect(JSON.parse((await h.op("task_show", { id: 1 })).text).owner).toBe("kimi");
   } finally {
     h.daemon.bus.publish = publish;
   }
+  expect(h.notices.filter((n) => n.includes("delivery is not confirmed"))).toHaveLength(1);
   expect(h.notices.some((n) => n.includes("could not be escalated"))).toBe(false);
-  expect(JSON.parse((await h.op("task_show", { id: 1 })).text).owner).toBe("kimi");
 });

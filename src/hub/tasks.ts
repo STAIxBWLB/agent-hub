@@ -834,7 +834,8 @@ export class Tasks {
    */
   private passedOver(task: Task, a: Assignment): string {
     if (!a.unreserved || task.reserved === task.owner || this.excluded(task).includes(task.reserved!)) return "";
-    this.d.notify(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
+    // Before the write, but after the caller's own (a decline's, say): a throwing console fails nothing (#297).
+    this.releaseNotice(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
     return `; reserved owner ${task.reserved} passed over: ${a.unreserved}`;
   }
 
@@ -889,9 +890,9 @@ export class Tasks {
     // A claim is its own hand-over: the claimant took the task in the turn it is in, so it is taking it, not busy elsewhere.
     // The cohort record formed just below reads it, and so does `route explain` while that turn lasts.
     if (opts.claim && a.owner === by && this.d.bus.peers.get(by)?.state === "busy") this.sent.set(handOver(next, by), by);
-    const hits = this.overlapHits(next);
-    this.formCohort(next, hits);
     try {
+      const hits = this.overlapHits(next);
+      this.formCohort(next, hits);
       if (hits.length) {
         this.announceOverlap(next, hits);
         this.tellEarlierOwners(next, hits);
@@ -899,16 +900,17 @@ export class Tasks {
       this.announceRouting(next, a);
       if (!opts.claim || a.owner !== by) await this.sendTask(next, a, opts.context, this.overlaps(next, true, hits), opts.contextWithheld);
     } catch (e) {
-      // The write above took effect: the move is fact, and a failure here is a delivery failure (#297). The one
-      // console notice is printed here, once, for every caller; callers decide control flow by the error type.
+      // Everything between the write and the end of the delivery is in here: the move is fact, and a failure is a
+      // delivery failure (#297). The one console notice is printed here, once, for every caller; callers decide
+      // control flow by the error type.
       let saved = next;
       try {
         saved = this.d.board.get(task.id) ?? next;
       } catch { /* the write's row is still true */ }
-      // A row whose owner is no longer the one this call wrote was superseded meanwhile (a console assign landed
-      // while the brief was read): not an undelivered assignment, so no notice naming either owner, and the
-      // original error goes to the caller as before #297.
-      if (saved.owner !== next.owner) throw e;
+      // Any later write to the row (another owner, the same owner again, an accept, an approval) means this
+      // assignment was superseded or acted on meanwhile: not an undelivered assignment, so no notice, no tail,
+      // and the original error goes to the caller as before #297.
+      if (saved.history.length !== next.history.length) throw e;
       this.releaseNotice(this.undeliveredNotice(saved, e));
       throw new AssignmentUndeliveredError(saved, e);
     }
