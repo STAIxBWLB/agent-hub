@@ -26,6 +26,7 @@ export const MACHINE_LOCAL = [
   "local.read_allow",
   "local.bash_network",
   "local.network_allow", // the hosts the egress proxy opens (#65)
+  "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
 ] as const;
 
 /**

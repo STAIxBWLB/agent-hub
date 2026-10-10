@@ -11,6 +11,17 @@ export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proces
   return env;
 }
 
+/**
+ * #269: the environment of a terminal the hub opens for a person: no agent marker and no hub-run flag, so `ahub`
+ * typed or started there has the console's identity, whatever started the hub.
+ */
+export function personEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = childEnv(source);
+  // The Orca terminal the hub itself was started in is not this new terminal: a launch there must not record it as its own.
+  for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PEER_ID", "AGENTHUB_UNATTENDED", "ORCA_TERMINAL_HANDLE", "ORCA_WORKTREE_ID"]) delete env[name];
+  return env;
+}
+
 /** Every native child owns its marker; caller vendor markers must not leak across peers (#193). */
 export function peerChildEnv(peer: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = childEnv(source);

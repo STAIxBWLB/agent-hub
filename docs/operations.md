@@ -199,10 +199,12 @@ Launch that peer with `ahub claude` for channel pushes, or select `codex` in
 `roles` and launch `ahub codex`. The conductor splits work into owned tasks,
 observes `hub_status`, moves stalled work and obtains review before reporting
 results and open decisions. It does not implement the tasks it handed out.
-`hub_peer_start` starts local, Kimi or headless Pi; requests for native TUIs
-return the `ahub` command for the person to run, after validating it through
-the shared launcher planner. The wrapper plans again at launch when native
-endpoints are available. `hub_peer_hold` and `hub_peer_release`
+`hub_peer_start` starts a peer in the start mode a person set for it (see
+"Start modes"): local, Kimi and a headless Pi or Codex start at once; for a
+TUI peer the hub opens a terminal running the fixed `ahub <peer>` command,
+after validating it through the shared launcher planner, and when it cannot
+open one the call fails with that command for the person to run. The
+conductor cannot choose the mode. `hub_peer_hold` and `hub_peer_release`
 manage only holds placed by that conductor. Assignment also requires `assign`
 when the conductor has an explicit capabilities list.
 
@@ -351,7 +353,7 @@ Managed launchers attach native peers to the project daemon:
 ahub claude
 ahub codex
 ahub kimi
-ahub pi --mode headless --backend auto
+ahub pi                 # its TUI; --headless for the background peer
 ahub local
 ahub local --model <served-model-id>
 ```
@@ -976,6 +978,7 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
 | --- | --- | --- | --- |
 | Permissions | `permission.<peer>` (the mode now) | the running hub only | at once |
 | Permissions | `permission_modes.<peer>` (the mode at hub start) | `config.local.json` | next hub start |
+| Start | `peers.pi.start_mode`, `peers.codex.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
 | Start | `pi.auto_start` | `config.local.json` | next hub start |
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled`, `coordination` | `config.local.json` | next hub start |
@@ -1018,6 +1021,64 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   recorded as a `settings` event. `ahub settings` needs a running hub; an older
   hub answers the request as unknown and the CLI advises upgrading. The unified
   dashboard (`ahub ui --all`) acts as an ordinary session.
+
+## Start modes: TUI by default, headless as opt-in
+
+A peer that has a TUI the hub attaches to starts in it by default (issue #269).
+
+| Peer | Default | Headless |
+| --- | --- | --- |
+| pi | `tui` | `ahub pi --headless` (or `--mode headless`), or `peers.pi.start_mode: headless` |
+| codex | `tui` (`ahub codex`) | `peers.codex.start_mode: headless`: a hub-made start runs the app-server only |
+| claude | `tui` (`ahub claude`) | none |
+| kimi | headless (ACP) | it has no TUI the hub attaches to |
+| local | headless (hub-native) | not applicable |
+
+- **You type the command:** `ahub pi` opens Pi's TUI in that terminal.
+  `--headless` and the start mode setting are the two ways to ask for the
+  background peer. `ahub settings set peers.pi.start_mode headless` writes the
+  setting; it applies at Pi's next start.
+- **The hub starts the peer** (the dashboard's Start control, `pi` typed in
+  `ahub console`, the conductor's `hub_peer_start`, `pi.auto_start`): it
+  follows the peer's start mode. For `tui` it opens a terminal running the
+  fixed command `ahub <peer>`, through a terminal provider:
+  1. `terminal.open` in `.agenthub/config.local.json`, an argv in which one
+     element holds `{command}` (the quoted command line to run); `{title}` and
+     `{cwd}` are replaced too. Examples:
+     `["tmux", "new-window", "-n", "{title}", "{command}"]`,
+     `["wezterm", "start", "--cwd", "{cwd}", "--", "sh", "-c", "{command}"]`.
+     Only a config file nobody committed may set it, and it is not a setting
+     the dashboard or `ahub settings` can write. It is read at hub start.
+     `{command}` is quoted for a POSIX shell; `{title}` and `{cwd}` are raw,
+     so give each an argv element of its own.
+  2. Orca, when the hub runs in an Orca worktree or an earlier `ahub <peer>`
+     launch of this project recorded one (the path recovery uses).
+- **No provider:** the start is refused with the command to run by hand. It is
+  never downgraded to headless. `ahub settings` lists each start mode, and the
+  dashboard's Start control says which mode a start will use and where its
+  terminal comes from.
+- The conductor cannot choose the mode: `hub_peer_start` takes the peer's own.
+- Recovery restores each peer in the mode its recorded session had. After an
+  unplanned stop, a Pi that ran in a terminal is reported with its command and
+  is not replaced by a headless one unless headless is its start mode.
+
+### Migration from 0.12.22 and earlier
+
+Pi's default changes from headless to its TUI.
+
+- `ahub pi` in a terminal now opens the TUI. For the background peer run
+  `ahub pi --headless`.
+- A project with `"pi": { "auto_start": true }` used to get a headless Pi at
+  every hub start. To keep that, set the start mode once:
+  `ahub settings set peers.pi.start_mode headless` (or add
+  `"peers": { "pi": { "start_mode": "headless" } }` to
+  `.agenthub/config.local.json`). Without it the hub opens Pi's TUI in a
+  terminal at start, or, with no terminal provider, says
+  `pi.auto_start did not start Pi` with the command to run.
+- Scripts and the console's `pi` command: without a terminal, `ahub pi` asks
+  the hub to open one. Add `--headless` where a headless Pi is meant.
+- A conductor's `hub_peer_start` no longer takes a mode. A call that passes one
+  is refused unless it repeats the peer's start mode.
 
 ## Approvals and pauses
 
@@ -1711,8 +1772,9 @@ crash of one is not reported this way.
   spends no cloud quota), and on a fresh session if that fails, keeping the
   recorded backend and model; the report says which. Malformed records in
   `sessions.json` are skipped. A Pi that ran in a terminal (`--mode tui`) is never started on its
-  recorded session by the hub; the report gives the command, and with
-  `pi.auto_start` a fresh headless Pi starts instead.
+  recorded session by the hub; the report gives the command. With
+  `pi.auto_start` a fresh headless Pi starts instead only when Pi's start mode
+  is headless; with the default (tui) nothing is started in its place.
 - Codex's app-server died with the hub; run `ahub codex` again. Claude Code's
   plugin reconnects by itself while that session is open.
 

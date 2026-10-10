@@ -4,6 +4,7 @@ import { loadConfig } from "../hub/daemon.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { relayModelIds } from "../models/relay.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
+import { startModeOf } from "../hub/start-mode.ts";
 import { buildLaunch, buildKimiLaunch, claudeObservationHooks, type Launch } from "./launch.ts";
 
 const REDACTED = "[redacted]";
@@ -62,7 +63,7 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     launch = buildKimiLaunch(nativeCommand(config.kimi_cmd, ["kimi", "acp"]), model ? REDACTED : undefined);
     unresolved.push({ field: "sessionId", reason: "ACP session identity is available only after native initialization" });
   } else {
-    const mode = value("--mode") ?? "headless";
+    const mode = value("--mode") ?? startModeOf(config.peers, "pi"); // #269: the same default `ahub pi` takes
     const backend = value("--backend") ?? config.pi.backend;
     if (!["headless", "tui"].includes(mode) || !["auto", "dgx", "mlx"].includes(backend) || (value("--session-id") && value("--session-file"))) throw new Error("invalid Pi options");
     for (let i = 0; i < args.length; i += 2) if (!["--mode", "--backend", "--model", "--session-id", "--session-file"].includes(args[i]!)) throw new Error("unknown Pi option");

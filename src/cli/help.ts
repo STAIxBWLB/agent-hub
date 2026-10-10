@@ -36,7 +36,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"],
     ["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"],
     ["ahub kimi [--print-command] [--model <alias>]", "start Kimi headless under ACP"],
-    ["ahub pi [--print-command] [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi"],
+    ["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"],
     ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
     ["ahub stop <peer>", "human only: stop a hub-owned headless peer; end TUI agents in their terminals"],
     ["ahub models setup|status|start|stop", "prepare or inspect local Ollama MLX (legacy stop is explicit)"],
