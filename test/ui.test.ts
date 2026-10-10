@@ -361,7 +361,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>) 
     ${starts}
     ({post,action,
       draw(starts){root.children=[];renderStarts(root,starts);return root},
-      project(id){selectedProjectId=id;selectedInstanceId='i-'+id;viewGeneration++;syncMutationControls()},
+      project(id,instance=id==='p1'?'i1':'i-'+id){selectedProjectId=id;selectedInstanceId=instance;viewGeneration++;syncMutationControls()},
       valid(value){snapshotValid=value;syncMutationControls()},
       snapshot(value){syncStarts(value)},
       pending(){return Array.from(pendingStarts.entries())}
@@ -432,4 +432,25 @@ test("a snapshot-confirmed attachment is not re-blocked by a late unconfirmed re
   await requested;
   expect(api.pending()).toEqual([]);
   api.draw(startRows); expect(buttons()[0]!.disabled).toBe(false);
+});
+
+
+test("an unconfirmed start belongs to its daemon instance, not a replacement", async () => {
+  const calls: any[] = [];
+  const { api, buttons } = startPageRuntime(async (_path, options) => {
+    calls.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ ok: false, unconfirmed: true, text: unavailableStart }) };
+  });
+  api.draw(startRows);
+  expect(await api.action({ action: "start_peer", peer: "codex" }, buttons()[0])).toBe(false);
+  api.draw(startRows); expect(buttons()[0]!.disabled).toBe(true);
+  api.project("p1", "replacement-instance");
+  api.snapshot({ status: { peers: {} }, starts: startRows });
+  api.draw(startRows); expect(buttons()[0]!.disabled).toBe(false);
+  expect(await api.action({ action: "start_peer", peer: "codex" }, buttons()[0])).toBe(false);
+  expect(calls.map(call => call.instanceId)).toEqual(["i1", "replacement-instance"]);
+  api.draw(startRows); expect(buttons()[0]!.disabled).toBe(true);
+  api.snapshot({ status: { peers: { codex: { attached: true } } }, starts: [] });
+  api.draw(startRows); expect(buttons()[0]!.disabled).toBe(false);
+  expect(api.pending()).toHaveLength(1); // the old instance cannot block or clear the replacement's controls
 });

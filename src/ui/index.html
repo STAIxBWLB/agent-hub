@@ -80,12 +80,12 @@ async function post(path, body) {
 }
 function canMutate() { return !managerMode || snapshotValid; }
 function context() { return { projectId: selectedProjectId, instanceId: selectedInstanceId, generation: viewGeneration }; }
-function startKey(peer, projectId = selectedProjectId) { return JSON.stringify([projectId, peer]); }
+function startKey(peer, projectId = selectedProjectId, instanceId = selectedInstanceId) { return JSON.stringify([projectId, instanceId, peer]); }
 async function action(payload, button, managerAction = false) {
   if (stopped) return false;
   if (!managerAction && !canMutate()) { notice('Wait for a current project snapshot before changing it.', true); return false; }
   const captured = context();
-  const key = payload.action === 'start_peer' ? startKey(payload.peer, captured.projectId) : undefined;
+  const key = payload.action === 'start_peer' ? startKey(payload.peer, captured.projectId, captured.instanceId) : undefined;
   if (key && pendingStarts.has(key)) return false;
   const pending = key ? {phase:'pending', text:'Starting ' + payload.peer + '. Waiting for the hub result.'} : undefined;
   if (key) pendingStarts.set(key, pending);
