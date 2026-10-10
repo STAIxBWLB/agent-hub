@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { Task, TaskClass } from "./board.ts";
+import { CLASSES, type Task, type TaskClass } from "./board.ts";
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
@@ -36,21 +36,115 @@ export interface Routing {
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
   /** `efficient_wait_ms`, opt-in (#199): how long a hub/auto request waits for a busy MLX slot before it moves to dgx/fast; absent, nothing moves for load. */
   pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number; efficient_wait_ms?: number };
+  /** The keys `.agenthub/routing.local.toml` set (#269), such as `classes.implement.peers`; every other value is routing.toml's. */
+  sources?: Record<string, "routing.local.toml">;
+}
+
+/**
+ * What `.agenthub/routing.local.toml` may hold (#269): a person's machine-local override of these keys and nothing
+ * else, so a settings write can never reach targets, routes, signals or the PII constraint.
+ */
+export interface RoutingOverlay {
+  stay_switch?: StaySwitchMode;
+  classes?: Partial<Record<TaskClass, { peers?: PeerId[]; escalate_to?: PeerId[]; route?: string; pi_backend?: "dgx" | "mlx" }>>;
+}
+export const OVERLAY_FILE = "routing.local.toml";
+const OVERLAY_PEER = /^[a-z][a-z0-9-]{0,31}$/;
+const OVERLAY_ROUTE = /^[A-Za-z0-9][A-Za-z0-9_./-]{0,63}$/;
+const OVERLAY_PEERS_MAX = 8;
+
+/** A checked copy of an overlay, in a fixed key order; throws on anything outside the keys above. */
+export function checkOverlay(raw: unknown): RoutingOverlay {
+  const bad = (what: string): never => { throw new Error(`${OVERLAY_FILE}: ${what}`); };
+  const table = (value: unknown, where: string): Record<string, unknown> => (!value || typeof value !== "object" || Array.isArray(value) ? bad(`${where} must be a table`) : value as Record<string, unknown>);
+  const peers = (value: unknown, where: string): PeerId[] => {
+    if (!Array.isArray(value) || value.length > OVERLAY_PEERS_MAX || value.some((p) => typeof p !== "string" || !OVERLAY_PEER.test(p)) || new Set(value).size !== value.length) bad(`${where} must list up to ${OVERLAY_PEERS_MAX} distinct peer ids`);
+    return [...(value as PeerId[])];
+  };
+  const top = table(raw, "the file");
+  const out: RoutingOverlay = {};
+  for (const [key, value] of Object.entries(top)) {
+    if (key === "stay_switch") {
+      if (value !== "off" && value !== "shadow" && value !== "enforce") bad('stay_switch must be "off", "shadow" or "enforce"');
+      out.stay_switch = value as StaySwitchMode;
+    } else if (key === "classes") {
+      for (const [name, policy] of Object.entries(table(value, "classes"))) {
+        if (!(CLASSES as readonly string[]).includes(name)) bad(`[classes.${name}] is not a task class`);
+        const entry: NonNullable<RoutingOverlay["classes"]>[TaskClass] = {};
+        for (const [field, v] of Object.entries(table(policy, `[classes.${name}]`))) {
+          if (field === "peers" || field === "escalate_to") entry[field] = peers(v, `[classes.${name}] ${field}`);
+          else if (field === "route") entry.route = typeof v === "string" && OVERLAY_ROUTE.test(v) ? v : bad(`[classes.${name}] route must be a route id`);
+          else if (field === "pi_backend") entry.pi_backend = v === "dgx" || v === "mlx" ? v : bad(`[classes.${name}] pi_backend must be "dgx" or "mlx"`);
+          else bad(`[classes.${name}] ${field} is not a setting this file holds; edit routing.toml`);
+        }
+        if (Object.keys(entry).length) (out.classes ??= {})[name as TaskClass] = entry;
+      }
+    } else bad(`${key} is not a setting this file holds; edit routing.toml`);
+  }
+  return out;
+}
+export const parseOverlay = (text: string): RoutingOverlay => checkOverlay(Bun.TOML.parse(text));
+
+/** The overlay as TOML. Every value is a checked id or a closed word, so a JSON string is a valid TOML basic string. */
+export function overlayToml(overlay: RoutingOverlay): string {
+  const checked = checkOverlay(overlay);
+  const lines = ["# Written by ahub settings and the dashboard (machine-local). It overrides routing.toml key by key."];
+  if (checked.stay_switch) lines.push(`stay_switch = ${JSON.stringify(checked.stay_switch)}`);
+  for (const name of CLASSES) {
+    const entry = checked.classes?.[name];
+    if (!entry) continue;
+    lines.push("", `[classes.${name}]`);
+    for (const field of ["peers", "escalate_to"] as const) if (entry[field]) lines.push(`${field} = [${entry[field]!.map((p) => JSON.stringify(p)).join(", ")}]`);
+    if (entry.route) lines.push(`route = ${JSON.stringify(entry.route)}`);
+    if (entry.pi_backend) lines.push(`pi_backend = ${JSON.stringify(entry.pi_backend)}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 const TEMPLATE = join(import.meta.dir, "..", "..", "templates", "routing.toml");
 export const LOCAL: PeerId = "local";
 export const PI: PeerId = "pi";
 
-/** `.agenthub/routing.toml`, or the shipped default when the project has none. Throws on a file that does not parse or lacks a fixed model. */
+/**
+ * `.agenthub/routing.toml`, or the shipped default when the project has none, with `.agenthub/routing.local.toml`
+ * merged over it key by key (#269). Throws on a file that does not parse or lacks a fixed model.
+ */
 export function loadRouting(cwd: string): Routing {
-  let text: string;
+  const text = routingText(cwd);
+  let overlay: string | undefined;
   try {
-    text = readFileSync(join(cwd, ".agenthub", "routing.toml"), "utf8");
-  } catch {
-    text = readFileSync(TEMPLATE, "utf8");
+    overlay = readFileSync(join(cwd, ".agenthub", OVERLAY_FILE), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  return parseRouting(text, overlay === undefined ? undefined : parseOverlay(overlay));
+}
+
+/** The project's routing.toml as text, or the shipped default when it has none. */
+export function routingText(cwd: string): string {
+  try {
+    return readFileSync(join(cwd, ".agenthub", "routing.toml"), "utf8");
+  } catch {
+    return readFileSync(TEMPLATE, "utf8");
+  }
+}
+
+/** The policy of a routing.toml text with an overlay merged over it: what `loadRouting` reads, without the disk. */
+export function parseRouting(text: string, overlay?: RoutingOverlay): Routing {
   const raw = Bun.TOML.parse(text) as Partial<Routing>;
+  const sources: NonNullable<Routing["sources"]> = {};
+  if (overlay) {
+    const checked = checkOverlay(overlay);
+    if (checked.stay_switch) { (raw as Record<string, unknown>).stay_switch = checked.stay_switch; sources.stay_switch = OVERLAY_FILE; }
+    const known = new Set([...Object.keys(raw.routes ?? {}), ...Object.keys(raw.hub_routes ?? {})]);
+    for (const [name, entry] of Object.entries(checked.classes ?? {})) {
+      if (entry.route && !known.has(entry.route)) throw new Error(`${OVERLAY_FILE}: [classes.${name}] route ${entry.route} names no route in routing.toml`);
+      const classes = (raw.classes ??= {}) as Record<string, ClassPolicy>;
+      // A class the shared file does not have starts from an empty peer list: the overlay may add its own.
+      classes[name] = { ...(classes[name] ?? { peers: [] }), ...entry };
+      for (const field of Object.keys(entry)) sources[`classes.${name}.${field}`] = OVERLAY_FILE;
+    }
+  }
   if (!raw.local?.fixed_model) throw new Error("routing.toml: [local] fixed_model is required (the path that works without Switchyard)");
   const signals = { pii_patterns: [], long_context_tokens: 120_000, pii_screen: "off" as const, ...raw.signals };
   for (const p of signals.pii_patterns) new RegExp(p); // a bad pattern fails here, at load, not in the middle of an assignment
@@ -82,22 +176,25 @@ export function loadRouting(cwd: string): Routing {
     signals,
     constraints: { pii: "local_only", long_context: "skip_local", budget_paused: "skip_peer", ...raw.constraints },
     pi,
+    ...(Object.keys(sources).length ? { sources } : {}),
   };
 }
 
-const cache = new Map<string, { mtime: number; routing: Routing }>();
+const cache = new Map<string, { mtime: string; routing: Routing }>();
 
 /**
  * loadRouting behind an mtime check. routing.toml is edited while the hub runs and read on every task operation;
  * a half-saved file must not abort an operation midway, so the last good parse stays in force until the file parses again.
  */
 export function currentRouting(cwd: string, log: (line: string) => void = () => {}): Routing {
-  let mtime = 0;
-  try {
-    mtime = statSync(join(cwd, ".agenthub", "routing.toml")).mtimeMs;
-  } catch {
-    // no project file: the shipped template
-  }
+  // Both files count: a settings write changes only the overlay.
+  const mtime = ["routing.toml", OVERLAY_FILE].map((name) => {
+    try {
+      return statSync(join(cwd, ".agenthub", name)).mtimeMs;
+    } catch {
+      return 0; // no project file: the shipped template, or no overlay
+    }
+  }).join(":");
   const hit = cache.get(cwd);
   if (hit && hit.mtime === mtime) return hit.routing;
   try {
@@ -106,7 +203,7 @@ export function currentRouting(cwd: string, log: (line: string) => void = () => 
     return routing;
   } catch (e) {
     if (!hit) throw e;
-    log(`routing.toml does not load, keeping the previous policy: ${(e as Error).message}`);
+    log(`routing does not load, keeping the previous policy: ${(e as Error).message}`);
     cache.set(cwd, { mtime, routing: hit.routing });
     return hit.routing;
   }
@@ -176,6 +273,9 @@ export function assign(
 ): Assignment {
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
+  // Which file each of this class's values comes from (#269), only when the machine-local overlay sets one.
+  const local = Object.keys(routing.sources ?? {}).filter((key) => key.startsWith(`classes.${task.class}.`)).map((key) => key.slice(`classes.${task.class}.`.length));
+  if (local.length) trace.push(`policy source: ${local.join(", ")} from ${OVERLAY_FILE}; the rest from routing.toml`);
   // A reserved owner (issue #207) is offered the task first. Named candidates (an assign, an escalation, a relay) replace it.
   const reserved = opts.candidates ? undefined : task.reserved ?? undefined;
   // Readiness is an input like peer states (issue #34): a task that waits for others goes to nobody yet.

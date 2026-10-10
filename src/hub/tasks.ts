@@ -766,9 +766,8 @@ export class Tasks {
     return moved;
   }
 
-  /** Same code as assignment, without doing it. */
-  explain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }): string[] {
-    const routing = this.d.routing();
+  /** Same code as assignment, without doing it. `routing`: a candidate policy to explain under (the settings preview, #269). */
+  explain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }, routing: Routing = this.d.routing()): string[] {
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
@@ -784,8 +783,8 @@ export class Tasks {
   }
 
   /** Public read path: every generated line is screened, including profile/config-derived trace fields. */
-  publicExplain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }): string[] {
-    return this.explain(target).map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
+  publicExplain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }, routing?: Routing): string[] {
+    return this.explain(target, routing).map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
   }
 
   /**

@@ -12,6 +12,8 @@ export const EVENTS_SCHEMA = 1;
  */
 export type HubEvent =
   | { type: "permission_mode"; peer: string; from: import("./permission-mode.ts").PermissionMode; to: import("./permission-mode.ts").PermissionMode }
+  /** A settings change (#269): the registry key, the value in force before and after (closed words, ids or booleans, never free text) and where it came from. */
+  | { type: "settings"; key: string; from: import("./settings.ts").SettingValue; to: import("./settings.ts").SettingValue; source: "dashboard" | "terminal"; undo?: boolean }
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }
