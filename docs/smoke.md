@@ -502,14 +502,14 @@ In the project directory, one terminal each:
 3. `ahub codex`. The TUI opens; after its first thread starts, `ahub status` shows `codex idle`.
 4. `ahub claude`. `ahub status` shows `claude idle`.
 5. `ahub say "Each of you: reply with your name and nothing else."` Expect three replies in `ahub tail`, each within its turn time, and each agent seeing the others' replies framed as untrusted (`<channel source="agent-hub">` in Claude, `[agent-hub message from ...]` in Codex and Kimi).
-6. While Codex is mid-turn on a long prompt typed in its TUI, run `ahub say @codex "status?"`. `ahub status` shows `queued 1` for codex; the message is injected after the turn completes.
+6. While Codex is mid-turn on a long prompt typed in its TUI, run `ahub say @codex "status?"`. `ahub status` shows `1` in the codex row's `Q` column; the message is injected after the turn completes.
 7. `ahub say @kimi one`, `ahub say @kimi two` back to back: both answered in order, none lost.
 8. Ask Kimi for something that needs a tool (`ahub say @kimi "create /tmp/agenthub-smoke.txt"`): `ahub tail` prints the permission request; `ahub permit <id> <option>` answers it; no answer within 120 s cancels it.
 9. `ahub kill`: no `kimi acp` or `codex app-server` process survives (`pgrep -fl "kimi acp|codex app-server"`).
 
 ## M2: tiers, digests, steer, recall
 
-1. `ahub pause kimi`, then `ahub say @kimi "[STATUS] one"`, `ahub say @kimi "[STATUS] two"`, `ahub say @kimi "how many agent-hub messages are in this prompt?"`. `ahub status` shows `kimi paused queued 3`. `ahub resume kimi`: one Kimi turn answers for all of them, and on the first delivery of the hub run it also reports the `hub` memory item (`grep recall .agenthub/state/hub.log` shows its size).
+1. `ahub pause kimi`, then `ahub say @kimi "[STATUS] one"`, `ahub say @kimi "[STATUS] two"`, `ahub say @kimi "how many agent-hub messages are in this prompt?"`. `ahub status` shows `3` in Kimi's `Q` column and a `paused` detail. `ahub resume kimi`: one Kimi turn answers for all of them, and on the first delivery of the hub run it also reports the `hub` memory item (`grep recall .agenthub/state/hub.log` shows its size).
 2. `ahub say "[FYI] note"` appears on `ahub tail` as `[fyi: record only]` and no peer goes busy.
 3. With Codex mid-turn on a long prompt typed in its TUI: `ahub say @codex "[IMPORTANT] stop and summarize"`. The running turn changes course (steer) instead of a new turn starting afterwards; `ahub status` never shows it queued. `ahub say @codex "[STATUS] later"` during the same turn stays queued until the turn ends.
 4. Two agents chatting without markers: their replies reach the third agent as digests, not one turn per message.
@@ -519,8 +519,8 @@ In the project directory, one terminal each:
 Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway over VPN, or the Access-protected public URL with its two header files) and a key: `OMNIROUTE_API_KEY`, or `omniroute.api_key_file` in `.agenthub/config.json`.
 
 1. `ahub doctor`: `omniroute` healthy, `omniroute key` present, `switchyard` installed or not.
-2. In a scratch git repo: `ahub up`, `ahub local`, `ahub tail`, then `ahub say @local "fix the typos in <file>, run git diff --stat and report"`. `ahub tail` shows a permission request for the edit; `ahub permit <id> allow`. The file changes, the answer is a short conclusion, `ahub status` shows `last call: omniroute <model> (provider vllm)`.
-3. Same with `AGENTHUB_SWITCHYARD_BIN` (or `switchyard-server` on PATH) set before `ahub up`: `ahub status` shows `last call: switchyard sy/coding -> <model>` and `switchyard: 127.0.0.1:<port>`; `lsof -nP -iTCP -sTCP:LISTEN | grep switchy` shows loopback only; `.agenthub/state/switchyard.toml` is mode 600 and holds no key; after `ahub kill` the file and the process are gone.
+2. In a scratch git repo: `ahub up`, `ahub local`, `ahub tail`, then `ahub say @local "fix the typos in <file>, run git diff --stat and report"`. `ahub tail` shows a permission request for the edit; `ahub permit <id> allow`. The file changes, the answer is a short conclusion, `ahub status` shows the served model in the local row's `MODEL` column and `vllm` in the backend table's `PROVIDER` column.
+3. Same with `AGENTHUB_SWITCHYARD_BIN` (or `switchyard-server` on PATH) set before `ahub up`: `ahub status` shows the served model in `MODEL`, `switchyard` in the backend's `PROVIDER` column, and a `switchyard` detail with `127.0.0.1:<port>`; `lsof -nP -iTCP -sTCP:LISTEN | grep switchy` shows loopback only; `.agenthub/state/switchyard.toml` is mode 600 and holds no key; after `ahub kill` the file and the process are gone.
 4. claude-mem: `sqlite3 -readonly ~/.claude-mem/claude-mem.db "select agent_id, agent_type, project, title from observations order by id desc limit 3"` shows `local | local-worker` rows a minute or two later (claude-mem's observer runs asynchronously).
 
 ## M4: task board
@@ -534,7 +534,7 @@ Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway ove
 ## M5: budget relay
 
 1. `ahub up`, `ahub kimi`, `ahub local`, `ahub tail`. Give Kimi a task, then `ahub budget set kimi 0.95 --resets-in 2m`.
-2. `ahub tail`: Kimi is asked for a checkpoint, writes `.agenthub/checkpoint.md`, calls `hub_checkpoint`; then `budget: kimi paused ...; checkpoint received` and `budget: moved from kimi: #<id> owner -> local`. `ahub status` shows `kimi paused (budget: ...)`, `ahub board` shows the task with `local`.
+2. `ahub tail`: Kimi is asked for a checkpoint, writes `.agenthub/checkpoint.md`, calls `hub_checkpoint`; then `budget: kimi paused ...; checkpoint received` and `budget: moved from kimi: #<id> owner -> local`. `ahub status` shows a `paused` detail for Kimi naming the budget reason, `ahub board` shows the task with `local`.
 3. `ahub budget set kimi 0.97` again changes nothing. `ahub resume kimi` is refused while the record is open; `ahub budget resume kimi` overrides it, and further readings over the gate do not pause Kimi again until that window has reset.
 4. `ahub budget set kimi 0.1` (the mocked reset), or wait for the reset time: `kimi resumed`, and Kimi gets one envelope listing what moved.
 5. Codex: with a TUI attached through `ahub codex`, `ahub budget` shows its windows from `account/rateLimits/read`; on a limited account Codex is paused until `resetsAt` without a checkpoint.
@@ -1522,3 +1522,13 @@ with the dashboard. In the dashboard select Light, Dark and System, reload each
 choice, change OS theme on System, and check text, bars, stage labels and controls.
 Repeat with cookies blocked and across two dashboard ports; verify unchanged
 progress snapshots do not repeatedly announce the live region. Record the exact head and verdict here.
+
+## One-shot command output (#284 phase 1)
+
+Human visual inspection: **not run**. Automated geometry and color checks are separate evidence.
+At the PR head, run `ahub status`, `ahub board`, `ahub budget` and `ahub doctor` in a light and a dark terminal,
+at 80 and 120 columns. Inspect Korean and long task titles, settlement and hold details, modes and quota windows.
+Confirm readable state/level words with `--color=never`, matching visible text with `--color=always`, and no cut fields.
+Compare status's shortened informational ids with `status --full`; suggested command ids must always be whole. In `ahub console`,
+run the same commands and confirm their rows stay within the four-column indent and output remains plain.
+Record the exact head and visual verdict here after the owner performs this leg.

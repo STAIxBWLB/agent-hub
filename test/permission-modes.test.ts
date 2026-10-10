@@ -13,7 +13,8 @@ import { startFakeAppServer } from "./fakes/app-server.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { AGENT_CONFIG_SEGMENTS, grantablePath, isAgentConfigPath, permissionDefaults } from "../src/hub/permission-mode.ts";
 import { sandboxAvailable } from "../src/local/sandbox.ts";
-import { peerLine } from "../src/cli/status-lines.ts";
+import { renderStatus } from "../src/cli/output.ts";
+import { paint } from "../src/cli/console-state.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -313,7 +314,7 @@ test("Kimi runtime changes are confirmed, observed and reset to project defaults
   expect((await rig.mode("kimi", "never-ask")).error).toContain("confirmation");
   expect((await rig.mode("kimi", "never-ask", true)).permissionMode).toBe("never-ask");
   expect((await rig.client.request({ t: "status" })).status.peers.kimi.permissionMode).toBe("never-ask");
-  expect(peerLine("kimi", { state: "idle", permissionMode: "never-ask" })).toContain("permission: never-ask");
+  expect(renderStatus({ peers: { kimi: { state: "idle", permissionMode: "never-ask" } } }).map(line => paint(line, false)).join("\n")).toContain("never-ask");
   expect(readEvents(join(rig.stateDir, "events.jsonl")).filter(e => e.type === "permission_mode")).toContainEqual(expect.objectContaining({ v: EVENTS_SCHEMA, peer: "kimi", from: "ask-when-needed", to: "never-ask" }));
   expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).toContain("permission mode kimi: ask-when-needed -> never-ask");
   expect((await rig.mode("kimi", "ask")).permissionMode).toBe("ask");

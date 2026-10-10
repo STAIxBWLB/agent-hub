@@ -3,6 +3,19 @@
 This guide describes ahub 0.12.22 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
+## Command output
+
+`ahub status`, `board`, `budget` and `doctor` print shared console tables and labelled details.
+Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
+Text columns are a human interface, not a scripting contract. `status --full` keeps informational identifiers whole;
+identifiers in suggested commands are always whole.
+
+`--color=auto|always|never` uses the console palette. Auto colors only a TTY with `TERM` other than `dumb`
+and empty `NO_COLOR`; pipes and redirects stay plain. Color never replaces a state or level word.
+TTY width is its columns (at least 80). A pipe uses a positive integer `COLUMNS` when supplied, otherwise rows
+are complete and unwrapped. Long fields wrap within their column; widths too narrow for all headers use table bands linked by the row id, retaining every field. Console children receive the console's width
+minus its four-column indent and remain uncolored.
+
 ## Command help
 
 `ahub help`, `ahub --help` and `ahub -h` print the commands grouped by section;
@@ -1176,8 +1189,8 @@ Only `ahub claude` starts Claude Code with the development-channel flag. A
 Claude session started another way (plain `claude`, an IDE) keeps the hub tools
 but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
 
-- Its messages stay queued. `ahub status` shows `queued N` and `tools-only:
-  messages wait for hub_inbox; for pushes restart Claude with ahub claude`; the
+- Its messages stay queued. `ahub status` shows the queue count in `Q` and a `tools-only` detail:
+  `messages wait for hub_inbox; for pushes restart Claude with ahub claude`; the
   console footer shows `tools-only: ahub claude` and the dashboard shows the
   status line.
 - The session reads them with `hub_inbox`, at most ten messages at a time plus
@@ -1901,7 +1914,7 @@ whose MLX slot is still busy after that wait goes to `dgx/fast` first (`source: 
 so does an enforced tool loop pinned to it (`source: "pin"`); without it nothing moves for load. `dgx/fast`
 never goes first while it is cooling down, or while its own last dispatch failed in any way,
 an error status or a failed stream included, until it succeeds or 30 s pass (`ahub status`:
-`last dispatch failed, no load moves until ...`). No load move or pin happens while the request
+a `dispatch held` detail with a relative time and `no load moves until then`). No load move or pin happens while the request
 runs under an execution budget, and enforced, a load move happens only at a user turn. A moved
 attempt gets 15 s to its response headers after the gateway lookup (OmniRoute's own probe,
 up to two 4 s rounds when no gateway is cached) and is then abandoned for MLX, which serves
@@ -1915,7 +1928,7 @@ consecutive transport or startup failures outside a cooldown (a failure more tha
 the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
 5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
 answer, a success or an error status, proves the transport works and ends the streak and the
-cooldown. `ahub status` shows `cooling down until ...` on the backend line and `events.jsonl`
+cooldown. `ahub status` shows a `cooling` detail with a relative time and failure count and `events.jsonl`
 records `cooldown` events.
 Progress judgements suggest reassignment; they never change task ownership.
 

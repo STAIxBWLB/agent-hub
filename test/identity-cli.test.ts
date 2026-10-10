@@ -13,7 +13,7 @@ async function cli(root: string, args: string[], markers: Record<string, string>
   // Bind fixture markers in the wrapper, independently of the test runner's scrubbed child environment.
   const wrapper = join(root, `cli-${crypto.randomUUID()}.ts`);
   writeFileSync(wrapper, `for (const name of ${JSON.stringify(MARKERS)}) delete process.env[name];
-Object.assign(process.env, ${JSON.stringify(markers)}, { AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))} });
+Object.assign(process.env, ${JSON.stringify(markers)}, { COLUMNS: "120", AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))} });
 process.argv = [process.execPath, ${JSON.stringify(CLI)}, ...${JSON.stringify(args)}];
 await import(${JSON.stringify(CLI)});
 `);
@@ -196,7 +196,15 @@ test("permission CLI validates confirmation, lists and shows modes, and guides a
     }
     const status = await cli(root, ["status"]);
     expect(status.code, status.stderr).toBe(0);
-    for (const display of ["unverified", "unmanaged", "unknown"]) expect(status.stdout).toContain(`permission: ${display}`);
+    const lines = status.stdout.split("\n");
+    const header = lines.find(line => line.startsWith("PEER"))!.trim().split(/\s+/);
+    const modeColumn = header.indexOf("MODE");
+    expect(modeColumn).toBeGreaterThanOrEqual(0);
+    for (const [peer, display] of [["claude", "unverified"], ["kimi", "unmanaged"], ["local", "unknown"]] as const) {
+      const row = lines.find(line => line.trim().split(/\s+/)[0] === peer);
+      expect(row).toBeDefined();
+      expect(row!.trim().split(/\s+/)[modeColumn]).toBe(display);
+    }
     const show = await cli(root, ["permission", "pi"]);
     expect(show.code, show.stderr).toBe(0); expect(show.stdout).toContain("pi: ask");
     for (const mode of ["ask", "ask-when-needed", "never-ask"]) {
