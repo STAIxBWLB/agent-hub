@@ -35,6 +35,12 @@ async function prompt(id: number, text: string) {
     if (text.includes("QUOTA_REFUSAL_OCCUPANCY")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 1, size: 10 } } });
     const message = arg("--quota-error-text") ?? (process.argv.includes("--quota-unrecognized") ? "Authentication required: 403 another provider refusal" : KIMI_2_1_1_5H_REFUSAL_PREFIX + " To continue now, purchase extra usage or upgrade your plan.");
     const refuse = () => { busy = false; cancel = undefined; send({ jsonrpc: "2.0", id, error: { code: -32603, message } }); };
+    if (text.includes("QUOTA_REFUSAL_PERMISSION")) {
+      const request = ++nextId;
+      waiting.set(request, () => { waiting.delete(request); refuse(); }); // refusal follows the consumed permission answer
+      send({ jsonrpc: "2.0", id: request, method: "session/request_permission", params: { sessionId: "s1", toolCall: { title: "quota permission probe" }, options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }] } });
+      return;
+    }
     if (text.includes("QUOTA_REFUSAL_AFTER_ACTIVITY") || (text.includes("QUOTA_REFUSAL_HELD") && !text.includes("OCCUPANCY"))) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "quota fixture activity" } } } });
     if (text.includes("QUOTA_REFUSAL_HELD") || text.includes("QUOTA_REFUSAL_OCCUPANCY_HELD")) { heldQuotaRefusal = refuse; cancel = () => { busy = false; }; return; }
     return refuse();

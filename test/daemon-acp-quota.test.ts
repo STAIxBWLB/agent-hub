@@ -33,7 +33,7 @@ class Implementer extends BasePeer {
   }
 }
 
-async function fixture() {
+async function fixture(args: string[] = [], recordProtocol = false) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-acp-quota-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -43,7 +43,7 @@ async function fixture() {
   writeFileSync(join(dir, ".agenthub/routing.toml"), routing);
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0,
-      kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal"],
+      kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal", ...args, ...(recordProtocol ? ["--record-protocol", join(dir, "protocol.jsonl")] : [])],
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 1 },
     } });
@@ -157,3 +157,55 @@ test("repeated early budget overrides leave only one pending resume notice (#306
   expect(queue.filter(env => env.kind === "budget" && env.refs?.budgetResume === "kimi")).toHaveLength(1);
   expect(queue.filter(env => env.id === original.id)).toHaveLength(1);
 }, 20_000);
+
+
+test("the delivered coalesced resume notice retains moves across two unread refusal cycles (#306)", async () => {
+  const { dir, daemon, console_, tools, implementer } = await fixture(["--quota-refusals", "3"], true);
+  for (const id of [1, 2]) {
+    expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: `retain move ${id}`, class: "implement", owner: "kimi", refs: { paths: [`move${id}.ts`] } } })).ok).toBe(true);
+    expect((await tools.request({ t: "task", op: "hub_task_accept", args: { id } })).ok).toBe(true);
+  }
+  await until(() => daemon.bus.stateOf("kimi") === "idle" && !daemon.bus.queued("kimi") && !daemon.bus.hasInFlight("kimi"));
+  daemon.bus.publish(newEnvelope("user", "QUOTA_REFUSAL", { to: ["kimi"] }));
+  await until(() => daemon.bus.isPaused("kimi") && [1, 2].every(id => implementer.received.some(env => env.refs?.task === String(id))));
+  const ordinary = newEnvelope("hub", "ordinary budget message", { to: ["kimi"], kind: "budget", refs: {} });
+  const lookalike = newEnvelope("user", "keep this user budget message", { to: ["kimi"], kind: "budget", refs: { budgetResume: "kimi" } });
+  daemon.bus.publish(ordinary); daemon.bus.publish(lookalike);
+  daemon.bus.publish(newEnvelope("hub", "Earlier unread resume: #8 [pii]", { to: ["kimi"], kind: "budget", refs: { budgetResume: "kimi" } }));
+  for (let cycle = 0; cycle < 3; cycle++) {
+    daemon.bus.setRecoveryHold(true);
+    try { expect((await console_.request({ t: "budget", resume: "kimi" })).ok).toBe(true); }
+    finally { daemon.bus.setRecoveryHold(false); }
+    if (cycle < 2) {
+      await until(() => daemon.bus.isPaused("kimi"));
+      const queue = daemon.bus.snapshot(false).queues.kimi!;
+      const notice = queue.filter(env => env.from === "hub" && env.refs?.budgetResume === "kimi");
+      expect(notice).toHaveLength(1);
+      expect(notice[0]!.body).toContain("retain move 1"); expect(notice[0]!.body).toContain("retain move 2");
+      expect(queue.map(env => env.id)).toEqual(expect.arrayContaining([ordinary.id, lookalike.id]));
+    }
+  }
+  await until(() => daemon.bus.stateOf("kimi") === "idle" && !daemon.bus.queued("kimi") && !daemon.bus.hasInFlight("kimi"));
+  await (daemon.bus.peers.get("kimi") as AcpPeer).setPermissionMode("ask");
+  const prompts = readFileSync(join(dir, "protocol.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(message => message.method === "session/prompt");
+  const delivered = prompts.at(-1)!.params.prompt.map((part: { text?: string }) => part.text ?? "").join("\n");
+  expect(delivered).toContain("Your quota window has reset");
+  expect(delivered).toContain("retain move 1"); expect(delivered).toContain("retain move 2");
+  expect(delivered).not.toContain("Nothing was moved");
+  expect(delivered).toContain("Earlier unread resume: #8 [pii]");
+});
+
+test("a quota refusal during the daemon recovery hold is unconfirmed and held without an attempt (#306)", async () => {
+  const { daemon, console_ } = await fixture();
+  const acp = daemon.bus.peers.get("kimi") as AcpPeer;
+  const original = newEnvelope("user", "QUOTA_REFUSAL_OCCUPANCY_HELD", { to: ["kimi"] });
+  daemon.bus.publish(original);
+  await until(() => daemon.bus.stateOf("kimi") === "busy");
+  const status = (await console_.request({ t: "status" })).status;
+  expect((await console_.request({ t: "recovery", op: "prepare", operationId: "quota-held", expectedInstanceId: status.instanceId })).ok).toBe(true);
+  await acp.setPermissionMode("ask"); // native refusal was held until this consumed transport barrier
+  await until(() => daemon.bus.queueSummary("kimi").needsReview === 1);
+  expect(daemon.bus.isPaused("kimi")).toBe(false); expect(daemon.bus.attemptState()).toEqual({});
+  expect(daemon.bus.queueList("kimi").filter(row => row.state === "needs_review")).toHaveLength(1);
+  expect((await console_.request({ t: "recovery", op: "abort", operationId: "quota-held", expectedInstanceId: status.instanceId })).ok).toBe(true);
+});

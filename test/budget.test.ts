@@ -431,3 +431,124 @@ test("headroom: the most used fresh window decides, with its own reset; stale re
   clock.now += 31 * MIN; // past stale_min
   expect(budget.headroom()).toEqual({});
 });
+
+test("a hard refusal ending an override keeps the earlier future bound of that same window (#35)", () => {
+  const s = setup({ canHandOff: () => false });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "first refusal" }], true);
+    const reset = s.budget.record("kimi")!.resetsAt;
+    s.clock.now += 60 * MIN;
+    expect(s.budget.override("kimi")).toBe(true);
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "refused after override" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(reset);
+    expect(s.budget.record("kimi")!.since).toBe(s.clock.now);
+    expect(s.budget.record("kimi")!.reason).toContain("refused after override");
+  } finally { s.budget.close(); }
+});
+
+test("override bounds do not shorten another window or an explicit provider reset (#35)", () => {
+  for (const differentWindow of [false, true]) {
+    const s = setup({ canHandOff: () => false });
+    try {
+      s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "initial" }], true);
+      s.clock.now += 60 * MIN;
+      expect(s.budget.override("kimi")).toBe(true);
+      const reset = s.clock.now + (differentWindow ? 10_080 : 500) * MIN;
+      s.budget.report("kimi", [differentWindow
+        ? { id: "week", used: 1, windowMins: 10_080, source: "weekly refusal" }
+        : { id: "5h", used: 1, resetsAt: reset, source: "provider reset" }], true);
+      expect(s.budget.record("kimi")!.resetsAt).toBe(reset);
+    } finally { s.budget.close(); }
+  }
+});
+
+test("a hard refusal confirms an open persisted pause on the live bus without extending its fallback (#35)", () => {
+  let livePaused = false, pauses = 0;
+  const s = setup({ canHandOff: () => false, pause: () => { livePaused = true; pauses++; } });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "initial" }], true);
+    const first = s.budget.record("kimi")!;
+    livePaused = false; // the persisted pause is open, but live pause state needs confirmation
+    s.clock.now += MIN;
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "again" }], true);
+    expect(livePaused).toBe(true);
+    expect(pauses).toBe(2);
+    expect(s.budget.record("kimi")).toEqual(first);
+  } finally { s.budget.close(); }
+});
+
+test("a hard renewal of an expired pause retains previously moved work for the eventual resume (#35)", async () => {
+  let canHandOff = true, finish!: () => void;
+  const moved = [{ id: 17, title: "#17 moved task", to: "codex", role: "owner" }] as Moved[];
+  const handedOff = new Promise<void>(resolve => { finish = resolve; });
+  const s = setup({ attached: () => false, canHandOff: () => canHandOff,
+    handoff: async () => moved, notify: line => { if (line.startsWith("budget: moved from")) finish(); } });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "initial" }], true);
+    await handedOff; // persisted moved list was written before this correlated notice
+    const first = s.budget.record("kimi")!;
+    expect(first.moved).toEqual(moved);
+    s.clock.now = first.resetsAt + MIN;
+    s.budget.tick();
+    expect(s.budget.record("kimi")).toBeDefined(); // unattached: retain the resume notice's evidence
+    canHandOff = false;
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "renewed" }], true);
+    expect(s.budget.record("kimi")).toMatchObject({ moved, handedOff: false, since: s.clock.now, resetsAt: s.clock.now + 300 * MIN });
+    expect(s.resumed).toEqual([]);
+  } finally { s.budget.close(); }
+});
+
+test("an obsolete soft checkpoint's finally cannot delete the newer hard evaluation token (#35)", async () => {
+  let releaseSoft!: (summary: string) => void, releaseHandoff!: (moved: Moved[]) => void, started!: () => void;
+  const handoffStarted = new Promise<void>(resolve => { started = resolve; });
+  const s = setup({ requestCheckpoint: () => new Promise(resolve => { releaseSoft = resolve; }),
+    platformContext: async () => undefined,
+    handoff: () => { started(); return new Promise(resolve => { releaseHandoff = resolve; }); } });
+  const internal = s.budget as unknown as { evaluate(peer: string, hard: boolean): Promise<void>; pausing: Map<string, object> };
+  const evaluate = internal.evaluate.bind(s.budget), evaluations: Promise<void>[] = [];
+  internal.evaluate = (peer, hard) => { const done = evaluate(peer, hard); evaluations.push(done); return done; };
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 0.95, source: "soft" }]);
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard" }], true);
+    await handoffStarted;
+    expect(evaluations).toHaveLength(2);
+    const hardToken = internal.pausing.get("kimi");
+    expect(hardToken).toBeDefined();
+    releaseSoft("obsolete checkpoint");
+    await evaluations[0]; // the obsolete evaluation has executed its finally
+    expect(internal.pausing.get("kimi")).toBe(hardToken);
+    expect(s.budget.recoverySettled).toBe(false);
+    expect(s.budget.record("kimi")!.summary).toBeNull();
+    releaseHandoff([]);
+    await evaluations[1];
+    expect(internal.pausing.has("kimi")).toBe(false);
+    expect(s.budget.recoverySettled).toBe(true);
+    expect(s.budget.record("kimi")!.handedOff).toBe(true);
+  } finally { s.budget.close(); }
+});
+
+test("a same-window override bound that has expired does not constrain a fresh refusal (#35)", () => {
+  const s = setup({ canHandOff: () => false });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "old" }], true);
+    const oldReset = s.budget.record("kimi")!.resetsAt;
+    expect(s.budget.override("kimi")).toBe(true);
+    s.clock.now = oldReset + MIN;
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "new" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(s.clock.now + 300 * MIN);
+  } finally { s.budget.close(); }
+});
+
+test("a provider reset learned while paused replaces the fallback retained across override (#35)", () => {
+  const s = setup({ canHandOff: () => false });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "fallback" }], true);
+    const providerReset = s.clock.now + 500 * MIN;
+    s.budget.report("kimi", [{ id: "5h", used: 1, resetsAt: providerReset, source: "known reset" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(providerReset);
+    s.clock.now += 60 * MIN; // a new fallback is shorter, but cannot replace the provider's explicit reset
+    expect(s.budget.override("kimi")).toBe(true);
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "unknown again" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(providerReset);
+  } finally { s.budget.close(); }
+});

@@ -797,3 +797,15 @@ test("a plain stop fences a pending prompt's rejection even without a generation
   await acp.stop(); // stop() rejects its pending RPC; the handler was registered when that RPC was created
   expect(failures).toEqual([]); expect(quotas).toEqual([]); expect(acp.state).toBe("offline");
 });
+
+
+test("a native permission before quota refusal is activity even without a delivery id (#306)", async () => {
+  const failures: unknown[] = [], permissions: string[] = [];
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(), onQuotaRefusal: () => true,
+    onPermission: async request => { permissions.push(request.title); return "yes"; },
+  }); peer = acp; acp.onFailed = (_envs, metadata) => failures.push(metadata);
+  await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL_PERMISSION")]);
+  await until(() => failures.length === 1 && acp.state === "idle");
+  await acp.setPermissionMode("ask"); // refusal follows the native consumed permission answer
+  expect(permissions).toEqual(["quota permission probe (payload not reported by the agent)"]); expect(failures).toEqual([undefined]);
+});

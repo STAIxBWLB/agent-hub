@@ -421,7 +421,11 @@ inside a peer.
   untouched ACP refusal is requeued only after the hub confirms its budget pause;
   otherwise it stays held for review. After activity, the delivery remains held
   even though open tasks are relayed, and the queue stays held after the budget
-  reset until a person inspects and resolves it. Keep one pending resume notice.
+  reset until a person inspects and resolves it. Keep one pending resume notice carrying
+  every public move since the previous notice was delivered; retain an older unstructured
+  notice as public text. Within one hub run, retain a still-future reset bound for the same
+  window across an override, while an explicit provider reset remains authoritative. A
+  restored pause without per-window reading identity starts a fresh estimate at the next refusal.
   A handoff waits until another peer is attached
   (right after a restart nobody is), readings keep their own timestamp, and a window whose
   reset time has passed no longer counts. A peer whose window reset while the hub was down is
