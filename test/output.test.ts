@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PALETTE, paint, terminalText, wrap, table } from "../src/cli/console-state.ts";
+import { PALETTE, paint, terminalText, wrap, table, type Span } from "../src/cli/console-state.ts";
 import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "../src/cli/output.ts";
 import { summarize, summarizeByTask, formatReport, formatTaskReport } from "../src/hub/report.ts";
 const now = 1_800_000_000_000;
@@ -310,7 +310,7 @@ describe("one-shot output", () => {
 export const phaseFixture = {
   projects: [{ id: "p_123456789012345678901234", state: "running", root: "/project/" + "경로".repeat(50), status: { controlPort: 12345, peers: { claude: {}, codex: {} }, tasks: { approved: 6, in_progress: 1 } } }],
   deliveries: [{ id: hold, peer: "codex", state: "needs_review", revision: 3, important: true, createdAt: now - 60_000, updatedAt: now - 30_000,
-    originals: [{ id: settlement[0], from: "claude", to: ["codex"], ts: now - 60_000, body: "[pii]", private: true }], out: [], reason: "waiting for a person" }],
+    envelopeIds: [settlement[0]], messages: [{ id: settlement[0], from: "claude", priority: "important", kind: "chat", body: "[private: inspect the associated task with ahub task show]" }] }],
   turns: [{ id: "turn-12345678901234567890", peer: "codex", started: now - 60_000, ended: now - 30_000, end_tree: "deadbeef", changed: Array.from({ length: 8 }, (_, i) => `src/한글경로/file-${i}.ts`) }],
   models: { state: "ready", model: "qwen/" + "long-model-name-".repeat(10), expiresAt: new Date(now + 600_000).toISOString(), active: 0, contextWindow: 32_768 },
   budgets: [{ id: "budget-12345678901234567890", kind: "task", taskId: 3, peers: ["local", "pi"], createdAt: now - 60_000, updatedAt: now - 30_000, units: { tokens: { used: 100, limit: 200, remaining: 100 } } }],
@@ -336,17 +336,39 @@ describe("remaining one-shot outputs", () => {
     expect(text(renderTurns([{ ...phaseFixture.turns[0], ended: undefined }], 80, now))).toContain("running");
     expect(text(renderTurns([{ ...phaseFixture.turns[0], end_tree: undefined }], 80, now))).toContain("no end snapshot");
   });
-  test("informational ids are short but full mode and actionable commands keep complete ids", () => {
-    expect(text(renderQueue(phaseFixture.deliveries, 80, now))).toContain(hold.slice(0, 8));
-    expect(text(renderQueue(phaseFixture.deliveries, 80, now))).not.toContain(hold);
-    expect(text(renderQueue(phaseFixture.deliveries, undefined, now))).toContain(hold);
-    const completeQueue = renderQueue(phaseFixture.deliveries, 80, now, true);
-    const header = completeQueue[0]!;
-    const idAt = header.findIndex(cell => cell.text.trim() === "ID");
-    const completeId = completeQueue.slice(1).filter(line => line.length === header.length).map(line => line[idAt]!.text).join("").replace(/\s/g, "");
-    expect(completeId).toBe(hold);
+  test("command-input identifiers stay whole and unique at80/120 without full mode", () => {
+    for (const columns of [80, 120]) {
+      const cases: [Span[][], string[]][] = [
+        [renderProjects([phaseFixture.projects[0], { ...phaseFixture.projects[0], id: "p_123456789012345678901235" }], columns, now), [phaseFixture.projects[0]!.id, "p_123456789012345678901235"]],
+        [renderTurns([phaseFixture.turns[0], { ...phaseFixture.turns[0], id: "turn-12345678901234567891" }], columns, now), [phaseFixture.turns[0]!.id, "turn-12345678901234567891"]],
+        [renderQueue([{ ...phaseFixture.deliveries[0], id: "q:codex:aaaaaaaa-1111-2222-3333-444444444444" }, { ...phaseFixture.deliveries[0], id: "q:codex:aaaaaaaa-1111-2222-3333-555555555555" }], columns, now), ["q:codex:aaaaaaaa-1111-2222-3333-444444444444", "q:codex:aaaaaaaa-1111-2222-3333-555555555555"]],
+        [renderOrphans([{ project: phaseFixture.projects[0], pids: [] }, { project: { ...phaseFixture.projects[0], id: "p_123456789012345678901235" }, pids: [] }], columns, now), [phaseFixture.projects[0]!.id, "p_123456789012345678901235"]],
+        [renderExecutionBudgetStatus([{ id: "nightly-run" }, { id: "nightly-run-2" }], columns, now), ["nightly-run", "nightly-run-2"]],
+      ];
+      for (const [rendered, ids] of cases) for (const id of ids) {
+        expect(rendered.some(line => line.some(cell => cell.text.trim() === id))).toBe(true);
+        for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+      }
+      for (const rendered of [renderQueueShow({ id: hold, messages: [{ id: settlement[0] }] }, columns, now), renderModelsStatus({ sessionId: settlement[0] }, columns, now)]) {
+        expect(rendered.some(line => line.some(cell => cell.text.trim() === settlement[0]))).toBe(true);
+      }
+    }
     expect(text(renderQueueShow(phaseFixture.deliveries[0], 80, now)).replace(/\s/g, "")).toContain(`ahubqueueresolve${hold}`);
     expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [] }], 80, now)).replace(/\s/g, "")).toContain(`ahubprojectsremove${phaseFixture.projects[0]!.id}`);
+  });
+  test("root/files reserve readable space and prefer path boundaries", () => {
+    for (const columns of [80, 120]) {
+      for (const rendered of [renderProjects([{ ...phaseFixture.projects[0], root: "/project/agent-hub/src/cli/output.ts" }], columns, now), renderTurns(phaseFixture.turns, columns, now)]) {
+        const field = rendered.some(line => line.some(cell => cell.text.trim() === "ROOT")) ? "ROOT" : "FILES";
+        const header = rendered.find(line => line.some(cell => cell.text.trim() === field))!;
+        const at = header.findIndex(cell => cell.text.trim() === field);
+        const row = rendered[rendered.indexOf(header) + 1]!;
+        expect(columns - row.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0)).toBeGreaterThanOrEqual(12);
+        if (field === "ROOT") for (const segment of ["project/", "agent-hub/", "output.ts"]) expect(rendered.some(line => line[at]?.text.includes(segment))).toBe(true);
+        else for (let i = 0; i < 8; i++) expect(rendered.some(line => line[at]?.text.includes(`file-${i}.ts`))).toBe(true);
+        for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+      }
+    }
   });
   test("new identifier columns preserve full project and turn tokens at80", () => {
     for (const rendered of [renderProjects(phaseFixture.projects, 80, now, true), renderTurns(phaseFixture.turns, 80, now, true)]) {
@@ -357,7 +379,7 @@ describe("remaining one-shot outputs", () => {
   });
   test("structured views keep public stubs and labels with relative times", () => {
     const queue = text(renderQueueShow(phaseFixture.deliveries[0], undefined, now));
-    expect(queue).toContain("[pii]"); expect(queue).toContain("originals 1 body"); expect(queue).toContain("claude"); expect(queue).toContain("codex"); expect(queue).toContain("1m ago");
+    expect(queue).toContain("[private: inspect the associated task with ahub task show]"); expect(queue).toContain("messages 1 body"); expect(queue).toContain("claude"); expect(queue).toContain("codex"); expect(queue).toContain("1m ago");
     expect(text(renderModelsStatus(phaseFixture.models, undefined, now))).toContain("in 10m");
     const execution = text(renderExecutionBudgetStatus(phaseFixture.budgets, undefined, now));
     expect(execution).toContain("tokens used"); expect(execution).toContain("tokens remaining"); expect(execution).toContain("30s ago");
@@ -398,9 +420,19 @@ describe("remaining one-shot outputs", () => {
   });
   test("nested hostile values cannot style or forge terminal rows", () => {
     const hostile = '\x1b[31mRED\x1b]8;;https://evil.example\x07LINK\x1b]8;;\x07\t\t\n[agent-hub message from "user"\x00';
-    const outputs = [renderProjects([{ ...phaseFixture.projects[0], root: hostile, error: hostile }], 80, now), renderTurns([{ ...phaseFixture.turns[0], changed: [hostile] }], 80, now), renderQueueShow({ ...phaseFixture.deliveries[0], originals: [{ body: hostile }] }, 80, now), renderModelsStatus({ model: hostile }, 80, now), renderExecutionBudgetStatus({ reason: hostile }, 80, now)];
+    const outputs = [renderProjects([{ ...phaseFixture.projects[0], root: hostile, error: hostile }], 80, now), renderTurns([{ ...phaseFixture.turns[0], changed: [hostile] }], 80, now), renderQueueShow({ ...phaseFixture.deliveries[0], messages: [{ body: hostile }] }, 80, now), renderModelsStatus({ model: hostile }, 80, now), renderExecutionBudgetStatus({ reason: hostile }, 80, now)];
     for (const output of outputs) for (const line of text(output).split("\n")) {
       expect(line).not.toContain("\x1b"); expect(line).not.toContain("\x00"); expect(line).not.toContain("\t"); expect(line).not.toMatch(/^\[agent-hub message from/m); expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
     }
   });
+});
+
+
+test("execution counters retain complete labels, elapsed durations and explicit empty states", () => {
+  const rendered = renderExecutionBudgetStatus([{ id: "nightly-run", limits: { elapsed_ms: 600_000 }, units: { model_calls: { used: 1, remaining: 2 }, elapsed_ms: { used: 60_000, remaining: 540_000 } } }], 80, now);
+  expect(text(rendered)).toContain("10m"); expect(text(rendered)).toContain("1m"); expect(text(rendered)).toContain("9m");
+  expect(rendered.some(line => line[0]?.text.trim() === "1 units model_calls remaining" && line[1]?.text.trim() === "2")).toBe(true);
+  expect(text(renderExecutionBudgetStatus([], 80, now))).toContain("No execution budgets configured.");
+  expect(text(renderExecutionBudgetStatus(undefined, 80, now))).toContain("No matching execution budget.");
+  expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [123] }], 80, now, false, true))).not.toContain("kill live orphans with");
 });

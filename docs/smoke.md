@@ -1530,7 +1530,7 @@ At the PR head, run `ahub status`, `ahub board`, `ahub budget` and `ahub doctor`
 at 80 and 120 columns. Inspect Korean and long task titles, settlement and hold details, modes and quota windows.
 Confirm readable state/level words with `--color=never`, matching visible text with `--color=always`, and no cut fields.
 Compare status's shortened informational ids with `status --full`; suggested command ids must always be whole. In `ahub console`,
-run the same commands and confirm their rows stay within the four-column indent and output remains plain.
+run `status`, `board` and `budget` and confirm their rows stay within the four-column indent and output remains plain. Run `ahub doctor` in the terminal outside the console.
 Record the exact head and visual verdict here after the owner performs this leg.
 
 ## Remaining command output (#284 phases 2 and 3)
@@ -1539,5 +1539,7 @@ Human visual inspection: **not run**. At the PR head, use light and dark termina
 Run `ahub projects`, `ahub status --all`, `ahub queue list`, `ahub turns`, `ahub doctor --orphans`,
 `ahub queue show <id>`, `ahub models status`, `ahub budget execution status`, `ahub report` and `ahub report --by task`.
 Inspect long Korean paths, all changed filenames, public private-delivery stubs, nested labelled fields, relative times and report coverage sentences.
-Compare `--color=never` with `--color=always`, `--full` where identifiers are shortened, and the same commands in the console.
+Compare `--color=never` with `--color=always`. Confirm turn, queue, project and execution budget ids are whole without `--full` and can be copied into their commands.
+In the console run `status --all`, `queue list`, `queue show <id>`, `turns`, `budget execution status`, `report` and `report --by task`;
+run `ahub projects`, `ahub doctor --orphans` and `ahub models status` in the terminal outside the console. Status's informational ids can be compared with `status --full`.
 Confirm JSON output stays plain under `--color=always`. Record the exact head and visual verdict here after the owner performs this leg.

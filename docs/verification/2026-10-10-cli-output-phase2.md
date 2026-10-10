@@ -14,15 +14,25 @@ p_123456789012345678901234  running      /project/경로경로경로경로경로
 After:
 
 ```text
-PROJECT   STATE    PEERS  TASKS                      ROOT
-p_123456  running  2      6 approved, 1 in_progress  /project/경로경로경로경로경
-                                                     로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로
+PROJECT                     STATE    PEERS  TASKS                   ROOT
+p_123456789012345678901234  running  2      6 approved, 1           /project/
+                                            in_progress             경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로
 ```
 
 ## status --all, 80 columns
@@ -37,15 +47,25 @@ p_123456789012345678901234  running      /project/경로경로경로경로경로
 After:
 
 ```text
-PROJECT   STATE    PEERS  TASKS                      ROOT
-p_123456  running  2      6 approved, 1 in_progress  /project/경로경로경로경로경
-                                                     로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로
+PROJECT                     STATE    PEERS  TASKS                   ROOT
+p_123456789012345678901234  running  2      6 approved, 1           /project/
+                                            in_progress             경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로경로
+                                                                    경로경로
 ```
 
 ## queue list, 80 columns
@@ -59,8 +79,8 @@ abcdef12-1111-2222-3333-444444444444  codex  needs_review  revision 3  important
 After:
 
 ```text
-ID        PEER   STATE         REV  AGE
-abcdef12  codex  needs_review  3    1m
+ID                                    PEER   STATE         REV  AGE
+abcdef12-1111-2222-3333-444444444444  codex  needs_review  3    1m
   priority  important
 ```
 
@@ -75,15 +95,16 @@ turn-12345678901234567890  1/15/2027, 7:59:00 AM  8 files: src/한글경로/file
 After:
 
 ```text
-TURN      PEER   STARTED  STATE      FILES
-turn-123  codex  1m ago   completed  8 files: src/한글경로/file-0.ts,
-                                     src/한글경로/file-1.ts,
-                                     src/한글경로/file-2.ts,
-                                     src/한글경로/file-3.ts,
-                                     src/한글경로/file-4.ts,
-                                     src/한글경로/file-5.ts,
-                                     src/한글경로/file-6.ts,
-                                     src/한글경로/file-7.ts
+TURN                       PEER   STARTED  STATE      FILES
+turn-12345678901234567890  codex  1m ago   completed  8 files: src/한글경로/
+                                                      file-0.ts, src/한글경로/
+                                                      file-1.ts, src/한글경로/
+                                                      file-2.ts, src/한글경로/
+                                                      file-3.ts, src/한글경로/
+                                                      file-4.ts, src/한글경로/
+                                                      file-5.ts, src/한글경로/
+                                                      file-6.ts, src/한글경로/
+                                                      file-7.ts
 ```
 
 ## doctor --orphans, 80 columns
@@ -100,11 +121,14 @@ After:
 
 ```text
 orphaned hub registrations (the project root is gone):
-PROJECT   STATE  PIDS   ROOT
-p_123456  live   12345  /project/경로경로경로경로경로경로경로경로경로경로경로경
-                        로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                        로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                        로경로경로경로경로경로경로경로경로경로경로
+PROJECT                     STATE  PIDS   ROOT
+p_123456789012345678901234  live   12345  /project/
+                                          경로경로경로경로경로경로경로경로경로경
+                                          로경로경로경로경로경로경로경로경로경로
+                                          경로경로경로경로경로경로경로경로경로경
+                                          로경로경로경로경로경로경로경로경로경로
+                                          경로경로경로경로경로경로경로경로경로경
+                                          로경로경로
 
 kill live orphans with ahub doctor --orphans --kill
   forget  ahub projects remove p_123456789012345678901234
@@ -123,20 +147,18 @@ Before:
   "important": true,
   "createdAt": 1799999940000,
   "updatedAt": 1799999970000,
-  "originals": [
+  "envelopeIds": [
+    "8d03b496-1111-2222-3333-444444444444"
+  ],
+  "messages": [
     {
       "id": "8d03b496-1111-2222-3333-444444444444",
       "from": "claude",
-      "to": [
-        "codex"
-      ],
-      "ts": 1799999940000,
-      "body": "[pii]",
-      "private": true
+      "priority": "important",
+      "kind": "chat",
+      "body": "[private: inspect the associated task with ahub task show]"
     }
-  ],
-  "out": [],
-  "reason": "waiting for a person"
+  ]
 }
 ```
 
@@ -145,21 +167,19 @@ After:
 ```text
 Delivery
 FIELD                VALUE
-id                   abcdef12
+id                   abcdef12-1111-2222-3333-444444444444
 peer                 codex
 state                needs_review
 revision             3
 important            true
 createdAt            1m ago
 updatedAt            30s ago
-originals 1 id       8d03b496
-originals 1 from     claude
-originals 1 to 1     codex
-originals 1 ts       1m ago
-originals 1 body     [pii]
-originals 1 private  true
-out                  none
-reason               waiting for a person
+envelopeIds 1        8d03b496-1111-2222-3333-444444444444
+messages 1 id        8d03b496-1111-2222-3333-444444444444
+messages 1 from      claude
+messages 1 priority  important
+messages 1 kind      chat
+messages 1 body      [private: inspect the associated task with ahub task show]
 
   resolve  ahub queue resolve abcdef12-1111-2222-3333-444444444444 --action
       completed|retry|discard --reason <text>
@@ -224,17 +244,17 @@ After:
 
 ```text
 Execution budget
-FIELD                      VALUE
- 1 id                      budget-1
- 1 kind                    task
- 1 taskId                  3
- 1 peers 1                 local
- 1 peers 2                 pi
- 1 createdAt               1m ago
- 1 updatedAt               30s ago
- 1 units tokens used       100
- 1 units tokens limit      200
- 1 units tokens remaining  100
+FIELD                     VALUE
+1 id                      budget-12345678901234567890
+1 kind                    task
+1 taskId                  3
+1 peers 1                 local
+1 peers 2                 pi
+1 createdAt               1m ago
+1 updatedAt               30s ago
+1 units tokens used       100
+1 units tokens limit      200
+1 units tokens remaining  100
 ```
 
 ## report, 80 columns
@@ -348,11 +368,13 @@ p_123456789012345678901234  running      /project/경로경로경로경로경로
 After:
 
 ```text
-PROJECT   STATE    PEERS  TASKS                      ROOT
-p_123456  running  2      6 approved, 1 in_progress  /project/경로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                                                     로경로경로
+PROJECT                     STATE    PEERS  TASKS                      ROOT
+p_123456789012345678901234  running  2      6 approved, 1 in_progress  /project/
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로
 ```
 
 ## status --all, 120 columns
@@ -367,11 +389,13 @@ p_123456789012345678901234  running      /project/경로경로경로경로경로
 After:
 
 ```text
-PROJECT   STATE    PEERS  TASKS                      ROOT
-p_123456  running  2      6 approved, 1 in_progress  /project/경로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                                                     로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로
-                                                     경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                                                     로경로경로
+PROJECT                     STATE    PEERS  TASKS                      ROOT
+p_123456789012345678901234  running  2      6 approved, 1 in_progress  /project/
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로경로경로경로경로경로경로경로경로경로경로
+                                                                       경로경로
 ```
 
 ## queue list, 120 columns
@@ -385,8 +409,8 @@ abcdef12-1111-2222-3333-444444444444  codex  needs_review  revision 3  important
 After:
 
 ```text
-ID        PEER   STATE         REV  AGE
-abcdef12  codex  needs_review  3    1m
+ID                                    PEER   STATE         REV  AGE
+abcdef12-1111-2222-3333-444444444444  codex  needs_review  3    1m
   priority  important
 ```
 
@@ -401,10 +425,11 @@ turn-12345678901234567890  1/15/2027, 7:59:00 AM  8 files: src/한글경로/file
 After:
 
 ```text
-TURN      PEER   STARTED  STATE      FILES
-turn-123  codex  1m ago   completed  8 files: src/한글경로/file-0.ts, src/한글경로/file-1.ts, src/한글경로/file-2.ts,
-                                     src/한글경로/file-3.ts, src/한글경로/file-4.ts, src/한글경로/file-5.ts,
-                                     src/한글경로/file-6.ts, src/한글경로/file-7.ts
+TURN                       PEER   STARTED  STATE      FILES
+turn-12345678901234567890  codex  1m ago   completed  8 files: src/한글경로/file-0.ts, src/한글경로/file-1.ts, src/
+                                                      한글경로/file-2.ts, src/한글경로/file-3.ts, src/한글경로/
+                                                      file-4.ts, src/한글경로/file-5.ts, src/한글경로/file-6.ts, src/
+                                                      한글경로/file-7.ts
 ```
 
 ## doctor --orphans, 120 columns
@@ -421,10 +446,11 @@ After:
 
 ```text
 orphaned hub registrations (the project root is gone):
-PROJECT   STATE  PIDS   ROOT
-p_123456  live   12345  /project/경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                        로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경
-                        로경로경로경로경로
+PROJECT                     STATE  PIDS   ROOT
+p_123456789012345678901234  live   12345  /project/
+                                          경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경
+                                          로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로경로
+                                          경로경로경로경로경로경로경로경로경로경로경로
 
 kill live orphans with ahub doctor --orphans --kill
   forget  ahub projects remove p_123456789012345678901234
@@ -443,20 +469,18 @@ Before:
   "important": true,
   "createdAt": 1799999940000,
   "updatedAt": 1799999970000,
-  "originals": [
+  "envelopeIds": [
+    "8d03b496-1111-2222-3333-444444444444"
+  ],
+  "messages": [
     {
       "id": "8d03b496-1111-2222-3333-444444444444",
       "from": "claude",
-      "to": [
-        "codex"
-      ],
-      "ts": 1799999940000,
-      "body": "[pii]",
-      "private": true
+      "priority": "important",
+      "kind": "chat",
+      "body": "[private: inspect the associated task with ahub task show]"
     }
-  ],
-  "out": [],
-  "reason": "waiting for a person"
+  ]
 }
 ```
 
@@ -465,21 +489,19 @@ After:
 ```text
 Delivery
 FIELD                VALUE
-id                   abcdef12
+id                   abcdef12-1111-2222-3333-444444444444
 peer                 codex
 state                needs_review
 revision             3
 important            true
 createdAt            1m ago
 updatedAt            30s ago
-originals 1 id       8d03b496
-originals 1 from     claude
-originals 1 to 1     codex
-originals 1 ts       1m ago
-originals 1 body     [pii]
-originals 1 private  true
-out                  none
-reason               waiting for a person
+envelopeIds 1        8d03b496-1111-2222-3333-444444444444
+messages 1 id        8d03b496-1111-2222-3333-444444444444
+messages 1 from      claude
+messages 1 priority  important
+messages 1 kind      chat
+messages 1 body      [private: inspect the associated task with ahub task show]
 
   resolve  ahub queue resolve abcdef12-1111-2222-3333-444444444444 --action completed|retry|discard --reason <text>
 ```
@@ -542,17 +564,17 @@ After:
 
 ```text
 Execution budget
-FIELD                      VALUE
- 1 id                      budget-1
- 1 kind                    task
- 1 taskId                  3
- 1 peers 1                 local
- 1 peers 2                 pi
- 1 createdAt               1m ago
- 1 updatedAt               30s ago
- 1 units tokens used       100
- 1 units tokens limit      200
- 1 units tokens remaining  100
+FIELD                     VALUE
+1 id                      budget-12345678901234567890
+1 kind                    task
+1 taskId                  3
+1 peers 1                 local
+1 peers 2                 pi
+1 createdAt               1m ago
+1 updatedAt               30s ago
+1 units tokens used       100
+1 units tokens limit      200
+1 units tokens remaining  100
 ```
 
 ## report, 120 columns
