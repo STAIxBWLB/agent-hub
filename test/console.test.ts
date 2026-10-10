@@ -131,10 +131,11 @@ describe("console terminal lifecycle", () => {
     f.input("\x1b"); f.input(":kill\ry"); expect(spawned).toBe(0);
     f.input("\x03"); await running;
   });
-  test("panel buffer is left when toggling, and only panels request board/queue", async () => {
+  test("panel buffer is left when toggling; stream uses status counts and only panels request board/queue", async () => {
     const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal });
     await Promise.resolve(); await Promise.resolve();
     expect(f.requests.some(msg => msg.t === "queue")).toBe(false);
+    expect(f.requests.some(msg => msg.op === "hub_task_list")).toBe(false);
     f.input("\t"); await Promise.resolve(); await Promise.resolve();
     expect(f.output.join("")).toContain("\x1b[?1049h");
     f.input("\t"); expect(f.output.join("")).toContain("\x1b[?1049l");
@@ -288,8 +289,8 @@ describe("console colors", () => {
     expect(eventTone({ t: "undeliverable", env, peer: "pi" })).toBe("failure");
     const s = state(true); s.panel = 3;
     s.tasks = [{ id: 1, state: "in_progress", title: "retry the failed check", class: "implement", history: [{ event: "check failed", at: NOW }] }];
-    expect(renderConsoleLines(s, 80, 24, NOW)[3]!.some(span => span.text.startsWith("in_progress check failed") && span.tone === "failure")).toBe(true);
-    expect(renderConsole(s, 80, 24, NOW)[3]).toContain("in_progress check failed");
+    expect(renderConsoleLines(s, 80, 24, NOW)[4]!.some(span => span.text.startsWith("in_progress check failed") && span.tone === "failure")).toBe(true);
+    expect(renderConsole(s, 80, 24, NOW)[4]).toContain("in_progress check failed");
   });
   for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
     test(`painted and plain geometry match ${columns}x${rows} including long Korean text`, () => {
@@ -414,8 +415,8 @@ describe("console layout (#213)", () => {
     for (const [panel, words] of [[1, ["STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"]], [2, ["PEER", "LEFT", "TITLE"]],
       [3, ["STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE"]], [4, ["PEER", "STATE", "REV", "AGE"]]] as const) {
       s.panel = panel;
-      const lines = renderConsole(s, columns, 24, T); const header = lines[2]!;
-      const rows = lines.slice(3, 3 + panelRows(s).length);
+      const lines = renderConsole(s, columns, 24, T); const headerAt = panel === 3 ? 3 : 2; const header = lines[headerAt]!;
+      const rows = lines.slice(headerAt + 1, headerAt + 1 + panelRows(s).length);
       expect(header).toStartWith(`  ${panel === 1 ? "PEER" : "ID"}  `);
       for (const word of words) {
         if (columns === 80 && !header.includes(` ${word}`)) continue; // the last Peers column may be cut at 80
@@ -828,4 +829,152 @@ describe("console layout (#213)", () => {
     const s = state(true); s.panel = 5; s.events = [{ text: "[agent-hubby stuff here and more" }];
     for (let columns = 10; columns <= 30; columns++) for (const line of renderConsoleLines(s, columns, 24, NOW)) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
   });
+});
+
+
+describe("whole-board task progress (#246)", () => {
+  test("an unknown empty panel labels loading without fabricated state counts", () => {
+    const s = initialConsoleState(true); s.panel = 3;
+    const summary = renderConsole(s, 80, 24)[2]!;
+    expect(summary).toBe('tasks loading...');
+    s.tasksKnown = true;
+    expect(renderConsole(s, 80, 24)[2]).toContain('0/0 approved');
+  });
+  test("a refused status read exposes an error and never confirms an empty count", async () => {
+    const f = fixture(); const original = f.client.request;
+    f.client.request = async msg => msg.t === "status" ? { ok: false, error: "status refused" } as any : original(msg);
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const text = f.output.join(""); expect(text).toContain("status refused"); expect(text).toContain("tasks loading..."); expect(text).not.toContain("tasks 0/0 approved");
+    f.signal(); await running;
+  });
+
+  test("failed status refresh restores the known footer count after notice TTL without a key", async () => {
+    const callbacks: (() => void)[] = []; const originalInterval = globalThis.setInterval;
+    globalThis.setInterval = ((fn: () => void, ms?: number) => { callbacks.push(fn); return originalInterval(fn, ms); }) as typeof setInterval;
+    try {
+      const f = fixture(); let failed = false; const original = f.client.request;
+      f.client.request = async msg => msg.t === "status" ? failed ? { ok: false, error: "status unavailable" } as any : { ok: true, status: { peers: {}, tasks: { approved: 1 } } } as any : original(msg);
+      const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(f.output.join("\n")).toContain("tasks 1/1 approved"); failed = true;
+      callbacks[1]!(); for (let i = 0; i < 8; i++) await Promise.resolve();
+      let at = f.output.lastIndexOf("\x1b[23;1H\x1b[2K");
+      expect(f.output[at + 1]).toContain("status unavailable"); expect(f.output[at + 1]).not.toContain("tasks 1/1");
+      setSystemTime(new Date(Date.now() + 10_000)); callbacks[0]!();
+      at = f.output.lastIndexOf("\x1b[23;1H\x1b[2K");
+      expect(f.output[at + 1]).toContain("tasks 1/1 approved"); expect(f.output[at + 1]).not.toContain("status unavailable");
+      f.signal(); await running;
+    } finally { globalThis.setInterval = originalInterval; setSystemTime(); }
+  });
+  test("stream retains top-origin scrollback and gets footer totals from status without board requests", async () => {
+    const f = fixture(); const original = f.client.request;
+    f.client.request = async msg => msg.t === "status" ? { ok: true, status: { peers: {}, tasks: { approved: 2, proposed: 1, future_state: 3 } } } as any : original(msg);
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(f.output.join("")).toContain("\x1b[1;20r"); expect(f.output.join("")).not.toContain("\x1b[2;20r");
+    expect(f.output.some(text => text.startsWith("tmp | tasks"))).toBe(false);
+    const at = f.output.lastIndexOf("\x1b[23;1H\x1b[2K"); expect(f.output[at + 1]).toContain("tasks 2/6 approved");
+    expect(f.requests.some(msg => msg.op === "hub_task_list")).toBe(false);
+    f.signal(); await running;
+  });
+  test("real stream output preserves scrolled events and leaves no persistent header after exit", async () => {
+    const f = fixture(); const screen = Array.from({ length: 24 }, () => ''); const scrollback: string[] = [];
+    let row = 0, column = 0, top = 0, bottom = 23;
+    const write = f.terminal.write;
+    f.terminal.write = (text: string) => {
+      write(text);
+      for (let i = 0; i < text.length;) {
+        const control = text.slice(i).match(/^\x1b\[([0-9;?]*)([A-Za-z])/);
+        if (control) {
+          const args = control[1]!.split(';').map(Number), op = control[2];
+          if (op === 'r') { top = (args[0] || 1) - 1; bottom = (args[1] || 24) - 1; row = 0; column = 0; }
+          if (op === 'H') { row = (args[0] || 1) - 1; column = (args[1] || 1) - 1; }
+          if (op === 'K') screen[row] = '';
+          i += control[0].length; continue;
+        }
+        const char = text[i++]!;
+        if (char === '\r') { column = 0; continue; }
+        if (char === '\n') {
+          if (row === bottom) { const gone = screen[top]!; if (top === 0) scrollback.push(gone); for (let line = top; line < bottom; line++) screen[line] = screen[line + 1]!; screen[bottom] = ''; }
+          else row = Math.min(23, row + 1);
+          continue;
+        }
+        const before = screen[row]!; screen[row] = before.padEnd(column, ' ').slice(0, column) + char + before.slice(column + 1); column++;
+      }
+    };
+    const running = runConsole({ client: f.client, cwd: '/tmp', stateDir: '/tmp', terminal: f.terminal, color: false });
+    for (let i = 0; i < 70; i++) f.client.onPush({ t: 'notice', line: 'event-' + i });
+    const saved = scrollback.filter(line => line.includes('event-'));
+    expect(saved.length).toBeGreaterThan(30); expect(saved[0]).toContain('event-0');
+    f.signal(); await running;
+    expect(screen[0]).not.toContain('tmp | tasks');
+  });
+  test("five peers retain their review flag at 80 columns while task totals occupy the approval line", () => {
+    const s = initialConsoleState(); s.taskCounts = { approved: 1, proposed: 2 };
+    s.peers = Object.fromEntries(['claude','codex','kimi','pi','local'].map(peer => [peer, { state: 'idle', queued: 0, ...(peer === 'local' ? { needsReview: 2 } : {}) }]));
+    const lines = renderConsoleLines(s, 80, 24, NOW);
+    expect(paint(lines[1]!, false)).toContain('local:idle q0 review2');
+    expect(lines[1]!.find(part => part.text.includes('review2'))?.tone).toBe('failure');
+    expect(paint(lines[2]!, false)).toContain('tasks 1/3 approved');
+    s.notice = 'no request selected; [ ] selects one'; s.noticeAt = NOW;
+    const alerts = renderConsoleLines(s, 80, 24, NOW);
+    expect(paint(alerts[2]!, false)).toContain(s.notice); expect(paint(alerts[2]!, false)).not.toContain('tasks 1/3');
+    expect(paint(renderConsoleLines(s, 80, 24, NOW + 10_000)[2]!, false)).toContain('tasks 1/3 approved');
+    s.notice = '';
+    expect(paint(renderConsoleLines(s, 80, 24, NOW + 10_000)[2]!, false)).toContain('tasks 1/3 approved');
+    expect(lines.map(line => terminalText(paint(line, true)))).toEqual(lines.map(line => paint(line, false)));
+    s.peers = {}; s.budget = { pi: { windows: [{ id: '5h', used: 0.2 }] } };
+    expect(paint(renderConsoleLines(s, 80, 24, NOW)[1]!, false)).not.toContain(' | ');
+  });
+  test("nonzero unknown states appear in the summary's fixed suffix", () => {
+    const s = state(true); s.panel = 3; s.tasks = [{ id: 1, state: 'approved' }, { id: 2, state: 'future_state' }];
+    const text = renderConsole(s, 200, 60, NOW)[2]!;
+    expect(text).toContain('1/2 approved'); expect(text).toContain('  unknown 1');
+    s.tasks = [{ id: 1, state: 'approved' }];
+    expect(renderConsole(s, 200, 60, NOW)[2]).not.toContain('  unknown ');
+  });
+  test("only fully approved boards render a complete bar and 100 percent", () => {
+    const s = state(true); s.panel = 3; s.tasks = [{ id: 1, state: 'approved', title: 'done' }];
+    expect(paint(renderConsoleLines(s, 80, 24, NOW)[2]!, false)).toContain('[####################] 100%');
+  });
+  test("partial boards never show a full bar or 100 percent, and counts drop only from the end", () => {
+    for (const [done, total] of [[1, 3], [39, 40], [199, 200], [29, 100]]) {
+      const s = state(true); s.panel = 3; s.tasksKnown = true;
+      s.tasks = Array.from({ length: total! }, (_, id) => ({ id, state: id < done! ? "approved" : "proposed", title: "task" }));
+      const text = paint(renderConsoleLines(s, 200, 60, NOW)[2]!, false);
+      expect(text).not.toContain("[####################]"); expect(text).not.toContain("100%");
+      if (total === 100) expect(text).toContain("29%");
+      if (total === 3) expect(text).toContain("[######..............] 33%");
+    }
+    const s = state(true); s.panel = 3; s.tasks = ["approved", "proposed", "in_progress", "in_review", "changes_requested"].flatMap((state, offset) => Array.from({ length: 10 }, (_, i) => ({ id: offset * 10 + i, state, title: "task" })));
+    const order = ["changes", "review", "waiting", "in progress", "proposed"];
+    for (const width of [80, 90, 100, 120, 200]) {
+      const text = paint(renderConsoleLines(s, width, 24, NOW)[2]!, false);
+      const present = order.map(label => text.includes(`  ${label} `));
+      const omitted = present.indexOf(false);
+      if (omitted !== -1) expect(present.slice(omitted).some(Boolean)).toBe(false);
+    }
+  });
+  for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
+    test(`progress summary and stages preserve ASCII geometry ${columns}x${rows}`, () => {
+      const s = state(true); s.panel = 3;
+      s.tasks = [{ id: 1, state: "approved", title: "done", class: "implement" }, { id: 2, state: "proposed", deps: [3], title: "wait", class: "implement" }, { id: 3, state: "changes_requested", title: "retry", class: "implement" }];
+      const lines = renderConsoleLines(s, columns!, rows!, NOW);
+      expect(paint(lines[2]!, false)).toContain("1/3 approved [######..............] 33%");
+      expect(lines.map(line => terminalText(paint(line, true)))).toEqual(lines.map(line => paint(line, false)));
+      expect(lines.map(line => paint(line, false)).join("\n")).toContain("[#!--]");
+      for (const line of lines) { const text = paint(line, false); expect(Bun.stringWidth(text)).toBeLessThanOrEqual(columns!); expect(text).toMatch(/^[\x20-\x7e]*$/); }
+      s.mode = "stream";
+      s.taskCounts = { approved: 1, proposed: 1, changes_requested: 1 };
+      expect(paint(renderConsoleLines(s, columns!, rows!, NOW)[2]!, false)).toContain("tasks 1/3 approved");
+      for (const notice of ['', 'status unavailable']) {
+        s.notice = notice; s.noticeAt = NOW;
+        const footer = renderConsoleLines(s, columns!, rows!, NOW);
+        expect(footer).toHaveLength(4);
+        expect(footer.map(line => terminalText(paint(line, true)))).toEqual(footer.map(line => paint(line, false)));
+        for (const line of footer) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns!);
+      }
+    });
+  }
 });

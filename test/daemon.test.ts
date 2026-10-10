@@ -1896,3 +1896,14 @@ test("a hand-over to Claude is tagged with the hub's version, Claude Code's from
   appendFileSync(transcript, "\n" + JSON.stringify({ type: "assistant", version: "2.1.300" }));
   expect(await profile("changed")).toBe(`hub ${hubVersion}; claude 2.1.300; turn-free`);
 });
+
+test("ui_snapshot preserves public dependencies of PII task stubs (#246)", async () => {
+  const { console_ } = await hub();
+  await console_.request({ t: 'task', op: 'hub_task_propose', args: { title: 'prerequisite 900101-1234567', class: 'implement' } });
+  const proposed = await console_.request({ t: 'task', op: 'hub_task_propose', args: { title: 'fix 900101-1234567', class: 'implement', after: [1] } });
+  expect(proposed.ok).toBe(true);
+  const snapshot = await console_.request({ t: 'ui_snapshot', after: 0 });
+  const task = snapshot.tasks.find((task: any) => task.id === 2);
+  expect(task).toMatchObject({ title: '[pii]', detail: '[pii]', deps: [1] });
+  expect(JSON.stringify(snapshot)).not.toContain('900101-1234567');
+});

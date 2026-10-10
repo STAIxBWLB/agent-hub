@@ -1354,3 +1354,18 @@ untracked), with at least two real peers attached:
 - Let one task run past its `timeout_s`; check the run stops, names the open task and reads `stopped`.
 - Press Ctrl-C during a `verify`; check the attempt reads `interrupted` and nothing it started keeps running.
 - Run a second arm, then `ahub bench compare <arm> <arm>`; check the dashboard's Benchmarks section shows both.
+
+## Whole-board task progress and dashboard themes (#246)
+
+Live console and dashboard light/dark inspection: **unverified**. No native
+sessions or model prompts were started for this change. The review pass admitted
+a real dependency install and focused tests, recorded separately from native
+visual/theme qualification.
+
+When admitted, inspect an empty board and a mixed board (approved, waiting,
+working, review and changes requested) at 80x24, 120x40 and 200x60. Confirm the
+stream count is in the footer and the scroll region starts at row 1 and the Tasks summary/row meters agree
+with the dashboard. In the dashboard select Light, Dark and System, reload each
+choice, change OS theme on System, and check text, bars, stage labels and controls.
+Repeat with cookies blocked and across two dashboard ports; verify unchanged
+progress snapshots do not repeatedly announce the live region. Record the exact head and verdict here.

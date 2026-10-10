@@ -1,3 +1,5 @@
+import { taskProgress } from "../ui/task-progress.ts";
+import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
 
 export interface Approval {
@@ -15,7 +17,7 @@ export interface ConsoleState {
   autoSelected?: boolean;
   input: string; editing: boolean; history: string[]; historyIndex: number;
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
-  tasks: any[]; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
+  tasks: any[]; tasksKnown?: boolean; taskCounts?: Record<string, number>; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
   confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] };
   optionChoice?: string;
@@ -26,7 +28,7 @@ export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; opt
   { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
-    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], queue: [], detailOffset: 0, help: false, notice: "" };
+    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], tasksKnown: false, queue: [], detailOffset: 0, help: false, notice: "" };
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
@@ -452,12 +454,12 @@ const NOTICE_MS = 10_000;
 const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
-  3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE"],
+  3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
 };
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
-function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[] {
+function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
   const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
   if (s.panel === 1) {
     const b = s.budget[row.id];
@@ -476,8 +478,10 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[
     const last = row.history?.at(-1);
     const at = last?.at ?? row.updated ?? row.created;
     const failed = last?.event === "check failed" || last?.event === "failed";
-    return [id(`#${row.id}`, "info"), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}`, failed ? "failure" : row.ready ? "attention" : stateTone(row.state)),
-      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title)];
+    const stage = stages?.get(row.id);
+    const meter = stage ? "[" + "#".repeat(stage.stage - (stage.changes ? 1 : 0)) + (stage.changes ? "!" : "") + "-".repeat(4 - stage.stage) + "]" : "[----]";
+    return [id(`#${row.id}`, "info"), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
+      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(meter, stage?.changes ? "failure" : stateTone(row.state))];
   }
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
   const [header, ...body] = String(row.text).split("\n");
@@ -492,10 +496,20 @@ function table(head: string[], rows: Span[][], columns: number): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));
   const widths = head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
+  const flexible = head.includes("STAGE") ? head.indexOf("TITLE") : head.length - 1;
+  if (head.includes("STAGE")) {
+    // Keep the original columns adjacent; stage meters occupy a fixed right-edge column.
+    const room = () => columns - 2 - widths.reduce((sum, value, index) => sum + (index === flexible ? 0 : value), 0) - 2 * (head.length - 1);
+    for (const key of ["CLASS", "OWNER", "REVIEWER", "AGE", "STATE"]) {
+      const metadata = head.indexOf(key);
+      while (room() < 7 && widths[metadata]! > head[metadata]!.length) widths[metadata] = widths[metadata]! - 1;
+    }
+    widths[flexible] = Math.max(0, room());
+  }
   return [head.map(h => span(h, "info")), ...rows].map(row => row.map((cell, i) => {
-    if (i === head.length - 1) return cell;
+    if (i === head.length - 1 && flexible === i) return cell;
     const text = fit(cell.text, widths[i]!);
-    return { ...cell, text: text + " ".repeat(widths[i]! - Bun.stringWidth(text) + 2) };
+    return { ...cell, text: text + " ".repeat(Math.max(0, widths[i]! - Bun.stringWidth(text)) + (i === head.length - 1 ? 0 : 2)) };
   }));
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
@@ -539,14 +553,24 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (p.toolsOnly) summary.push(span(" tools-only: ahub claude", "attention"));
   }
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");
-  if (quotas) summary.push(span(` | ${quotas}`));
+  if (quotas) summary.push(span(`${summary.length ? " | " : ""}${quotas}`));
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
   if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${duration(permission.expiresAt - now)} left`, "muted"));
   else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
-  if (s.notice && now - (s.noticeAt ?? now) < NOTICE_MS) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
+  const noticeShown = !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+  if (noticeShown) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
   const footer = [fitLine(summary, columns), fitLine(approvals, columns), fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
-  if (s.mode === "stream") return [rule, ...footer];
+  if (s.mode === "stream") {
+    const counts = s.taskCounts;
+    const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
+    const taskCount = span(counts ? `tasks ${counts.approved ?? 0}/${total} approved` : "tasks loading...", counts ? "success" : "attention");
+    if (!noticeShown && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
+      footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
+    }
+    return [rule, ...footer];
+  }
+  const progress = taskProgress(s.tasks);
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
   if (s.help) lines.push(...keyTable(columns));
@@ -562,8 +586,21 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const fits = Math.max(1, height - 5); // table header, one row, rule, one title line, deny
     if (allow.length > fits) allow.splice(fits - 1, Infinity, more(allow[0]!, `${plural(allow.length - fits + 1, "more option")}: Enter shows them all`));
     const tail = [...allow, ...deny];
-    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - 1); const start = Math.max(0, at - capacity + 1);
-    const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now)), columns) : undefined;
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
+    const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
+    const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now, stages)), columns) : undefined;
+    if (s.panel === 3) {
+      const done = progress.total ? Math.floor(progress.counts.approved * 20 / progress.total) : 0;
+      const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${progress.total ? Math.floor(progress.counts.approved * 100 / progress.total) : 0}%`;
+      const known = s.tasksKnown !== false || progress.total > 0;
+      const parts = [span(main, known ? "success" : "attention")];
+      for (const [label, value, tone] of [["changes", progress.counts.changes_requested, "failure"], ["review", progress.counts.in_review, "attention"], ["waiting", progress.counts.waiting, "attention"], ["in progress", progress.counts.in_progress, undefined], ["proposed", progress.counts.proposed, undefined], ...(progress.counts.unknown ? [["unknown", progress.counts.unknown, "attention"] as const] : [])] as const) {
+        const extra = `  ${label} ${value}`;
+        if (!known || Bun.stringWidth(parts.map(p => p.text).join("") + extra) > columns) break;
+        parts.push(span(extra, tone));
+      }
+      lines.push(fitLine(parts, columns));
+    }
     lines.push(fitLine([span("  "), ...(rowsOf?.[0] ?? [span(`peer ${s.peerFilter ?? "all"}  kind ${s.kindFilter ?? "all"}`, "info")])], columns));
     for (let i = start; i < Math.min(data.length, start + capacity); i++) {
       const selected = i === at;
