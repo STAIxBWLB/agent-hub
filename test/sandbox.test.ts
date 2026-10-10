@@ -229,15 +229,20 @@ test.skipIf(!HFS.ok)(`an HFS+ image: every ignorable code point at every positio
     Bun.spawnSync(["git", "-C", main2, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "one"]);
     const wt = join(cwd, "wt2");
     expect(Bun.spawnSync(["git", "-C", main2, "worktree", "add", wt]).exitCode).toBe(0);
+    // The profile is built while the worktree still resolves its git dirs: built after the removals below it would
+    // not hold them at all, and every write there would be refused whatever the rules say.
+    const extProfile = profile(wt, false);
     rmSync(join(main2, ".git", "config"));
     rmSync(join(main2, ".git", "hooks"), { recursive: true, force: true });
     rmSync(join(main2, ".git", "worktrees", "wt2", "commondir"));
     const ext = await sandboxedExec(["/bin/sh", "-c", [
+      // The control: an ordinary file in the common dir is writable, so a block below is the rule's doing.
+      `(echo x > '${main2}/.git/probe-ok') 2>/dev/null && echo WROTE-EXT-OK || echo blocked-ext-ok`,
       `(echo x > '${main2}/.git/co${ZWJ}nfig') 2>/dev/null && echo WROTE-EXT-CONFIG || echo blocked-ext-config`,
-      `(mkdir '${main2}/.git/ho${ZWJ}ks' && echo x > '${main2}/.git/ho${ZWJ}ks/pre-commit') 2>/dev/null && echo WROTE-EXT-HOOKS || echo blocked-ext-hooks`,
+      `(mkdir '${main2}/.git/ho${ZWJ}oks' && echo x > '${main2}/.git/ho${ZWJ}oks/pre-commit') 2>/dev/null && echo WROTE-EXT-HOOKS || echo blocked-ext-hooks`,
       `(echo x > '${main2}/.git/worktrees/wt2/co${ZWJ}mmondir') 2>/dev/null && echo WROTE-EXT-COMMONDIR || echo blocked-ext-commondir`,
-    ].join("; ")], { cwd: wt, profile: profile(wt, false) });
-    for (const expected of ["blocked-ext-config", "blocked-ext-hooks", "blocked-ext-commondir"]) expect(ext.output).toContain(expected);
+    ].join("; ")], { cwd: wt, profile: extProfile });
+    for (const expected of ["WROTE-EXT-OK", "blocked-ext-config", "blocked-ext-hooks", "blocked-ext-commondir"]) expect(ext.output).toContain(expected);
     expect(existsSync(join(main2, ".git", "config"))).toBe(false);
     expect(existsSync(join(main2, ".git", "hooks"))).toBe(false);
     expect(existsSync(join(main2, ".git", "worktrees", "wt2", "commondir"))).toBe(false);
