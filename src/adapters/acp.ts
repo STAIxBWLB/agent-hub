@@ -315,7 +315,10 @@ export class AcpPeer extends BasePeer {
         const waiting = this.cancelWait;
         if (!waiting || waiting.turn !== cancelledTurn || waiting.successor !== successor) return;
         this.clearCancelWait();
-        if (!this.stopping && this.turn === successor) this.setState("offline"); // keep queued work until restart
+        if (!this.stopping && this.turn === successor) {
+          this.setState("offline"); // keep queued work until restart
+          this.opts.log?.(`[${this.id}] cancelled prompt did not report within the cancellation deadline; peer offline, queued work retained; stop and restart the peer to resume delivery`);
+        }
       }, this.opts.cancelWaitMs ?? HANDSHAKE_MS);
       timer.unref?.();
       this.cancelWait = { turn: cancelledTurn, successor, timer };

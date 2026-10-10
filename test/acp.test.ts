@@ -703,8 +703,9 @@ test("a journal-less cancellation waits for the consumed native result instead o
 });
 
 test("a cancellation that never reports has a bounded offline outcome with queued work retained (#304)", async () => {
-  const bus = new Bus({ batchMs: 0 }), failures: string[] = [], diagnostics: number[] = [];
-  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-never-report", "--mode-delay-ms", "0"], cwd: process.cwd(), ...{ cancelWaitMs: 53 }, onTurnFailure: (_envs, reason) => { failures.push(reason); }, onUsageDiagnostic: value => { if (value.contextUsed !== undefined) diagnostics.push(value.contextUsed); } }); peer = acp;
+  const bus = new Bus({ batchMs: 0 }), failures: string[] = [], diagnostics: number[] = [], logs: string[] = [], said: string[] = [];
+  bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") said.push(event.env.body); });
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-never-report", "--mode-delay-ms", "0"], cwd: process.cwd(), ...{ cancelWaitMs: 53 }, log: line => logs.push(line), onTurnFailure: (_envs, reason) => { failures.push(reason); }, onUsageDiagnostic: value => { if (value.contextUsed !== undefined) diagnostics.push(value.contextUsed); } }); peer = acp;
   bus.add(acp); await acp.start();
   bus.publish(newEnvelope("user", "CANCEL_WAIT", { to: ["kimi"] })); await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
   const after = newEnvelope("user", "kept after timeout", { to: ["kimi"] }); bus.publish(after);
@@ -716,6 +717,14 @@ test("a cancellation that never reports has a bounded offline outcome with queue
     expect(acp.state).toBe("offline"); expect(bus.queueIds("kimi")).toEqual([after.id]);
     expect(timer.timers[0]!.cleared).toBe(true); expect(failures).toEqual([]);
     await expect(acp.deliver([newEnvelope("user", "cannot overlap")])).rejects.toThrow("offline");
+    timer.expire();
+    expect(logs.filter(line => line.includes("cancelled prompt did not report"))).toEqual([
+      '[kimi] cancelled prompt did not report within the cancellation deadline; peer offline, queued work retained; stop and restart the peer to resume delivery',
+    ]);
+    await acp.stop(); await acp.start();
+    await until(() => said.length === 1 && acp.state === "idle");
+    await acp.setPermissionMode("ask"); // consume the restarted transport before asserting once
+    expect(said).toEqual(["echo: kept after timeout"]); expect(bus.queueIds("kimi")).toEqual([]); expect(failures).toEqual([]);
   } finally { try { await acp.stop(); } finally { timer.restore(); } }
 });
 
