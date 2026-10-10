@@ -1349,13 +1349,18 @@ and `[q] quit`.
 
 `[k] end agents` ends attached agents before the upgrade, so they are neither
 waited for nor restored: `t` for the TUI agents, `h` for the headless ones
-(Kimi, Pi in headless mode, the local worker), or their names. After a
+(Kimi, Pi in headless mode, the local worker), or their names, written
+`<project id>/<name>` when the plan covers more than one project. After a
 confirmation a TUI agent's terminal is closed, which cuts a turn in progress,
 and a headless agent is stopped by its hub through the `peer_stop` request
-(#278). A hub that does not know that request (0.12.21 and older) cannot end a
-headless agent: the screen says so, the agent stops with the old hub at the
-upgrade, and the new hub starts it again. A session marked `own` is ended where
-it runs. The next plan shows the ended agents as offline.
+(#278). An agent that was busy leaves its delivery held as `needs_review` and
+its queue held until `ahub queue resolve` settles it. Each agent is ended only
+if the lock is free and its hub, its session and its terminal are still the
+ones the plan read; otherwise the screen says why it was left. A hub that does
+not know `peer_stop` (0.12.21 and older) cannot end a headless agent: the
+screen says so, the agent stops with the old hub at the upgrade, and the new
+hub starts it again. A session marked `own` is ended where it runs. The next
+plan shows the ended agents as offline.
 
 After apply the command stays attached and prints each step as the receipt
 records it, and while a source is being prepared, what it still waits for.

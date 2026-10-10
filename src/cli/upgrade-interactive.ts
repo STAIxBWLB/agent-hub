@@ -50,7 +50,8 @@ const left = (op: { id: string; sourceRoot?: string }): string => `left: the run
 
 /**
  * How an attached peer runs, which decides how it can be ended: a TUI agent in a terminal the plan could bind, a
- * headless agent the hub owns, or a session the hub did not launch (a person ends that one where it runs).
+ * headless agent the hub owns, or `unmanaged` (shown as `own`): a session the hub did not launch, or one it launched
+ * whose terminal the plan could not bind (a person ends that one where it runs).
  */
 export function peerKind(planned: PlannedProject, peer: RecoveryPeer): "tui" | "headless" | "unmanaged" | "offline" {
   if (peer.state === "offline") return "offline";
@@ -154,19 +155,32 @@ export async function follow(host: UpgradeHost, io: ScreenIO, id: string, schedu
  * neither waited for nor restored. True when at least one was asked to end.
  */
 export async function endAgents(host: UpgradeHost, io: ScreenIO, endable: { planned: PlannedProject; peer: RecoveryPeer }[]): Promise<boolean> {
-  const of = (kind: string) => [...new Set(endable.filter((e) => peerKind(e.planned, e.peer) === kind).map((e) => e.peer.id))];
+  type Agent = (typeof endable)[number];
+  // An upgrade plans every running project and each has its own claude or codex: with several, a name carries its project.
+  const several = new Set(endable.map((e) => e.planned.project.id)).size > 1;
+  const full = (e: Agent) => `${e.planned.project.id}/${e.peer.id}`, label = (e: Agent) => several ? full(e) : e.peer.id;
+  const of = (kind: string) => endable.filter((e) => peerKind(e.planned, e.peer) === kind);
   const tui = of("tui"), headless = of("headless");
-  const choices = [...(tui.length ? [`[t] the TUI agents (${tui.join(", ")})`] : []), ...(headless.length ? [`[h] the headless agents (${headless.join(", ")})`] : []), "or names separated by spaces", "[Enter] none"];
-  const answer = ((await io.ask(`End which agents? ${choices.join("  ")}: `)) ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-  const names = new Set(answer.flatMap((word) => word === "t" ? tui : word === "h" ? headless : [word]));
-  const chosen = endable.filter((e) => names.has(e.peer.id));
-  const unknown = [...names].filter((name) => !chosen.some((e) => e.peer.id === name));
+  const choices = [...(tui.length ? [`[t] the TUI agents (${tui.map(label).join(", ")})`] : []), ...(headless.length ? [`[h] the headless agents (${headless.map(label).join(", ")})`] : []), "or names separated by spaces", "[Enter] none"];
+  const words = new Set(((await io.ask(`End which agents? ${choices.join("  ")}: `)) ?? "").toLowerCase().split(/\s+/).filter(Boolean));
+  const picked = new Set<Agent>(), unknown: string[] = [], ambiguous: string[] = [];
+  for (const word of words) {
+    const named = word === "t" ? tui : word === "h" ? headless : endable.filter((e) => word === full(e) || word === e.peer.id);
+    if (word === "t" || word === "h" || named.length === 1) for (const e of named) picked.add(e);
+    else (named.length ? ambiguous : unknown).push(word);
+  }
   if (unknown.length) io.out(`not an agent that can be ended here: ${unknown.join(", ")}`);
+  if (ambiguous.length) io.out(`${ambiguous.join(", ")}: attached in several projects; name the one to end with its project (${endable.filter((e) => ambiguous.includes(e.peer.id)).map(full).join(", ")})`);
+  const chosen = endable.filter((e) => picked.has(e));
   if (!chosen.length) { io.out("no agent was ended"); return false; }
-  const list = [...new Set(chosen.map((e) => e.peer.id))].join(", ");
-  if (!(await yes(io, `End ${list} now? A TUI agent's terminal is closed, a turn in progress is cut, and none of them is restored by the upgrade. [y/N] `))) { io.out("no agent was ended"); return false; }
-  for (const { planned, peer } of chosen) io.out(`  ${await host.endPeer(planned, peer)}`);
-  return true;
+  if (!(await yes(io, `End ${chosen.map(label).join(", ")} now? A TUI agent's terminal is closed, a turn in progress is cut, and none of them is restored by the upgrade. [y/N] `))) { io.out("no agent was ended"); return false; }
+  let asked = 0;
+  for (const e of chosen) {
+    if (io.interrupted()) { io.out(`interrupted: ${chosen.length - asked} of ${chosen.length} left alone (${chosen.slice(asked).map(label).join(", ")})`); break; }
+    io.out(`  ${await host.endPeer(e.planned, e.peer)}`);
+    asked++;
+  }
+  return asked > 0;
 }
 
 /** `ahub reset` for one project: the scope, its dry run, a confirmation, then the reset itself. */

@@ -348,6 +348,37 @@ test("agents are ended by kind or by name, only after a confirmation, and only t
   const mixed = screen(["local kimi", "y"]);
   await endAgents(h, mixed.io, endable);
   expect(mixed.out).toEqual(["not an agent that can be ended here: local", "  kimi: ended"]);
+  // Ctrl+C while the first one is being ended: the rest are left alone, and the screen says which.
+  const stopped = screen(["t", "y"]);
+  let pressed = false;
+  stopped.io.interrupted = () => pressed;
+  ended.length = 0;
+  expect(await endAgents(host({ endPeer: async (_p, peer) => { ended.push(peer.id); pressed = true; return `${peer.id}: ended`; } }), stopped.io, endable)).toBe(true);
+  expect(ended).toEqual(["claude"]);
+  expect(stopped.out).toEqual(["  claude: ended", "interrupted: 1 of 2 left alone (codex)"]);
+  // An upgrade plans every running project and a peer id is attached in each: with several, every agent carries its
+  // project in the question, the confirmation and the outcome, and a bare name that two projects share selects none.
+  const beta = plan({ project: { ...project, id: "beta", root: "/beta" }, source: source({ peers: [{ id: "claude", state: "idle", sessionId: "s2" }, { id: "kimi", state: "idle" }, { id: "local", state: "idle" }] }), terminals: [{ peer: "claude", handle: "term_beta" }], reconnectOnly: [] }).projects[0]!;
+  const both = [...endable, ...beta.source.peers.map((peer) => ({ planned: beta, peer }))];
+  const across: string[] = [];
+  const two = host({ endPeer: async (p, peer) => { across.push(`${p.project.id}/${peer.id}`); return `${p.project.id}/${peer.id}: ended`; } });
+  const kinds = screen(["t", "y"]);
+  await endAgents(two, kinds.io, both);
+  expect(kinds.asked).toEqual([
+    "End which agents? [t] the TUI agents (alpha/claude, alpha/codex, beta/claude)  [h] the headless agents (alpha/kimi, alpha/pi, beta/kimi, beta/local)  or names separated by spaces  [Enter] none: ",
+    "End alpha/claude, alpha/codex, beta/claude now? A TUI agent's terminal is closed, a turn in progress is cut, and none of them is restored by the upgrade. [y/N] ",
+  ]);
+  expect(kinds.out).toEqual(["  alpha/claude: ended", "  alpha/codex: ended", "  beta/claude: ended"]);
+  across.length = 0;
+  const bare = screen(["claude kimi", "y"]);
+  expect(await endAgents(two, bare.io, both)).toBe(false);
+  expect(bare.out).toEqual(["claude, kimi: attached in several projects; name the one to end with its project (alpha/claude, alpha/kimi, beta/claude, beta/kimi)", "no agent was ended"]);
+  expect(bare.asked).toHaveLength(1);
+  // `project/peer` is exactly that one; a bare name only one project has attached is that one too.
+  const named = screen(["beta/claude local codex", "y"]);
+  expect(await endAgents(two, named.io, both)).toBe(true);
+  expect(named.asked[1]).toStartWith("End alpha/codex, beta/claude, beta/local now? ");
+  expect(across).toEqual(["alpha/codex", "beta/claude", "beta/local"]);
   // From the plan screen: the ended agents are offline in the plan that follows.
   let gone = false;
   const flow = screen(["k", "t", "y", "q"]);

@@ -542,13 +542,19 @@ front end to the commands above, never a second coordinator.
   continues, as after any runner crash.
 - The plan screen can end attached agents before the operation exists (user
   request, 2026-10-10: choose to end headless or TUI agents during an upgrade).
-  A TUI agent is ended by closing the terminal the plan bound to its session
-  (`closeTerminal`, which proves that binding first); a headless agent by the
-  console-role request `peer_stop` to its hub (#278), which an older hub answers
-  as unknown. An ended agent is offline in the next plan, so it is neither
-  waited for nor restored. Nothing is ended once an operation holds the lock:
-  the coordinator's roster check reads a planned peer that left as a changed
-  source.
+  A TUI agent is ended by closing the terminal the plan bound to its session; a
+  headless agent by the console-role request `peer_stop` to its hub (#278),
+  which an older hub answers as unknown. The plan is not acted on as it was
+  drawn: `endPlannedPeer` reads again the lock, the hub instance and the peer's
+  attachment, and for a TUI agent the attached session and the terminal's
+  handle and incarnation (`inspectTerminals` for that one session); any
+  difference ends nothing. `closeTerminal` itself compares only the terminal's
+  handle, incarnation, worktree and root. An ended agent is offline in the next
+  plan, so it is neither waited for nor restored. Nothing is ended once an
+  operation holds the lock: the coordinator's roster check reads a planned peer
+  that left as a changed source. With several projects in the plan an agent is
+  named `<project id>/<peer id>`, and a bare name attached in more than one
+  selects none. A Ctrl+C between two agents leaves the rest alone.
 - A Ctrl+C while `apply` checks the plan again creates no operation.
 - Ctrl+C leaves the screens and stops nothing; the terminal is not read again
   after it, because a parent process that died on the same signal (`bun x`, a
@@ -563,8 +569,8 @@ front end to the commands above, never a second coordinator.
 - The daemon's `recovery inspect` lists every condition `recoveryReady()` waits
   for in `blockers` (task commands, completion checks, Pi calls and a release
   in flight, an unsettled Pi, besides busy peers, approvals, startup and a
-  budget transition). A hub that is not ready and names no cause is shown as
-  such.
+  budget transition). The roster identity comparison is not listed. A hub that
+  is not ready and names no cause is shown as such.
 - The progress view prints the receipt's steps and, during `prepare`, the
   source's own readiness blockers. `inspectRecovery` copies them into
   `Inspection.recovery.waiting` for display only; `planFingerprint` leaves

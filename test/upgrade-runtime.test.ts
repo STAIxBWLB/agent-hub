@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
-import { inspectRecovery, makeRecoveryDriver, makeUpgradePlan, PACKAGE_ROOT, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
+import { endPlannedPeer, inspectRecovery, makeRecoveryDriver, makeUpgradePlan, PACKAGE_ROOT, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
 
 /** The test operations preserve this package as their coordinator, which has every recovery command (#215). */
 const COORD = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 import { VERSION } from "../src/version.ts";
-import { liveProjects, nextActions, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
+import { liveProjects, nextActions, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { readRecoveryWaivers, waiveRecoveryPeers } from "../src/hub/restart.ts";
@@ -1086,4 +1086,113 @@ test("a restarted target whose planned session comes back clears the fresh choic
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     server.stop(true); rmSync(temp, { recursive: true, force: true });
   }
+});
+
+// #272 review: [k] on the plan screen acts on a plan a person read a while ago. The lock, the hub and the terminal are
+// injected here, so no hub, registry or lock of this machine is read.
+const CUT = "; its turn was cut: the delivery is held as needs_review and its queue stays held until ahub queue resolve";
+function endFixture(peer: "codex" | "claude" | "pi", root = "/end-272", stateDir = "/end-272/.agenthub/state") {
+  const attached = (session: string, state = "idle") => ({ id: peer, state, ...(peer === "codex" ? { threadId: session } : { sessionId: session }), ...(peer === "pi" ? { args: { mode: "tui" } } : {}) });
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const planned: PlannedProject = {
+    project: { id: "p-272", root, stateDir, instanceId: "i-plan", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-plan", version: "0.12.21", protocol: PROTOCOL, peers: [attached("session-S")], blockers: [] },
+    terminals: [{ peer, handle: "term-planned", incarnationId: "inc-planned", worktreeId: "wt", projectRoot: root, sessionId: "session-S", launch, launchMetadata: launch }], blockers: [],
+  };
+  // Orca as it answers now: one terminal in the project, until it is closed.
+  const orca = { terminal: { handle: "term-planned", incarnationId: "inc-planned", worktreeId: "wt", worktreePath: root, agentIdentity: peer, sessionId: "session-S", connected: true } as Record<string, unknown> | undefined, calls: [] as string[] };
+  const run = async (argv: string[]) => {
+    orca.calls.push(argv[2]!);
+    const result = argv[2] === "show" ? { terminal: orca.terminal } : argv[2] === "close" ? (orca.terminal = undefined, {}) : { terminals: orca.terminal ? [orca.terminal] : [] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const hub = (over: Partial<Inspection> = {}): Inspection => ({ ...planned.source, ...over });
+  const end = (deps: Parameters<typeof endPlannedPeer>[2] = {}) => endPlannedPeer(planned, planned.source.peers[0]!, { run, lock: () => undefined, inspect: async () => hub(), ...deps });
+  return { planned, orca, hub, attached, end };
+}
+
+test("a TUI agent's terminal is closed while the lock, the hub, its session and its terminal are the ones the plan read", async () => {
+  for (const peer of ["codex", "claude", "pi"] as const) {
+    const { orca, end } = endFixture(peer);
+    expect(await end()).toBe(`p-272/${peer}: terminal term-planned closed`);
+    expect(orca.calls.filter((call) => call === "close")).toHaveLength(1);
+    expect(orca.calls.indexOf("list")).toBeLessThan(orca.calls.indexOf("close")); // bound again before the close
+  }
+  // A turn in progress is cut by the close: the line says what the hub holds because of it.
+  const busy = endFixture("codex");
+  expect(await busy.end({ inspect: async () => busy.hub({ peers: [busy.attached("session-S", "busy")] }) })).toBe(`p-272/codex: terminal term-planned closed${CUT}`);
+});
+
+test("a TUI agent is not ended, and nothing is closed, once the lock, the hub, its session or its terminal differ from the plan", async () => {
+  const { orca, hub, attached, end } = endFixture("codex");
+  const shown = orca.terminal!;
+  const refused = async (why: string, deps: Parameters<typeof end>[0], terminal: Record<string, unknown> | null = shown) => {
+    orca.terminal = terminal ?? undefined; orca.calls.length = 0;
+    expect(await end(deps)).toBe(`p-272/codex: not ended (${why})`);
+    expect(orca.calls).not.toContain("close");
+  };
+  // An operation took the lock after the plan was drawn: not even the hub is read.
+  await refused("recovery operation 00000000-0000-4000-8000-000000000272 holds the lock", { lock: () => "00000000-0000-4000-8000-000000000272", inspect: async () => { throw new Error("not read"); } });
+  expect(orca.calls).toEqual([]);
+  await refused("recovery lock is unreadable; inspect it before changing runtimes", { lock: () => { throw new Error("recovery lock is unreadable; inspect it before changing runtimes"); } });
+  // The hub was restarted, stopped, or cannot be inspected.
+  await refused("its hub reads as instance i-other, not the i-plan of the plan", { inspect: async () => hub({ instanceId: "i-other" }) });
+  await refused("its hub reads as stopped", { inspect: async () => hub({ state: "stopped", peers: [] }) });
+  await refused("registry unreadable", { inspect: async () => { throw new Error("registry unreadable"); } });
+  // The peer left, or another conversation attached under its name.
+  await refused("it is no longer attached to its hub", { inspect: async () => hub({ peers: [attached("session-S", "offline")] }) });
+  await refused("it is no longer attached to its hub", { inspect: async () => hub({ peers: [] }) });
+  await refused("the session attached now is not the one the plan bound to terminal term-planned", { inspect: async () => hub({ peers: [attached("session-OTHER")] }) });
+  expect(orca.calls).toEqual([]);
+  // The session runs in another terminal now, or the planned handle is another incarnation.
+  await refused("its session is now bound to terminal term-new (inc-new), not the plan's term-planned (inc-planned)", {}, { ...shown, handle: "term-new", incarnationId: "inc-new" });
+  await refused("its session is now bound to terminal term-planned (inc-reused), not the plan's term-planned (inc-planned)", {}, { ...shown, incarnationId: "inc-reused" });
+  // The planned terminal (same handle, incarnation, worktree and root) holds another session, no agent, or is gone:
+  // `closeTerminal` alone would have closed the first two.
+  await refused("its terminal cannot be bound again: no codex terminal with session session-S in /end-272", {}, { ...shown, sessionId: "session-OTHER" });
+  await refused("its terminal cannot be bound again: cannot prove codex terminal ownership from Orca metadata", {}, { ...shown, agentIdentity: undefined, sessionId: undefined });
+  await refused("its terminal cannot be bound again: no codex terminal with session session-S in /end-272", {}, null);
+  await refused("its terminal cannot be bound again: Orca terminal list failed: orca is not running", { run: async () => ({ code: 1, stdout: "", stderr: "orca is not running" }) });
+});
+
+test("a headless agent is stopped through peer_stop, and a hub that does not know the request never reads as stopped", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-end-headless-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  let answer: Record<string, unknown> = { ok: true };
+  const asked: unknown[] = [];
+  // A hub that answers the stop request the way the test says; the real control client asks it.
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t === "hello") return void ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-272", instanceId: "i-plan", cwd: temp, protocol: PROTOCOL }));
+      asked.push({ t: msg.t, peer: msg.peer });
+      ws.send(JSON.stringify({ rid: msg.rid, t: msg.t, ...answer }));
+    } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "token-272\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, projectId: "p-272", instanceId: "i-plan", cwd: temp }));
+  const planned: PlannedProject = {
+    project: { id: "p-272", root: temp, stateDir, instanceId: "i-plan", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-plan", version: "0.12.21", protocol: PROTOCOL, peers: [{ id: "kimi", state: "idle" }], blockers: [] }, terminals: [], blockers: [],
+  };
+  const end = (deps: Parameters<typeof endPlannedPeer>[2] = {}) => endPlannedPeer(planned, planned.source.peers[0]!, { lock: () => undefined, inspect: async () => planned.source, run: async () => { throw new Error("no terminal command for a headless agent"); }, ...deps });
+  try {
+    expect(await end()).toBe("p-272/kimi: stopped");
+    expect(await end({ inspect: async () => ({ ...planned.source, peers: [{ id: "kimi", state: "busy" }] }) })).toBe(`p-272/kimi: stopped${CUT}`);
+    // The daemon's answer to a request it does not have (0.12.21 and older).
+    answer = { ok: false, error: 'this hub does not know "peer_stop" (restart it: ahub kill && ahub up)' };
+    expect(await end()).toBe("p-272/kimi: hub 0.12.21 cannot end a headless agent by itself; it stops with the old hub at the upgrade and the new hub starts it again (ahub stop kimi ends it then)");
+    answer = { ok: false, error: "kimi is not a peer this hub runs" };
+    expect(await end()).toBe("p-272/kimi: not stopped (kimi is not a peer this hub runs)");
+    expect(asked).toEqual(Array(4).fill({ t: "peer_stop", peer: "kimi" }));
+    // The lock and the hub are read again for a headless agent too: nothing is asked of a hub that is not the planned one.
+    answer = { ok: true };
+    expect(await end({ lock: () => "00000000-0000-4000-8000-000000000272" })).toBe("p-272/kimi: not ended (recovery operation 00000000-0000-4000-8000-000000000272 holds the lock)");
+    expect(await end({ inspect: async () => ({ ...planned.source, instanceId: "i-other" }) })).toBe("p-272/kimi: not ended (its hub reads as instance i-other, not the i-plan of the plan)");
+    expect(await end({ inspect: async () => ({ ...planned.source, peers: [{ id: "kimi", state: "offline" }] }) })).toBe("p-272/kimi: not ended (it is no longer attached to its hub)");
+    expect(asked).toHaveLength(4);
+  } finally { server.stop(true); rmSync(temp, { recursive: true, force: true }); }
 });
