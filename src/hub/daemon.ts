@@ -46,8 +46,8 @@ import { launcherPreview } from "../cli/preview.ts";
 import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
-import { currentRouting, detectSignals, parseRouting, routingText } from "./routing.ts";
-import { checkSettingValue, pendingUndo, readOverlay, routingCandidate, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue } from "./settings.ts";
+import { currentRouting, detectSignals, OVERLAY_FILE, parseRouting, routingText, type Routing } from "./routing.ts";
+import { checkSettingValue, ignoredLine, pendingUndo, readOverlay, restoredValue, routingCandidate, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -281,9 +281,15 @@ export function mlxLaunchProblem(config: HubConfig, args: { backend?: unknown; m
 
 /** Shipped defaults remain capability-aware; operator-written MLX pins require an explicit migration. */
 function disabledMlxPolicyProblem(config: HubConfig, cwd: string): string | undefined {
-  if (config.mlx.enabled !== false || !existsSync(join(cwd, ".agenthub", "routing.toml"))) return undefined;
-  const conflict = Object.entries(currentRouting(cwd).classes).find(([, policy]) => policy?.pi_backend === "mlx");
-  return conflict ? `routing.toml: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
+  if (config.mlx.enabled !== false) return undefined;
+  const project = existsSync(join(cwd, ".agenthub", "routing.toml"));
+  if (!project && !existsSync(join(cwd, ".agenthub", OVERLAY_FILE))) return undefined;
+  return mlxPinProblem(currentRouting(cwd), project);
+}
+/** A pin a person wrote, in routing.toml or the machine-local overlay (#269); the shipped template's own pins are not theirs to migrate. */
+function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
+  const conflict = Object.entries(routing.classes).find(([name, policy]) => policy?.pi_backend === "mlx" && (project || routing.sources?.[`classes.${name}.pi_backend`]));
+  return conflict ? `${routing.sources?.[`classes.${conflict[0]}.pi_backend`] ?? "routing.toml"}: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
 }
 
 export interface DaemonOptions {
@@ -2602,8 +2608,10 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function settingsView(): { rows: SettingRow[]; undo?: string } {
     const stored = storedConfig();
+    let routingProblem: string | undefined;
+    try { readOverlay(opts.cwd); } catch (error) { routingProblem = (error as Error).message; }
     const rows = settingRows({
-      cwd: opts.cwd, routing: currentRouting(opts.cwd, log),
+      cwd: opts.cwd, routing: currentRouting(opts.cwd, log), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
       running: (path) => valueAt(config, path),
       next: stored ? (path) => valueAt(stored, path) : undefined,
       mode: (peer) => {
@@ -2650,30 +2658,38 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     try {
       if (def.store === "routing") {
-        if (value === "mlx" && config.mlx.enabled === false) return { ok: false, error: `${def.key}: mlx conflicts with mlx.enabled=false; select dgx or remove the pin` };
         const from = routingValue(currentRouting(opts.cwd, log), def);
-        const next = writeRoutingSetting(opts.cwd, opts.stateDir, def, value);
+        const next = writeRoutingSetting(opts.cwd, opts.stateDir, def, value, routingCheck);
+        if (!next) return { ok: true, text: `${def.key}: ${OVERLAY_FILE} already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
         recordSetting(def.key, from, routingValue(next, def), source);
         return { ok: true, text: `${def.key}: ${settingText(routingValue(next, def))} (in force now)` };
       }
+      // Removing the machine-local value uncovers the shared file's: never-ask there needs the same confirmation.
+      if (peer && value === null && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
       const from = settingScalar(valueAt(storedConfig(), def.path));
-      writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch));
+      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
       const to = settingScalar(valueAt(storedConfig(), def.path));
       recordSetting(def.key, from, to, source);
-      return { ok: true, text: `${def.key}: ${settingText(to)} (applies at the next hub start)` };
+      // Config trust (#17) can drop a machine-local field at load: the write happened, and the person is told it will not count.
+      const dropped = ignoredLine(storedConfig()?.ignored, def);
+      return { ok: true, text: dropped ? `${def.key}: written, but the hub does not read it (${dropped})` : `${def.key}: ${settingText(to)} (applies at the next hub start)` };
     } catch (error) {
       return { ok: false, error: (error as Error).message };
     }
   }
+  /** A pin the hub could not start with: refused before a write or an undo puts it on disk. */
+  const routingCheck = (routing: Routing) => { const problem = config.mlx.enabled === false ? mlxPinProblem(routing, true) : undefined; if (problem) throw new Error(problem); };
   function settingsUndo(authority: SettingAuthority): Record<string, unknown> {
     // The previous version can hold a wider value than the one in force, so undo is never an ordinary session's.
     if (authority === "ordinary") return { ok: false, error: "undo can put back a value that widens what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings undo in a terminal" };
     const def = settingDef(pendingUndo(opts.stateDir));
     if (typeof def === "string") return { ok: false, error: "nothing to undo" };
     const read = (): SettingValue => def.store === "routing" ? routingValue(currentRouting(opts.cwd, log), def) : settingScalar(valueAt(storedConfig(), def.path));
+    // never-ask is set with its confirmation, never put back by an undo that carries none.
+    if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} to never-ask again instead; nothing was undone` };
     try {
       const from = read();
-      undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch));
+      undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);
       recordSetting(def.key, from, read(), settingSource(authority), true);
       return { ok: true, text: `${def.key}: put back to ${settingText(read())}` };
     } catch (error) {

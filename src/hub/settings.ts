@@ -135,18 +135,33 @@ function atomicWrite(file: string, text: string): void {
 }
 /** A settings write never changes a file git tracks: the machine-local files are meant to stay out of the repository. */
 function refuseTracked(cwd: string, file: StoredFile): void {
-  if (configTracked(cwd, file)) throw new Error(`.agenthub/${file} is committed to git; settings write only machine-local files. Remove it from the repository (git rm --cached) and ignore it`);
+  const tracked = configTracked(cwd, file);
+  if (tracked) throw new Error(`.agenthub/${file} is committed to git; settings write only machine-local files. Remove it from the repository (git rm --cached) and ignore it`);
+  // Unknown is not untracked where there is a repository to ask; only a project outside git has nothing tracked.
+  if (tracked === undefined && existsSync(join(cwd, ".git"))) throw new Error(`git could not confirm that .agenthub/${file} is untracked; nothing was written`);
 }
 /** Keeps the one previous version, then replaces (or removes) the file. */
 function store(cwd: string, stateDir: string, file: StoredFile, key: string, previous: string | null, next: string | null): void {
   refuseTracked(cwd, file);
-  const path = join(cwd, ".agenthub", file);
+  replaceFile(join(cwd, ".agenthub", file), file, next);
+  // The record follows the file: a write that failed leaves the earlier record valid, because the file is as it left it.
   const record: UndoRecord = { file, key, previous, written: digest(next), at: Date.now() };
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  rmSync(undoFile(stateDir), { force: true });
-  writeFileSync(undoFile(stateDir), JSON.stringify(record), { mode: 0o600 });
-  if (next === null) rmSync(path, { force: true });
-  else atomicWrite(path, next);
+  try {
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    rmSync(undoFile(stateDir), { force: true });
+    writeFileSync(undoFile(stateDir), JSON.stringify(record), { mode: 0o600 });
+  } catch {
+    rmSync(undoFile(stateDir), { force: true }); // this write has no undo, and an older record must not offer one
+  }
+}
+/** Replaces or removes the file. A file-system failure is reported by its code only: its text names absolute paths, and this reaches the dashboard. */
+function replaceFile(path: string, file: StoredFile, text: string | null): void {
+  try {
+    if (text === null) rmSync(path, { force: true });
+    else atomicWrite(path, text);
+  } catch (error) {
+    throw new Error(`.agenthub/${file} could not be written (${(error as NodeJS.ErrnoException).code ?? "unknown error"}); nothing was changed`);
+  }
 }
 
 /** The value a config file holds at a path, or undefined. */
@@ -163,10 +178,13 @@ export function valueAt(doc: unknown, path: readonly string[]): unknown {
  * Sets (or with null removes) one key of `.agenthub/config.local.json`. `validate` gets a scratch project that holds
  * the shared config and the candidate, and throws when the hub's own loader would refuse it: nothing is written then.
  */
-export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue, validate: (scratch: string) => unknown): void {
+export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue, validate: (scratch: string) => unknown): boolean {
   const file = join(cwd, ".agenthub", CONFIG_LOCAL);
   const before = readText(file);
   const doc = before === null ? {} : parseObject(before, CONFIG_LOCAL);
+  // Nothing to change: no file is created or rewritten, and the undo record keeps the last real write.
+  const held = valueAt(doc, def.path);
+  if (value === null ? held === undefined : same(held, value)) return false;
   let node = doc;
   const trail: [Record<string, unknown>, string][] = [];
   for (const part of def.path.slice(0, -1)) {
@@ -191,6 +209,7 @@ export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDe
   const text = `${JSON.stringify(doc, null, 2)}\n`;
   checkConfigText(cwd, text, validate);
   store(cwd, stateDir, CONFIG_LOCAL, def.key, before, text);
+  return true;
 }
 /** Runs `validate` on a scratch project holding the shared config and this candidate for the machine-local one. */
 function checkConfigText(cwd: string, text: string | null, validate: (scratch: string) => unknown): void {
@@ -205,12 +224,19 @@ function checkConfigText(cwd: string, text: string | null, validate: (scratch: s
   }
 }
 
-/** Sets (or with null removes) one key of `.agenthub/routing.local.toml`; the real parser reads the result first. */
-export function writeRoutingSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue): Routing {
+/**
+ * Sets (or with null removes) one key of `.agenthub/routing.local.toml`; the real parser reads the result first, and
+ * `check` may refuse the policy it yields. Undefined when the overlay already holds that value: nothing is written.
+ */
+export function writeRoutingSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue, check?: (routing: Routing) => void): Routing | undefined {
   const file = join(cwd, ".agenthub", OVERLAY_FILE);
   const before = readText(file);
-  const overlay = routingCandidate(before === null ? {} : parseOverlay(before), def, value);
+  const current = before === null ? {} : parseOverlay(before);
+  const held = def.path[0] === "stay_switch" ? current.stay_switch : (current.classes?.[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!];
+  if (value === null ? held === undefined : same(held, value)) return undefined;
+  const overlay = routingCandidate(current, def, value);
   const routing = parseRouting(routingText(cwd), overlay);
+  check?.(routing);
   const empty = !overlay.stay_switch && !Object.keys(overlay.classes ?? {}).length;
   store(cwd, stateDir, OVERLAY_FILE, def.key, before, empty ? null : overlayToml(overlay));
   return routing;
@@ -241,7 +267,7 @@ export function readOverlay(cwd: string): RoutingOverlay {
  * Puts back the one previous version of the file the last settings write changed. Refused when the file changed since
  * that write (a hand edit would be lost), when the loaders no longer accept that version, or when there is nothing to undo.
  */
-export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown): { key: string; file: StoredFile } {
+export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown, checkRouting?: (routing: Routing) => void): { key: string; file: StoredFile } {
   const raw = readText(undoFile(stateDir));
   if (raw === null) throw new Error("nothing to undo");
   let record: UndoRecord;
@@ -251,18 +277,37 @@ export function undoSetting(cwd: string, stateDir: string, validate: (scratch: s
   if (digest(readText(path)) !== record.written) throw new Error(`.agenthub/${record.file} changed since the last settings write; nothing was undone`);
   if (record.previous !== null && typeof record.previous !== "string") throw new Error("nothing to undo");
   refuseTracked(cwd, record.file);
-  if (record.file === OVERLAY_FILE) parseRouting(routingText(cwd), record.previous === null ? undefined : parseOverlay(record.previous));
+  if (record.file === OVERLAY_FILE) checkRouting?.(parseRouting(routingText(cwd), record.previous === null ? undefined : parseOverlay(record.previous)));
   else checkConfigText(cwd, record.previous, validate);
-  if (record.previous === null) rmSync(path, { force: true });
-  else atomicWrite(path, record.previous);
+  replaceFile(path, record.file, record.previous);
   rmSync(undoFile(stateDir), { force: true });
   return { key: String(record.key), file: record.file };
+}
+/**
+ * For a config setting: the value the config files would hold for it after the pending undo (the previous version of
+ * the machine-local file, else the shared file), or after `inherit` when `previous` is given as null. Undefined when
+ * neither sets it or nothing reads.
+ */
+export function restoredValue(cwd: string, stateDir: string, def: SettingDef, inherit = false): unknown {
+  const parse = (text: string | null): unknown => { try { return text === null ? {} : JSON.parse(text); } catch { return {}; } };
+  let local: unknown = {};
+  if (!inherit) {
+    try { const record = JSON.parse(readFileSync(undoFile(stateDir), "utf8")) as UndoRecord; if (record.file !== CONFIG_LOCAL) return undefined; local = parse(record.previous); } catch { return undefined; }
+  }
+  return valueAt(local, def.path) ?? valueAt(parse(readText(join(cwd, ".agenthub", "config.json"))), def.path);
 }
 /** The key the next undo would put back, if any. */
 export function pendingUndo(stateDir: string): string | undefined {
   try { const record = JSON.parse(readFileSync(undoFile(stateDir), "utf8")) as UndoRecord; return typeof record.key === "string" ? record.key : undefined; } catch { return undefined; }
 }
 
+/** The loader's line saying it ignored this setting's field in the machine-local file, if it did (config trust, #17). */
+export function ignoredLine(ignored: readonly string[] | undefined, def: SettingDef): string | undefined {
+  return ignored?.find((line) => {
+    const at = line.indexOf(` in .agenthub/${CONFIG_LOCAL} ignored:`);
+    return at > 0 && line.slice(0, at).split(", ").some((field) => field === def.path[0] || field === def.path.slice(0, 2).join("."));
+  });
+}
 export interface SettingRow {
   key: string; group: SettingDef["group"]; label: string; type: SettingDef["type"]; values?: readonly string[];
   /** The file a write goes to, or "this hub run". */
@@ -290,6 +335,10 @@ export function settingRows(input: {
   running: (path: readonly string[]) => unknown;
   next: ((path: readonly string[]) => unknown) | undefined;
   mode: (peer: string) => { value?: string; note?: string };
+  /** Why the overlay does not load, when it does not: the rows then show the last policy that did. */
+  routingProblem?: string;
+  /** The loader's own lines about machine-local fields it ignored (`HubConfig.ignored`). */
+  ignored?: string[];
 }): SettingRow[] {
   const raw = (name: string): unknown => { try { return JSON.parse(readFileSync(join(input.cwd, ".agenthub", name), "utf8")); } catch { return undefined; } };
   const local = raw(CONFIG_LOCAL), shared = raw("config.json");
@@ -305,11 +354,14 @@ export function settingRows(input: {
     }
     if (def.store === "routing") {
       const value = scalar(def.path[0] === "stay_switch" ? input.routing.stay_switch : (input.routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
-      return { ...base, values: def.values ?? routes, file: OVERLAY_FILE, value, source: input.routing.sources?.[def.key.slice("routing.".length)] ?? (value === null ? "default" : projectRouting ? "routing.toml" : "default") };
+      return { ...base, ...(def.type === "enum" ? { values: def.values ?? routes } : {}), file: OVERLAY_FILE, value, source: input.routing.sources?.[def.key.slice("routing.".length)] ?? (value === null ? "default" : projectRouting ? "routing.toml" : "default"),
+        ...(input.routingProblem ? { note: `${OVERLAY_FILE} does not load, so the last policy that did stays in force: ${input.routingProblem}` } : {}) };
     }
     const value = scalar(input.running(def.path));
     const stored = input.next ? scalar(input.next(def.path)) : value;
     const source = valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "default";
-    return { ...base, ...(def.values ? { values: def.values } : {}), file: CONFIG_LOCAL, value, source, ...(same(value, stored) ? {} : { pending: stored }), ...(input.next ? {} : { note: "the config files do not load; fix them in your editor" }) };
+    const dropped = ignoredLine(input.ignored, def);
+    return { ...base, ...(def.values ? { values: def.values } : {}), file: CONFIG_LOCAL, value, source, ...(same(value, stored) ? {} : { pending: stored }),
+      ...(!input.next ? { note: "the config files do not load; fix them in your editor" } : dropped ? { note: `the hub does not read this value: ${dropped}` } : {}) };
   });
 }

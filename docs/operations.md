@@ -994,8 +994,15 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   value read at hub start what the next start will read (`Pending restart`).
 - `ahub settings undo` (the dashboard's "Undo last write") puts back the one
   previous version of the file the last write changed. It refuses when that
-  file was edited since. A mode changed for the running hub is not a file:
-  set it again instead.
+  file was edited since, and when it would put a stored never-ask back (set it
+  again with its confirmation instead). A mode changed for the running hub is
+  not a file: set it again instead. Setting a value it already has, or
+  removing one that is not set, writes nothing.
+- A project initialised before 0.12.23 has no `.gitignore` line for
+  `.agenthub/routing.local.toml`: run `ahub init` again, or add it. A
+  `permission_modes` value is read only from a file git confirms nobody
+  committed (config trust); where the hub will not read what was written, the
+  reply and the Settings row say so.
 - Authority: a dashboard opened with `ahub ui` reads settings, lowers a mode to
   `ask`, turns `pi.auto_start` off and changes the Switches group. Everything
   else needs `ahub ui --settings`, whose session may raise for 15 minutes, or

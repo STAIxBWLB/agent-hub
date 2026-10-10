@@ -190,7 +190,8 @@ export function currentRouting(cwd: string, log: (line: string) => void = () => 
   // Both files count: a settings write changes only the overlay.
   const mtime = ["routing.toml", OVERLAY_FILE].map((name) => {
     try {
-      return statSync(join(cwd, ".agenthub", name)).mtimeMs;
+      const stat = statSync(join(cwd, ".agenthub", name));
+      return `${stat.mtimeMs}/${stat.size}`;
     } catch {
       return 0; // no project file: the shipped template, or no overlay
     }

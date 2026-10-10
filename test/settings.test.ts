@@ -348,6 +348,7 @@ test("AC7: the Settings section renders every row from the registry with its sou
     value = ""; hidden = false; disabled = false; open = false; htmlFor = ""; id = ""; type = ""; placeholder = "";
     constructor(public tag: string, public textContent = "", public className = "") {}
     append(...nodes: Node[]) { this.children.push(...nodes); }
+    replaceChildren(...nodes: Node[]) { this.children = nodes; }
     setAttribute(name: string, value: string) { this.attrs[name] = value; }
     addEventListener(name: string, fn: () => void) { this.listeners[name] = fn; }
     all(): Node[] { return [this, ...this.children.flatMap((child) => child.all())]; }
@@ -405,6 +406,16 @@ test("AC7: the Settings section renders every row from the registry with its sou
     { action: "setting", key: "routing.classes.implement.peers", value: null },
     { action: "setting_undo" },
   ]);
+  // A change to one row rebuilds that row only: what was typed into another row is still there.
+  const live: Record<string, any> = { ...context, update: (() => { let signature = ""; return (_id: string, data: unknown, render: (target: Node) => void) => { const next = JSON.stringify(data); if (next === signature) return; signature = next; root.children = []; render(root); }; })() };
+  runInNewContext(`${code}; globalThis.again = (next) => renderSettings(next); renderSettings(settings)`, live);
+  const typed = root.all().find((n) => n.id === "setting-routing-classes-implement-peers")!, other = root.all().find((n) => n.id === "setting-permission-kimi")!;
+  typed.value = "kimi, pi";
+  live.again({ rows: rows.map((row) => row.key === "permission.kimi" ? { ...row, value: "ask", note: "not attached: only ask can be set" } : row), undo: "pi.auto_start" });
+  expect(root.all().find((n) => n.id === "setting-routing-classes-implement-peers")).toBe(typed);
+  expect(typed.value).toBe("kimi, pi");
+  expect(root.all().find((n) => n.id === "setting-permission-kimi")).not.toBe(other);
+  expect(root.text()).toContain("not attached: only ask can be set");
   // A settings session says how long it has, and the raise hint goes.
   context.settings = { rows, sessionUntil: Date.now() + 14.5 * 60_000 };
   runInNewContext(`${code}; renderSettings(settings)`, context);
@@ -484,7 +495,8 @@ test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a
   expect(confirmed.code).toBe(0); expect(confirmed.stderr).toContain("never-ask: kimi: runs its own tools; NO hub sandbox");
   expect(JSON.parse(text(local)!)).toEqual({ permission_modes: { kimi: "never-ask" } });
 
-  for (const args of [["settings", "set", "research.enabled"], ["settings", "get"], ["settings", "list", "extra"], ["settings", "frobnicate"], ["settings", "set", "research.enabled", "true", "--force"], ["settings", "undo", "now"]]) {
+  for (const args of [["settings", "set", "research.enabled"], ["settings", "get"], ["settings", "list", "extra"], ["settings", "frobnicate"], ["settings", "set", "research.enabled", "true", "--force"], ["settings", "undo", "now"],
+    ["settings", "undo", "--preview"], ["settings", "undo", "--yes"], ["settings", "list", "--yes"], ["settings", "set", "research.enabled", "true", "--json"]]) { // a flag of another subcommand is refused, not ignored
     const bad = await cli(rig.cwd, args);
     expect(bad.code).toBe(1); expect(bad.stderr).toContain("usage: ahub settings");
   }
@@ -509,3 +521,65 @@ test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a
   }
   expect(text(local)).toBe(before);
 }, 60_000);
+
+test("review of #290: a write that changes nothing writes nothing, a failed write keeps the earlier undo, and git has to answer where there is a repository", async () => {
+  const rig = await hub();
+  const local = rig.file("config.local.json");
+  const set = (key: string, value: unknown) => rig.client.request({ t: "settings_set", key, value });
+  // Removing what is not there: no file appears (an empty one would move the project off the built-in defaults), no event, no undo.
+  expect(await set("research.enabled", null)).toEqual(expect.objectContaining({ ok: true, text: "research.enabled: config.local.json already leaves it unset; nothing was written" }));
+  expect(await set("routing.stay_switch", null)).toEqual(expect.objectContaining({ ok: true, text: `routing.stay_switch: ${OVERLAY_FILE} already leaves it unset; nothing was written` }));
+  expect([text(local), text(rig.file(OVERLAY_FILE))]).toEqual([null, null]);
+  expect(rig.events()).toEqual([]);
+  expect((await rig.client.request({ t: "settings_undo" })).error).toBe("nothing to undo");
+  // The same value twice: the second is not a write, and the first one's undo is still the one on offer.
+  expect((await set("research.enabled", true)).ok).toBe(true);
+  expect((await set("research.enabled", true)).text).toBe("research.enabled: config.local.json already holds true; nothing was written");
+  expect(rig.events()).toHaveLength(1);
+  // A write that fails: the file-system error is named by its code only, and the earlier undo still works.
+  expect((await set("coordination", "turn-free")).ok).toBe(true);
+  const written = text(local);
+  writeFileSync(`${local}.${process.pid}.tmp`, "left behind");
+  const failed = await set("snapshots.enabled", false);
+  expect(failed).toEqual(expect.objectContaining({ ok: false, error: ".agenthub/config.local.json could not be written (EEXIST); nothing was changed" }));
+  expect(failed.error).not.toContain(rig.cwd);
+  expect(text(local)).toBe(written);
+  expect(existsSync(`${local}.${process.pid}.tmp`)).toBe(false); // the stale temp file went with the failed attempt, so the next write is not stuck on it
+  expect((await rig.client.request({ t: "settings_undo" })).text).toContain("coordination: put back to");
+  expect(JSON.parse(text(local)!)).toEqual({ research: { enabled: true } });
+  // A repository whose git cannot answer: unknown is not untracked, so nothing is written.
+  const p = project();
+  writeFileSync(join(p.cwd, ".git"), "gitdir: /nonexistent/elsewhere\n");
+  expect(() => writeConfigSetting(p.cwd, p.stateDir, def("research.enabled"), true, (scratch) => loadConfig(scratch))).toThrow("git could not confirm that .agenthub/config.local.json is untracked");
+  expect(text(p.file("config.local.json"))).toBeNull();
+}, 20_000);
+
+test("review of #290: never-ask comes back only with its confirmation, never through undo or inherit, and the control ui_action path is an ordinary session", async () => {
+  const rig = await hub();
+  const local = rig.file("config.local.json");
+  const set = (key: string, value: unknown, confirm?: string) => rig.client.request({ t: "settings_set", key, value, ...(confirm ? { confirm } : {}) });
+  // Stored never-ask, lowered, then undo: refused, and the file keeps ask.
+  expect((await set("permission_modes.codex", "never-ask", "codex")).ok).toBe(true);
+  expect((await set("permission_modes.codex", "ask")).ok).toBe(true);
+  const undone = await rig.client.request({ t: "settings_undo" });
+  expect(undone).toEqual(expect.objectContaining({ ok: false, error: "undo would put never-ask back for codex without its confirmation: set permission_modes.codex to never-ask again instead; nothing was undone" }));
+  expect(JSON.parse(text(local)!)).toEqual({ permission_modes: { codex: "ask" } });
+  // The shared file says never-ask and the machine-local one lowers it: removing the local value needs the peer id.
+  writeFileSync(rig.file("config.json"), JSON.stringify({ memory: { enabled: false }, permission_modes: { codex: "never-ask" } }));
+  expect((await set("permission_modes.codex", null)).error).toContain("leaves never-ask from config.json for codex: it needs the peer id as the confirmation");
+  expect((await set("permission_modes.codex", null, "kimi")).ok).toBe(false);
+  expect(JSON.parse(text(local)!)).toEqual({ permission_modes: { codex: "ask" } });
+  expect((await set("permission_modes.codex", null, "codex")).ok).toBe(true);
+  // This project is no repository, so config trust drops the field at load: the reply and the row say the value will not count.
+  const stored = await set("permission_modes.kimi", "ask-when-needed");
+  expect(stored.ok).toBe(true);
+  expect(stored.text).toContain("permission_modes.kimi: written, but the hub does not read it (permission_modes in .agenthub/config.local.json ignored: git could not confirm");
+  const row = (await rig.client.request({ t: "settings_get" })).rows.find((r: SettingRow) => r.key === "permission_modes.kimi");
+  expect(row.note).toContain("the hub does not read this value: permission_modes in .agenthub/config.local.json ignored");
+  // The control connection's ui_action (the unified dashboard's path) carries no settings session.
+  const instanceId = (await rig.client.request({ t: "status" })).status.instanceId;
+  const forwarded = (action: Record<string, unknown>) => rig.client.request({ t: "ui_action", instanceId, action });
+  for (const action of [{ action: "setting", key: "permission.kimi", value: "ask-when-needed" }, { action: "setting", key: "routing.stay_switch", value: "enforce" }, { action: "setting_undo" }]) expect((await forwarded(action)).error).toContain("ahub ui --settings");
+  expect(await forwarded({ action: "setting", key: "snapshots.enabled", value: false })).toMatchObject({ ok: true });
+  expect((await forwarded({ action: "setting_preview", key: "routing.stay_switch", value: "enforce" })).ok).toBe(true);
+}, 20_000);

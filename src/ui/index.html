@@ -254,11 +254,17 @@ function settingRow(row, raise) {
   actions.append(save); node.append(actions, out);
   return node;
 }
+const settingSlots = new Map();
+function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
 function renderSettings(settings) {
-  if (!settings || !Array.isArray(settings.rows)) { $('settings-session').textContent = ''; return update('settings', 'none', (target) => empty(target, 'This hub does not report settings.')); }
+  if (!settings || !Array.isArray(settings.rows)) { setText($('settings-session'), ''); settingSlots.clear(); return update('settings', 'none', (target) => empty(target, 'This hub does not report settings.')); }
   const raise = typeof settings.sessionUntil === 'number' && settings.sessionUntil > Date.now();
-  $('settings-session').textContent = raise ? 'Settings session: ' + Math.max(1, Math.ceil((settings.sessionUntil - Date.now()) / 60000)) + ' min left' : 'Read, lower and safe switches only';
-  update('settings', [settings.rows, settings.undo || '', raise], (target) => {
+  // Written only when it changes: a status region that is rewritten every second is read out every second.
+  setText($('settings-session'), raise ? 'Settings session: ' + Math.max(1, Math.ceil((settings.sessionUntil - Date.now()) / 60000)) + ' min left' : 'Read, lower and safe switches only');
+  // The frame (the undo row and the groups) follows the list of keys. A row sits in a slot of its own and is rebuilt
+  // only when its own data changed, so a value being typed in one row survives a change to another.
+  update('settings', [settings.rows.map((row) => row.key), settings.undo || ''], (target) => {
+    settingSlots.clear();
     if (settings.undo) {
       const row = el('div', undefined, 'row'); row.append(el('p', 'Last settings write: ' + settings.undo, 'meta'));
       const actions = el('div', undefined, 'actions'); actions.append(button('Undo last write', {action:'setting_undo'})); row.append(actions); target.append(row);
@@ -269,10 +275,15 @@ function renderSettings(settings) {
       const box = el('details', undefined, 'settings-group'); box.open = settingsOpen.has(group);
       box.addEventListener('toggle', () => { if (box.open) settingsOpen.add(group); else settingsOpen.delete(group); });
       box.append(el('summary', group + ' (' + rows.length + ')'));
-      for (const row of rows) box.append(settingRow(row, raise));
+      for (const row of rows) { const slot = el('div'); settingSlots.set(row.key, { node: slot, signature: '' }); box.append(slot); }
       target.append(box);
     }
   });
+  for (const row of settings.rows) {
+    const slot = settingSlots.get(row.key), signature = JSON.stringify([row, raise]);
+    if (!slot || slot.signature === signature) continue;
+    slot.signature = signature; slot.node.replaceChildren(settingRow(row, raise));
+  }
 }
 function render(snapshot) {
   const peers = snapshot.status.peers || {}, ids = Object.keys(peers);

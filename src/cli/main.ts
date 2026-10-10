@@ -1003,7 +1003,8 @@ const commands: Record<string, () => Promise<void> | void> = {
   settings: async () => {
     const usage = "usage: ahub settings [list] [--json] | get <key> [--json] | set <key> <value|inherit> [--yes] [--preview] | undo";
     const flags = args.filter((arg) => arg.startsWith("--")), [sub = "list", key, text, ...extra] = args.filter((arg) => !arg.startsWith("--"));
-    if (flags.some((flag) => !["--json", "--yes", "--preview"].includes(flag)) || extra.length || !["list", "get", "set", "undo"].includes(sub)) fail(usage);
+    const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview"], undo: [] };
+    if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);
     if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo") && key !== undefined)) fail(usage);
     const def = key === undefined ? undefined : settingDef(key);
     if (typeof def === "string") fail(`${key}: ${def}`);
