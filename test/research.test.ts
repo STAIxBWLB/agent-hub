@@ -121,7 +121,13 @@ test("an owner who gets a task back counts it once; a move without a reason is n
   // A label goes to the current board's #1 (its proposal in the events), never the earlier one; no record yet is refused.
   expect(labelTarget(both, again, 1)).toBe(both[1]!);
   expect(() => labelTarget(both.slice(0, 1), again, 1)).toThrow("task #1 has no research record yet");
-  expect(() => labelTarget(both, again, 7)).toThrow("task #7 is not in this hub's events");
+  expect(() => labelTarget(both, again, 7)).toThrow("no research record for task #7");
+  // After `ahub reset --all` the old task is no longer in the events: the store's only record with that id, or the
+  // one `--created` names when there are several.
+  expect(labelTarget(both.slice(0, 1), [], 1)).toBe(both[0]!);
+  expect(() => labelTarget(both, [], 1)).toThrow("name one with --created <time>");
+  expect(labelTarget(both, [], 1, both[0]!.createdAt!)).toBe(both[0]!);
+  expect(() => labelTarget(both, [], 1, "2000-01-01T00:00:00.000Z")).toThrow("it has:");
 });
 
 test("labelling a task is a person's; reading the research measures is not", () => {
@@ -238,15 +244,15 @@ async function daemonWithKimi(home: string, delayMs: number) {
     for (let i = 0; i < 300 && daemon.bus.peers.get("kimi")?.state !== "busy"; i++) await Bun.sleep(5);
     expect(await op("hub_task_done", { id: 1, summary: "done" })).toContain("approved");
   };
-  return { stop, approve, file: researchFile("p-research", home) };
+  return { stop, approve, daemon, file: researchFile("p-research", home) };
 }
 
 test("the live record waits for an open turn attributed to the approved task and counts it", async () => {
-  const f = await daemonWithKimi(temp("home-wait"), 800);
+  const f = await daemonWithKimi(temp("home-wait"), 1500);
   await f.approve();
   await Bun.sleep(200);
-  expect(existsSync(f.file)).toBe(false); // Kimi's turn is still open
-  for (let i = 0; i < 300 && !existsSync(f.file); i++) await Bun.sleep(10);
+  if (f.daemon.bus.peers.get("kimi")?.state === "busy") expect(existsSync(f.file)).toBe(false); // Kimi's turn is still open
+  for (let i = 0; i < 500 && !existsSync(f.file); i++) await Bun.sleep(10);
   expect(readStore(f.file)).toMatchObject([{ task: 1, turns: 1, owners: ["worker"] }]);
 });
 

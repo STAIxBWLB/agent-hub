@@ -161,16 +161,26 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
 }
 
 /**
- * The record a person's label is for: the current board's task with that id, found by its proposal in `events`, so a
- * label never lands on an earlier task with the same id after `ahub reset --all`. Throws why there is none.
+ * The record a person's label is for. `created` (a record's `createdAt`, from `ahub research export`) names one exactly.
+ * Otherwise the current board's task with that id, found by its proposal in `events`, so a label never lands on an
+ * earlier task with the same id; an id this hub's events do not have (a task from before `ahub reset --all`) is the
+ * store's only record with that id. Throws why there is none, or which ones to choose from.
  */
-export function labelTarget(records: ResearchRecord[], events: StampedEvent[], task: number): TaskRecord {
+export function labelTarget(records: ResearchRecord[], events: StampedEvent[], task: number, created?: string): TaskRecord {
+  const mine = records.filter((r): r is TaskRecord => r.kind === "task" && r.task === task);
+  if (created !== undefined) {
+    return mine.find((r) => r.createdAt === created) ?? fail(`no research record for task #${task} proposed at ${created}${mine.length ? ` (it has: ${mine.map((r) => r.createdAt).join(", ")})` : ""}`);
+  }
   const proposed = events.filter((e) => e.type === "task" && e.id === task && e.event === "proposed").at(-1);
-  if (!proposed) throw new Error(`task #${task} is not in this hub's events (after ahub reset --all, label it from its archive's events with backfill first)`);
-  const record = records.find((r): r is TaskRecord => r.kind === "task" && r.task === task && r.createdAt === proposed.at);
-  if (!record) throw new Error(`task #${task} has no research record yet: it is not approved, or its record waits until the turns that approved it end`);
-  return record;
+  if (proposed) {
+    return mine.find((r) => r.createdAt === proposed.at)
+      ?? fail(`task #${task} has no research record yet: it is not approved, its record still waits for the turns that approved it, or it was approved while research was off (ahub research backfill builds that one)`);
+  }
+  if (mine.length === 1) return mine[0]!;
+  if (!mine.length) throw new Error(`no research record for task #${task}`);
+  throw new Error(`task #${task} is not on this hub's board and the store has ${mine.length} records with that id; name one with --created <time>: ${mine.map((r) => r.createdAt).join(", ")}`);
 }
+const fail = (message: string): never => { throw new Error(message); };
 
 const pct = (n: number, d: number) => d ? n / d : null;
 /** Linear interpolation between the closest ranks: the median of [100, 300] is 200. */

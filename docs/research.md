@@ -25,12 +25,15 @@ directory, so `ahub research --all` can compare them. `ahub reset --all` does no
 
 When a task is approved (a review approves it, or its owner reports a task without a reviewer done), the hub waits
 until no open turn is attributed to the task (the turn that approved it ends after the approval, and its usage arrives
-later still), checking every 10 s for at most 30 minutes, then appends one task record built from that project's events.
-A hub that stops first writes it once its peers have stopped. The first record written for a task is final. Approval is final on the board, so each task has one record. A failing write
-is one `hub.log` line per hub run and never changes the task flow.
+later still), checking every 10 s for at most 30 minutes, then appends one task record built from that project's
+events. A hub that stops first writes it once its peers have stopped. Approval is final on the board, so each task has
+one record, and the first record written for a task is final. A failing write is one `hub.log` line per hub run and
+never changes the task flow.
 
 `ahub research backfill` builds the same records from a project's existing `events.jsonl` (marked
 `writer.source: "backfill"`), reading every event attributed to a task, and appends those the store does not hold yet.
+It is for tasks approved before research was on: a record it writes is final, so running it while a live record still
+waits for its turns freezes that record without them.
 A task is identified by project, id and proposal time (`createdAt`), because `ahub reset --all` starts the ids again
 while the store keeps the older records.
 
@@ -60,12 +63,14 @@ while the store keeps the older records.
 
 ## Label record (`kind: "label"`)
 
-`ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned` appends `{ project, task, createdAt, label, at }`:
-a person's later verdict (a revert next week, a regression found later, work given up) on the current board's task with
-that id (its proposal in `events.jsonl` pins `createdAt`), so a label never lands on an earlier task with the same id
-after a reset. A task with no record yet (not approved, or its record still waiting for the turns that approved it) is
-refused; labels mark approved tasks only. Only a person can run it (agent shells are refused), and only while research is on. The latest label
-wins.
+`ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned [--created <time>]` appends
+`{ project, task, createdAt, label, at }`: a person's later verdict (a revert next week, a regression found later, work
+given up). It labels the current board's task with that id (its proposal in `events.jsonl` pins `createdAt`), so a
+later task with the same id after a reset does not inherit it. A task from before `ahub reset --all` is not on the board
+any more: it is the store's only record with that id, or, when there are several, the one `--created` names (the
+`createdAt` that `ahub research export` shows). A task with no record yet (not approved, its record still waiting for
+the turns that approved it, or approved while research was off) is refused; labels mark approved tasks only. Only a
+person can run it (agent shells are refused), and only while research is on. The latest label wins.
 
 ## Measures
 
@@ -78,8 +83,8 @@ wins.
 - tokens and wall time per approved task, median and p90 (linear interpolation between ranks).
 
 They are computed each time from the records; nothing derived is stored. `ahub research export [--format jsonl|csv]
-[--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, class, pii, outcome,
-createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds, changesRequested, checkPassed,
+[--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, class, pii,
+outcome, createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds, changesRequested, checkPassed,
 checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens, turns,
 filesChanged, models, label, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
 Another project's measures: `ahub --project <dir> research`.

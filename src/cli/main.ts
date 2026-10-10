@@ -779,11 +779,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "assign") return console.log(await taskOp("task_assign", { id: rest[0], peer: rest[1] }));
     if (sub === "label") {
       // #247: a person's later verdict on an approved task (the identity gate keeps it human-only), for research records.
-      const id = Number(rest[0]), label = rest[1] as Label;
-      if (rest.length !== 2 || !/^[1-9]\d*$/.test(rest[0]!) || !Number.isSafeInteger(id) || !(LABELS as readonly string[]).includes(label)) fail(`usage: ahub task label <id> ${LABELS.join("|")}`);
+      const { one, rest: positional } = takeFlags(rest, ["--created"], []);
+      const id = Number(positional[0]), label = positional[1] as Label;
+      if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[0]!) || !Number.isSafeInteger(id) || !(LABELS as readonly string[]).includes(label)) fail(`usage: ahub task label <id> ${LABELS.join("|")} [--created <time from ahub research export>]`);
       const project = researchProject();
       let record: TaskRecord;
-      try { record = labelTarget(readStores(project.id), readEvents(join(stateDir, "events.jsonl")), id); } catch (error) { fail((error as Error).message); }
+      try { record = labelTarget(readStores(project.id), readEvents(join(stateDir, "events.jsonl")), id, one["--created"]); } catch (error) { fail((error as Error).message); }
       appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString() }]);
       return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);
     }
