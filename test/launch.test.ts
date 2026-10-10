@@ -92,7 +92,7 @@ test("merged caller settings are private files rather than native argv and previ
     const facts = claudeObservationHooks({}, { script: "/candidate/facts-hook.ts", stateDir: dir });
     const caller = JSON.stringify({ env: { PASSWORD: "native-argv-canary" }, hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo caller-secret-canary" }] }] } });
     const before = readdirSync(dir);
-    const draft = buildLaunch("claude", ["--settings", caller], { unattended: false, facts });
+    const draft = buildLaunch("claude", ["--settings", caller], { unattended: false, facts, preview: true });
     expect(readdirSync(dir)).toEqual(before); expect(JSON.parse(draft.args[draft.args.indexOf("--settings") + 1]!).env.PASSWORD).toBe("native-argv-canary");
     const launch = buildLaunch("claude", ["--settings", caller], { unattended: false, facts });
     expect(launch.args.join(" ")).not.toContain("native-argv-canary"); expect(launch.args.join(" ")).not.toContain("caller-secret-canary");

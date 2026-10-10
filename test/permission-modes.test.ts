@@ -258,6 +258,9 @@ test("permission source/default merge is per peer, honors explicit ask and track
 });
 
 test("local mode grants write/edit only in ask-when-needed and keeps its sandbox in never-ask", async () => {
+  const priorKey = process.env.OMNIROUTE_API_KEY;
+  process.env.OMNIROUTE_API_KEY = "permission-fixture-key";
+  cleanup.push(() => { if (priorKey === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = priorKey; });
   const model = startFakeModelServer({ script: body => body.messages.at(-1)?.role === "tool" ? { content: `done: ${body.messages.at(-1)?.content}` } : { tool_calls: [String(body.messages.at(-1)?.content).includes("SHELL") ? toolCall("bash", { command: "printf safe" }) : toolCall("write", { path: "edit.txt", content: "changed" })] } }); cleanup.push(model.stop);
   const rig = await fixture({ omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] } });
   expect((await rig.client.request({ t: "start", peer: "local", args: { model: "vllm/test" } })).ok).toBe(true);
