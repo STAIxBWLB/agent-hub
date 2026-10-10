@@ -128,6 +128,7 @@ export class AcpPeer extends BasePeer {
   private readonly toolTitles = new Map<string, string>(); // the title a call was announced with, per call id (#138)
   private primed = false;
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
+  private stopping = false;
   private activeDeliveryId: string | undefined;
   private deliveryAccepted = false;
 
@@ -144,6 +145,7 @@ export class AcpPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
+    this.stopping = false;
     const [bin, ...args] = this.opts.cmd;
     // Its own process group, stopped as a whole (#115, as Codex's in #113): an agent CLI may be a launcher with a native child.
     const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -223,6 +225,7 @@ export class AcpPeer extends BasePeer {
   }
 
   async stop(reason?: string): Promise<void> {
+    this.stopping = true;
     if (reason !== undefined) this.turn++; // a requested stop cannot escalate or complete the cancelled turn
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "ACP session stopped before settlement" });
     this.activeDeliveryId = undefined;
@@ -315,6 +318,7 @@ export class AcpPeer extends BasePeer {
   }
 
   private onLine(line: string): void {
+    if (this.stopping) return; // buffered native callbacks cannot recreate approvals after peer_stop
     let msg: any;
     try {
       msg = JSON.parse(line);

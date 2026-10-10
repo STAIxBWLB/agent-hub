@@ -268,3 +268,15 @@ test("upgrade endPlannedPeer ends a headless owner through the real daemon peer_
   const stillRunning = (await h.console_.request({ t: "status" })).status;
   expect(stillRunning.pid).toBe(process.pid);
 }, 30_000);
+
+test("a stopped ACP owner's buffered permission callback cannot recreate an approval hold (#278)", async () => {
+  const h = await rig(), kimi = await h.start("kimi"), owner = ownedGroup(kimi);
+  expect((await h.console_.request({ t: "peer_stop", peer: "kimi" })).ok).toBe(true);
+  groupGone(owner);
+  (kimi as any).onLine(JSON.stringify({ jsonrpc: "2.0", id: 8765, method: "session/request_permission", params: {
+    sessionId: kimi.recoveryMetadata!().sessionId, toolCall: { toolCallId: "buffered-after-stop", title: "write after stop" },
+    options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }],
+  } }));
+  expect((await h.inspect()).pendingApprovals).toBe(0);
+  expect(h.asks).toHaveLength(0); expect(kimi.state).toBe("offline");
+}, 30_000);
