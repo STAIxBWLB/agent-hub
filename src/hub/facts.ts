@@ -781,7 +781,7 @@ export class Facts {
     try {
       writeFileSync(a, before, { mode: 0o600 });
       writeFileSync(b, after, { mode: 0o600 });
-      const r = Bun.spawnSync(hubGitArgv(["-c", "core.quotepath=off", "diff", "--no-index", "--no-color", "--no-ext-diff", "--unified=2", "--", a, b]), { stdout: "pipe", stderr: "pipe", env: hubGitEnv() });
+      const r = Bun.spawnSync(hubGitArgv(["-c", "core.quotepath=off", "diff", "--no-index", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=2", "--", a, b]), { stdout: "pipe", stderr: "pipe", env: hubGitEnv() });
       const lines = r.stdout.toString().split("\n");
       const start = lines.findIndex((l) => l.startsWith("@@"));
       if (start === -1) return [];

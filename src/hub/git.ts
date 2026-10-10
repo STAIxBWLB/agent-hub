@@ -11,9 +11,11 @@ import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncRetur
  * - credential.helper= (empty resets the list) and core.askpass= (empty fails closed), with GIT_TERMINAL_PROMPT=0:
  *   no hub command authenticates, so any prompt is a bug and must fail instead of running a configured helper.
  * git has no global switch for filter drivers or textconv: both are per-driver config keys. Of the hub's commands
- * only the snapshot's `add`/`restore` would run a filter driver, and only a content diff would run textconv (the
- * hub's one content diff is `diff --no-index`, which reads no attributes); both need .git/config, which the profile
- * refuses to a sandboxed command. GIT_CONFIG_NOSYSTEM/global are left alone: those files are the user's own.
+ * only the snapshot's `add`/`restore` would run a filter driver, and only a content diff would run textconv — the
+ * hub's one content diff is `diff --no-index`, which DOES read the repository's config (verified: a planted
+ * diff.external runs for it), so that call passes `--no-ext-diff` and `--no-textconv` on top of the config here,
+ * and the driver command of a filter lives in the `.git/config` the seatbelt profile refuses to a sandboxed
+ * command. GIT_CONFIG_NOSYSTEM/global are left alone: those files are the user's own.
  */
 const SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
 

@@ -229,9 +229,9 @@ test.skipIf(!HFS.ok)(`an HFS+ image: every ignorable code point at every positio
     segLeg("config", "config", (v) => `echo x > '.git/${v}'`);
     segLeg("hooks", "hooks", (v) => `mkdir '.git/${v}' && echo x > '.git/${v}/pre-commit'`);
     segLeg("commondir", "commondir", (v) => `echo x > '.git/${v}'`);
-    // A submodule git dir's names fold the same way (#281): `.git/modules/sub` stands in for one.
+    // A submodule git dir's names fold the same way (#281): `.git/modules/sub` stands in for one. The folded
+    // `modules` component itself is the documented residual (the rules anchor at the discovered plain path).
     mkdirSync(join(cwd, ".git", "modules", "sub"), { recursive: true });
-    segLeg("modseg", "modules", (v) => `echo x > '.git/${v}/sub/config'`);
     segLeg("modconfig", "config", (v) => `echo x > '.git/modules/sub/${v}'`);
     segLeg("modhooks", "hooks", (v) => `mkdir '.git/modules/sub/${v}' && echo x > '.git/modules/sub/${v}/pre-commit'`);
     const attempts = legs.filter((l) => l.includes("echo WROTE")).length;
@@ -301,22 +301,31 @@ test.skipIf(!sandboxAvailable())("a submodule's git dir under .git/modules: conf
   expect(existsSync(join(subGit, "config"))).toBe(true);
   expect(existsSync(join(deepGit, "config"))).toBe(true);
   const subConfig = readFileSync(join(subGit, "config"), "utf8"), deepConfig = readFileSync(join(deepGit, "config"), "utf8");
+  rmSync(join(subGit, "hooks"), { recursive: true, force: true }); // the create-when-absent leg
   const out = await sandboxedExec(["/bin/sh", "-c", [
     "(echo x > .git/modules/sub/config) 2>/dev/null && echo WROTE-SUB-CONFIG || echo blocked-sub-config",
-    "(echo x > .git/modules/sub/hooks/pre-commit) 2>/dev/null && echo WROTE-SUB-HOOK || echo blocked-sub-hook",
+    "(mkdir .git/modules/sub/hooks && echo x > .git/modules/sub/hooks/pre-commit) 2>/dev/null && echo WROTE-SUB-HOOK || echo blocked-sub-hook",
     "(echo x > .git/modules/sub/modules/deep/config) 2>/dev/null && echo WROTE-DEEP-CONFIG || echo blocked-deep-config",
     "(echo x > .git/modules/sub/modules/deep/hooks/pre-commit) 2>/dev/null && echo WROTE-DEEP-HOOK || echo blocked-deep-hook",
+    // The indirect routes: the directory entries above those files are protected like the .git name (#281).
+    "(mv .git/modules/sub .git/modules/away) 2>/dev/null && echo WROTE-RENAME || echo blocked-rename",
+    "(mv .git/modules .git/m2) 2>/dev/null && echo WROTE-ROOT-RENAME || echo blocked-root-rename",
+    "(mv .git/modules/sub/modules .git/modules/sub/m2) 2>/dev/null && echo WROTE-NESTED-RENAME || echo blocked-nested-rename",
+    "(mkdir planted && echo x > planted/config && ln planted/config .git/modules/sub/config) 2>/dev/null && echo WROTE-HARDLINK || echo blocked-hardlink",
+    "ln -sfn planted .git/modules/sub 2>/dev/null; [ -L .git/modules/sub ] && echo WROTE-SYMLINK-REPLACE || echo entry-intact", // ln -sfn exits 0 but cannot replace a real directory; assert the state, not the code
     "git -C sub branch fix/config && echo branched-config-in-sub",
     "git -C sub tag config && echo tagged-config-in-sub",
     "git -C sub checkout -qb feature/hooks && echo branched-hooks-in-sub",
     "git -C sub/deep tag hooks && echo tagged-hooks-in-deep",
     "git -C sub -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm sub-work --allow-empty && echo committed-in-sub",
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["blocked-sub-config", "blocked-sub-hook", "blocked-deep-config", "blocked-deep-hook", "branched-config-in-sub", "tagged-config-in-sub", "branched-hooks-in-sub", "tagged-hooks-in-deep", "committed-in-sub"]) expect(out.output).toContain(expected);
+  for (const expected of ["blocked-sub-config", "blocked-sub-hook", "blocked-deep-config", "blocked-deep-hook", "blocked-rename", "blocked-root-rename", "blocked-nested-rename", "blocked-hardlink", "entry-intact", "branched-config-in-sub", "tagged-config-in-sub", "branched-hooks-in-sub", "tagged-hooks-in-deep", "committed-in-sub"]) expect(out.output).toContain(expected);
   expect(readFileSync(join(subGit, "config"), "utf8")).toBe(subConfig);
   expect(readFileSync(join(deepGit, "config"), "utf8")).toBe(deepConfig);
-  expect(existsSync(join(subGit, "hooks", "pre-commit"))).toBe(false);
-  expect(existsSync(join(deepGit, "hooks", "pre-commit"))).toBe(false);
+  expect(existsSync(join(subGit, "hooks"))).toBe(false);
+  expect(existsSync(join(cwd, ".git", "modules", "away"))).toBe(false);
+  expect(existsSync(join(cwd, ".git", "m2"))).toBe(false);
+  expect(existsSync(join(subGit, "m2"))).toBe(false);
 });
 
 test.skipIf(!sandboxAvailable())("a nested bare-layout repository is not covered by the rules: the exclusion, tested (#281)", async () => {
@@ -361,3 +370,21 @@ test.skipIf(!APFSX.ok)(`a case-sensitive APFS image: the deny rules hold there, 
     rmSync(dir, { recursive: true, force: true });
   }
 }, 15_000);
+
+test.skipIf(!sandboxAvailable())("the modules rules ignore the project's own ancestor names (#281)", async () => {
+  // Executed against round 1's rule: a project under a directory named `refs` turned the rule off, and one under
+  // `config` refused unrelated writes (FETCH_HEAD) inside a submodule git dir. The anchored rule holds both.
+  for (const ancestor of ["refs", "config"]) {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-ancestor-")));
+    const cwd = join(base, ancestor, "proj");
+    mkdirSync(cwd, { recursive: true });
+    Bun.spawnSync(["git", "init", "-q"], { cwd });
+    mkdirSync(join(cwd, ".git", "modules", "sub"), { recursive: true });
+    const out = await sandboxedExec(["/bin/sh", "-c", [
+      "(echo x > .git/modules/sub/config) 2>/dev/null && echo WROTE-CONFIG || echo blocked-config",
+      "(echo x > .git/modules/sub/FETCH_HEAD) 2>/dev/null && echo wrote-unrelated || echo blocked-unrelated",
+    ].join("; ")], { cwd, profile: profile(cwd, false) });
+    expect(out.output).toContain("blocked-config");
+    expect(out.output).toContain("wrote-unrelated");
+  }
+});
