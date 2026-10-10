@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.21
+bun add -g github:STAIxBWLB/agent-hub#v0.12.22
 ahub setup
 ```
 
@@ -26,7 +26,9 @@ From a clone instead: `git clone`, `bun install`, `bun link`.
 `ahub doctor` tells you what is installed, running and configured. Rows you do not need can stay red: the hub works with any subset of the peers.
 
 For managed launchers, two-agent task/review work, approvals, graceful shutdown,
-and upgrade or crash recovery, see the [operations guide](operations.md).
+and upgrade or crash recovery, see the [operations guide](operations.md). To
+move running projects to a newer release later, run `ahub upgrade` in a
+terminal: it reviews the plan with you, applies it and follows it.
 
 ## First session
 
@@ -57,7 +59,7 @@ ahub say @kimi "run the tests and report"          # one peer
 { "omniroute": { "urls": ["http://your-gateway:20128/v1"], "api_key_file": "/path/to/key" } }
 ```
 
-or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local] fixed_model`). Then `ahub local`. It works only inside the project, asks before it writes or runs anything (`ahub permit <id> allow`) unless you chose a permission mode for it (`ahub permission`), and everything it executes is sandboxed.
+or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local] fixed_model`). Then `ahub local`. It works only inside the project, asks before it writes or runs anything (`ahub permit <id> allow`) unless you chose a permission mode for it (`ahub permission`), and everything it executes is sandboxed. Keep `ahub console` open while it works: a request nobody answers expires, and after two in a row its turn ends.
 
 ## Commands of a working day
 
@@ -68,6 +70,7 @@ or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local]
 | `ahub board` | who has what; `ahub task show <id>` for one task |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
+| `ahub stop <peer>` | stop one headless peer (Kimi, headless Pi, `local`); the hub and the other peers keep running |
 | `ahub kill` | stop the daemon and everything it started |
 
 More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-design.md`](specs/2026-09-19-agent-hub-design.md). What it protects and what it does not: [`docs/security.md`](security.md).
