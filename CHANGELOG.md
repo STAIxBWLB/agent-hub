@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Console panels: Left and Right move between the five tabs with the digit keys' guards and resets, wrapping at both ends, and the Events tab colours each row's header through the stream's own tokenizer, so an event reads the same in both places (body lines and command output stay plain; with colour off the panel is byte-identical) (#309).
 - Pause Kimi on its observed ACP 5-hour quota refusal, requeue untouched work only after a confirmed pause and automatically relay open tasks through the existing budget policy; hard refusals end reading overrides and supersede pending soft checkpoints. (#306)
 - Bound SQLite contention on every shared database connection with a per-file busy timeout and a source guard. (#303)
 - Make status, board, budget and doctor output readable with shared tables, color policy, wrapped fields, full identifiers and JSON output; size console child output to its available width (#284).
