@@ -27,12 +27,20 @@ describe("conductor authority", () => {
     expect(CONDUCTOR_TOOL_NAMES.has("hub_status")).toBe(true);
   });
 
-  test("headless starts have a closed allowlist; TUIs only preview", () => {
-    for (const peer of ["local", "kimi", "pi"] as const) expect(conductorStart(peer, undefined, () => "unused")).toEqual({ peer, mode: "headless" });
-    for (const peer of ["claude", "codex", "pi"] as const) expect(conductorStart(peer, "tui", (id) => `ahub ${id}`)).toEqual({ peer, mode: "tui", command: `ahub ${peer}` });
-    expect(conductorStart("codex", "headless", () => "ahub codex").mode).toBe("tui");
-    expect(() => conductorStart("kimi", "tui", () => "no")).toThrow();
-    expect(() => conductorStart("other", undefined, () => "no")).toThrow();
+  test("starts have a closed allowlist and take the peer's own start mode; a caller cannot choose one (#269)", () => {
+    // What a person set: Pi and Codex headless here; Claude has only a TUI, Kimi and local only a headless form.
+    const headless = (peer: string) => (peer === "claude" ? "tui" : "headless") as "tui" | "headless";
+    const defaults = (peer: string) => (["claude", "codex", "pi"].includes(peer) ? "tui" : "headless") as "tui" | "headless";
+    for (const peer of ["local", "kimi", "pi", "codex"] as const) expect(conductorStart(peer, undefined, () => "unused", false, headless)).toEqual({ peer, mode: "headless" });
+    for (const peer of ["claude", "codex", "pi"] as const) expect(conductorStart(peer, "tui", (id) => `ahub ${id}`, false, defaults)).toEqual({ peer, mode: "tui", command: `ahub ${peer}` });
+    for (const peer of ["claude", "codex", "pi"] as const) expect(conductorStart(peer, undefined, (id) => `ahub ${id}`, false, defaults).mode).toBe("tui");
+    // A mode that is not the peer's own is refused, not followed and not silently replaced.
+    expect(() => conductorStart("codex", "headless", () => "ahub codex", false, defaults)).toThrow("the conductor cannot choose one");
+    expect(() => conductorStart("pi", "headless", () => "ahub pi", false, defaults)).toThrow("pi starts tui here");
+    expect(() => conductorStart("pi", "tui", () => "ahub pi", false, headless)).toThrow("pi starts headless here");
+    expect(() => conductorStart("kimi", "tui", () => "no", false, defaults)).toThrow();
+    expect(() => conductorStart("other", undefined, () => "no", false, defaults)).toThrow("only claude, codex, kimi, pi and local");
+    expect(() => conductorStart("pi", "window", () => "no", true, defaults)).toThrow("mode must be headless or tui");
   });
 });
 
@@ -107,7 +115,7 @@ test("a proposer's redirect needs assign capability to hand its task to another 
   const conductor = new Conductor(holds, {
     roles: () => ({ codex: ["conductor"] }), capabilities: () => caps, status: () => ({ peers: [], taskCounts: {}, approvals: [] }),
     task: proposed, publicView: (t) => ({ ...t }), assign: async (actor, id, peer) => { assigned.push(`${actor}:${id}:${peer}`); },
-    escalate: async () => task(), preview: (peer) => `ahub ${peer}`, start: async () => {}, known: () => true, pause: () => {}, release: () => {},
+    escalate: async () => task(), preview: (peer) => `ahub ${peer}`, startMode: () => "headless", start: async () => {}, known: () => true, pause: () => {}, release: () => {},
     audit: (event) => { events.push(event); },
   });
   try {
@@ -132,7 +140,9 @@ test("controller binds mutations to actor, public results and ids-only audit", a
     task: () => task(), publicView: () => ({ title: "[pii]" }),
     assign: async (actor, id, peer) => { expect([actor, id, peer]).toEqual(["claude", 12, "pi"]); return task(); },
     escalate: async () => task(), preview: (peer) => `ahub ${peer}`,
-    start: async (peer) => { started.push(peer); }, known: () => true, pause: () => {},
+    // #269: Codex keeps its TUI default here and Pi was set headless; the hook opens the terminal or starts the peer.
+    startMode: (peer) => (peer === "codex" || peer === "claude" ? "tui" : "headless"),
+    start: async (peer) => { started.push(peer); return peer === "codex" ? { ok: true, opened: "fake" } : { ok: true }; }, known: () => true, pause: () => {},
     release: (peer) => { resumed.push(peer); }, audit: (event) => { events.push(event); },
   };
   const conductor = new Conductor(holds, hooks);
@@ -142,10 +152,15 @@ test("controller binds mutations to actor, public results and ids-only audit", a
     }
     const result = await conductor.execute("claude", "hub_task_assign", { id: 12, peer: "pi" });
     expect(JSON.stringify(result)).not.toContain("secret");
-    await conductor.execute("claude", "hub_peer_start", { peer: "codex" });
-    expect(started).toEqual([]);
-    await conductor.execute("claude", "hub_peer_start", { peer: "pi" });
-    expect(started).toEqual(["pi"]);
+    // A TUI peer: the hub opens its fixed command in a terminal and the answer names both.
+    expect(await conductor.execute("claude", "hub_peer_start", { peer: "codex" })).toEqual({ peer: "codex", mode: "tui", command: "ahub codex", opened: "fake" });
+    expect(started).toEqual(["codex"]);
+    expect(await conductor.execute("claude", "hub_peer_start", { peer: "pi" })).toEqual({ peer: "pi", mode: "headless" });
+    expect(started).toEqual(["codex", "pi"]);
+    // The mode is a person's setting: asking for another one starts nothing.
+    await expect(conductor.execute("claude", "hub_peer_start", { peer: "pi", mode: "tui" })).rejects.toThrow("the conductor cannot choose one");
+    await expect(conductor.execute("claude", "hub_peer_start", { peer: "codex", mode: "headless" })).rejects.toThrow("the conductor cannot choose one");
+    expect(started).toEqual(["codex", "pi"]);
     await expect(conductor.execute("claude", "hub_peer_release", { peer: "local" })).rejects.toThrow("only");
     expect(resumed).toEqual([]);
     await conductor.execute("claude", "hub_peer_hold", { peer: "local" });

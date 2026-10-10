@@ -35,6 +35,7 @@ async function rig(autoStart = false, emptyPi = false) {
     controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0,
       kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")],
+      peers: { pi: { start_mode: "headless" } }, // #269: this fixture's auto-started Pi is the headless one
       pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: autoStart, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), ...(emptyPi ? ["--empty-session"] : [])] },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false },

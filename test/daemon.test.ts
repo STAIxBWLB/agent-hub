@@ -64,8 +64,8 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
   return { stateDir, daemon, console_, events, pushes };
 }
 
-async function dashboardClient(console_: ControlClient) {
-  const opened = await console_.request({ t: "ui" });
+async function dashboardClient(console_: ControlClient, settings = false) {
+  const opened = await console_.request({ t: "ui", ...(settings ? { settings: true } : {}) });
   expect(opened.ok).toBe(true);
   const url = new URL(opened.url);
   const origin = url.origin;
@@ -77,23 +77,35 @@ async function dashboardClient(console_: ControlClient) {
   return { origin, post };
 }
 
+/** MCP initialization does not imply that the plugin has processed its control welcome (#287). */
+async function connectPlugin(client: Client, env: Record<string, string>, peer: string, expectConnected = true) {
+  const transport = new StdioClientTransport({
+    command: "bun",
+    args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
+    env,
+    stderr: "pipe",
+  });
+  let diagnostics = "";
+  transport.stderr!.on("data", (chunk) => { diagnostics += chunk.toString(); });
+  await client.connect(transport);
+  cleanup.push(() => client.close());
+  const waitConnected = (count = 1) => until(
+    () => diagnostics.split(`[agent-hub] connected to hub as "${peer}"`).length - 1 >= count,
+    `channel welcome ${peer} ${count}`,
+  );
+  // Opt out only when the test deliberately exercises a refused/standing-by connection.
+  if (expectConnected) await waitConnected();
+  return waitConnected;
+}
 /** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: AGENTHUB_CHANNEL, "1" as `ahub claude` sets it, null for none (#205). */
-async function fakeClaude(stateDir: string, channelEvidence: string | null = "1") {
+async function fakeClaude(stateDir: string, channelEvidence: string | null = "1", expectConnected = true) {
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
   const channel: any[] = [];
   client.fallbackNotificationHandler = async (n) => void channel.push(n);
   const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
   if (channelEvidence === null) delete env.AGENTHUB_CHANNEL; else env.AGENTHUB_CHANNEL = channelEvidence;
-  await client.connect(
-    new StdioClientTransport({
-      command: "bun",
-      args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
-      env,
-      stderr: "ignore",
-    }),
-  );
-  cleanup.push(() => client.close());
-  return { client, channel };
+  const waitConnected = await connectPlugin(client, env, "claude", expectConnected);
+  return { client, channel, waitConnected };
 }
 
 test("control link: token file is 0600, wrong token and browser origins are refused", async () => {
@@ -202,7 +214,7 @@ test("a claude session without pushes never takes the peer from one with them: i
   const { stateDir, daemon, console_ } = await hub();
   const flagged = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "channel attach");
-  const plain = await fakeClaude(stateDir, null);
+  const plain = await fakeClaude(stateDir, null, false);
   await Bun.sleep(1500); // past the plain side's first retry
   expect((daemon.bus.peers.get("claude") as any).pullOnly).toBe(false);
   await console_.request({ t: "send", body: "for the channel session", to: ["claude"] });
@@ -508,6 +520,7 @@ test("a second session attached as the same peer wins, and the replaced one stan
   await second.client.close(); // the taking session leaves: the slot is free again
   await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 2, "taker left");
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "reclaimed without a restart");
+  await first.waitConnected(2); // this session processed its new welcome, not only the daemon attach
   const back: any = await first.client.callTool({ name: "hub_send", arguments: { text: "back" } });
   expect(back.content[0].text).not.toContain("standing by");
 }, 30_000);
@@ -591,7 +604,7 @@ test("the channel server exits when its host goes away and does not retry a hub 
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: fake.port, protocol: PROTOCOL, cwd: ROOT }));
   writeFileSync(join(stateDir, "control-token"), "t");
 
-  const { client } = await fakeClaude(stateDir);
+  const { client } = await fakeClaude(stateDir, "1", false);
   await until(() => hellos === 1, "first hello");
   await Bun.sleep(2500);
   expect(hellos).toBe(1);
@@ -775,13 +788,11 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
 
   // the same bundle in tools mode, as Kimi or Codex would run it
   const kimiTools = new Client({ name: "fake-kimi-mcp", version: "0" }, { capabilities: {} });
-  await kimiTools.connect(new StdioClientTransport({ command: "bun", args: [join(ROOT, "plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: first.stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, stderr: "ignore" }));
-  cleanup.push(() => kimiTools.close());
+  await connectPlugin(kimiTools, { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: first.stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, "kimi");
   expect(kimiTools.getServerCapabilities()?.experimental).toBeUndefined(); // no channel in tools mode
   expect((await kimiTools.listTools()).tools.map((t) => t.name)).not.toContain("hub_inbox");
   expect(kimiTools.getInstructions()).toContain("verifier: run the checks");
   const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
-  for (let i = 0; i < 50 && (await call("hub_task_list", {})).startsWith("hub is not running"); i++) await Bun.sleep(50);
   expect(await call("hub_task_accept", { id: 1 })).toBe("task #1: in_progress, owner kimi, reviewer claude"); // attributed to kimi
   expect(await call("hub_review", { id: 1, verdict: "approved" })).toMatch(/^error: .*only its reviewer \(claude\)/);
   expect(await call("hub_task_done", { id: 1, summary: "doc written" })).toContain("in_review");
@@ -823,10 +834,8 @@ test("a note from one peer rides on the others' next delivery, never its own; a 
   kimi.deliver = (envs, deliveryId) => ((toKimi += envs.map((e) => e.body).join("\n")), deliver(envs, deliveryId));
 
   const kimiTools = new Client({ name: "fake-kimi-mcp", version: "0" }, { capabilities: {} });
-  await kimiTools.connect(new StdioClientTransport({ command: "bun", args: [join(ROOT, "plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, stderr: "ignore" }));
-  cleanup.push(() => kimiTools.close());
+  await connectPlugin(kimiTools, { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, "kimi");
   const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
-  for (let i = 0; i < 50 && (await call("hub_task_list", {})).startsWith("hub is not running"); i++) await Bun.sleep(50);
 
   expect(await call("hub_remember", { title: "WAL mode", text: "locks the test db", kind: "fail" })).toBe("saved to shared memory; the other agents get it with their next message");
   await Bun.sleep(60);
@@ -1071,6 +1080,13 @@ test("dashboard hides local permission contents, refuses allow and can deny", as
   expect(pending.terminalOnly).toBe(true);
   expect(pending.options.map((o: any) => o.optionId)).toEqual(["deny"]);
   expect(await ui.post("action", { action: "permit", id: pending.id, option: "allow" })).toMatchObject({ ok: false });
+  // #269: a settings session raises settings, never a tool approval: the same stub, the same refusal.
+  const raised = await dashboardClient(console_, true);
+  const raisedSnapshot = await raised.post("snapshot");
+  expect(raisedSnapshot.settings.sessionUntil).toBeGreaterThan(Date.now());
+  expect(JSON.stringify(raisedSnapshot)).not.toContain(privateValue);
+  expect(raisedSnapshot.permissions[0].options.map((o: any) => o.optionId)).toEqual(["deny"]);
+  expect(await raised.post("action", { action: "permit", id: pending.id, option: "allow" })).toMatchObject({ ok: false });
   expect(await ui.post("action", { action: "permit", id: pending.id, option: "deny" })).toMatchObject({ ok: true });
 });
 

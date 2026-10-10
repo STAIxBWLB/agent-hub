@@ -38,20 +38,56 @@ test("prompt round trip: chunks are aggregated into one reply that inherits the 
 });
 
 test("correlated ACP delivery reports acceptance before completion and ignores a late cancelled result", async () => {
-  const { peer: acp } = await (async () => { const p = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), watchdogMs: 40 }); await p.start(); return { peer: p }; })();
-  const receipts: { id: string; state: string }[] = [];
-  acp.onDelivery = (r) => receipts.push({ id: r.id, state: r.state });
+  class ReceiptPeer extends AcpPeer {
+    expireWatchdog(): void { this.onWatchdog(); }
+  }
+  const milestone = () => {
+    let fire = () => {};
+    const promise = new Promise<void>((resolve) => { fire = resolve; });
+    return { promise, fire: () => fire() };
+  };
+  const accepted = milestone(), completed = milestone(), idle = milestone(), slowAccepted = milestone(), uncertain = milestone();
+  const failures: string[] = [];
+  // The old 40 ms watchdog cancelled a normal reply when its nominal 20 ms fake delay or transport ran late.
+  // An 80 ms fake delay deterministically crosses that old bound; ordinary I/O keeps the default watchdog.
+  const acp = new ReceiptPeer("kimi", { cmd: [...FAKE, "--mode-after-cancel"], cwd: process.cwd(), env: { FAKE_ACP_DELAY_MS: "80" },
+    onTurnFailure: (_envs, reason) => { failures.push(reason); } });
+  peer = acp;
+  const receipts: { id: string; state: string; reason?: string }[] = [];
+  const messages: string[] = [];
+  acp.onMessage = (body) => messages.push(body);
+  acp.onDelivery = (r) => {
+    receipts.push(r);
+    if (r.id === "d-accepted" && r.state === "accepted") accepted.fire();
+    if (r.id === "d-accepted" && r.state === "completed") completed.fire();
+    if (r.id === "d-slow" && r.state === "accepted") slowAccepted.fire();
+    if (r.id === "d-slow" && r.state === "needs_review") uncertain.fire();
+  };
   try {
+    await acp.start();
+    acp.onState = (state) => { if (state === "idle") idle.fire(); };
     await acp.deliver([newEnvelope("user", "ping", { to: ["kimi"] })], "d-accepted");
     expect(receipts).toEqual([]);
-    await until(() => receipts.some((r) => r.id === "d-accepted" && r.state === "accepted"));
-    await until(() => receipts.some((r) => r.state === "completed"));
+    await accepted.promise;
+    await completed.promise;
+    await idle.promise; // completion is reported before the adapter's finally releases the next turn
     expect(receipts.map((r) => r.state)).toEqual(["accepted", "completed"]);
+    expect(messages).toEqual(["echo: ping"]);
 
     await acp.deliver([newEnvelope("user", "ACK_SLOW", { to: ["kimi"] })], "d-slow");
-    await until(() => receipts.some((r) => r.id === "d-slow" && r.state === "needs_review"));
-    await Bun.sleep(100);
+    await slowAccepted.promise;
+    acp.expireWatchdog(); // exercise expiry at the native acknowledgement, without racing normal transport
+    await uncertain.promise;
+    const failuresAtExpiry = [...failures];
+    // The fake sends this mode acknowledgement after the late cancelled result on the same stdout stream.
+    // Resolving the public RPC proves that the adapter consumed the old result; no guessed sleep is needed.
+    await acp.setPermissionMode("ask");
     expect(receipts.filter((r) => r.id === "d-slow")).toHaveLength(2); // accepted + one uncertain terminal state
+    expect(receipts.filter((r) => r.id === "d-slow").map((r) => r.state)).toEqual(["accepted", "needs_review"]);
+    expect(receipts.at(-1)!.reason).toBe("ACP turn watchdog timeout");
+    expect(acp.state).toBe("offline");
+    expect(messages).toEqual(["echo: ping"]);
+    expect(failures).toEqual(failuresAtExpiry);
   } finally { await acp.stop(); }
 });
 
@@ -90,7 +126,7 @@ test("a failed prompt turn reports onTurnFailure; an abnormal end with no answer
 
   // A watchdog-cancelled turn's late report is stale and never fires the callback.
   const lateFailures: string[] = [];
-  const acp = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), watchdogMs: 40, onTurnFailure: async (_e, r) => { lateFailures.push(r); } });
+  const acp = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), watchdogMs: 1000, onTurnFailure: async (_e, r) => { lateFailures.push(r); } });
   await acp.start();
   try {
     const answered: string[] = [];
@@ -360,7 +396,7 @@ test("ACP child drops recovery authority while retaining account and state envir
 });
 
 test("watchdog: the cancelled prompt reports late and must not disturb the turn that followed it", async () => {
-  const { bus, said } = await setup({ watchdogMs: 60 });
+  const { bus, said } = await setup({ watchdogMs: 1000 });
   bus.publish(newEnvelope("user", "SLOW", { to: ["kimi"] }));
   bus.publish(newEnvelope("user", "after", { to: ["kimi"] }));
   await until(() => said.length === 1);
