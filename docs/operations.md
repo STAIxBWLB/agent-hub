@@ -2019,7 +2019,8 @@ operation or shutdown holds stop mutations; finish that operation first.
 A peer's concurrent start, stop or permission-mode change must also finish
 before another lifecycle change is admitted.
 
-A requested stop does not automatically restart a peer. Start it again with
+A requested stop does not automatically restart a peer. A person or an authorized
+conductor can explicitly start it again; conductor starts remain permitted. Start it with
 `ahub kimi`, `ahub pi` or `ahub local`. Pending approvals are withdrawn before
 teardown. An in-flight delivery becomes `needs_review`, with a reason naming
 the requested stop; it is neither completed nor automatically replayed.
@@ -2027,4 +2028,11 @@ Inspect partial effects with `ahub queue list --peer <peer>` and
 `ahub queue show <delivery-id>`, then explicitly choose `completed`, `retry`
 or `discard` with `ahub queue resolve`. Restarting alone does not release
 that held delivery. Work queued behind an idle stopped peer is retained and
-runs when it is started again, subject to its existing pauses and holds.
+runs when it is started again, subject to its existing pauses and holds. New work
+arriving during teardown stays queued too, even if a console resume runs meanwhile.
+An idle Pi with no message/file yet records its live empty-session proof before
+stopping, so its next start resumes that identity. A Pi stopped after its first
+prompt was accepted but before history was persisted is not treated as empty:
+its delivery is held, and another start refuses until resume history is verified.
+Inspect and settle the held delivery before deliberately replacing that unpersisted
+session by restarting the hub; the stop never silently chooses a fresh session.

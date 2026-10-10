@@ -17,6 +17,8 @@ export type BusEvent =
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
+  /** Transient owner lifecycle fence: retain new work without changing console/budget pauses. */
+  deliveryHeld?: (peer: PeerId) => boolean;
   /** Observe original envelopes immediately before a transport starts its turn. */
   onDeliver?: (peer: PeerId, originals: Envelope[]) => void;
   retryMs: number;
@@ -548,7 +550,7 @@ export class Bus {
     try { for (const id of targets) {
       const peer = this.peers.get(id);
       if (!peer) { this.enqueue(id, env); continue; }
-      if (!this.journal && !this.recoveryHeld && !this.recoveryHeldPeers.has(id) && env.priority === "important" && peer.steer && this.stateOf(id) === "busy") {
+      if (!this.journal && !this.recoveryHeld && !this.recoveryHeldPeers.has(id) && !this.opts.deliveryHeld?.(id) && env.priority === "important" && peer.steer && this.stateOf(id) === "busy") {
         // Not queued while the steer is in flight, or an idle transition would deliver it a second time.
         this.steering++;
         const deliveryId = crypto.randomUUID();
@@ -568,7 +570,7 @@ export class Bus {
       this.onQueues?.();
       for (const id of targets) {
         const peer = this.peers.get(id);
-        if (!this.recoveryHeld && !this.recoveryHeldPeers.has(id) && env.priority === "important" && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env);
+        if (!this.recoveryHeld && !this.recoveryHeldPeers.has(id) && !this.opts.deliveryHeld?.(id) && env.priority === "important" && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env);
         else void this.drain(id);
       }
     }
@@ -732,7 +734,7 @@ export class Bus {
 
   /** Holds on a peer's queue, for a drain and a pull alike: recovery, an uncertain delivery, a pause (console, budget, conductor). */
   private held(id: PeerId): boolean {
-    return this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id);
+    return this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id) || this.opts.deliveryHeld?.(id) === true;
   }
 
   /** What a peer was just handed stays resolvable for `reply_to`: moved to the newest end, the stored envelope kept. */

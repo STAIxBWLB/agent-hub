@@ -589,7 +589,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let relevantNotice: (peer: PeerId, env: Envelope) => boolean = () => true;
   const staleOff = config.experiments?.stale_notices === "deliver";
   if (staleOff) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
-  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence });
+  const requestedPeerStops = new Set<string>();
+  const bus = new Bus({ deliveryHeld: peer => requestedPeerStops.has(peer), journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   const conductorHolds = new ConductorHolds(join(opts.stateDir, "hub.db"));
@@ -1933,7 +1934,6 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // One start per peer at a time: a second `ahub codex` must not tear down an adapter that is still coming up.
   const starting = new Map<string, Promise<Record<string, unknown>>>();
-  const requestedPeerStops = new Set<string>();
   let piAutoRestartAt = -Infinity;
   let piAutoRestartPending = false;
   const replacingPi = new Set<PiPeer>();
@@ -1973,11 +1973,16 @@ export async function startDaemon(opts: DaemonOptions) {
     if (owner instanceof PiPeer && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
     if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ahub ${peer} before stopping it` };
     if (starting.has(peer) || requestedPeerStops.has(peer) || permissionChanges.has(peer)) return { ok: false, error: "peer lifecycle or permission change is in progress; wait for ahub status before retrying" };
-    requestedPeerStops.add(peer); // fence starts and recovery before the first asynchronous stop step
+    requestedPeerStops.add(peer); // fence delivery, starts and recovery before the first asynchronous stop step
     try {
       return await permissionChange(peer, async () => {
         if (stopping || recoveryActive() || bus.peers.get(peer) !== owner) return { ok: false, error: "peer or recovery changed; refresh ahub status before retrying" };
         const reason = `requested stop: ahub stop ${peer}`; // ids only, never task or message text
+        // Pi persists a session only after its first message: take live empty-session proof before stopping.
+        if (owner instanceof PiPeer && owner.state === "idle") {
+          try { await owner.captureResume(); }
+          catch { log(`requested stop ${peer}: resume evidence unavailable; later start requires verified persisted history`); }
+        }
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
         await owner.stop(reason);
         writeStatus();

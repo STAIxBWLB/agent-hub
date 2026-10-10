@@ -238,7 +238,7 @@ export class AcpPeer extends BasePeer {
 
   /** Resolves once the prompt is in flight; the turn result arrives on its own. */
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
-    if (this.state !== "idle") {
+    if (this.state !== "idle" || this.stopping) {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }

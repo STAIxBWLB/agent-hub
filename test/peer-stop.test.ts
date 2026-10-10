@@ -9,6 +9,8 @@ import type { Inspection, PlannedProject, RecoveryPeer } from "../src/cli/upgrad
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { processTable } from "../src/hub/child-process.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
+import { Capture } from "../src/memory/capture.ts";
+import { MemoryClient } from "../src/memory/client.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -18,7 +20,7 @@ const until = async (condition: () => boolean, label: string) => {
   if (!condition()) throw new Error(`timed out waiting for ${label}`);
 };
 
-async function rig(autoStart = false) {
+async function rig(autoStart = false, emptyPi = false) {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-peer-stop-"))), stateDir = join(cwd, "state");
   cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const keyFile = join(cwd, "gateway-key"); writeFileSync(keyFile, "fixture-key");
@@ -33,7 +35,7 @@ async function rig(autoStart = false) {
     controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0,
       kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")],
-      pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: autoStart, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] },
+      pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: autoStart, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), ...(emptyPi ? ["--empty-session"] : [])] },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false },
       omniroute: { urls: [model.url], access_hosts: [], api_key_file: keyFile },
@@ -174,20 +176,26 @@ test("Pi auto_start never restarts a requested idle stop; manual start takes que
   expect(h.daemon.bus.queueList("pi").find(row => row.originals.some(env => env.id === queued.id))!.state).toBe("completed");
 }, 30_000);
 
-test("an admitted peer stop fences starts, permission changes and recovery preparation until teardown finishes (#278)", async () => {
-  const h = await rig(), local = await h.start("local");
+for (const id of ["local", "kimi"]) test(`an admitted ${id} stop fences delivery, starts, permission and recovery until teardown finishes (#278)`, async () => {
+  const h = await rig(), local = await h.start(id);
   let entered!: () => void, release!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
   const stop = local.stop.bind(local);
   local.stop = async reason => { entered(); await gate; return stop(reason); };
-  const pending = h.console_.request({ t: "peer_stop", peer: "local" });
+  const pending = h.console_.request({ t: "peer_stop", peer: id });
   try {
     await started;
+    const queued = newEnvelope("user", "work arriving during teardown", { to: [id] });
+    h.daemon.bus.publish(queued);
+    expect((await h.console_.request({ t: "resume", peer: id })).ok).toBe(true);
+    await Bun.sleep(30);
+    expect(h.daemon.bus.queueList(id).find(row => row.originals.some(env => env.id === queued.id))?.state).toBe("queued");
+    expect(h.answers).toHaveLength(0);
     for (const request of [
-      { t: "start", peer: "local", args: { model: "m" } },
-      { t: "permission", peer: "local", mode: "ask" },
-      { t: "peer_stop", peer: "local" },
+      { t: "start", peer: id, args: { model: "m" } },
+      { t: "permission", peer: id, mode: "ask" },
+      { t: "peer_stop", peer: id },
       { t: "recovery", op: "prepare", expectedInstanceId: h.instanceId, operationId: crypto.randomUUID() },
     ]) {
       const refused = await h.console_.request(request);
@@ -196,7 +204,9 @@ test("an admitted peer stop fences starts, permission changes and recovery prepa
   } finally { release(); }
   expect((await pending).ok).toBe(true);
   expect(local.state).toBe("offline");
-  expect((await h.start("local")).state).toBe("idle");
+  await h.start(id);
+  await until(() => h.answers.length === 1, "retained work runs on manual restart");
+  expect(h.daemon.bus.queueList(id).every(row => row.state !== "needs_review")).toBe(true);
 }, 30_000);
 
 test("a requested Pi stop holds its delivery before awaiting tools and ignores late native settlement (#278)", async () => {
@@ -279,4 +289,75 @@ test("a stopped ACP owner's buffered permission callback cannot recreate an appr
   } }));
   expect((await h.inspect()).pendingApprovals).toBe(0);
   expect(h.asks).toHaveLength(0); expect(kimi.state).toBe("offline");
+}, 30_000);
+
+
+test("idle local stop retains work arriving while its actual memory teardown awaits (#278)", async () => {
+  const h = await rig(), local = await h.start("local");
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  // Exercise LocalPeer.stop's real generation increment and network-bound capture await.
+  const worker = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    if (new URL(request.url).pathname === "/api/sessions/session-end") { entered(); await gate; }
+    return Response.json({ ok: true });
+  } });
+  cleanup.push(() => worker.stop(true));
+  const capture = new Capture(new MemoryClient(`http://127.0.0.1:${worker.port}`, 2000), { project: "stop-fixture", cwd: h.cwd });
+  capture.init("stop-fixture", "fixture native memory session");
+  (local as any).opts.capture = capture;
+  const stopping = h.console_.request({ t: "peer_stop", peer: "local" });
+  const env = newEnvelope("user", "queued during memory teardown", { to: ["local"] });
+  try {
+    await started;
+    expect(local.state).toBe("offline");
+    h.daemon.bus.publish(env);
+    expect((await h.console_.request({ t: "resume", peer: "local" })).ok).toBe(true);
+    await Bun.sleep(30);
+    expect(h.model.requests).toHaveLength(0);
+    expect(h.answers).toHaveLength(0);
+    const row = h.daemon.bus.queueList("local").find(row => row.originals.some(original => original.id === env.id));
+    expect(row?.state).toBe("queued");
+  } finally { release(); }
+  expect(await stopping).toMatchObject({ ok: true, state: "offline" });
+  expect(h.model.requests).toHaveLength(0);
+  await h.start("local");
+  await until(() => h.answers.length === 1, "manual restart delivers retained work once");
+  expect(h.model.requests).toHaveLength(1);
+  expect(h.daemon.bus.queueList("local").find(row => row.originals.some(original => original.id === env.id))?.state).toBe("completed");
+}, 30_000);
+
+
+test("requested stop of an empty idle Pi keeps live empty-session proof for manual restart (#278)", async () => {
+  const h = await rig(false, true), pi = await h.start("pi") as PiPeer;
+  const source = pi.recoveryMetadata();
+  expect(typeof source.sessionId).toBe("string");
+  expect(source.sessionFile === undefined || !existsSync(source.sessionFile as string)).toBe(true);
+  expect(await h.console_.request({ t: "peer_stop", peer: "pi" })).toMatchObject({ ok: true, state: "offline" });
+  const queued = newEnvelope("user", "first turn after requested stop", { to: ["pi"] });
+  h.daemon.bus.publish(queued);
+  const replacement = await h.start("pi") as PiPeer;
+  expect(replacement.recoveryMetadata().sessionId).toBe(source.sessionId);
+  expect(h.daemon.bus.queueList("pi").some(row => row.state === "needs_review")).toBe(false);
+  await until(() => h.daemon.bus.queueList("pi").some(row => row.state === "accepted"), "empty session resumes queued turn");
+  const post = bridge(replacement);
+  await post("/event", { type: "agent_start", generation: 1 });
+  await post("/event", { type: "agent_end", generation: 1, text: "resumed empty session" });
+  await post("/event", { type: "agent_settled", generation: 1 });
+  await until(() => h.answers.length === 1, "resumed Pi answers once");
+}, 30_000);
+
+
+test("a stopped Pi whose first accepted prompt is unpersisted refuses empty-session recreation (#278)", async () => {
+  const h = await rig(false, true);
+  await h.start("pi");
+  const env = newEnvelope("user", "accepted before persistence", { to: ["pi"] });
+  h.daemon.bus.publish(env);
+  await until(() => h.daemon.bus.queueList("pi").some(row => row.state === "accepted"), "first prompt accepted");
+  expect(await h.console_.request({ t: "peer_stop", peer: "pi" })).toMatchObject({ ok: true, state: "offline" });
+  const start = await h.console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
+  expect(start.ok).toBe(false);
+  expect(start.error).toContain("no verified persisted resume state");
+  expect(h.daemon.bus.queueList("pi").find(row => row.originals.some(original => original.id === env.id))).toMatchObject({ state: "needs_review", reason: "requested stop: ahub stop pi" });
+  expect(h.answers).toHaveLength(0);
 }, 30_000);
