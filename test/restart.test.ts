@@ -510,3 +510,52 @@ test("an abandoned operation's snapshot is archived and another operation's is l
   expect(JSON.parse(readFileSync(archived, "utf8")).operationId).toBe("op-a");
   expect(statSync(archived).mode & 0o777).toBe(0o600);
 });
+
+// #225: a target that dies after it started is started again from the same committed snapshot. The journal imports the
+// snapshot only while it is at revision 0, so the second start continues from what the first wrote, and release's
+// integrity check still holds.
+test("a target started twice from one committed snapshot keeps the first target's journal and still releases", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-restart-twice-"));
+  const options = { cwd: process.cwd(), projectId: "p-twice", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } };
+  const source = await startDaemon({ ...options, instanceId: "twice-source" });
+  cleanup.push(() => void source.stop());
+  const one = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => one.close());
+  const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  await Bun.sleep(20);
+  peer.close();
+  for (const deadline = Date.now() + 5000; Date.now() < deadline && source.bus.peers.get("claude")?.state !== "offline";) await Bun.sleep(10);
+  expect((await one.request({ t: "send", body: "kept for claude" })).ok).not.toBe(false);
+  expect(source.bus.queued("claude")).toBe(1);
+  expect((await one.request({ t: "recovery", op: "prepare", operationId: "op-twice", expectedInstanceId: "twice-source" })).recovery.phase).toBe("prepared");
+  expect((await one.request({ t: "recovery", op: "commit", operationId: "op-twice", expectedInstanceId: "twice-source" })).committed).toBe(true);
+  await source.stopped;
+  const startTarget = async (instanceId: string) => {
+    const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
+    try { process.env.AGENTHUB_RECOVERY_OPERATION = "op-twice"; return await startDaemon({ ...options, instanceId }); }
+    finally { if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previous; }
+  };
+  const inspect = async (instanceId: string) => {
+    const client = await ControlClient.connect(stateDir, { role: "console" });
+    try { return (await client.request({ t: "recovery", op: "inspect", expectedInstanceId: instanceId })).recovery; } finally { client.close(); }
+  };
+  const first = await startTarget("twice-first");
+  const firstRevision = first.bus.snapshot().journal!.revision;
+  expect(firstRevision).toBeGreaterThan(0);
+  expect(first.bus.queued("claude")).toBe(1);
+  const atFirst = await inspect("twice-first");
+  expect(atFirst.integrity.current).toEqual(atFirst.integrity.expected);
+  await first.stop(); // the target dies before release; the committed snapshot stays
+  expect(readRestartSnapshot(stateDir, { projectRoot: process.cwd(), projectId: "p-twice" })?.operationId).toBe("op-twice");
+
+  const second = await startTarget("twice-second");
+  cleanup.push(() => void second.stop());
+  expect(second.bus.snapshot().journal!.revision).toBeGreaterThanOrEqual(firstRevision); // no second import from revision 0
+  expect(second.bus.queued("claude")).toBe(1); // the queued message once, not twice
+  const atSecond = await inspect("twice-second");
+  expect(atSecond.integrity.current).toEqual(atSecond.integrity.expected);
+  const two = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => two.close());
+  expect((await two.request({ t: "recovery", op: "release", operationId: "op-twice", expectedInstanceId: "twice-second" })).released).toBe(true);
+});

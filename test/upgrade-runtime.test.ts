@@ -13,7 +13,7 @@ import { VERSION } from "../src/version.ts";
 import { liveProjects, nextActions, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
-import { readRecoveryWaivers } from "../src/hub/restart.ts";
+import { readRecoveryWaivers, waiveRecoveryPeers } from "../src/hub/restart.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
 // #206: a plain `claude` is attached while claude-session.json still holds the session an earlier, ended
@@ -858,4 +858,232 @@ test("a pending terminal close stays pending when Orca's terminal list cannot be
   const absent = { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: "" };
   await makeRecoveryDriver(async () => absent).closeTerminals(planned, progress, op, () => {});
   expect(progress.terminals["closed:codex"]).toBe(true);
+});
+
+// #225: after a restart, the stopped target's restored terminal is closed (or found absent) before its peer is
+// relaunched; launch records of the dead instance still count; an accepted session is relaunched by its own id.
+test("a restarted target's retired terminal is closed first, dead launchers block, and the accepted session is resumed", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-restore-")));
+  const stateDir = join(temp, "state"), codexHome = join(temp, "codex-home"), sessions = join(codexHome, "sessions", "2026", "10", "10");
+  mkdirSync(stateDir); mkdirSync(sessions, { recursive: true });
+  writeFileSync(join(sessions, "rollout-thread-accepted.jsonl"), "{}\n");
+  let attachedThread: string | undefined;
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true,
+    peers: attachedThread ? { codex: { id: "codex", state: "idle", threadId: attachedThread } } : {} }));
+  const ended = Bun.spawnSync(["true"]).pid;
+  const row = (instanceId: string, handle: string, live: boolean) => ({ peer: "codex", projectRoot: temp, stateDir, instanceId, launcherPid: live ? process.pid : ended,
+    launcherSignature: live ? processSignature(process.pid) : "ended", launchId: `l-${handle}`, handle, incarnationId: `inc-${handle}`, worktreeId: "wt", env: {} });
+  const records = (rows: unknown[]) => writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify(rows));
+  const retired = { handle: "term-retired", incarnationId: "inc-term-retired", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-accepted", connected: true };
+  const replacement = { handle: "term-new", incarnationId: "inc-term-new", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-accepted", connected: true };
+  let retiredOpen = true, inventoryReadable = false;
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv);
+    if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" };
+    if (argv[2] === "list" && !inventoryReadable) return { code: 1, stdout: "", stderr: "orca is not running" };
+    if (argv[2] === "close") retiredOpen = false;
+    if (argv[2] === "create") { records([row("i-new", "term-new", true)]); attachedThread = "thread-accepted"; }
+    const shown = argv.includes("term-retired") ? retired : replacement;
+    const result = argv[2] === "create" ? { terminal: { handle: "term-new", incarnationId: "inc-term-new", worktreeId: "wt" } }
+      : argv[2] === "show" ? { terminal: shown } : argv[2] === "wait" ? { wait: { satisfied: true } } : argv[2] === "close" ? {}
+      : { terminals: [...(retiredOpen ? [retired] : []), ...(calls.some((c) => c[2] === "create") ? [replacement] : [])] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+    terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
+  };
+  // The dead instance had restored Codex under a session the operator accepted instead of thread-T.
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "started", restarts: [{ instanceId: "i-dead", at: 1 }], fresh: { codex: { lost: "thread-T", reason: "chosen", at: 1 } },
+    terminals: { "closed:codex": true, "retired:codex": { ...planned.terminals[0] as object, handle: "term-retired", incarnationId: "inc-term-retired", sessionId: "thread-accepted" } } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    const driver = makeRecoveryDriver(run);
+    records([row("i-dead", "term-retired", true)]);
+    // An unreadable Orca inventory says nothing about the retired terminal: nothing changes, nothing is closed or made.
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("Orca's terminal list could not be read, so whether terminal term-retired is closed is unknown");
+    expect(progress.terminals["closedRetired:codex"]).toBeUndefined();
+    expect(calls.some((c) => c[2] === "close" || c[2] === "create")).toBe(false);
+    // Readable: the retired terminal is closed first; then a launcher the dead instance recorded that still runs blocks.
+    inventoryReadable = true;
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its launcher in terminal term-retired is running but no codex session attached yet; no terminal was created");
+    expect(progress.terminals["closedRetired:codex"]).toBe(true);
+    expect(calls.filter((c) => c[2] === "close").map((c) => c[c.indexOf("--terminal") + 1])).toEqual(["term-retired"]);
+    expect(calls.some((c) => c[2] === "create")).toBe(false);
+    // Once that launcher is gone, Codex is relaunched resuming the session it had accepted.
+    records([row("i-dead", "term-retired", false)]);
+    await driver.restore(planned, progress, op, "native", () => {});
+    const create = calls.filter((c) => c[2] === "create");
+    expect(create).toHaveLength(1);
+    expect(create[0]![create[0]!.indexOf("--command") + 1]).toEndWith("'codex' 'resume' 'thread-accepted'");
+    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "thread-accepted" });
+    expect(calls.filter((c) => c[2] === "close")).toHaveLength(1); // closed once, never again
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("a Claude attached to the target without a session id blocks its relaunch: never read as nothing attached", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-claude-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true, peers: { claude: { id: "claude", state: "idle" } } }));
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: "" }; };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "claude", state: "idle", sessionId: "S" }], blockers: [] },
+    terminals: [{ peer: "claude", handle: "term-claude", incarnationId: "inc", worktreeId: "wt", projectRoot: temp, sessionId: "S", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "peers-restored", restarts: [{ instanceId: "i-dead", at: 1 }], terminals: { "closed:claude": true } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    await expect(makeRecoveryDriver(run).restore(planned, progress, op, "claude", () => {})).rejects.toThrow("a claude session is attached to the target without a session id");
+    expect(progress.terminals["restored:claude"]).toBeUndefined();
+    expect(calls.some((c) => c[2] === "create")).toBe(false);
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+// #225 review: after a restart the accepted session is the one to relaunch, but the operator's fresh choice stays on
+// record when it attaches; an accepted Claude with no transcript starts new instead of a --resume that cannot succeed.
+test("a restarted target keeps a fresh choice when the accepted session attaches, and starts an accepted Claude with no transcript anew", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-accepted-")));
+  const stateDir = join(temp, "state"), claudeConfig = join(temp, "claude-config"), codexHome = join(temp, "codex-home");
+  mkdirSync(stateDir); mkdirSync(join(claudeConfig, "projects"), { recursive: true }); mkdirSync(join(codexHome, "sessions"), { recursive: true });
+  writeFileSync(join(codexHome, "sessions", "rollout-thread-accepted.jsonl"), "{}\n");
+  let peers: Record<string, unknown> = { codex: { id: "codex", state: "idle", threadId: "thread-accepted" } };
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true, peers }));
+  const shown = (handle: string, agentIdentity: string, sessionId: string) => ({ handle, incarnationId: `inc-${handle}`, worktreeId: "wt", worktreePath: temp, agentIdentity, sessionId, connected: true });
+  let replacement = shown("term-codex-attached", "codex", "thread-accepted");
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv);
+    if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" };
+    if (argv[2] === "create") {
+      writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "claude", projectRoot: temp, stateDir, instanceId: "i-new", launcherPid: process.pid,
+        launcherSignature: processSignature(process.pid), launchId: "l-new", handle: "term-claude-new", incarnationId: "inc-term-claude-new", worktreeId: "wt", env: {} }]));
+      replacement = shown("term-claude-new", "claude", "S-new");
+      peers = { claude: { id: "claude", state: "idle", sessionId: "S-new" } };
+    }
+    const result = argv[2] === "create" ? { terminal: { handle: replacement.handle, incarnationId: replacement.incarnationId, worktreeId: "wt" } }
+      : argv[2] === "show" ? { terminal: replacement } : argv[2] === "wait" ? { wait: { satisfied: true } } : { terminals: [replacement] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const codexLaunch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const claudeLaunch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CLAUDE_CONFIG_DIR: claudeConfig } };
+  const codex = { peer: "codex" as const, handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch: codexLaunch, launchMetadata: codexLaunch };
+  const claude = { peer: "claude" as const, handle: "term-claude", incarnationId: "inc-claude", worktreeId: "wt", projectRoot: temp, sessionId: "S-planned", launch: claudeLaunch, launchMetadata: claudeLaunch };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }, { id: "claude", state: "idle", sessionId: "S-planned" }], blockers: [] },
+    terminals: [codex, claude], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "started", restarts: [{ instanceId: "i-dead", at: 1 }],
+    fresh: { codex: { lost: "thread-T", reason: "chosen", at: 1 } },
+    terminals: { "closed:codex": true, "closed:claude": true, "closedRetired:codex": true, "closedRetired:claude": true,
+      "retired:codex": { ...codex, sessionId: "thread-accepted" }, "retired:claude": { ...claude, sessionId: "S-accepted" }, "restored:codex": "pending" } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    const driver = makeRecoveryDriver(run);
+    // The accepted thread is attached: the pending receipt settles to it and the operator's choice stays recorded.
+    await driver.restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-accepted" });
+    expect(progress.fresh?.codex).toMatchObject({ lost: "thread-T" });
+    // The accepted Claude session never got a transcript: it starts new rather than resuming S-accepted.
+    await driver.restore(planned, progress, op, "claude", () => {});
+    const create = calls.filter((c) => c[2] === "create").at(-1)!;
+    const command = create[create.indexOf("--command") + 1]!;
+    expect(command).toEndWith("'claude'");
+    expect(command).not.toContain("--resume");
+    expect(progress.terminals["restored:claude"]).toMatchObject({ sessionId: "S-new" });
+    // The waiver's audit label for a Claude with nothing to resume.
+    expect(readRecoveryWaivers(stateDir, "op-225")).toEqual({ claude: "zero-turn" });
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+// #225 review: a Claude attached to the target without a session id is judged only after every instance's launch
+// records are read, so a block names a dead instance's launcher that still runs, or the records that cannot be read.
+for (const mode of ["a dead instance's live launcher", "unreadable launch records"] as const) test(`a restarted target's claude attached without an id blocks on ${mode}`, async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-noid-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true, peers: { claude: { id: "claude", state: "idle" } } }));
+  writeFileSync(join(stateDir, "terminal-recovery.json"), mode === "unreadable launch records" ? "{not json" : JSON.stringify([{ peer: "claude", projectRoot: temp, stateDir, instanceId: "i-dead",
+    launcherPid: process.pid, launcherSignature: processSignature(process.pid), launchId: "l-dead", handle: "term-dead-claude", incarnationId: "inc-dead", worktreeId: "wt", env: {} }]));
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: "" }; };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "claude", state: "idle", sessionId: "S" }], blockers: [] },
+    terminals: [{ peer: "claude", handle: "term-claude", incarnationId: "inc", worktreeId: "wt", projectRoot: temp, sessionId: "S", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "peers-restored", restarts: [{ instanceId: "i-dead", at: 1 }], terminals: { "closed:claude": true } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    const err = await makeRecoveryDriver(run).restore(planned, progress, op, "claude", () => {}).then(() => undefined, (e) => e as Error);
+    expect(err?.message).toContain(mode === "unreadable launch records" ? "terminal-recovery.json" : "terminal term-dead-claude is running but no claude session with an id attached yet");
+    expect(calls.some((c) => c[2] === "create")).toBe(false);
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+// #225 review: the planned session coming back after a restart needs no waiver (the snapshot expects it), so the one
+// written when the operator chose a fresh session keeps its label, and the choice is cleared.
+test("a restarted target whose planned session comes back clears the fresh choice and keeps the waiver's label", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-planned-")));
+  const stateDir = join(temp, "state"), codexHome = join(temp, "codex-home");
+  mkdirSync(stateDir); mkdirSync(join(codexHome, "sessions"), { recursive: true });
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true, peers: { codex: { id: "codex", state: "idle", threadId: "thread-T" } } }));
+  waiveRecoveryPeers(stateDir, "op-225", { codex: "fresh-session" });
+  const shown = { handle: "term-codex-planned", incarnationId: "inc-planned", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-T", connected: true };
+  const run = async (argv: string[]) => {
+    if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" };
+    const result = argv[2] === "show" ? { terminal: shown } : argv[2] === "wait" ? { wait: { satisfied: true } } : { terminals: [shown] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const codex = { peer: "codex" as const, handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+    terminals: [codex], blockers: [],
+  };
+  // The accepted fresh thread never got a rollout, so the planned thread attaching settles the pending receipt.
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "started", restarts: [{ instanceId: "i-dead", at: 1 }],
+    fresh: { codex: { lost: "thread-T", reason: "chosen", at: 1 } },
+    terminals: { "closed:codex": true, "closedRetired:codex": true, "retired:codex": { ...codex, sessionId: "thread-accepted" }, "restored:codex": "pending" } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-T" });
+    expect(progress.fresh).toBeUndefined();
+    expect(readRecoveryWaivers(stateDir, "op-225")).toEqual({ codex: "fresh-session" });
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
 });

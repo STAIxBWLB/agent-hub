@@ -309,7 +309,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
    * expected instance can report "gone"; an unreadable target or launcher is unknown and blocks, never gone.
    */
   const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
-      Promise<{ state: "live"; session?: string; handle?: string } | { state: "gone" } | { state: "unknown"; why: string; step?: string }> => {
+      Promise<{ state: "live"; session?: string; handle?: string; attached?: true } | { state: "gone" } | { state: "unknown"; why: string; step?: string }> => {
     const target = await inspectRecovery(planned.project);
     if (target.state !== "running" || target.instanceId !== progress.instanceId) {
       // Only a hub that may still answer is waited for; a stopped, missing or other one is settled by the runner's list.
@@ -319,14 +319,43 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     const attached = target.peers.find((p) => p.id === peer && p.state !== "offline");
     const session = peer === "codex" ? attached?.threadId : attached?.sessionId;
     if (session) return { state: "live", session };
-    const launch = await launcherOf(peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
-    if (launch?.state === "live") return { state: "live", handle: launch.record!.handle };
-    if (launch?.state === "unknown") {
-      return launch.record ? { state: "unknown", why: `its launcher in terminal ${launch.record.handle} cannot be read`, step: `wait until it attaches, or end it and close terminal ${launch.record.handle}` }
-        : launch.invalidRow ? { state: "unknown", why: "a launch record that may be its launcher's cannot be evaluated", step: `inspect ${recordPath(planned.project.stateDir)} and fix that row, or end that launcher and remove its row` }
-        : { state: "unknown", why: "the launcher records cannot be read", step: `inspect ${recordPath(planned.project.stateDir)} and move it aside (sessions it recorded then count as unmanaged)` };
+    // #225: the launch records of every instance this operation started for the project, the current one first: a
+    // launcher a dead instance recorded may still run (read before the check below, so a block names its terminal).
+    for (const instanceId of [progress.instanceId, ...(progress.restarts ?? []).map((r) => r.instanceId)]) {
+      if (!instanceId) continue;
+      const launch = await launcherOf(peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId });
+      if (launch?.state === "live") return { state: "live", handle: launch.record!.handle, ...(attached ? { attached: true as const } : {}) };
+      if (launch?.state === "unknown") {
+        return launch.record ? { state: "unknown", why: `its launcher in terminal ${launch.record.handle} cannot be read`, step: `wait until it attaches, or end it and close terminal ${launch.record.handle}` }
+          : launch.invalidRow ? { state: "unknown", why: "a launch record that may be its launcher's cannot be evaluated", step: `inspect ${recordPath(planned.project.stateDir)} and fix that row, or end that launcher and remove its row` }
+          : { state: "unknown", why: "the launcher records cannot be read", step: `inspect ${recordPath(planned.project.stateDir)} and move it aside (sessions it recorded then count as unmanaged)` };
+      }
     }
+    // #225: attached with no provable session id (a Claude of a dead instance whose plugin reconnected, or one that has
+    // not reported its id yet) is a session of unknown identity, never "nothing attached".
+    if (attached) return { state: "unknown", why: `a ${peer} session is attached to the target without a session id`, step: `wait until it reports one, or end that ${peer} session` };
     return { state: "gone" };
+  };
+  /**
+   * #225: the terminal of a done restoration of a target instance that died is closed under the close receipt rules
+   * (`closedRetired:<peer>` `pending` until Orca no longer lists it; an unreadable or truncated inventory is unknown and
+   * changes nothing) or found absent, before its peer is relaunched against the new instance.
+   */
+  const closeRetired = async (progress: ProjectProgress, peer: string, save: () => void): Promise<void> => {
+    const retired = progress.terminals[`retired:${peer}`] as TerminalBinding | undefined;
+    const key = `closedRetired:${peer}`;
+    if (!retired || typeof retired !== "object" || progress.terminals[key] === true) return;
+    const seen = await listed(retired);
+    if (progress.terminals[key] === "pending" || seen !== "listed") {
+      if (seen !== "absent") throw new Error(closeUnsettled(retired, seen));
+      progress.terminals[key] = true; save(); return;
+    }
+    const idle = await waitForIdle(retired, 120_000, terminalOptions(run));
+    if (!idle.satisfied) throw new Error(`${peer}: terminal ${retired.handle} of the stopped target's session is not verified idle; finish or cancel its turn, or close that terminal by hand, first`);
+    progress.terminals[key] = "pending"; save();
+    const result = await closeTerminal(retired, 0, terminalOptions(run));
+    if (result.manualRequired) throw new Error(`${peer}: closing terminal ${retired.handle} of the stopped target's session was not verified; manual-required`);
+    progress.terminals[key] = true; save();
   };
   const attachedId = async (planned: PlannedProject, peer: string, op: RecoveryOperation): Promise<string> => {
     for (const deadline = now() + RECONNECT_WAIT_MS; ;) {
@@ -428,17 +457,30 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           await command(op, args, planned.project);
         }
       }
-      for (const original of planned.terminals as TerminalBinding[]) {
-        if ((original.peer === "claude") !== (group === "claude")) continue;
-        const key = `restored:${original.peer}`;
+      for (const plannedBinding of planned.terminals as TerminalBinding[]) {
+        if ((plannedBinding.peer === "claude") !== (group === "claude")) continue;
+        const key = `restored:${plannedBinding.peer}`;
+        // #225: after a restart, the stopped target's terminal for this peer goes first; a session it had accepted
+        // instead of the planned one (fresh choice, fresh start, zero-turn Claude) is relaunched by that id, which the
+        // operation-fenced waiver already covers.
+        await closeRetired(progress, plannedBinding.peer, save);
+        const retired = progress.terminals[`retired:${plannedBinding.peer}`] as TerminalBinding | undefined;
+        const accepted = retired && typeof retired === "object" && retired.sessionId !== plannedBinding.sessionId ? retired.sessionId : undefined;
+        const original = accepted ? { ...plannedBinding, sessionId: accepted } : plannedBinding;
         // A new session is accepted only by the operator's choice (#215 dispose --fresh-session) or a planned fresh
         // start of a Codex thread with nothing to lose that still has no rollout; an unreadable store is neither.
         const chosen = !!progress.fresh?.[original.peer];
         let read: ReturnType<typeof codexTranscript> | undefined;
-        const transcript = () => original.peer !== "codex" || chosen ? "found" : (read ??= codexTranscript(original));
-        const fresh = () => chosen || (!!planned.freshStart?.includes(original.peer) && transcript() === "missing");
+        const transcript = () => original.peer !== "codex" || (chosen && !accepted) ? "found" : (read ??= codexTranscript(original));
+        // An accepted session starts new again only when it has nothing to resume: a Codex thread that never got a
+        // rollout, or a Claude session with no transcript (`--resume` could never succeed, #21).
+        const fresh = () => accepted
+          ? (original.peer === "codex" ? (chosen || !!planned.freshStart?.includes("codex")) && transcript() === "missing" : original.peer === "claude" && !claudeTranscriptExists(original))
+          : chosen || (!!planned.freshStart?.includes(original.peer) && transcript() === "missing");
         // The runner ends this with the choices `status` shows (nextActions); resume comes first and launches a failed
         // peer again, which helps once its cause (a transient Orca create failure, a fixed store) is gone.
+        // The waiver's audit label: the operator's choice, a Claude with nothing to resume, or the plan's Codex fresh start.
+        const waiver = () => progress.fresh?.[original.peer] ? "fresh-session" : original.peer === "claude" ? "zero-turn" : "fresh-start";
         const notRestored = (why: string) => new Error(fresh()
           ? `${original.peer}: ${why}; read that terminal in Orca for the launcher's error and fix its cause`
           : `${original.peer}: ${why}; session ${original.sessionId} was not restored; resume launches it again once the cause is fixed`);
@@ -447,7 +489,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           ? `${original.peer}: whether a ${original.peer} session or launcher is live cannot be told (${evidence.why}); nothing was recorded or created${evidence.step ? `; ${evidence.step} first` : ""}`
           : evidence.session
             ? `${original.peer}: session ${evidence.session} is attached instead of ${original.sessionId}; no terminal was created; end that ${original.peer} session and close its terminal first`
-            : `${original.peer}: its launcher in terminal ${evidence.handle} is running but no ${original.peer} session attached yet; no terminal was created; wait until it attaches, or end it and close terminal ${evidence.handle} first`);
+            : `${original.peer}: its launcher in terminal ${evidence.handle} is running but no ${original.peer} session ${evidence.attached ? "with an id " : ""}attached yet; no terminal was created; wait until it attaches, or end it and close terminal ${evidence.handle} first`);
         const receipt = progress.terminals[key];
         if (receipt && receipt !== "pending" && receipt !== "failed") {
           progress.terminals[key] = await revalidateTerminal(planned, progress, receipt as TerminalBinding, true); save();
@@ -461,14 +503,16 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           if (attached !== original.sessionId && !fresh() && !(original.peer === "claude" && !claudeTranscriptExists(original))) {
             throw new Error(`${original.peer}: terminal creation outcome is uncertain: session ${attached} is attached instead of ${original.sessionId}; end that ${original.peer} session and close its terminal first`);
           }
-          // The original came back after all: a fresh session chosen for it lost nothing.
-          if (attached === original.sessionId && progress.fresh?.[original.peer]) {
+          // The planned session came back after all: a fresh session chosen for it lost nothing. Compared with the plan,
+          // never with a session accepted after a restart (#225), whose choice must stay on record.
+          if (attached === plannedBinding.sessionId && progress.fresh?.[original.peer]) {
             delete progress.fresh[original.peer];
             if (!Object.keys(progress.fresh).length) delete progress.fresh;
           }
           // Any other accepted session needs the target to waive the saved id, or release would wait for it forever;
           // a launch writes the waiver first, but this must not rely on that.
-          if (attached !== original.sessionId) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: progress.fresh?.[original.peer] ? "fresh-session" : fresh() ? "fresh-start" : "zero-turn" });
+          // The planned session needs no waiver: the target's snapshot already expects it.
+          if (attached !== original.sessionId && attached !== plannedBinding.sessionId) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: waiver() });
           progress.terminals[key] = await revalidateTerminal(planned, progress, { ...original, sessionId: attached }, false); save();
         };
         // #215: a pending or failed receipt is settled by what is live now (the receipt table in the recovery spec).
@@ -499,7 +543,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if (fresh()) {
           if (!targetReadsWaivers(op)) throw new Error(`${original.peer}: target ${op.plan.version} predates recovery waivers, so it cannot accept a new session`);
           // The restored daemon must accept the new session instead of the recorded one.
-          waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: progress.fresh?.[original.peer] ? "fresh-session" : "fresh-start" });
+          waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: waiver() });
         }
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
         const argv = restoredTerminalArgv(entrypoint, planned.project.root, original, fresh());

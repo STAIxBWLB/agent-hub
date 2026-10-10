@@ -1210,10 +1210,17 @@ next actions").
   the operation's restart snapshot.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
-- When a target hub dies after it started (a crash or a reboot), restarting it
-  from its snapshot is not supported in this release (its peers would have to
-  be relaunched against the new hub): `resume` is not offered and the way out
-  is stop-and-archive.
+- When a target hub dies after it started (a crash or a reboot), `resume`
+  starts it again from the operation's snapshot while the project's state
+  directory still holds it: it records the restart (status shows `restarts`),
+  closes the terminals the dead hub's peers were restored into (or finds them
+  gone), and relaunches those peers against the new hub, a session you had
+  accepted instead of the original included. A launcher still running from
+  the dead hub, or a session attached without an id, stops it until you end
+  that session. A target that dies again in the same `resume` stops it with the
+  restart count; look at its `hub.log` before resuming again. Without the
+  snapshot, or for an operation started by a coordinator older than 0.12.21,
+  the way out is stop-and-archive.
 - A Codex conversation comes back only when a rollout file naming its thread
   exists under `sessions/` of the store the restored terminal uses (the
   recorded `CODEX_HOME`, else `~/.codex`). Codex writes that file with the
