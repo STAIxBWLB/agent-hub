@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { CLASSES, type TaskClass } from "./board.ts";
 import { configTracked } from "./config-trust.ts";
 import { PERMISSION_MODES, permissionBoundary } from "./permission-mode.ts";
+import { START_MODE_PEERS, START_MODES } from "./start-mode.ts";
 import { OVERLAY_FILE, overlayToml, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "./routing.ts";
 
 /**
@@ -24,7 +25,8 @@ export interface SettingDef {
   values?: readonly string[];
   /** `runtime` lives in the running hub only; the others are the machine-local file that holds the value. */
   store: "runtime" | "config" | "routing";
-  applies: "live" | "hub start";
+  /** `peer start`: stored, and taken up by the running hub at that peer's next start. */
+  applies: "live" | "peer start" | "hub start";
   /** `raises`: only a settings session or a person's terminal may set it, except to `floor`. */
   risk: "safe" | "raises";
   floor?: string | boolean;
@@ -43,6 +45,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
 export const SETTINGS: readonly SettingDef[] = [
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at hub start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "hub start", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
+  ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "peer start", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),
   { key: "pi.auto_start", group: "Start", label: "Start Pi with the hub", type: "boolean", store: "config", applies: "hub start", risk: "raises", floor: false, path: ["pi", "auto_start"] },
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
   ...CLASSES.flatMap(perClass),

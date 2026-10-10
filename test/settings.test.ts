@@ -54,7 +54,7 @@ test("AC1: every editable setting has one registry entry with its store, apply t
   expect(new Set(SETTINGS.map((s) => s.key)).size).toBe(SETTINGS.length);
   for (const s of SETTINGS) {
     expect(["runtime", "config", "routing"]).toContain(s.store);
-    expect(["live", "hub start"]).toContain(s.applies);
+    expect(["live", "peer start", "hub start"]).toContain(s.applies);
     expect(["safe", "raises"]).toContain(s.risk);
     expect(s.type === "enum" ? s.values !== undefined || s.key.endsWith(".route") : true).toBe(true);
     expect(settingDef(s.key)).toBe(s);

@@ -273,6 +273,32 @@ function defaultRunner(executable: string): CommandRunner {
   };
 }
 
+/** The Orca executable a start or a recovery would run (`orca`, or what the environment pins). */
+export const orcaExecutable = (): string => resolveOrcaExecutable();
+
+/**
+ * #269: the Orca worktree a terminal for this project can be opened in: the one this process runs in, or the one the
+ * last recorded `ahub <peer>` launch of this project used. Undefined when there is none or the record does not read.
+ * ponytail: the environment's worktree is taken as this project's; a hub started from another project's Orca terminal
+ * (`ahub --project`, the dashboard manager's start, an upgrade or restart that brings several projects up from one
+ * terminal) opens the terminal there and `ahub <peer>` then fails its root readback. Ask Orca for the worktree's path
+ * and compare it if that case shows up.
+ */
+export function startTerminalWorktree(projectRoot: string, stateDir: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (env.ORCA_WORKTREE_ID) return env.ORCA_WORKTREE_ID;
+  const records = launchRecords(stateDir);
+  return records === "unreadable" ? undefined : records.rows.filter((row) => row.projectRoot === projectRoot).at(-1)?.worktreeId;
+}
+
+/** #269: a new Orca terminal running `command` (a complete, already quoted command line); the terminal's handle. */
+export async function openStartTerminal(worktreeId: string, command: string, title: string, options?: CommandRunner | TerminalRecoveryOptions): Promise<string> {
+  const config = normalizeOptions(options);
+  const selector = worktreeId.startsWith("id:") ? worktreeId : `id:${worktreeId}`;
+  const handle = nestedString(terminalObject(await run(config.runner, ["terminal", "create", "--worktree", selector, "--command", command, "--title", title, "--json"])), ["handle"]);
+  if (!handle) throw new Error("Orca create returned no terminal handle");
+  return handle;
+}
+
 const RECORD_FILE = "terminal-recovery.json";
 
 export function recordPath(stateDir: string): string {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
+import { startModeOf } from "../hub/start-mode.ts";
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -175,12 +176,18 @@ function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv): nev
   process.exit(res.status ?? 1);
 }
 
-function piFlags(): { mode: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; model?: string; sessionId?: string; sessionFile?: string } {
+/** `mode` is absent when no flag chose one: the caller takes the configured start mode (#269). `--headless` is `--mode headless`. */
+function piFlags(): { mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; model?: string; sessionId?: string; sessionFile?: string } {
+  const usage = "usage: ahub pi [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id> | --session-file <path>]";
+  if (args.includes("--headless")) {
+    if (args.includes("--mode")) fail(usage);
+    args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
+  }
   for (const flag of ["--mode", "--backend", "--model", "--session-id", "--session-file"]) {
     const index = args.indexOf(flag);
     if (index >= 0 && (!args[index + 1] || args[index + 1]!.startsWith("--"))) fail(`${flag} needs a value`);
   }
-  const mode = (args.includes("--mode") ? args[args.indexOf("--mode") + 1] : "headless") as string;
+  const mode = (args.includes("--mode") ? args[args.indexOf("--mode") + 1] : undefined) as string | undefined;
   const backend = (args.includes("--backend") ? args[args.indexOf("--backend") + 1] : undefined) as string | undefined;
   const model = args.includes("--model") ? args[args.indexOf("--model") + 1] : undefined;
   const sessionId = args.includes("--session-id") ? args[args.indexOf("--session-id") + 1] : undefined;
@@ -190,8 +197,8 @@ function piFlags(): { mode: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"
     if (!valueFlags.has(args[i]!)) fail(`unknown Pi option: ${args[i]}`);
     i++;
   }
-  if (!["headless", "tui"].includes(mode) || (backend !== undefined && !["auto", "dgx", "mlx"].includes(backend)) || (sessionId && sessionFile)) fail("usage: ahub pi [--mode headless|tui] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id> | --session-file <path>]");
-  return { mode: mode as "headless" | "tui", ...(backend ? { backend: backend as "auto" | "dgx" | "mlx" } : {}), ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}) };
+  if ((mode !== undefined && !["headless", "tui"].includes(mode)) || (backend !== undefined && !["auto", "dgx", "mlx"].includes(backend)) || (sessionId && sessionFile)) fail(usage);
+  return { ...(mode ? { mode: mode as "headless" | "tui" } : {}), ...(backend ? { backend: backend as "auto" | "dgx" | "mlx" } : {}), ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}) };
 }
 
 async function projectRows() {
@@ -725,11 +732,30 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   pi: async () => {
+    // --headless is --mode headless everywhere this command goes: the preview, the hub and the conductor path.
+    if (args.includes("--headless") && !args.includes("--mode")) args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
     if (args.includes("--print-command") || args.includes("--dry-run")) {
       try { return console.log(JSON.stringify(launcherPreview("pi", args, cwd, stateDir, unattendedEnv), null, 2)); }
       catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
     }
-    const options = piFlags();
+    const flags = piFlags();
+    // #269: with no flag, Pi's start mode decides, and that is its TUI unless a person set headless.
+    const options = { ...flags, mode: flags.mode ?? startModeOf(projectConfig().peers, "pi") };
+    if (flags.mode === undefined && options.mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY)) {
+      // The default asked for the TUI and there is no terminal here (the console's command line, a script): the hub
+      // opens one, or says how to. It is never downgraded to headless. The fixed command carries no option, so one
+      // that was given needs a terminal of its own. An explicit --mode tui is taken at its word, as before.
+      if (Object.keys(flags).length) fail("Pi's TUI needs a terminal, and these options are not passed to one the hub opens: run this in a terminal, or add --mode headless");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "peer_start", peer: "pi" }, 35_000);
+        if (reply.ok !== true) {
+          const error = String(reply.error ?? "pi start refused");
+          fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_start"/i.test(error) ? `${error}; upgrade the running hub, or run ahub pi --mode headless` : error);
+        }
+        return console.log(reply.already ? "pi is already attached" : reply.opened ? `pi: opened a terminal running ${reply.command}; it attaches when its TUI is ready` : 'pi attached (headless). Talk to it with: ahub say @pi "..."');
+      } finally { hub.close(); }
+    }
     // #215: as for Codex, a TUI launch by the recovery operation holding the lock records itself before the hub round
     // trip, so a resume in that window never reads it as gone; an ordinary launch records only after the hub accepted it.
     const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
@@ -1046,7 +1072,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       let group = "";
       for (const row of rows) {
         if (sub === "list" && row.group !== group) console.log(`${group ? "\n" : ""}${group = row.group}`);
-        const facts = [`from ${row.source}`, row.applies === "live" ? "applies at once" : "read at hub start", ...(row.pending !== undefined ? [`${settingText(row.pending)} at the next hub start`] : []), ...(row.note ? [row.note] : [])];
+        const facts = [`from ${row.source}`, row.applies === "live" ? "applies at once" : row.applies === "peer start" ? "applies at the peer's next start" : "read at hub start", ...(row.pending !== undefined ? [`${settingText(row.pending)} at the next hub start`] : []), ...(row.note ? [row.note] : [])];
         console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join("; ")}`);
         if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "peers" ? "a comma list of peer ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
       }
@@ -1454,9 +1480,11 @@ async function runConductorCommand(): Promise<void> {
     input = { peer: args[0] };
   } else {
     // Native TUIs return a human launch command through the daemon; an agent shell never executes it.
+    if (cmd === "pi" && args.length === 1 && args[0] === "--headless") args.splice(0, 1, "--mode", "headless");
     if (args.length && !(cmd === "pi" && args.length === 2 && args[0] === "--mode" && ["headless", "tui"].includes(args[1] ?? ""))) fail(`conductor starts accept no launch overrides; use ahub ${cmd}${cmd === "pi" ? " [--mode headless|tui]" : ""}`);
     op = "hub_peer_start";
-    input = { peer: cmd, ...(cmd === "pi" ? { mode: args[1] ?? "headless" } : {}) };
+    // #269: a mode may only repeat the peer's start mode, which a person sets; without one the hub takes that mode.
+    input = { peer: cmd, ...(cmd === "pi" && args[1] ? { mode: args[1] } : {}) };
   }
   console.log(await taskOp(op, input));
 }

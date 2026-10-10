@@ -217,7 +217,7 @@ function settingRow(row, raise) {
   const node = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), id = 'setting-' + row.key.replaceAll('.', '-');
   const title = el('label', row.label, 'label'); title.htmlFor = id;
   head.append(title, badge(settingText(row.value), row.group === 'Permissions' && row.value !== null && row.value !== 'ask' ? 'warn' : ''));
-  node.append(head, el('p', row.key + ' / from ' + row.source + ' / ' + (row.applies === 'live' ? 'applies at once' : 'read at hub start') + ' / written to ' + row.file, 'meta'));
+  node.append(head, el('p', row.key + ' / from ' + row.source + ' / ' + (row.applies === 'live' ? 'applies at once' : row.applies === 'peer start' ? "applies at the peer's next start" : 'read at hub start') + ' / written to ' + row.file, 'meta'));
   if (row.pending !== undefined) node.append(el('p', 'Pending restart: ' + settingText(row.pending) + ' at the next hub start.', 'meta'));
   if (row.hint) node.append(el('p', 'Bounds: ' + row.hint, 'meta'));
   if (row.note) node.append(el('p', row.note, 'meta'));
@@ -292,11 +292,23 @@ function renderSettings(settings) {
     slot.signature = signature; slot.node.replaceChildren(settingRow(row, raise));
   }
 }
+function renderStarts(target, starts) {
+  // A Start control per peer that is not attached: the mode it will use and where that comes from.
+  for (const start of starts) {
+    if (start.attached) continue;
+    const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+    head.append(el('span', 'Start ' + start.peer, 'label'), badge(start.mode));
+    const tui = start.mode === 'tui';
+    row.append(head, el('p', !tui ? 'Starts headless: its start mode.' : start.via ? 'Start mode tui: opens ' + start.command + ' in a terminal through ' + start.via + '.' : 'Start mode tui, and the hub has no terminal to open (' + start.why + '). Run ' + start.command + ' in a terminal.', 'meta'));
+    if (!tui || start.via) { const actions = el('div', undefined, 'actions'); actions.append(button('Start ' + start.peer, {action:'start_peer', peer:start.peer})); row.append(actions); }
+    target.append(row);
+  }
+}
 function render(snapshot) {
-  const peers = snapshot.status.peers || {}, ids = Object.keys(peers);
+  const peers = snapshot.status.peers || {}, ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
-  update('peers', peers, (target) => {
-    if (!ids.length) return empty(target, 'No peers connected. Start an agent from your terminal.');
+  update('peers', [peers, starts], (target) => {
+    if (!ids.length) { empty(target, 'No peers connected. Start one below, or from your terminal.'); return renderStarts(target, starts); }
     for (const [id, peer] of Object.entries(peers)) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
@@ -314,6 +326,7 @@ function render(snapshot) {
       const paused = peer.state === 'paused' || peer.paused;
       row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
     }
+    renderStarts(target, starts);
   });
   const assignable = ids.filter((id) => peers[id].state !== 'offline' && peers[id].attached !== false);
   const peerSignature = JSON.stringify([ids, assignable]);
