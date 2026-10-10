@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
-import { denyRegexes, sbplString } from "./deny.ts";
+import { denyRegexes, hubWriteRegexes, sbplString } from "./deny.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export const OUTPUT_CAP = 20_000;
@@ -102,8 +102,11 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     ...start,
     "(deny file-write*)",
     `(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
-    // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub.
-    `(deny file-write* (subpath ${q(join(root, ".agenthub"))}) ${[join(root, ".git"), ...gitDirs].map((d) => `(subpath ${q(join(d, "hooks"))}) (literal ${q(join(d, "config"))})`).join(" ")})`,
+    // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub. The .git and
+    // .agenthub patterns tolerate the code points HFS+ ignores in every segment, the .git name itself is refused
+    // at any depth (creation, rename, symlink, gitfile), and the external git dirs get folded hooks/config rules
+    // (#270). The cost: git init, clone and worktree add no longer run inside the sandbox.
+    `(deny file-write* ${hubWriteRegexes(root, gitDirs).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     // Python's own CA bundle (certifi, which pip vendors too): pip, requests and httpx read it instead of the system's (#64).
