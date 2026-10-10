@@ -37,6 +37,8 @@ const bulkEdit: Script = (body) => {
   return { content: `done: ${body.messages.at(-1)?.content}` };
 };
 
+class WatchdogLocalPeer extends LocalPeer { expireWatchdog(): void { this.onWatchdog(); } }
+
 async function setup(script: Script, extra: Partial<LocalOptions> = {}, permit = true) {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-local-")));
   writeFileSync(join(cwd, "a.txt"), "one\ntwo\n");
@@ -53,7 +55,7 @@ async function setup(script: Script, extra: Partial<LocalOptions> = {}, permit =
     if (e.t === "envelope" && e.env.from === "local") said.push(e.env);
   });
   const asked: string[] = [];
-  const peer = new LocalPeer("local", {
+  const peer = new WatchdogLocalPeer("local", {
     cwd,
     omni,
     fixedModel: "vllm/fixed",
@@ -103,20 +105,30 @@ test("a refused approval and a malformed tool call come back to the model as tex
 });
 
 test("watchdog aborts a silent model call; its late answer neither publishes nor flips the next turn", async () => {
-  let release = () => {};
-  const { bus, peer, said, model } = await setup(
-    async (body) => {
-      if (String(body.messages.at(-1)?.content).includes("SLOW")) await new Promise<void>((r) => (release = r));
-      return { content: `echo: ${String(body.messages.at(-1)?.content).split("\n").at(-1)}` };
-    },
-    { watchdogMs: 80 },
-  );
-  cleanup.push(() => release()); // runs before model.stop: a failure before the release below must not hang stop()
+  let release = () => {}, slowObserved = false;
+  let parsedLate!: () => void;
+  const lateResponse = new Promise<void>(resolve => { parsedLate = resolve; });
+  const { bus, peer, said, model, omni } = await setup(async (body) => {
+    if (String(body.messages.at(-1)?.content).includes("SLOW")) await new Promise<void>(resolve => { release = resolve; slowObserved = true; });
+    return { content: `echo: ${String(body.messages.at(-1)?.content).split("\n").at(-1)}` };
+  });
+  const chat = omni.chat.bind(omni);
+  // This fake transport returns even after cancellation, so a parsed late response exercises the turn-generation guard.
+  omni.chat = async (body, options = {}) => {
+    const slow = String(body.messages.at(-1)?.content).includes("SLOW");
+    const response = await chat(body, slow ? { ...options, signal: undefined } : options);
+    if (slow) parsedLate();
+    return response;
+  };
+  cleanup.push(() => { omni.chat = chat; release(); }); // release before model.stop even if a preceding assertion fails
   bus.publish(newEnvelope("user", "SLOW", { priority: "important" }));
   bus.publish(newEnvelope("user", "after", { priority: "important" }));
+  await until(() => slowObserved, "SLOW request held by the fake gateway");
+  peer.expireWatchdog(); // ordinary I/O uses the normal watchdog; only the observed silent turn is expired
   await until(() => said.length === 1, "turn after the abort");
   release();
-  await Bun.sleep(50);
+  await lateResponse; // the real OmniRoute parser consumed the released response
+  await new Promise<void>(resolve => setImmediate(resolve)); // drain its downstream promise continuations, not a fixed delay
   expect(said.map((e) => e.body)).toEqual(["echo: after"]);
   expect(peer.state).toBe("idle");
   // the aborted turn joined nothing to the history: the next request holds only the system prompt and its own user turn

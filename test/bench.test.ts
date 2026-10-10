@@ -29,6 +29,11 @@ function benchRepo(): { root: string; head: string } {
   return { root, head: git(root, "rev-parse", "HEAD") };
 }
 
+const until = async (condition: () => boolean | Promise<boolean>, label: string, attempts = 100, interval = 10) => {
+  for (let i = 0; i < attempts && !(await condition()); i++) await Bun.sleep(interval);
+  if (!(await condition())) throw new Error(`timed out waiting for ${label}`);
+};
+
 test("a suite is checked field by field and every refusal names the task and the field", () => {
   const ok = { name: "s", tasks: [{ id: "a", title: "t", ref: "HEAD", verify: "true", timeout_s: 60 }] };
   expect(parseSuite(JSON.stringify(ok)).tasks).toHaveLength(1);
@@ -145,7 +150,7 @@ test("a run records pass, fail and timeout with measures, resets the tree betwee
     config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
   cleanup.push(() => daemon.stop());
   for (const peer of ["worker", "claude"]) { const c = await ControlClient.connect(stateDir, { role: "peer", peer }); cleanup.push(() => c.close()); }
-  for (let i = 0; i < 100 && !(daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle"); i++) await Bun.sleep(10);
+  await until(() => daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle", "benchmark worker and reviewer attached");
   const tools = async (peer: string) => { const c = await ControlClient.connect(stateDir, { role: "tools", peer }); cleanup.push(() => c.close()); return c; };
   const worker = await tools("worker"), reviewer = await tools("claude");
   const SECRET = "SECRET-SUITE-TEXT";

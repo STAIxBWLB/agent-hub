@@ -24,6 +24,11 @@ class HeldPeer extends BasePeer {
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
+const until = async (condition: () => boolean | Promise<boolean>, label: string, attempts = 100, interval = 10) => {
+  for (let i = 0; i < attempts && !(await condition()); i++) await Bun.sleep(interval);
+  if (!(await condition())) throw new Error(`timed out waiting for ${label}`);
+};
+
 test("journal recovery preserves an offline peer's empty queue without reattachment", () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-empty-recovery-"));
   const journal = new DeliveryJournal({ file: join(stateDir, "hub.db"), projectRoot: stateDir, projectId: "p", instanceId: "i" });
@@ -248,16 +253,17 @@ test("prepare remains blocked by a pending permission, then preserves a manual p
   console_.onPush = (message) => pushes.push(message);
   console_.send({ t: "tail" });
   expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
-  for (let i = 0; i < 100 && (await console_.request({ t: "status" })).status.peers.kimi?.state !== "idle"; i++) await Bun.sleep(10);
+  await until(async () => (await console_.request({ t: "status" })).status.peers.kimi?.state === "idle", "recovery Kimi started");
   await console_.request({ t: "send", body: "PERMISSION", to: ["kimi"] });
-  for (let i = 0; i < 100 && !pushes.some((message) => message.t === "permission"); i++) await Bun.sleep(10);
+  await until(() => pushes.some(message => message.t === "permission"), "recovery permission requested");
   const permission = pushes.find((message) => message.t === "permission");
   expect(permission).toBeDefined();
   await console_.request({ t: "pause", peer: "kimi" });
   const preparing = await console_.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" });
   expect(preparing.recovery.ready).toBe(false);
   console_.send({ t: "permit", id: permission.id, option: "yes" });
-  for (let i = 0; i < 100 && pushes.some((message) => message.t === "permission"); i++) await Bun.sleep(10);
+  // Pushes are append-only history: permission_closed correlates settlement; native idle makes recovery ready despite the pause.
+  await until(() => pushes.some(message => message.t === "permission_closed" && message.id === permission.id) && daemon.bus.peers.get("kimi")?.state === "idle", "permission settled and Kimi native turn ended");
   const prepared = await console_.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" });
   expect(prepared.recovery.phase).toBe("prepared");
   expect((await console_.request({ t: "status" })).status.peers.kimi.state).toBe("paused");
