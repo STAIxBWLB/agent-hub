@@ -265,13 +265,15 @@ test("a stopped Pi owner can hand its persisted history to a different mode", as
 });
 
 // issue #66: after a crash, pi.auto_start brings Pi back on its recorded session, or on a fresh one.
-async function crashedHub(piConfig: Partial<typeof DEFAULT_CONFIG.pi>, session: (stateDir: string) => string | undefined, recovery = DEFAULT_CONFIG.recovery, launch: Record<string, unknown> = { mode: "headless", backend: "dgx" }, extra: unknown[] = []) {
+/** #269: Pi's start mode is its TUI unless set: a hub that auto-starts a headless Pi says so, as these fixtures do. */
+const HEADLESS_PI = { pi: { start_mode: "headless" as const } };
+async function crashedHub(piConfig: Partial<typeof DEFAULT_CONFIG.pi>, session: (stateDir: string) => string | undefined, recovery = DEFAULT_CONFIG.recovery, launch: Record<string, unknown> = { mode: "headless", backend: "dgx" }, extra: unknown[] = [], peers: typeof DEFAULT_CONFIG.peers = {}) {
   const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-pi-crash-")));
   mkdirSync(join(stateDir, "pi-sessions"), { recursive: true });
   const sessionFile = session(stateDir);
   // What a run that died left behind: a session record of another instance, with Pi on that session file.
   writeFileSync(join(stateDir, "sessions.json"), JSON.stringify({ instanceId: "crashed", at: Date.now(), peers: [...extra, { peer: "pi", meta: { launch: { kind: "pi", ...launch }, ...(sessionFile ? { sessionFile } : {}) } }] }));
-  const config = { ...DEFAULT_CONFIG, recovery, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")], ...piConfig }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
+  const config = { ...DEFAULT_CONFIG, recovery, peers, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")], ...piConfig }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
   const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 20, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
@@ -310,8 +312,19 @@ test("after a crash, with pi.auto_start off, a recorded Pi is reported and not s
   expect((await crash()).some((l) => l.includes("(recovery.auto_resume_after_crash is off)"))).toBe(true);
 });
 
-test("after a crash, a terminal Pi is reported with its command, and pi.auto_start starts a fresh headless one on the recorded model", async () => {
+test("after a crash, a terminal Pi is reported with its command and never replaced by a headless one while its start mode is tui (#269)", async () => {
   const { daemon, crash } = await crashedHub({ auto_start: true }, recorded, DEFAULT_CONFIG.recovery, { mode: "tui", backend: "dgx", model: "dgx/fast" });
+  for (let i = 0; i < 200 && !(await crash()).some((l) => l.startsWith("pi.auto_start")); i++) await Bun.sleep(10);
+  const report = await crash();
+  expect(report.some((l) => l.startsWith("pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file "))).toBe(true);
+  expect(report).toContain("pi.auto_start starts no headless Pi in place of a terminal one: run the command above, or set peers.pi.start_mode to headless");
+  expect(report.some((l) => l.startsWith("pi.auto_start started a fresh session"))).toBe(false);
+  await Bun.sleep(50);
+  expect(daemon.bus.stateOf("pi")).toBe("offline");
+});
+
+test("after a crash, a terminal Pi is reported with its command, and with a headless start mode pi.auto_start starts a fresh headless one on the recorded model", async () => {
+  const { daemon, crash } = await crashedHub({ auto_start: true }, recorded, DEFAULT_CONFIG.recovery, { mode: "tui", backend: "dgx", model: "dgx/fast" }, [], HEADLESS_PI);
   for (let i = 0; i < 200 && !(await crash()).some((l) => l.startsWith("pi.auto_start")); i++) await Bun.sleep(10);
   const report = await crash();
   expect(report.some((l) => l.startsWith("pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file "))).toBe(true);
@@ -518,7 +531,7 @@ for (const outcome of [{ code: 0 }, { code: 19 }, { signal: "SIGTERM" }] as cons
 
 test("pi.auto_start resumes one recorded idle-exit session and stops at a second exit within 60 s (#255)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-auto-exit-")), trigger = join(dir, "exit-now");
-  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
     cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-consume-trigger", "--exit-code", "0"] } };
   const { stateDir, daemon, console_ } = await hub(config);
   const notices: string[] = [];
@@ -544,7 +557,7 @@ test("pi.auto_start resumes one recorded idle-exit session and stops at a second
 
 test("pi.auto_start does not replace an idle-exit session whose persisted history cannot be verified (#255)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-auto-unpersisted-")), trigger = join(dir, "exit-now");
-  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
     cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--empty-session", "--exit-trigger", trigger, "--exit-code", "0"] } };
   const { stateDir, daemon, console_ } = await hub(config);
   const notices: string[] = [];
@@ -561,7 +574,7 @@ test("pi.auto_start does not replace an idle-exit session whose persisted histor
 });
 
 test("pi.auto_start reports a startup exit once and does not retry it (#255)", async () => {
-  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: [process.execPath, "-e", "process.exit(0)"] } };
+  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: [process.execPath, "-e", "process.exit(0)"] } };
   const { stateDir, daemon } = await hub(config);
   for (let i = 0; i < 200 && !readFileSync(join(stateDir, "hub.log"), "utf8").includes("startup failed;"); i++) await Bun.sleep(5);
   const log = readFileSync(join(stateDir, "hub.log"), "utf8");
@@ -573,7 +586,7 @@ test("pi.auto_start reports a startup exit once and does not retry it (#255)", a
 
 test("an active Pi turn exiting under auto_start stays offline for reconciliation (#255)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-auto-active-")), trigger = join(dir, "exit-now");
-  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
     cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-code", "0"] } };
   const { stateDir, daemon } = await hub(config);
   for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(5);
@@ -640,7 +653,7 @@ test("a watchdog Pi teardown gives inspection and ahub pi guidance rather than c
 
 test("a long Pi idle restart attempt rearms its 60 s bound after settling (#255)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-long-restart-")), trigger = join(dir, "exit-now");
-  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
     cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-consume-trigger", "--exit-code", "0"] } };
   const { stateDir, daemon } = await hub(config);
   for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(5);

@@ -25,8 +25,23 @@ person's commands, so the live leg is run by hand, on a scratch project:
    `.agenthub/routing.toml`; `ahub settings` in the terminal shows the same
    rows as the page.
 
-Record the date, the hub version, the browser and each step's result. Starting
-Pi in a TUI from the dashboard and changing a start mode belong to part 2.
+Record the date, the hub version, the browser and each step's result.
+
+Part 2, start modes (not run live either; `test/start-modes.test.ts` uses a
+recording terminal provider and a scripted hub, and no terminal was opened):
+
+6. In an Orca terminal of the project, `ahub up` with Pi enabled. `ahub pi`
+   opens Pi's TUI in that terminal; in another, `ahub pi --headless` moves it
+   to the background.
+7. Stop Pi. In the dashboard's Peers panel the Start control for pi says
+   "Start mode tui: opens ahub pi --mode tui in a terminal through orca".
+   Press it: a new Orca terminal runs the TUI and Pi attaches.
+8. In a settings session set `peers.pi.start_mode` to headless, stop Pi, press
+   Start again: Pi comes up headless and no terminal opens.
+9. Outside Orca with no `terminal.open`: the Start control shows no button and
+   the command to run; typing `pi` in `ahub console` prints the same refusal.
+10. With `terminal.open` set to a tmux or wezterm template in
+    `config.local.json`, Start opens Pi's TUI there.
 
 ## Codex resumed approval policy (#270)
 

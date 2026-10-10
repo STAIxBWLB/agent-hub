@@ -26,7 +26,10 @@ async function fixture(conductor: "claude" | "codex" = "claude", feed: "off" | "
     .replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-MARKER"]')
     .replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"');
   writeFileSync(join(dir, ".agenthub", "routing.toml"), routing);
-  const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 300, config: {
+  // #269: a TUI peer's start opens its fixed command through the terminal provider; this one records and opens nothing.
+  const opened: string[][] = [];
+  const terminal = () => ({ available: () => ({ ok: true as const, via: "fake" }), open: async (_title: string, argv: readonly string[]) => { opened.push([...argv]); return { ok: true as const, via: "fake" }; } });
+  const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 300, terminal, config: {
     ...DEFAULT_CONFIG, roles: { ...DEFAULT_CONFIG.roles, [conductor]: ["conductor"] }, conductor: { feed, approval_wait_s: 0 }, batch_ms: 0,
     memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
     kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")],
@@ -36,7 +39,7 @@ async function fixture(conductor: "claude" | "codex" = "claude", feed: "off" | "
     const client = await ControlClient.connect(dir, peer ? { role: "tools", peer } : { role: "console" });
     cleanup.push(() => client.close()); return client;
   };
-  return { dir, daemon, connect, lead: await connect(conductor), console_: await connect() };
+  return { dir, daemon, connect, opened, lead: await connect(conductor), console_: await connect() };
 }
 
 test("Claude and Codex tools callers need their explicit conductor role, including unlisted peers", async () => {
@@ -46,7 +49,9 @@ test("Claude and Codex tools callers need their explicit conductor role, includi
     const other = await f.connect("unlisted");
     for (const op of CONDUCTOR_TOOL_NAMES) expect((await other.request({ t: "task", op, args: {} })).ok).toBe(false);
     const preview = await f.lead.request({ t: "task", op: "hub_peer_start", args: { peer: "codex" } });
-    expect(preview.ok).toBe(true); expect(JSON.parse(preview.text).command).toBe("ahub codex");
+    expect(preview.ok).toBe(true); expect(JSON.parse(preview.text)).toEqual({ peer: "codex", mode: "tui", command: "ahub codex", opened: "fake" });
+    // The terminal got the hub's own words and nothing else; no Codex adapter was started in its place.
+    expect(f.opened).toHaveLength(1); expect(f.opened[0]!.slice(2)).toEqual(["--project", f.dir, "codex"]);
     expect(f.daemon.bus.peers.has("codex")).toBe(false);
     expect(readEvents(join(f.dir, "events.jsonl")).some(e => e.type === "conduct" && e.peer === id && e.action === "peer_start")).toBe(true);
   }
