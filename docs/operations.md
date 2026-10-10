@@ -1048,7 +1048,9 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
      `["tmux", "new-window", "-n", "{title}", "{command}"]`,
      `["wezterm", "start", "--cwd", "{cwd}", "--", "sh", "-c", "{command}"]`.
      Only a config file nobody committed may set it, and it is not a setting
-     the dashboard or `ahub settings` can write.
+     the dashboard or `ahub settings` can write. It is read at hub start.
+     `{command}` is quoted for a POSIX shell; `{title}` and `{cwd}` are raw,
+     so give each an argv element of its own.
   2. Orca, when the hub runs in an Orca worktree or an earlier `ahub <peer>`
      launch of this project recorded one (the path recovery uses).
 - **No provider:** the start is refused with the command to run by hand. It is

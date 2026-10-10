@@ -17,11 +17,15 @@ const until = async (check: () => boolean) => { for (let i = 0; i < 400 && !chec
 const MAIN = realpathSync(join(import.meta.dir, "../src/cli/main.ts"));
 const PI = [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")];
 
-/** A terminal provider that records what it was asked to run and opens nothing. */
-function provider(present = true) {
+/** A terminal provider that records what it was asked to run and opens nothing. `script` answers each open in turn. */
+function provider(present = true, script: (() => Promise<{ ok: true; via: string } | { ok: false; why: string; detail?: string }>)[] = []) {
   const opened: { title: string; argv: string[] }[] = [];
   const answer = () => present ? { ok: true as const, via: "fake" } : { ok: false as const, why: "no provider in this test" };
-  const opener: TerminalOpener = { available: answer, open: async (title, argv) => { const can = answer(); if (can.ok) opened.push({ title, argv: [...argv] }); return can; } };
+  const opener: TerminalOpener = { available: answer, open: async (title, argv) => {
+    const can = script.length ? await script.shift()!() : answer();
+    if (can.ok) opened.push({ title, argv: [...argv] });
+    return can;
+  } };
   return { opened, terminal: () => opener };
 }
 async function hub(config: Partial<HubConfig> = {}, terminal?: () => TerminalOpener) {
@@ -183,7 +187,22 @@ test("terminal providers: the machine-local template gets one quoted command lin
   await none.open("t", argv);
   expect(calls.at(-1)!.slice(0, 4)).toEqual(["terminal", "create", "--worktree", "id:wt-recorded"]);
   // The person's terminal carries no agent marker, whatever started the hub.
-  expect(personEnv({ PATH: "/bin", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "s", CODEX_THREAD_ID: "t", AGENTHUB_PEER_ID: "kimi", AGENTHUB_CHANNEL: "c", AGENTHUB_UNATTENDED: "1", AGENTHUB_RECOVERY_OPERATION: "op" })).toEqual({ PATH: "/bin" });
+  expect(personEnv({ PATH: "/bin", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "s", CODEX_THREAD_ID: "t", AGENTHUB_PEER_ID: "kimi", AGENTHUB_CHANNEL: "c", AGENTHUB_UNATTENDED: "1", AGENTHUB_RECOVERY_OPERATION: "op", ORCA_TERMINAL_HANDLE: "h", ORCA_WORKTREE_ID: "w" })).toEqual({ PATH: "/bin" });
+  // A project path is data, whatever it holds: a quote, a shell command, "$" patterns and the template's own
+  // placeholders reach the terminal's shell as one word, exactly, and run nothing.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "ahub-term-hostile-"))), hostile = join(base, "p'; touch INJECTED; '{cwd} $& $$ {title} {command}");
+  mkdirSync(hostile);
+  const seen = join(base, "seen.txt"), words = [process.execPath, "/pkg/main.ts", "--project", hostile, "pi", "--mode", "tui"];
+  const guarded = terminalOpener({ template: ["/bin/sh", "-c", `eval "set -- $1"; printf '%s\\n' "$#" "$4" > ${shellQuote(seen)}`, "sh", "{command}"], cwd: hostile, stateDir, env: {} });
+  expect(await guarded.open("pi (agent-hub)", words)).toEqual({ ok: true, via: "terminal.open" });
+  await until(() => existsSync(seen) && readFileSync(seen, "utf8").endsWith("\n"));
+  expect(readFileSync(seen, "utf8")).toBe(`7\n${hostile}\n`);
+  expect([existsSync(join(hostile, "INJECTED")), existsSync(join(base, "INJECTED"))]).toEqual([false, false]);
+  // {title} and {cwd} are substituted once, raw, in elements of their own.
+  const raw = join(base, "raw.txt");
+  await terminalOpener({ template: ["/bin/sh", "-c", `printf '%s\\n' "$1" "$2" > ${shellQuote(raw)}`, "sh", "{title}", "{cwd}", "{command}"], cwd: hostile, stateDir, env: {} }).open("pi (agent-hub)", words);
+  await until(() => existsSync(raw) && readFileSync(raw, "utf8").endsWith("\n"));
+  expect(readFileSync(raw, "utf8")).toBe(`pi (agent-hub)\n${hostile}\n`);
 }, 20_000);
 
 const MARKERS = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION"];
@@ -234,6 +253,11 @@ test("AC6: ahub pi asks for the TUI by default, --mode headless and --headless a
   }
   expect(last().args.backend).toBe("dgx");
   expect((await cli(root, ["pi", "--headless", "--mode", "tui"], { tty: true })).stderr).toContain("usage: ahub pi [--mode headless|tui | --headless]");
+  // --headless is --mode headless on every path of the command, the preview included.
+  const preview = await cli(root, ["pi", "--headless", "--print-command"]);
+  expect(preview.stderr).toBe(""); expect(preview.code).toBe(0);
+  expect(preview.stdout).toBe((await cli(root, ["pi", "--mode", "headless", "--print-command"])).stdout);
+  expect(preview.stdout).not.toBe((await cli(root, ["pi", "--mode", "tui", "--print-command"])).stdout);
   config({ memory: { enabled: false }, peers: { pi: { start_mode: "headless" } } });
   expect((await cli(root, ["pi"], { tty: true })).code).toBe(0);
   expect(last()).toMatchObject({ t: "start", args: { mode: "headless" } });
@@ -264,8 +288,10 @@ test("AC6: ahub pi asks for the TUI by default, --mode headless and --headless a
   await cli(root, ["pi"], { markers: { AGENTHUB_PEER_ID: "claude" } });
   expect(last()).toMatchObject({ t: "task", op: "hub_peer_start", args: { peer: "pi" } });
   expect(last().args.mode).toBeUndefined();
-  await cli(root, ["pi", "--mode", "headless"], { markers: { AGENTHUB_PEER_ID: "claude" } });
-  expect(last().args).toEqual({ peer: "pi", mode: "headless" });
+  for (const flags of [["--mode", "headless"], ["--headless"]]) {
+    await cli(root, ["pi", ...flags], { markers: { AGENTHUB_PEER_ID: "claude" } });
+    expect(last().args).toEqual({ peer: "pi", mode: "headless" });
+  }
 }, 60_000);
 
 test("AC6 dashboard: the Start control names the mode and where the terminal comes from, and offers no button it cannot honour", () => {
@@ -290,3 +316,28 @@ test("AC6 dashboard: the Start control names the mode and where the terminal com
   expect(page).toContain("Start mode tui, and the hub has no terminal to open (no terminal.open command is configured and this project has no Orca worktree on record). Run ahub pi --mode tui in a terminal.");
   expect(actions).toEqual([{ action: "start_peer", peer: "codex" }, { action: "start_peer", peer: "kimi" }]);
 });
+
+test("AC6: starts that arrive together open one terminal, a failed open frees the next try, and a provider's own error text stays in the log", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fake = provider(true, [
+    async () => ({ ok: false, why: "Orca could not create the terminal", detail: "stderr: /Users/someone/private/path refused" }),
+    async () => { await gate; return { ok: true, via: "fake" }; },
+  ]);
+  const rig = await hub({}, fake.terminal);
+  const ui = await rig.page();
+  // A provider failure: the caller gets the hub's wording and the manual command; the provider's text goes to hub.log only.
+  const failed = await ui.act({ action: "start_peer", peer: "pi" });
+  expect(failed.ok).toBe(false);
+  expect(failed.error).toContain("could not open a terminal for it (Orca could not create the terminal). Run ahub pi --mode tui in a terminal");
+  expect(JSON.stringify(failed)).not.toContain("private/path");
+  expect(rig.log()).toContain("terminal provider for pi: stderr: /Users/someone/private/path refused");
+  // Nothing was opened, so the next request is not held off by the 30 s guard. Three arrive together: one terminal.
+  const together = [ui.act({ action: "start_peer", peer: "pi" }), rig.client.request({ t: "peer_start", peer: "pi" }), ui.act({ action: "start_peer", peer: "pi" })];
+  await Bun.sleep(50);
+  release();
+  const results = await Promise.all(together);
+  expect(results.filter((r) => r.ok === true)).toHaveLength(1);
+  for (const refused of results.filter((r) => r.ok !== true)) expect(refused.error).toContain("a terminal for pi was opened");
+  expect(fake.opened).toHaveLength(1);
+}, 20_000);

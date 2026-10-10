@@ -3,7 +3,7 @@ import { personEnv } from "./child-process.ts";
 import { openStartTerminal, orcaExecutable, shellQuote, startTerminalWorktree, type CommandRunner } from "../cli/terminal-recovery.ts";
 
 /** #269: where a terminal for a hub-made start comes from, or why there is none. */
-export type TerminalOpened = { ok: true; via: string } | { ok: false; why: string };
+export type TerminalOpened = { ok: true; via: string } | { ok: false; why: string; detail?: string };
 export interface TerminalOpener {
   /** Whether a start could open a terminal now; opens nothing. */
   available(): TerminalOpened;
@@ -11,7 +11,10 @@ export interface TerminalOpener {
   open(title: string, argv: readonly string[]): Promise<TerminalOpened>;
 }
 
+// ponytail: a template command still running after this long is taken to be the terminal itself, so one that fails
+// later is reported as opened; a provider-specific readiness check (as recovery has for Orca) if that ever misleads.
 const SETTLE_MS = 1500;
+const PLACEHOLDER = /\{(command|title|cwd)\}/g;
 
 /**
  * The providers, in order: the machine-local `terminal.open` command template, then Orca (the path recovery uses)
@@ -38,18 +41,23 @@ export function terminalOpener(opts: { template: string[]; cwd: string; stateDir
           await openStartTerminal(worktree()!, command, title, opts.run ? { runner: opts.run } : undefined);
           return can;
         }
-        const [bin, ...args] = opts.template.map((part) => part.replaceAll("{command}", command).replaceAll("{title}", title).replaceAll("{cwd}", opts.cwd));
+        // One pass with a function: a placeholder inside a substituted value (a project path that contains "{cwd}")
+        // is not expanded again, and "$" in a path is not a replacement pattern. Only {command} is shell-quoted;
+        // {title} and {cwd} are raw text for an argv element of their own.
+        const values: Record<string, string> = { command, title, cwd: opts.cwd };
+        const [bin, ...args] = opts.template.map((part) => part.replace(PLACEHOLDER, (_, name: string) => values[name]!));
         // Detached and unwatched: the terminal is the person's and outlives the hub.
         const child = spawn(bin!, args, { cwd: opts.cwd, env: personEnv(env), stdio: "ignore", detached: true });
         const failed = await new Promise<string | undefined>((resolve) => {
           const timer = setTimeout(() => resolve(undefined), SETTLE_MS); // still running: it is the terminal itself
-          child.once("error", (error) => { clearTimeout(timer); resolve(error.message); });
+          child.once("error", (error) => { clearTimeout(timer); resolve(`terminal.open could not start (${(error as NodeJS.ErrnoException).code ?? "error"})`); });
           child.once("exit", (code, signal) => { clearTimeout(timer); resolve(code === 0 ? undefined : `terminal.open exited ${signal ?? code}`); });
         });
         child.unref();
         return failed ? { ok: false, why: failed } : can;
       } catch (error) {
-        return { ok: false, why: (error as Error).message };
+        // The provider's own text can name paths and its stderr: it goes to the hub's log, not to the caller.
+        return { ok: false, why: can.via === "orca" ? "Orca could not create the terminal" : "terminal.open could not be run", detail: (error as Error).message };
       }
     },
   };

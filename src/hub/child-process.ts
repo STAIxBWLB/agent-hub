@@ -17,7 +17,8 @@ export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proces
  */
 export function personEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = childEnv(source);
-  for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PEER_ID", "AGENTHUB_UNATTENDED"]) delete env[name];
+  // The Orca terminal the hub itself was started in is not this new terminal: a launch there must not record it as its own.
+  for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PEER_ID", "AGENTHUB_UNATTENDED", "ORCA_TERMINAL_HANDLE", "ORCA_WORKTREE_ID"]) delete env[name];
   return env;
 }
 

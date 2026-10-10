@@ -279,6 +279,9 @@ export const orcaExecutable = (): string => resolveOrcaExecutable();
 /**
  * #269: the Orca worktree a terminal for this project can be opened in: the one this process runs in, or the one the
  * last recorded `ahub <peer>` launch of this project used. Undefined when there is none or the record does not read.
+ * ponytail: the environment's worktree is taken as this project's; a hub started from another project's Orca terminal
+ * (`ahub --project`) opens the terminal there and `ahub <peer>` then fails its root readback. Ask Orca for the
+ * worktree's path and compare it if that case shows up.
  */
 export function startTerminalWorktree(projectRoot: string, stateDir: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (env.ORCA_WORKTREE_ID) return env.ORCA_WORKTREE_ID;

@@ -72,7 +72,8 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
         const fresh: Record<string, string> = {};
         for (const k of ["backend", "model"] as const) if (str(launch[k])) fresh[k] = str(launch[k])!;
         const sessionFile = str(meta.sessionFile) ?? str(launch.sessionFile);
-        if (!sessionFile) return { peer, fresh, how: "pi: no session file was recorded; start it again with ahub pi" };
+        // #269: a terminal Pi stays marked as one without a session file too, so nothing headless is started in its place.
+        if (!sessionFile) return { peer, fresh, ...(str(launch.mode) === "tui" ? { tui: true } : {}), how: "pi: no session file was recorded; start it again with ahub pi" };
         // A terminal Pi is run by the CLI that launched it, not by the hub: nothing here could start it again.
         if (str(launch.mode) === "tui") return { peer, fresh, tui: true, how: `pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file ${sessionFile}` };
         const args: Record<string, string> = { sessionFile };

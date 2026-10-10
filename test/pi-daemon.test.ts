@@ -321,6 +321,14 @@ test("after a crash, a terminal Pi is reported with its command and never replac
   expect(report.some((l) => l.startsWith("pi.auto_start started a fresh session"))).toBe(false);
   await Bun.sleep(50);
   expect(daemon.bus.stateOf("pi")).toBe("offline");
+  // The same when the terminal Pi had recorded no session file: it is still a terminal Pi.
+  const bare = await crashedHub({ auto_start: true }, () => undefined, DEFAULT_CONFIG.recovery, { mode: "tui", backend: "dgx" });
+  for (let i = 0; i < 200 && !(await bare.crash()).some((l) => l.startsWith("pi.auto_start")); i++) await Bun.sleep(10);
+  const bareReport = await bare.crash();
+  expect(bareReport).toContain("pi.auto_start starts no headless Pi in place of a terminal one: run the command above, or set peers.pi.start_mode to headless");
+  expect(bareReport.some((l) => l.startsWith("pi.auto_start started a fresh session"))).toBe(false);
+  await Bun.sleep(50);
+  expect(bare.daemon.bus.stateOf("pi")).toBe("offline");
 });
 
 test("after a crash, a terminal Pi is reported with its command, and with a headless start mode pi.auto_start starts a fresh headless one on the recorded model", async () => {

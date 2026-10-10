@@ -2002,9 +2002,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const startMode = (peer: string): StartMode => startModeOf(config.peers, peer);
   const startWords = (peer: string): string[] => peer === "pi" ? ["pi", "--mode", "tui"] : [peer];
   const startable = (peer: string) => peer !== "pi" || config.pi.enabled;
+  // ponytail: one terminal per peer per 30 s, by the clock. The hub cannot see whether the terminal it opened still
+  // exists, so a peer that never attaches can be opened again after that; track the provider's handle to do better.
   const opening = new Map<string, number>();
   const OPENING_MS = 30_000;
   /** For the dashboard's Start control: what a start of each peer would do now, and for a TUI where its terminal comes from. */
+  // ponytail: asks the provider on every dashboard poll (a launch-record read and a PATH lookup for Orca); cache it for a few seconds if a page feels it.
   const startPlans = () => STARTABLE_PEERS.filter(startable).map((peer) => {
     const mode = startMode(peer), owner = bus.peers.get(peer), can = mode === "tui" ? opener.available() : undefined;
     return { peer, mode, attached: !!owner && owner.state !== "offline", command: `ahub ${startWords(peer).join(" ")}`, ...(can ? (can.ok ? { via: can.via } : { why: can.why }) : {}) };
@@ -2014,19 +2017,26 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!isStartablePeer(peer) || !startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
     const mode = startMode(peer);
-    if (mode === "headless") return startPeer(peer, peer === "pi" ? { mode: "headless" } : {});
     const owner = bus.peers.get(peer);
+    if (mode === "headless") {
+      // A Pi a person runs in a terminal is theirs: a start made for them never takes it over as a headless one.
+      if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
+      return startPeer(peer, peer === "pi" ? { mode: "headless" } : {});
+    }
     if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
     const command = `ahub ${startWords(peer).join(" ")}`;
     const since = Date.now() - (opening.get(peer) ?? 0);
     if (since < OPENING_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };
+    // Reserved before the provider is awaited, so starts that arrive together open one terminal, not one each.
+    opening.set(peer, Date.now());
     // Every word is the hub's own: its runtime, its entry point, this project and a peer from the closed list.
-    const opened = await opener.open(`${peer} (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, ...startWords(peer)]);
+    const opened = await opener.open(`${peer} (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, ...startWords(peer)]).catch((error: Error) => ({ ok: false as const, why: "the terminal provider failed", detail: error.message }));
     if (!opened.ok) {
+      opening.delete(peer); // nothing was opened: the next request may try again at once
+      if (opened.detail) log(`terminal provider for ${peer}: ${opened.detail}`);
       const headless = peer === "claude" ? "" : `, or set its start mode to headless (ahub settings set peers.${peer}.start_mode headless)`;
       return { ok: false, error: `${peer} starts in its TUI and the hub could not open a terminal for it (${opened.why}). Run ${command} in a terminal${headless}`, command };
     }
-    opening.set(peer, Date.now());
     try { notify(`${peer}: ${by} opened a terminal running ${command} (${opened.via}); it attaches when its TUI is ready`); } catch { /* the terminal is open either way */ }
     return { ok: true, mode, opened: opened.via, command };
   }
@@ -2564,8 +2574,6 @@ export async function startDaemon(opts: DaemonOptions) {
     // #269: the conductor's start is the hub's own: the peer's start mode decides, never the caller.
     startMode: peer => startMode(peer),
     start: async peer => {
-      const existing = bus.peers.get(peer);
-      if (startMode(peer) === "headless" && existing instanceof PiPeer && (existing.recoveryMetadata().launch as { mode?: string })?.mode === "tui") throw new Error("Pi owns a TUI; ask the person to change its mode");
       const result = await hubStart(peer, "the conductor");
       if (result.ok !== true) throw new Error(String(result.error ?? "peer start failed"));
       return result;
@@ -2775,7 +2783,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const peer = def.path.at(-1)!;
       return { ok: true, lines: [permissionBoundary(peer), ...(isPermissionMode(value) ? [`${value}: ${permissionGrant(peer, value)}`] : ["inherit: the shared file's default, or ask"])] };
     }
-    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; read at the next hub start`] };
+    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; ${def.applies === "peer start" ? "applies at the peer's next start" : "read at the next hub start"}`] };
     try {
       const after = parseRouting(routingText(opts.cwd), routingCandidate(readOverlay(opts.cwd), def, value));
       const open = board.list().filter((task) => task.state !== "approved");

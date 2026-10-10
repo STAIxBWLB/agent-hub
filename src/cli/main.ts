@@ -732,6 +732,8 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   pi: async () => {
+    // --headless is --mode headless everywhere this command goes: the preview, the hub and the conductor path.
+    if (args.includes("--headless") && !args.includes("--mode")) args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
     if (args.includes("--print-command") || args.includes("--dry-run")) {
       try { return console.log(JSON.stringify(launcherPreview("pi", args, cwd, stateDir, unattendedEnv), null, 2)); }
       catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
@@ -1478,6 +1480,7 @@ async function runConductorCommand(): Promise<void> {
     input = { peer: args[0] };
   } else {
     // Native TUIs return a human launch command through the daemon; an agent shell never executes it.
+    if (cmd === "pi" && args.length === 1 && args[0] === "--headless") args.splice(0, 1, "--mode", "headless");
     if (args.length && !(cmd === "pi" && args.length === 2 && args[0] === "--mode" && ["headless", "tui"].includes(args[1] ?? ""))) fail(`conductor starts accept no launch overrides; use ahub ${cmd}${cmd === "pi" ? " [--mode headless|tui]" : ""}`);
     op = "hub_peer_start";
     // #269: a mode may only repeat the peer's start mode, which a person sets; without one the hub takes that mode.
