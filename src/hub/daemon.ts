@@ -44,7 +44,7 @@ import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, public
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
-import { Tasks } from "./tasks.ts";
+import { AssignmentUndeliveredError, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals, OVERLAY_FILE, parseRouting, routingText, type Routing } from "./routing.ts";
@@ -1860,7 +1860,10 @@ export async function startDaemon(opts: DaemonOptions) {
         if (task?.owner === e.peer && ["proposed", "in_progress", "changes_requested"].includes(task.state)) {
           const reason = tasks.isPii(task) ? "private delivery retries exhausted" : sanitize(e.reason ?? "delivery retries exhausted").replace(/\s+/g, " ").slice(0, 300);
           notify(`task ${tasks.publicTitle(task)}: undeliverable to ${e.peer}: ${reason}; escalating`);
-          void tasks.escalate(HUB, task.id, `Undeliverable to ${e.peer}: ${reason}`, "delivery_failed").catch(() => notify(`task ${tasks.publicTitle(task)} could not be escalated; inspect with ahub task show ${task.id}`));
+          void tasks.escalate(HUB, task.id, `Undeliverable to ${e.peer}: ${reason}`, "delivery_failed").catch((err) =>
+            // A saved move whose delivery failed: the tail already said "escalated from A to B"; say the rest of the
+            // truth, never "could not be escalated" (#297).
+            notify(err instanceof AssignmentUndeliveredError ? tasks.undeliveredNotice(err.task, err.cause) : `task ${tasks.publicTitle(task)} could not be escalated; inspect with ahub task show ${task.id}`));
         }
       }
     } else {
@@ -2401,7 +2404,8 @@ export async function startDaemon(opts: DaemonOptions) {
             const task = board.get(Number(id));
             if (!task || task.owner !== "pi" || tasks.isPii(task) || !["proposed", "in_progress", "changes_requested"].includes(task.state)) continue;
             try { await tasks.escalate(HUB, task.id, "Pi inference failed after accepting the turn. Prior tool effects may be partial or uncertain. Inspect the working tree and Pi session before continuing; do not blindly repeat writes or commands.", "inference_failed"); }
-            catch { notify(`Pi task #${task.id} could not be escalated; inspect it with ahub task show`); }
+            // A saved move whose delivery failed gets the undelivered notice, not "could not be escalated" (#297).
+            catch (err) { notify(err instanceof AssignmentUndeliveredError ? tasks.undeliveredNotice(err.task, err.cause) : `Pi task #${task.id} could not be escalated; inspect it with ahub task show`); }
           }
           if (!ids.length) notify("Pi inference failed; inspect its session before retrying any effects");
         },
