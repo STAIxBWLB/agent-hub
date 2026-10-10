@@ -598,8 +598,8 @@ test("a known steer rejection after native completion remains failed_safe", asyn
       const msg = JSON.parse(String(data));
       const reply = (result: unknown) => ws.send(JSON.stringify({ id: msg.id, result }));
       const note = (method: string, params: unknown) => ws.send(JSON.stringify({ method, params }));
-      if (msg.method === "initialize") return reply({ userAgent: "codex-cli/0.154.0" });
-      if (msg.method === "thread/start") return reply({ thread: { id: "th1" } });
+      if (msg.method === "initialize") return void reply({ userAgent: "codex-cli/0.154.0" });
+      if (msg.method === "thread/start") return void reply({ thread: { id: "th1" } });
       if (msg.method === "turn/start") { reply({ turn: { id: "turn1" } }); note("turn/started", { threadId: "th1", turn: { id: "turn1" } }); return; }
       if (msg.method === "turn/steer") {
         // A turn can finish while its steer is in flight. The ordered definitive refusal follows its completion.
