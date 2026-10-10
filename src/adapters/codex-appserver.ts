@@ -37,7 +37,7 @@ export interface CodexOptions {
   onItem?: (item: any, nativeTurn?: string) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
-  /** How long a fact's steer waits for app-server's answer (tests shorten it). */
+  /** Facts wait from send; durable steers wait only after their original turn ends (default 10 s). */
   steerTimeoutMs?: number;
   cwd: string;
   /** Optional launch environment; recovery authority is always removed before spawn. */
@@ -84,7 +84,7 @@ export class CodexPeer extends BasePeer {
   private freshThread = false;
   private readonly activeTurns = new Set<string>();
   private nextId = -1;
-  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer" }>();
+  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void }>();
   private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private answering: Envelope[] = []; // everything delivered or steered into the current turn: who its answer is for
@@ -228,12 +228,35 @@ export class CodexPeer extends BasePeer {
       return Promise.reject(new Error(`${this.id} has no steerable turn`));
     }
     const id = this.nextId--;
+    const expectedEpoch = this.contextEpoch;
     this.steers.add(id);
     return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = () => { clearTimeout(timer); this.steers.delete(id); };
+      const fail = (e: Error) => {
+        settle();
+        if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
+        reject(e);
+      };
       this.pending.set(id, {
-        deliveryId, kind: "steer",
-        resolve: () => {
-          this.steers.delete(id);
+        deliveryId, kind: "steer", expectedTurnId,
+        afterTurn: deliveryId ? () => {
+          if (timer !== undefined) return;
+          timer = setTimeout(() => {
+            const pending = this.pending.get(id);
+            this.pending.delete(id);
+            pending?.reject(new Error("steer unanswered: RPC timeout"));
+          }, this.opts.steerTimeoutMs ?? 10_000);
+          timer.unref?.();
+        } : undefined,
+        resolve: (result) => {
+          // Native completion can precede the RPC answer. A late refusal is definitive; a late acceptance is uncertain.
+          if (deliveryId && (this.link !== link || this.contextEpoch !== expectedEpoch || !this.activeTurns.has(expectedTurnId) ||
+            (typeof result?.turnId === "string" && result.turnId !== expectedTurnId))) {
+            fail(new Error("steer accepted after its original native turn ended or changed"));
+            return;
+          }
+          settle();
           this.primed = true;
           // The turn now answers these too; the highest hop wins so a steer cannot reset the hop cap.
           this.injected = replyParent(this.injected ? [this.injected, ...envs] : envs);
@@ -244,11 +267,7 @@ export class CodexPeer extends BasePeer {
           }
           resolve();
         },
-        reject: (e) => {
-          this.steers.delete(id);
-          if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
-          reject(e);
-        },
+        reject: fail,
       });
       const input = [{ type: "text", text: this.render(envs) }];
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
@@ -296,6 +315,16 @@ export class CodexPeer extends BasePeer {
       const p = this.pending.get(id);
       this.pending.delete(id);
       p?.reject(new Error(`steer unanswered: ${reason}`));
+    }
+  }
+
+  /** An ended native turn bounds only its unanswered durable steers; legacy steers retain their immediate retry. */
+  private endSteers(turnId: string | undefined): void {
+    for (const id of this.steers) {
+      const pending = this.pending.get(id);
+      if (!pending || pending.expectedTurnId !== turnId) continue;
+      if (pending.deliveryId) pending.afterTurn?.();
+      else { this.pending.delete(id); pending.reject(new Error("steer unanswered: turn completed")); }
     }
   }
 
@@ -363,8 +392,8 @@ export class CodexPeer extends BasePeer {
     this.contextEpoch++;
     this.activeTurns.clear();
     for (const p of this.pending.values()) {
-      if (p.deliveryId) this.delivery({ id: p.deliveryId, state: "needs_review", reason: "Codex TUI detached" });
-      p.reject(new Error("codex TUI detached"));
+      if (p.deliveryId && p.kind !== "steer") this.delivery({ id: p.deliveryId, state: "needs_review", reason: "Codex TUI detached" });
+      p.reject(new Error(p.kind === "steer" ? "Codex TUI detached" : "codex TUI detached"));
     }
     this.pending.clear();
     for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
@@ -470,6 +499,7 @@ export class CodexPeer extends BasePeer {
 
   private adopt(link: Link, threadId: unknown, fresh = false): void {
     if (typeof threadId !== "string" || !threadId) return;
+    this.abandonSteers("thread changed");
     this.tokenTotal = undefined;
     this.freshThread = fresh;
     this.link = link;
@@ -559,8 +589,8 @@ export class CodexPeer extends BasePeer {
       if (params.turn?.status === "failed") {
         this.opts.log?.(`[${this.id}] turn failed: ${params.turn.error?.message ?? "unknown error"}`);
       }
+      this.endSteers(nativeTurn);
       if (this.activeTurns.size) return;
-      this.abandonSteers("turn completed");
       if (typeof nativeTurn === "string") {
         for (const id of this.turnDeliveries.get(nativeTurn) ?? []) this.delivery({ id, state: params.turn?.status === "failed" ? "needs_review" : "completed", ...(params.turn?.status === "failed" ? { reason: params.turn?.error?.message ?? "Codex turn failed" } : {}) });
         this.turnDeliveries.delete(nativeTurn);
