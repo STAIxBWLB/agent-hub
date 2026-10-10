@@ -2020,6 +2020,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     if (mode === "headless") {
       // A Pi a person runs in a terminal is theirs: a start made for them never takes it over as a headless one.
+      // ponytail: an attached terminal Pi only. A terminal launch that the TUI has not claimed yet reads as offline,
+      // like one whose terminal was closed, so a headless start in that window replaces it; record when a launch was
+      // issued to tell the two apart.
       if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
       return startPeer(peer, peer === "pi" ? { mode: "headless" } : {});
     }
