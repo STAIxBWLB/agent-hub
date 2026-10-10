@@ -407,13 +407,18 @@ test("ACP child drops recovery authority while retaining account and state envir
 });
 
 test("watchdog: the cancelled prompt reports late and must not disturb the turn that followed it", async () => {
-  const { bus, said } = await setup({ watchdogMs: 1000 });
+  const failures: string[] = [];
+  const { bus, said } = await setup({ watchdogMs: 1000, onTurnFailure: (_envs, reason) => { failures.push(reason); } });
   bus.publish(newEnvelope("user", "SLOW", { to: ["kimi"] }));
   bus.publish(newEnvelope("user", "after", { to: ["kimi"] }));
   await until(() => said.length === 1);
   await new Promise((r) => setTimeout(r, 80));
   expect(said.map((e) => e.body)).toEqual(["echo: after"]); // nothing attributed to SLOW
   expect(peer!.state).toBe("idle");
+  // The cancelled turn's late result lands while the next turn runs (wire order: it precedes the next answer);
+  // the turn generation fences it: no failure report names the cancelled end (#296). (The next prompt's first
+  // attempt can still hit the fake's busy window and retry, as the rejection test below covers.)
+  expect(failures.filter((f) => f.includes("cancelled") || f.includes("without normal completion"))).toEqual([]);
 });
 
 test("a prompt the agent rejects is retried, then reported undeliverable instead of blocking the queue", async () => {
