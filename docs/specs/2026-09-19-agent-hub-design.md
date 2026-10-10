@@ -1972,7 +1972,8 @@ acts on the stopped state directory.
 - The record counts everything attributed to the task, the turn that approved it included: that turn ends after the
   approval and its usage arrives later, so the writer waits until no open turn is attributed to the task (polled every
   10 s, at most 30 minutes; a stopping hub writes once its peers have stopped). The first record written for a
-  task is final; a label binds to the current board's task, or with `--created` to one from before a reset. Task events carry the board's move `reason` (a closed
+  task is final; a label binds to the current board's task, else to the store's only record with that id, or with
+  `--created` to a named one from before a reset. Task events carry the board's move `reason` (a closed
   list) so reassignments are counted by reason.
 - Recording never blocks or fails the task flow: the writer runs after the board event, and a failure is one
   hub.log line per run. ponytail: it reads the whole events file for each record; an incremental per-task index
@@ -1984,3 +1985,29 @@ acts on the stopped state directory.
 - A trusted guard uses `PreEffectToolRefusal` only when that operation has performed no task or board effect; PII screening and its telemetry record may precede the refusal. Pi receives the same `error: <message>` refusal as the control client, and its session/call receipt is `done`. Initial task ownership/dependency/state checks and conductor entry peer/mode/assignment/escalation validation opt into the type; shared helpers default to ordinary errors, and conductor checks after an awaited release validation stay ordinary. Generic errors, board readback failures after a write, and receipt settlement write failures remain uncertain/pending and are never repeated. A legacy pending row has no pre-effect proof in its stored fingerprint/state/result, so startup preserves it; neither present board state nor a matching error message establishes historical refusal.
 - Each Pi owner reports one exit with cause, exit code or signal, whether startup completed, whether a turn/tool was active, whether teardown was expected, and the last validated tool name only. TUI shutdown/owner-loss and verified stop teardown lack observed OS status and record unknown. A successfully stopped claimed TUI owner reports once; a never-owned launch reports no invented exit. Internal teardown notices direct inspection and `ahub pi`, without claiming a person requested them. Console notices name the next action or automatic-start state; headless code 0 is still an exit and settles active deliveries as uncertain.
 - With `pi.auto_start`, an unexpected idle headless exit attempts its verified persisted session once in a 60 s window. The daemon owns the attempt/window across adapter replacements, blocks throughout an in-flight attempt, and rearms the 60 s window when that attempt settles. It checks current-owner identity, completed startup, turn/tool inactivity, start serialization, shutdown and recovery before and after awaited receipt drain/session capture. Missing or invalid persisted state leaves Pi offline with `ahub pi` guidance, with no fresh-session fallback. A second exit inside the window stays offline. Requested stops, stale owners, startup failures, active turns/tools and native terminal exits never trigger this automatic path; crash recovery's existing #66 behavior remains separate.
+## Amendment: benchmarks (issue #251)
+
+- `ahub bench` runs a person's suite file (tasks with a starting commit, an optional setup and a verify command)
+  against the peers attached to a hub, in a project opted in with `bench.enabled`, because every attempt resets the work
+  tree (`git checkout --force --detach <commit>` with HEAD checked against the pin, `git clean -ffdx -e /.agenthub`, then a
+  clean-tree check). Before
+  anything changes the runner requires the project to be the root of its repository, nothing tracked under `.agenthub/`
+  (in any letter case) in the tree or in any suite ref, every ref to be a commit, which it pins for the run, and a
+  clean tree. The runner is a console client: it proposes each
+  task as the console does and polls the board, so the task flow is unchanged and no new control request exists.
+- `setup` and `verify` run in their own process group, bounded; the group is stopped at the bound, on an interrupt and
+  when the command exits. An approved attempt's measures come from #247's `taskRecords` for the task proposed last with
+  that id, read once the turns started since its proposal have ended (waiting only while their peers are busy or
+  paused, at most 10 minutes, outside the attempt's duration); a timeout, an error, an interrupted wait or an unreadable
+  hub status leaves none, never partial ones.
+- Results go to `~/.agenthub/bench/<run>.jsonl` (ids, outcomes, exit codes, counts, times; never suite text or command
+  output). A run's state comes from its end record or its runner's liveness (`processLiveness`). Comparisons are
+  derived when asked: an arm is every run of it that is over (a stopped run included), runs of different suites or
+  suite versions are not mixed unless asked, and each difference has a seeded 95% bootstrap interval, inconclusive
+  below five attempts counted for that measure per arm (errors are not counted for pass rate or wall time).
+- A task that times out stops the run, because an agent may still work in the tree the next attempt would reset.
+  ponytail: a board state to withdraw an open task would let the run continue. The fingerprint holds what the hub's
+  status reports (a requested model for Pi, permission modes once #242 lands); ponytail: read each peer's launch
+  settings for the rest.
+- The dashboard snapshot carries run summaries and per-arm measures only. `bench run` is a person's (identity gate,
+  wherever `--json` stands); reading results is not. Schema and commands: [bench](../bench.md).

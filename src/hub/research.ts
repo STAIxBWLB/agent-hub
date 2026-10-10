@@ -152,6 +152,7 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
   if (!records.length) return 0;
   const file = researchFile(projectId, home);
   mkdirSync(researchDir(home), { recursive: true, mode: 0o700 });
+  chmodSync(researchDir(home), 0o700); // mkdir's mode applies only when it creates the directory
   const held = new Set(readStore(file).flatMap((r) => r.kind === "task" ? [recordKey(r)] : []));
   const added = records.filter((r) => r.kind === "label" || !held.has(recordKey(r)));
   if (!added.length) return 0;
@@ -167,17 +168,18 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
  * store's only record with that id. Throws why there is none, or which ones to choose from.
  */
 export function labelTarget(records: ResearchRecord[], events: StampedEvent[], task: number, created?: string): TaskRecord {
-  const mine = records.filter((r): r is TaskRecord => r.kind === "task" && r.task === task);
+  // A record without a proposal time (its proposal was not in the events) cannot be told apart, so it takes no label.
+  const mine = records.filter((r): r is TaskRecord => r.kind === "task" && r.task === task && r.createdAt !== null);
   if (created !== undefined) {
     return mine.find((r) => r.createdAt === created) ?? fail(`no research record for task #${task} proposed at ${created}${mine.length ? ` (it has: ${mine.map((r) => r.createdAt).join(", ")})` : ""}`);
   }
   const proposed = events.filter((e) => e.type === "task" && e.id === task && e.event === "proposed").at(-1);
   if (proposed) {
     return mine.find((r) => r.createdAt === proposed.at)
-      ?? fail(`task #${task} has no research record yet: it is not approved, its record still waits for the turns that approved it, or it was approved while research was off (ahub research backfill builds that one)`);
+      ?? fail(`task #${task} has no research record yet: it is not approved, its record still waits for the turns that approved it, or it was approved while research was off (ahub research backfill builds that one)${mine.length ? `; an earlier task #${task} from before a reset is labelled with --created ${mine.map((r) => r.createdAt).join(" or ")}` : ""}`);
   }
   if (mine.length === 1) return mine[0]!;
-  if (!mine.length) throw new Error(`no research record for task #${task}`);
+  if (!mine.length) throw new Error(records.some((r) => r.kind === "task" && r.task === task) ? `task #${task}'s research record has no proposal time (its proposal was not in the events), so it takes no label` : `no research record for task #${task}`);
   throw new Error(`task #${task} is not on this hub's board and the store has ${mine.length} records with that id; name one with --created <time>: ${mine.map((r) => r.createdAt).join(", ")}`);
 }
 const fail = (message: string): never => { throw new Error(message); };

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -80,7 +80,10 @@ test("measures count each task once, a label binds to its task and not to a late
     task(2, "done", "in_review", { owner: "kimi", reviewer: "claude" }), task(2, "approved", "approved", { owner: "kimi", reviewer: "claude" }),
   ], "alpha", writer);
   const before = epoch([100, 300]);
+  mkdirSync(join(home, "research"), { mode: 0o755 }); // an existing, wider directory is narrowed
   appendRecords("alpha", before, home);
+  expect(statSync(join(home, "research")).mode & 0o777).toBe(0o700);
+  expect(statSync(researchFile("alpha", home)).mode & 0o777).toBe(0o600);
   expect(appendRecords("alpha", before, home)).toBe(0); // the same tasks are not written twice
   appendRecords("alpha", [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey("alpha"), task: 2, createdAt: before[1]!.createdAt!, label: "reverted", at: at() }], home);
   const r = researchReport(readStore(researchFile("alpha", home)));
@@ -128,6 +131,11 @@ test("an owner who gets a task back counts it once; a move without a reason is n
   expect(() => labelTarget(both, [], 1)).toThrow("name one with --created <time>");
   expect(labelTarget(both, [], 1, both[0]!.createdAt!)).toBe(both[0]!);
   expect(() => labelTarget(both, [], 1, "2000-01-01T00:00:00.000Z")).toThrow("it has:");
+  // A new #1 still open while the old #1 is recorded: the refusal names the old one's --created.
+  const reopened = [...again, task(1, "proposed", "proposed")];
+  expect(() => labelTarget(both, reopened, 1)).toThrow(`an earlier task #1 from before a reset is labelled with --created ${both[0]!.createdAt} or ${both[1]!.createdAt}`);
+  // A record without a proposal time takes no label.
+  expect(() => labelTarget([{ ...both[0]!, createdAt: null }], [], 1)).toThrow("has no proposal time");
 });
 
 test("labelling a task is a person's; reading the research measures is not", () => {

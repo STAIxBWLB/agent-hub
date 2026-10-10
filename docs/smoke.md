@@ -1343,3 +1343,14 @@ Not run yet. Record the terminal, its theme and the result per step.
 - Press `?`, Enter on an approval and Tab back to the stream; check that the key
   table, the labeled detail and the stream's rule above the footer read in both
   themes.
+
+## `ahub bench` live run (#251)
+
+Not run yet (unverified). In a scratch git repository kept for benchmarks (`"bench": { "enabled": true }`, `.agenthub/`
+untracked), with at least two real peers attached:
+
+- Run a two-task suite with `--repeat 2` under one arm; check each attempt's outcome against its `verify` command and
+  that the tree is reset between attempts.
+- Let one task run past its `timeout_s`; check the run stops, names the open task and reads `stopped`.
+- Press Ctrl-C during a `verify`; check the attempt reads `interrupted` and nothing it started keeps running.
+- Run a second arm, then `ahub bench compare <arm> <arm>`; check the dashboard's Benchmarks section shows both.

@@ -534,6 +534,23 @@ ahub research backfill             # build this project's records once from even
 ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, incomplete, wrong, abandoned)
 ```
 
+## Benchmarks
+
+In a git repository kept for benchmarks (`"bench": { "enabled": true }` in its `.agenthub/config.json`, a clean tree),
+`ahub bench` runs a suite of tasks against the peers attached to its hub and compares configurations: pass rate, first
+pass, tokens and wall time per attempt, with bootstrap intervals between arms. Each attempt resets the tree to the
+task's commit, so never enable it in a project you work in. The project must be the root of its repository with
+nothing tracked under `.agenthub/`, and the suite file lives outside its tree ([suite format and store](bench.md)).
+
+```bash
+ahub bench run ../suites/suite.json --arm baseline --repeat 5   # a person's: resets the tree, proposes the tasks
+ahub bench status                                     # the run in progress
+ahub bench compare baseline ripwire-on                # arms side by side, inconclusive below 5 attempts each
+ahub bench export --format csv
+```
+
+The dashboard's Benchmarks section shows the latest runs and, per suite with two or more arms, the comparison.
+
 ## Turns and undo
 
 In a git work tree the hub snapshots the project's tracked and unignored files (the

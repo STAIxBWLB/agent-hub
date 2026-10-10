@@ -57,6 +57,7 @@ import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
+import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
 import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
@@ -98,6 +99,8 @@ export interface HubConfig {
   snapshots: { enabled: boolean; keep: number };
   /** #247: opt-in research records of each approved task in ~/.agenthub/research (ids, counts and tokens only). */
   research: { enabled: boolean };
+  /** #251: a project kept for benchmarks: `ahub bench run` resets its work tree between attempts. */
+  bench: { enabled: boolean };
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
@@ -143,6 +146,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
   research: { enabled: false },
+  bench: { enabled: false },
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false },
@@ -158,7 +162,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "limits", "review", "recovery", "capabilities", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string): { roles: Record<string, string[]>; conductor: HubConfig["conductor"] } {
@@ -245,6 +249,7 @@ export function loadConfig(cwd: string): HubConfig {
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     research: { enabled: file.research?.enabled === true }, // opt-in: anything but true is off
+    bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     review: { ...DEFAULT_CONFIG.review, ...file.review },
     recovery: { ...DEFAULT_CONFIG.recovery, ...file.recovery },
@@ -2383,6 +2388,24 @@ export async function startDaemon(opts: DaemonOptions) {
     };
   }
 
+  /** #251: this machine's benchmark runs for the dashboard: summaries and per-arm measures, never suite text. */
+  // ponytail: reads every run file on each dashboard poll; an index of run summaries if the store grows large.
+  function benchView(): { bench?: { runs: RunSummary[]; arms: { suite: string; arm: string; runs: number; measures: Measures }[]; minute: number; minAttempts: number } } {
+    try {
+      const runs = readRuns();
+      if (!runs.length) return {};
+      // An arm per suite version (name and file hash), from every run of it that is over, a stopped one included.
+      const groups = new Map<string, typeof runs>();
+      for (const r of runs.filter((x) => x.state !== "running" && x.state !== "unknown")) {
+        const key = `${r.header.suite}\0${r.header.suiteHash}\0${r.header.arm}`;
+        groups.set(key, [...(groups.get(key) ?? []), r]);
+      }
+      const versions = (suite: string) => new Set(runs.filter((r) => r.header.suite === suite).map((r) => r.header.suiteHash)).size;
+      return { bench: { runs: runs.slice(0, 20).map(runSummary), minute: Math.floor(Date.now() / 60_000), minAttempts: MIN_ATTEMPTS, // the minute keeps "running for" current
+        arms: [...groups.values()].map((rs) => ({ suite: versions(rs[0]!.header.suite) > 1 ? `${rs[0]!.header.suite} (${rs[0]!.header.suiteHash.slice(0, 8)})` : rs[0]!.header.suite,
+          arm: rs[0]!.header.arm, runs: rs.length, measures: benchReport(rs).overall })) } };
+    } catch { return {}; } // an unreadable store never breaks the dashboard
+  }
   function uiSnapshot(after: number) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
@@ -2407,6 +2430,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
+      ...benchView(),
     };
   }
 

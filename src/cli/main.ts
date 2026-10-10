@@ -34,6 +34,8 @@ import { setupOllamaModel } from "./models-setup.ts";
 import { unknownContext } from "../hub/context-window.ts";
 import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
+import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
+import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { appendRecords, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { formatReport, summarize, formatTaskReport, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
@@ -99,6 +101,7 @@ function audit(outcome: "run" | "refused" | "invalid"): void {
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
 if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
 if (identity.role === "tools") audit("run");
+const invokedFrom = process.cwd(); // relative paths a person types (a bench suite) are theirs, not the project's
 try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cwd}`); }
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
 const lifecycle = { inspectProject, startProject, stopProject };
@@ -867,6 +870,62 @@ const commands: Record<string, () => Promise<void> | void> = {
   logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
   export: () => {
     for (const e of readEvents(join(stateDir, "events.jsonl"), since())) console.log(JSON.stringify(e));
+  },
+  bench: async () => {
+    // #251: benchmark suites run against the peers attached here, and their comparison across arms.
+    const json = args.includes("--json");
+    const [sub, ...rest] = args.filter((a) => a !== "--json");
+    if (sub === "run") {
+      const { one, rest: positional } = takeFlags(rest, ["--arm", "--repeat", "--tasks"], []);
+      const suite = positional[0];
+      const repeat = one["--repeat"] === undefined ? 1 : Number(one["--repeat"]);
+      if (!suite || positional.length !== 1 || !one["--arm"]?.trim() || !Number.isSafeInteger(repeat) || repeat < 1 || repeat > 100) {
+        fail("usage: ahub bench run <suite.json> --arm <label> [--repeat 1..100] [--tasks a,b]");
+      }
+      await benchPreflight(cwd, loadConfig(cwd).bench.enabled); // the suite's refs are checked once it is read
+      let interrupted = false;
+      const stop = () => { interrupted = true; console.log("stopping at the next check: the attempt in progress is recorded as interrupted (a task still open is named)"); };
+      process.on("SIGINT", stop);
+      try {
+        const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd));
+        return console.log(formatBenchReport(benchReport(readRuns().filter((r) => r.header.run === run))).join("\n"));
+      } finally { process.off("SIGINT", stop); }
+    }
+    const runs = readRuns();
+    if (sub === undefined || sub === "list") return console.log(json ? JSON.stringify(runs.map(runSummary), null, 2) : formatRuns(runs).join("\n"));
+    if (sub === "status") {
+      const live = runs.filter((r) => r.state === "running" || r.state === "unknown");
+      return console.log(json ? JSON.stringify(live.map(runSummary), null, 2) : live.length ? formatRuns(live).join("\n") : "no benchmark run is running");
+    }
+    if (sub === "report") {
+      const run = runs.find((r) => r.header.run === rest[0]) ?? fail(`usage: ahub bench report <run> (ahub bench list shows the runs)`);
+      const r = benchReport([run]);
+      return console.log(json ? JSON.stringify(r, null, 2) : formatBenchReport(r).join("\n"));
+    }
+    if (sub === "compare") {
+      const mixed = rest.includes("--mixed");
+      const { one, rest: picks } = takeFlags(rest.filter((a) => a !== "--mixed"), ["--suite"], []);
+      const scoped = one["--suite"] ? runs.filter((r) => r.header.suite === one["--suite"]) : runs;
+      const groups = picks.map((pick) => {
+        const byRun = scoped.filter((r) => r.header.run === pick);
+        const chosen = byRun.length ? byRun : armRuns(scoped, pick);
+        if (!chosen.length) fail(`no run, or arm with a run that is over, named ${pick}${one["--suite"] ? ` in suite ${one["--suite"]}` : ""}`);
+        return { arm: byRun.length ? `${pick} [${byRun[0]!.header.arm}]` : pick, runs: chosen };
+      });
+      if (groups.length < 2) fail("usage: ahub bench compare <run|arm> <run|arm>... [--suite <name>] [--mixed] [--json]");
+      const differs = sameSuite(groups);
+      if (differs && !mixed) fail(`${differs}; compare runs of one suite file (name runs by id, or --suite when the names differ), or pass --mixed to compare them anyway`);
+      const c = benchCompare(groups);
+      return console.log(json ? JSON.stringify(c, null, 2) : formatCompare(c).join("\n"));
+    }
+    if (sub === "export") {
+      const format = rest.includes("--format") ? rest[rest.indexOf("--format") + 1] : "jsonl";
+      if (format !== "jsonl" && format !== "csv") fail("--format takes jsonl or csv");
+      if (format === "csv") return void process.stdout.write(benchCsv(runs));
+      for (const r of runs) for (const record of [r.header, ...r.attempts, ...(r.end ? [r.end] : [])]) console.log(JSON.stringify(record));
+      return;
+    }
+    fail("usage: ahub bench run|list|status|report|compare|export (ahub help bench)");
   },
   research: () => {
     // #247: measures from the opt-in research records; `export` writes them out, `backfill` builds them from events.jsonl.
