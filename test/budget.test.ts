@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetHooks, type Moved, type PauseRecord } from "../src/hub/budget.ts";
+import { AcpPeer } from "../src/adapters/acp.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
+import { newEnvelope } from "../src/hub/envelope.ts";
 
 function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdir(), "agenthub-budget-")), "hub.db"), cfg = DEFAULT_BUDGET) {
   const clock = { now: 1_800_000_000_000 };
@@ -25,6 +29,53 @@ function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdi
   return { budget, clock, log, resumed, settle, db, hooks };
 }
 const MIN = 60_000;
+
+test("ACP quota resets retry an untouched envelope once per window without consuming poison attempts (#306)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-quota-reset-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "quota", instanceId: "quota-run" });
+  const bus = new Bus({ batchMs: 0, journal });
+  let now = 1_800_000_000_000;
+  let reports = 0;
+  const checkpoint = () => { throw new Error("an exhausted agent must not receive a checkpoint"); };
+  const budget = new Budget(join(dir, "hub.db"), DEFAULT_BUDGET, {
+    pause: peer => bus.pause(peer), resume: peer => bus.resume(peer),
+    requestCheckpoint: checkpoint, platformContext: async () => undefined,
+    canHandOff: () => false, attached: peer => bus.peers.has(peer), handoff: async () => [],
+    resumed: () => {}, notify: () => {},
+  }, () => now);
+  const peer = new AcpPeer("kimi", {
+    cwd: dir, cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal"],
+    onQuotaRefusal: window => { budget.report("kimi", [window], true); reports++; },
+  });
+  const undeliverable: string[] = [];
+  bus.tap(event => { if (event.t === "undeliverable") undeliverable.push(event.env.id); });
+  const until = async (condition: () => boolean) => {
+    for (let i = 0; i < 400 && !condition(); i++) await Bun.sleep(10);
+    expect(condition()).toBe(true);
+  };
+  try {
+    await peer.start(); bus.add(peer);
+    const env = newEnvelope("user", "QUOTA_REFUSAL", { to: ["kimi"] });
+    bus.publish(env);
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await until(() => reports === attempt && bus.isPaused("kimi") && bus.queueIds("kimi").includes(env.id));
+      expect(budget.record("kimi")!.resetsAt).toBe(now + 300 * MIN);
+      expect(budget.status().kimi!.windows[0]!.source).toBe("kimi ACP usage-limit refusal");
+      expect(bus.queueIds("kimi").filter(id => id === env.id)).toHaveLength(1);
+      expect(journal.list("kimi").filter(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toHaveLength(attempt);
+      expect(bus.queueSummary("kimi").needsReview).toBe(0);
+      expect(bus.attemptState()).toEqual({});
+      expect(undeliverable).toEqual([]);
+      if (attempt < 4) {
+        now = budget.record("kimi")!.resetsAt + MIN; // existing coordinator reset grace, on a virtual clock
+        budget.tick();
+        expect(budget.record("kimi")).toBeUndefined();
+      }
+    }
+  } finally {
+    await peer.stop(); bus.closeJournal(); budget.close(); rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("over the gate: checkpoint first, pause second, hand over with the summary; repeating the reading does nothing", async () => {
   const { budget, clock, log, settle } = setup();

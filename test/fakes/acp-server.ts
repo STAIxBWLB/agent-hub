@@ -5,11 +5,13 @@
 // loop-protection error (message plus structured data).
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { KIMI_2_1_1_5H_REFUSAL_PREFIX } from "../../src/adapters/acp-quota.ts";
 
 const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
 const send = (m: unknown) => process.stdout.write(`${JSON.stringify(m)}\n`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let busy = false;
+let heldQuotaRefusal: (() => void) | undefined;
 let cancel: (() => void) | undefined;
 // Receipt-order fixture: a later mode reply is an ordered transport barrier after the cancelled prompt result.
 let cancelledResultSent: (() => void) | undefined;
@@ -26,6 +28,14 @@ async function prompt(id: number, text: string) {
   if (busy) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: "turn.agent_busy" } });
   busy = true;
   let verdict = "";
+  // Opt-in quota fixture only: ordinary prompts and existing cancellation modes are unchanged.
+  if (process.argv.includes("--quota-refusal") && text.includes("QUOTA_REFUSAL")) {
+    const message = arg("--quota-error-text") ?? (process.argv.includes("--quota-unrecognized") ? "Authentication required: 403 another provider refusal" : KIMI_2_1_1_5H_REFUSAL_PREFIX + " To continue now, purchase extra usage or upgrade your plan.");
+    const refuse = () => { busy = false; cancel = undefined; send({ jsonrpc: "2.0", id, error: { code: -32603, message } }); };
+    if (text.includes("QUOTA_REFUSAL_AFTER_ACTIVITY") || text.includes("QUOTA_REFUSAL_HELD")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "quota fixture activity" } } } });
+    if (text.includes("QUOTA_REFUSAL_HELD")) { heldQuotaRefusal = refuse; cancel = () => { busy = false; }; return; }
+    return refuse();
+  }
   // Occupancy trailing updates (#285): flat `{used, size}` (docs/smoke.md), held for the test's barrier; 2.1.1's
   // source text emits it after the prompt resolves (read from the source, not observed live). OCCUPANCY is 45%,
   // OCCUPANCY_HIGH 90% (over a 0.8 gate), OCCUPANCY_INVALID the numbers normalizeACPUsage rejects,
@@ -170,6 +180,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       modePending = false;
       const ackRecord = arg("--mode-ack-record");
       if (ackRecord) appendFileSync(ackRecord, `${msg.params.modeId}\n`);
+      const quota = heldQuotaRefusal; heldQuotaRefusal = undefined; quota?.(); // old quota error precedes the mode reply on stdout
       flushHeld(); // held trailing updates go out before the reply: a resolved setPermissionMode is the barrier (#285)
       if (process.argv.includes("--refuse-mode")) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "mode disabled" } });
       else { modes.currentModeId = msg.params.modeId; send({ jsonrpc: "2.0", id: msg.id, result: {} }); }

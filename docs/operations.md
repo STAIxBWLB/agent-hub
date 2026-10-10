@@ -1133,6 +1133,10 @@ A budget pause remains authoritative until the budget command explicitly
 overrides it or the window resets. Check `ahub status` and `ahub board` after
 a pause or handoff.
 
+Kimi Code CLI 2.1.1's observed 5-hour usage-limit refusal now creates a hard budget reading (`kimi ACP usage-limit refusal`). `ahub status` shows a budget pause and `ahub budget` shows its source and reset estimate. The refusal gives no reset timestamp, so the hub estimates the reset at five hours after it was observed and resumes on the next budget tick after the existing one-minute grace. With `budget.wait_max_min` below that estimate, the existing budget relay automatically hands open tasks to an attached eligible peer; routing skips Kimi while paused. No checkpoint is requested from an exhausted agent.
+
+A refused prompt with no acceptance or activity is requeued without a review hold. At the estimated reset it is tried again; another quota refusal pauses it again without consuming the poison-envelope retry count. Work that already started remains held for review. Other errors keep their ordinary review behavior. Only the observed Kimi 5-hour text is recognised; weekly/monthly limits and other ACP vendors, including Qwen, remain unverified. The recognised text and its provenance live in `src/adapters/acp-quota.ts`.
+
 Quota also shapes routing and handoffs:
 
 - Among peers a task could go to, those with quota readings are ordered by

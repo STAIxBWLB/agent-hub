@@ -2168,6 +2168,8 @@ export async function startDaemon(opts: DaemonOptions) {
         autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
         onTokens: onKimiTokens,
+        // Pause synchronously before the adapter requeues a provider-refused prompt (#306).
+        onQuotaRefusal: (window) => budget.report("kimi", [window], true),
         // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
         // context reading (#285 phase 1), never a tokens event or a budget window. The reading is bound to the
         // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid

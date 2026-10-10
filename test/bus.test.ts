@@ -44,6 +44,27 @@ class NativeFakePeer extends BasePeer {
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
+for (const paused of [false, true]) test(`quota metadata preserves poison attempts unless the journal-less peer is paused: ${paused} (#306)`, async () => {
+  const bus = new Bus({ batchMs: 0 });
+  const peer = new FakePeer("kimi");
+  peer.deliver = async envs => {
+    peer.set("busy");
+    peer.got.push(...envs);
+    if (paused) bus.pause(peer.id);
+    peer.onFailed?.(envs, { quota: true });
+  };
+  try {
+    await peer.start(); bus.add(peer);
+    const env = newEnvelope("user", "quota refusal", { to: [peer.id] });
+    bus.publish(env);
+    const failed = () => peer.got.some(item => item.id === env.id) && bus.queueIds(peer.id).includes(env.id);
+    for (let i = 0; i < 200 && !failed(); i++) await Bun.sleep(10);
+    expect(failed()).toBe(true);
+    expect(bus.queueIds(peer.id).filter(id => id === env.id)).toHaveLength(1);
+    expect(bus.attemptState()).toEqual(paused ? {} : { [`${peer.id}:${env.id}`]: 1 });
+  } finally { bus.closeJournal(); await peer.stop(); }
+});
+
 async function trio(watchdogMs?: number, opts: Partial<BusOptions> = {}) {
   const bus = new Bus({ retryMs: 15, batchMs: 0, ...opts }); // batchMs 0 = every envelope is ready at once
   const peers = ["claude", "codex", "kimi"].map((id) => new FakePeer(id, watchdogMs));
