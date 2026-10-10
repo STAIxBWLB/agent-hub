@@ -2272,7 +2272,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const capture = config.memory.enabled
         ? new Capture(memory, { project: chain.at(-1)!, cwd: opts.cwd, skip: skipTools(), deny: config.local.deny })
         : undefined;
-      const permit = (title: string, tool?: string) => {
+      const permit = (title: string, tool?: string): Promise<boolean> => {
         const selected = permissionMode("local");
         if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool))) return Promise.resolve(!stopping && bus.peers.get("local") === local);
         return onPermission({
