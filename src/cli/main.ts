@@ -297,7 +297,7 @@ async function killOrphan(pid: number, root: string, diagnostic: (text: string) 
 async function orphanDoctor(kill: boolean, options: ReturnType<typeof outputOptions>): Promise<void> {
   const orphans = registeredProjects().filter(project => !existsSync(project.root)).map(project => ({ project, pids: orphanPids(project) }));
   if (options.json) console.log(JSON.stringify(orphans, null, 2));
-  else printOutput(renderOrphans(orphans, options.columns, Date.now(), options.full), options.color);
+  else printOutput(renderOrphans(orphans, options.columns, Date.now(), options.full, kill), options.color);
   let failed = 0;
   const diagnostic = (text: string) => options.json
     ? console.error(paint([{ text }], false))
@@ -896,15 +896,15 @@ const commands: Record<string, () => Promise<void> | void> = {
       const op = outputArguments()[1] ?? "status";
       let request: Record<string, unknown> = { t: "execution_budget", op, ...(outputArguments()[2] ? { id: outputArguments()[2] } : {}) };
       if (op === "configure") {
-        if (!args[2]) { hub.close(); fail("usage: ahub budget execution configure <config.json>"); }
-        try { request = { t: "execution_budget", op, config: JSON.parse(readFileSync(args[2]!, "utf8")) }; }
+        if (!outputArguments()[2]) { hub.close(); fail("usage: ahub budget execution configure <config.json>"); }
+        try { request = { t: "execution_budget", op, config: JSON.parse(readFileSync(outputArguments()[2]!, "utf8")) }; }
         catch { hub.close(); fail("cannot read execution budget JSON configuration"); }
       }
       const result = await hub.request(request); hub.close();
       if (!result.ok) fail(result.error);
       const data = result.budgets ?? result.budget ?? { disabled: result.disabled };
       if (op !== "status" || options.json) return console.log(JSON.stringify(data, null, 2));
-      return printOutput(renderExecutionBudgetStatus(data, options.columns, Date.now(), options.full), options.color);
+      return printOutput(renderExecutionBudgetStatus(result.budgets, options.columns, Date.now(), options.full), options.color);
     }
     let set: Record<string, unknown> | undefined;
     if (args[0] === "resume") {

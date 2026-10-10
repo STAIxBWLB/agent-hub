@@ -22,7 +22,9 @@ function fixture(options: { failFullBoard?: boolean } = {}) {
   const status = { projectId: project.id, pid: process.pid, cwd: root, controlPort: 12345, instanceId: "output-fixture", peers: { claude: { state: "idle", queued: 0, attached: true, context: { used: 0.5, freshness: "fresh", source: "claude_statusline", measuredAt: Date.now() } } }, tasks: { proposed: 1 } };
   const tasks: any[] = [{ id: 1, state: "proposed", class: "implement", owner: "claude", reviewer: "codex", title: "검증할 긴 제목 ".repeat(40), signals: [], created: Date.now() }];
   const budget = { claude: { windows: [{ id: "week", used: 0.25, source: "fixture", at: Date.now(), resetsAt: Date.now() + 60_000 }] } };
-  const deliveries = [{ id: "abcdef12-1111-2222-3333-444444444444", peer: "codex", state: "needs_review", revision: 2, createdAt: now - 60_000, important: true, originals: [{ from: "claude", to: ["codex"], body: "[pii]", private: true, ts: now - 60_000 }] }];
+  const envelopeId = "12345678-1111-2222-3333-444444444444";
+  const deliveries = [{ id: "abcdef12-1111-2222-3333-444444444444", peer: "codex", state: "needs_review", revision: 2, createdAt: now - 60_000, updatedAt: now - 30_000, envelopeIds: [envelopeId], important: true }];
+  const delivery = { ...deliveries[0], messages: [{ id: envelopeId, from: "claude", priority: "important", kind: "task", body: "[private: inspect the associated task with ahub task show]" }] };
   const budgets = [{ id: "fixture-budget", kind: "run", peers: ["local"], limits: { model_calls: 5 }, used: { model_calls: 2 }, units: { model_calls: { used: 2, limit: 5, remaining: 3 } }, createdAt: now - 60_000, updatedAt: now }];
   const turnStore = new Turns(join(stateDir, "hub.db"));
   turnStore.begin("turn-fixture-12345678", "codex", "start-tree");
@@ -42,7 +44,7 @@ function fixture(options: { failFullBoard?: boolean } = {}) {
         : req.t === "status" ? { status }
         : req.t === "budget" ? { budget, gate: 0.95 }
         : req.t === "execution_budget" ? { budgets }
-        : req.t === "queue" ? req.op === "show" ? { delivery: deliveries[0] } : { deliveries }
+        : req.t === "queue" ? req.op === "show" ? { delivery } : { deliveries }
         : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
@@ -70,7 +72,7 @@ function fixture(options: { failFullBoard?: boolean } = {}) {
     const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     return { code, stdout, stderr };
   };
-  return { run, status, tasks, budget, requests, root, project, deliveries, budgets, turns, events };
+  return { run, status, tasks, budget, requests, root, project, deliveries, delivery, budgets, turns, events };
 }
 
 test("status JSON remains byte-identical and adds no quota read; board/budget JSON print their rendered data without color", async () => {
@@ -149,7 +151,7 @@ test("remaining JSON commands keep fetched documents without color", async () =>
   const expectedProjects = [{ ...f.project, state: "running", status: f.status }];
   const cases: [string[], unknown][] = [
     [["projects"], expectedProjects], [["status", "--all"], expectedProjects], [["queue", "list"], f.deliveries],
-    [["queue", "show", f.deliveries[0]!.id], f.deliveries[0]], [["turns"], f.turns],
+    [["queue", "show", f.deliveries[0]!.id], f.delivery], [["turns"], f.turns],
     [["models", "status"], { state: "disabled", enabled: false }], [["budget", "execution", "status"], f.budgets],
     [["report"], summarize(f.events)], [["report", "--by", "task"], summarizeByTask(f.events)],
   ];
@@ -174,7 +176,8 @@ test("remaining text command paths use complete readable tables and labelled fie
   }
   const turns = await f.run(["turns"]);
   for (const name of f.turns[0]!.changed) expect(turns.stdout).toContain(name);
-  const queue = await f.run(["queue", "show", f.deliveries[0]!.id]); expect(queue.stdout).toContain("[pii]");
+  const queue = await f.run(["queue", "show", f.deliveries[0]!.id]); expect(queue.stdout).toContain("[private: inspect the associated task with ahub task show]");
+  expect(queue.stdout).not.toContain("[pii]");
 });
 
 
@@ -192,4 +195,14 @@ test("successful filtered-board fallback records run rather than refused for an 
   const result = await f.run(["board", "proposed"], { AGENTHUB_PEER_ID: "codex" });
   expect(result.code).toBe(0); expect(result.stdout).toContain("proposed"); expect(result.stderr).toContain("stages unavailable");
   expect(drainCliAudits(join(f.root, ".agenthub/state")).map(row => row.outcome)).toEqual(["run"]);
+});
+
+
+test("execution configure removes presentation flags before reading its file", async () => {
+  const f = fixture(); const file = join(f.root, "execution.json");
+  const config = { id: "nightly-run", kind: "run", peers: ["local"], limits: { model_calls: 5 } };
+  writeFileSync(file, JSON.stringify(config));
+  const result = await f.run(["budget", "--color=never", "execution", "configure", file]);
+  expect(result.code, result.stderr).toBe(0);
+  expect(f.requests.find(request => request.t === "execution_budget")).toMatchObject({ op: "configure", config });
 });
