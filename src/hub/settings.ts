@@ -138,7 +138,14 @@ function refuseTracked(cwd: string, file: StoredFile): void {
   const tracked = configTracked(cwd, file);
   if (tracked) throw new Error(`.agenthub/${file} is committed to git; settings write only machine-local files. Remove it from the repository (git rm --cached) and ignore it`);
   // Unknown is not untracked where there is a repository to ask; only a project outside git has nothing tracked.
-  if (tracked === undefined && existsSync(join(cwd, ".git"))) throw new Error(`git could not confirm that .agenthub/${file} is untracked; nothing was written`);
+  if (tracked === undefined && insideRepository(cwd)) throw new Error(`git could not confirm that .agenthub/${file} is untracked; nothing was written`);
+}
+/** Whether this directory or one above it holds a `.git`: a repository git should have been able to answer for. */
+function insideRepository(dir: string): boolean {
+  for (let at = dir; ; at = dirname(at)) {
+    if (existsSync(join(at, ".git"))) return true;
+    if (dirname(at) === at) return false;
+  }
 }
 /** Keeps the one previous version, then replaces (or removes) the file. */
 function store(cwd: string, stateDir: string, file: StoredFile, key: string, previous: string | null, next: string | null): void {
@@ -277,7 +284,11 @@ export function undoSetting(cwd: string, stateDir: string, validate: (scratch: s
   if (digest(readText(path)) !== record.written) throw new Error(`.agenthub/${record.file} changed since the last settings write; nothing was undone`);
   if (record.previous !== null && typeof record.previous !== "string") throw new Error("nothing to undo");
   refuseTracked(cwd, record.file);
-  if (record.file === OVERLAY_FILE) checkRouting?.(parseRouting(routingText(cwd), record.previous === null ? undefined : parseOverlay(record.previous)));
+  if (record.file === OVERLAY_FILE) {
+    // The parser always reads what is put back; the caller's check is on top of it.
+    const restored = parseRouting(routingText(cwd), record.previous === null ? undefined : parseOverlay(record.previous));
+    checkRouting?.(restored);
+  }
   else checkConfigText(cwd, record.previous, validate);
   replaceFile(path, record.file, record.previous);
   rmSync(undoFile(stateDir), { force: true });

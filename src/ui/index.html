@@ -237,10 +237,11 @@ function settingRow(row, raise) {
     read = () => select.value === INHERIT ? null : row.type === 'boolean' ? select.value === 'true' : select.value;
     actions.append(select);
     if (row.group === 'Permissions') {
-      // never-ask: the person types the peer it is for, as the console asks for y.
+      // never-ask: the person types the peer it is for, as the console asks for y. Removing the machine-local value
+      // can leave a never-ask from the shared file in force, so inherit offers the same field.
       const peer = row.key.split('.').pop();
       confirm = el('input'); confirm.type = 'text'; confirm.placeholder = 'type ' + peer + ' to confirm never-ask'; confirm.setAttribute('aria-label', 'Type ' + peer + ' to confirm never-ask for ' + peer); confirm.autocomplete = 'off'; confirm.spellcheck = false;
-      const sync = () => { confirm.hidden = select.value !== 'never-ask'; }; select.addEventListener('change', sync); sync();
+      const sync = () => { confirm.hidden = select.value !== 'never-ask' && select.value !== INHERIT; }; select.addEventListener('change', sync); sync();
       actions.append(confirm);
     }
   }
@@ -250,7 +251,7 @@ function settingRow(row, raise) {
     preview.addEventListener('click', () => void previewSetting(row, read(), out, preview)); actions.append(preview);
   }
   const save = el('button', 'Save', 'primary'); save.type = 'button'; save.dataset.mutation = 'project'; save.disabled = managerMode && !snapshotValid; save.setAttribute('aria-label', 'Save ' + row.label);
-  save.addEventListener('click', () => { const payload = {action:'setting', key:row.key, value:read()}; if (confirm && !confirm.hidden) payload.confirm = confirm.value.trim(); void action(payload, save); });
+  save.addEventListener('click', () => { const payload = {action:'setting', key:row.key, value:read()}; if (confirm && !confirm.hidden && confirm.value.trim()) payload.confirm = confirm.value.trim(); void action(payload, save); });
   actions.append(save); node.append(actions, out);
   return node;
 }
@@ -261,14 +262,11 @@ function renderSettings(settings) {
   const raise = typeof settings.sessionUntil === 'number' && settings.sessionUntil > Date.now();
   // Written only when it changes: a status region that is rewritten every second is read out every second.
   setText($('settings-session'), raise ? 'Settings session: ' + Math.max(1, Math.ceil((settings.sessionUntil - Date.now()) / 60000)) + ' min left' : 'Read, lower and safe switches only');
-  // The frame (the undo row and the groups) follows the list of keys. A row sits in a slot of its own and is rebuilt
-  // only when its own data changed, so a value being typed in one row survives a change to another.
-  update('settings', [settings.rows.map((row) => row.key), settings.undo || ''], (target) => {
+  // The frame (the groups) follows the list of keys. The undo row and every setting sit in slots of their own and
+  // are rebuilt only when their own data changed, so a value being typed in one row survives a save of another.
+  update('settings', settings.rows.map((row) => row.key), (target) => {
     settingSlots.clear();
-    if (settings.undo) {
-      const row = el('div', undefined, 'row'); row.append(el('p', 'Last settings write: ' + settings.undo, 'meta'));
-      const actions = el('div', undefined, 'actions'); actions.append(button('Undo last write', {action:'setting_undo'})); row.append(actions); target.append(row);
-    }
+    const undo = el('div'); settingSlots.set('', { node: undo, signature: null }); target.append(undo);
     for (const group of SETTING_GROUPS) {
       const rows = settings.rows.filter((row) => row.group === group);
       if (!rows.length) continue;
@@ -279,6 +277,14 @@ function renderSettings(settings) {
       target.append(box);
     }
   });
+  const undoSlot = settingSlots.get(''), undoKey = settings.undo || '';
+  if (undoSlot && undoSlot.signature !== undoKey) {
+    undoSlot.signature = undoKey; undoSlot.node.replaceChildren();
+    if (undoKey) {
+      const row = el('div', undefined, 'row'); row.append(el('p', 'Last settings write: ' + undoKey, 'meta'));
+      const actions = el('div', undefined, 'actions'); actions.append(button('Undo last write', {action:'setting_undo'})); row.append(actions); undoSlot.node.append(row);
+    }
+  }
   for (const row of settings.rows) {
     const slot = settingSlots.get(row.key), signature = JSON.stringify([row, raise]);
     if (!slot || slot.signature === signature) continue;

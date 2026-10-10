@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { runInNewContext, Script } from "node:vm";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { assign, currentRouting, loadRouting, OVERLAY_FILE, overlayToml, parseOverlay } from "../src/hub/routing.ts";
 import { checkSettingValue, NEVER_EDITABLE, settingDef, settingRefusal, SETTINGS, undoSetting, writeConfigSetting, writeRoutingSetting, type SettingDef, type SettingRow } from "../src/hub/settings.ts";
@@ -29,8 +29,9 @@ function project() {
 }
 const text = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : null);
 
-async function hub(config: Partial<HubConfig> = {}) {
+async function hub(config: Partial<HubConfig> = {}, files: { routing?: boolean } = {}) {
   const p = project();
+  if (files.routing === false) rmSync(p.file("routing.toml")); // a project that runs on the shipped routing template
   const daemon = await startDaemon({ cwd: p.cwd, stateDir: p.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
     config: { ...loadConfig(p.cwd), batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], ...config } });
   cleanup.push(() => daemon.stop());
@@ -416,6 +417,17 @@ test("AC7: the Settings section renders every row from the registry with its sou
   expect(typed.value).toBe("kimi, pi");
   expect(root.all().find((n) => n.id === "setting-permission-kimi")).not.toBe(other);
   expect(root.text()).toContain("not attached: only ask can be set");
+  // A stored default can be removed (inherit), which can leave a never-ask from the shared file in force: the same typed confirmation is offered.
+  const stored: SettingRow = { key: "permission_modes.kimi", group: "Permissions", label: "kimi: mode at hub start", type: "enum", values: ["ask", "ask-when-needed", "never-ask"], file: "config.local.json", applies: "hub start", risk: "raises", floor: "ask", value: "ask", source: "config.local.json" };
+  const one = runInNewContext(`${code}; settingRow(row, true)`, { ...context, row: stored }) as Node;
+  const choice = one.all().find((n) => n.id === "setting-permission_modes-kimi")!, typedConfirm = one.all().find((n) => n.attrs["aria-label"] === "Type kimi to confirm never-ask for kimi")!;
+  expect(typedConfirm.hidden).toBe(true);
+  choice.value = "__inherit__"; choice.listeners.change!(); expect(typedConfirm.hidden).toBe(false);
+  sent.length = 0;
+  one.all().find((n) => n.attrs["aria-label"] === "Save kimi: mode at hub start")!.listeners.click!(); // nothing typed: no confirm is sent, and the hub decides
+  typedConfirm.value = "kimi";
+  one.all().find((n) => n.attrs["aria-label"] === "Save kimi: mode at hub start")!.listeners.click!();
+  expect(sent).toEqual([{ action: "setting", key: "permission_modes.kimi", value: null }, { action: "setting", key: "permission_modes.kimi", value: null, confirm: "kimi" }]);
   // A settings session says how long it has, and the raise hint goes.
   context.settings = { rows, sessionUntil: Date.now() + 14.5 * 60_000 };
   runInNewContext(`${code}; renderSettings(settings)`, context);
@@ -582,4 +594,19 @@ test("review of #290: never-ask comes back only with its confirmation, never thr
   for (const action of [{ action: "setting", key: "permission.kimi", value: "ask-when-needed" }, { action: "setting", key: "routing.stay_switch", value: "enforce" }, { action: "setting_undo" }]) expect((await forwarded(action)).error).toContain("ahub ui --settings");
   expect(await forwarded({ action: "setting", key: "snapshots.enabled", value: false })).toMatchObject({ ok: true });
   expect((await forwarded({ action: "setting_preview", key: "routing.stay_switch", value: "enforce" })).ok).toBe(true);
+}, 20_000);
+
+test("review of #290, round 2: with MLX off and no project routing.toml, routing settings still write; only a pin a person sets is refused", async () => {
+  // The shipped template pins mlx for some classes and stays capability-aware: those pins are not the person's to migrate.
+  const rig = await hub({ mlx: { ...DEFAULT_CONFIG.mlx, enabled: false } }, { routing: false });
+  const set = (key: string, value: unknown) => rig.client.request({ t: "settings_set", key, value });
+  expect(TEMPLATE).toContain('pi_backend = "mlx"');
+  expect(await set("routing.classes.implement.peers", ["kimi", "codex"])).toMatchObject({ ok: true });
+  expect(await set("routing.stay_switch", "shadow")).toMatchObject({ ok: true });
+  expect(await set("routing.classes.implement.pi_backend", "dgx")).toMatchObject({ ok: true });
+  const pinned = await set("routing.classes.test.pi_backend", "mlx");
+  expect(pinned.ok).toBe(false);
+  expect(pinned.error).toBe(`${OVERLAY_FILE}: [classes.test] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx`);
+  expect(parseOverlay(text(rig.file(OVERLAY_FILE))!)).toEqual({ stay_switch: "shadow", classes: { implement: { peers: ["kimi", "codex"], pi_backend: "dgx" } } });
+  expect((await rig.client.request({ t: "settings_undo" })).ok).toBe(true); // undo passes the same check
 }, 20_000);

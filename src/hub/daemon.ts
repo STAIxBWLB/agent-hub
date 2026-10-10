@@ -2678,7 +2678,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
   /** A pin the hub could not start with: refused before a write or an undo puts it on disk. */
-  const routingCheck = (routing: Routing) => { const problem = config.mlx.enabled === false ? mlxPinProblem(routing, true) : undefined; if (problem) throw new Error(problem); };
+  // As at hub start: with no project routing.toml only a pin the overlay sets counts, never the shipped template's own.
+  const routingCheck = (routing: Routing) => { const problem = config.mlx.enabled === false ? mlxPinProblem(routing, existsSync(join(opts.cwd, ".agenthub", "routing.toml"))) : undefined; if (problem) throw new Error(problem); };
   function settingsUndo(authority: SettingAuthority): Record<string, unknown> {
     // The previous version can hold a wider value than the one in force, so undo is never an ordinary session's.
     if (authority === "ordinary") return { ok: false, error: "undo can put back a value that widens what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings undo in a terminal" };
