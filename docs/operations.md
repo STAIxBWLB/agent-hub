@@ -1872,13 +1872,15 @@ worker must not retry that call; hand the task off or stop. Two consecutive
 unanswered requests end the current turn and produce a console notice. An
 expiry counts only when no person answered a request of that peer while it
 was pending, so a batch of parallel requests does not stop a worker whose
-person is answering; a grant served from the always-allow cache is not an
-answer and does not reset the count. A new turn also resets it. The turn ends
+person is answering; a grant served from the always-allow cache or a permission
+mode is not an answer and does not reset the count. A new turn also resets it. The turn ends
 through the same abort path an execution-budget stop uses: Pi stays attached
 and the sender is told the approval reason. A Pi whose extension cannot abort
-a turn (an older hub extension) goes offline instead; restart it with
-`ahub pi` and settle the held delivery after inspecting prior work. A
-cancelled tool withdraws
+a turn (an older hub extension or a runtime without native abort support) goes
+offline instead. Inspect prior work, restart with `ahub pi`, find the held
+delivery with `ahub queue list --peer pi`, inspect it with `ahub queue show <id>`,
+then explicitly settle it with `ahub queue resolve <id> --action completed|retry|discard --reason "<text>"`.
+A cancelled tool withdraws
 its request immediately; a later `ahub permit` answer is refused and cannot
 create an always-allow grant. Tool requests from a previous turn or an older
 extension missing session/turn identity are refused before execution; restart

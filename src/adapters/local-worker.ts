@@ -314,6 +314,9 @@ export class LocalPeer extends BasePeer {
           this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
         });
         if (generation !== this.turn || (turnSignal.aborted && picked !== "expired")) return "aborted";
+        // Legacy permit callbacks can represent a person's denial without provenance. A true
+        // result may be automatic, so it must never reset the unanswered-request streak.
+        if (!observed && picked === false) observe({ source: "person", answerEpoch: (this.approvalAnswerEpoch ?? 0) + 1 });
         if (!observed && picked === "expired") observe({ source: "expired", answerEpoch: this.approvalAnswerEpoch ?? 0, eligibleExpiry: true });
         return picked;
       },

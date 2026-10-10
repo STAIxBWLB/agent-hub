@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { connect } from "node:net";
 import { createHash } from "node:crypto";
-import { runInNewContext } from "node:vm";
 import { taskProgress } from "../src/ui/task-progress.ts";
 import { initialConsoleState, renderConsole } from "../src/cli/console-state.ts";
 import { startDashboard } from "../src/hub/ui.ts";

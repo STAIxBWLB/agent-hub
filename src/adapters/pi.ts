@@ -27,6 +27,7 @@ export interface PiExit {
 }
 export interface PiToolContext { userBash: boolean; isCurrent: () => boolean; onApproval: (provenance: ApprovalProvenance) => void; }
 export interface PiToolResult { text: string; exitCode: number | null; }
+class PiToolSettlementFailure extends Error {}
 export interface PiOptions {
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
@@ -309,6 +310,7 @@ export class PiPeer extends BasePeer {
 
   private async startImpl(): Promise<void> {
     this.stopping = false;
+    this.approvalTurnAbort = false;
     this.exitReported = false; this.started = false; this.lastToolName = undefined; this.shutdownExit = undefined;
     this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false;
     mkdirSync(this.opts.stateDir, { recursive: true });
@@ -404,7 +406,7 @@ export class PiPeer extends BasePeer {
     if (settling.length) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([Promise.all(settling), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Pi managed tools did not settle after cancellation")), this.opts.stopGraceMs ?? 5_000); })]);
+        await Promise.race([Promise.all(settling), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new PiToolSettlementFailure("Pi managed tools did not settle after cancellation")), this.opts.stopGraceMs ?? 5_000); })]);
       } catch (error) { unsettled = error; } // a tool past its grace must not block the teardown (#253): stop reports it at the end
       finally { clearTimeout(timer); }
     }
@@ -536,7 +538,7 @@ export class PiPeer extends BasePeer {
   private handleBridgeEvent(event: any): void {
     if (event.type === "session_start") {
       if (!this.ownerClaimed) { this.ownerClaimed = true; this.ownerToken = String(event.ownerToken ?? ""); }
-      if (event.approvalTurnAbort === true) this.approvalTurnAbort = true;
+      this.approvalTurnAbort = event.approvalTurnAbort === true;
       this.sessionId = String(event.sessionId ?? ""); this.sessionFile = String(event.sessionFile ?? "");
       this.ownerPid = Number.isInteger(event.pid) ? event.pid : undefined; this.ownerSignature = typeof event.signature === "string" ? event.signature : undefined;
       if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) { this.opts.log?.(`[${this.id}] Pi session identity mismatch`); return; }
@@ -712,7 +714,12 @@ export class PiPeer extends BasePeer {
       await this.stop();
       // The process exit handler may already have reported this failure.
       if (this.activeEnvs.length) this.fail(error);
-    } catch {
+    } catch (stopError) {
+      if (stopError instanceof PiToolSettlementFailure && this.state === "offline") {
+        this.opts.log?.(`Pi teardown completed with a managed-tool settlement failure: ${(stopError as Error).message}`);
+        if (this.activeEnvs.length) this.fail(error);
+        return;
+      }
       this.activeEnvs = envs; this.currentReply = reply;
       this.stopping = true;
       this.setState("busy");

@@ -502,6 +502,41 @@ test("a managed tool that outlives the stop grace does not block the teardown; s
 }, 30_000);
 
 
+test("unsupported approval turn abort stays offline after a managed tool misses the stop grace (#253)", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-approval-stop-grace-"));
+  const logs: string[] = [], answers: string[] = [], deliveries: any[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", stopGraceMs: 50,
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] }, tools: [], log: (text) => logs.push(text),
+    executeTool: async (name, _args, _id, _session, _signal, context) => {
+      if (name === "stuck") return new Promise<string>(() => {});
+      context!.onApproval({ source: "expired", answerEpoch: 0, eligibleExpiry: true });
+      return "error: approval expired: no person answered";
+    },
+  });
+  peer.onMessage = (text) => { answers.push(text); };
+  peer.onDelivery = (event) => deliveries.push(event);
+  try {
+    await peer.start();
+    await peer.deliver([newEnvelope("user", "run tools", { to: ["pi"] })], "stuck-approval-delivery");
+    const launch = peer.tuiLaunch!;
+    const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/event", { type: "agent_start", generation: 1 });
+    const call = (name: string) => post("/tool", { name, toolCallId: name, sessionId: peer.recoveryMetadata().sessionId, generation: 1, args: {} });
+    const stuck = call("stuck").catch(() => undefined);
+    for (let i = 0; i < 100 && (peer as any).activeTools === 0; i++) await Bun.sleep(5);
+    await call("expiry-one"); await call("expiry-two");
+    for (let i = 0; i < 200 && peer.state !== "offline"; i++) await Bun.sleep(10);
+    await stuck;
+    expect(peer.state).toBe("offline");
+    expect(logs.join("\n")).toContain("managed-tool settlement failure");
+    expect(logs.join("\n")).not.toContain("session remains fenced");
+    expect(answers.join("\n")).toContain("no person answered");
+    expect(deliveries.some((event) => event.id === "stuck-approval-delivery" && event.state === "needs_review")).toBe(true);
+  } finally { await peer.stop().catch(() => undefined); rmSync(stateDir, { recursive: true, force: true }); }
+}, 30_000);
+
+
 for (const denied of [false, true]) test(`an old normal budget reply cannot change the new Pi turn (${denied ? "denied" : "remaining"})`, async () => {
   const stateDir = mkdtempSync(join(process.cwd(), ".pi-budget-lineage-"));
   let release!: () => void, entered = false;

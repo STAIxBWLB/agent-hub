@@ -156,6 +156,60 @@ test("the real extension forwards native abort and the person's shell exit statu
   } finally { settle?.(); server.stop(true); }
 }, 10_000);
 
+for (const supported of [true, false]) test(`the real extension ${supported ? "aborts and settles the turn with its approval reason" : "refuses an approval abort when the native runtime cannot abort"}`, async () => {
+  const reason = "Pi turn stopped after two unanswered approvals; no person answered. Do not retry the calls.";
+  const events: any[] = [], acknowledgements: any[] = [];
+  let started!: () => void, acknowledged!: () => void;
+  const turnStarted = new Promise<void>((resolve) => { started = resolve; });
+  const commandAcknowledged = new Promise<void>((resolve) => { acknowledged = resolve; });
+  let commands = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname;
+    if (path === "/commands") {
+      await turnStarted;
+      if (commands++ === 0) return Response.json({ command: { id: "approval-abort", type: "abort_budget", generation: 1, cause: "approval", reason } });
+      await commandAcknowledged;
+      return Response.json({ command: { id: "driver-shutdown", type: "shutdown" } });
+    }
+    const body = await req.json() as any;
+    if (path === "/event") {
+      events.push(body);
+      if (body.type === "agent_start") started();
+    } else if (path === "/ack") {
+      acknowledgements.push(body);
+      if (body.id === "approval-abort") acknowledged();
+    }
+    return Response.json({ ok: true });
+  } });
+  let stopChild: (() => Promise<void>) | undefined;
+  try {
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/pi-extension-driver.ts"), join(import.meta.dir, "../src/pi/extension.ts"), supported ? "approval-abort" : "approval-abort-unsupported"], {
+      stdout: "pipe", stderr: "pipe", env: { ...process.env, AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${server.port}`, AGENTHUB_PI_BRIDGE_TOKEN: "test-token", AGENTHUB_PI_TOOLS: JSON.stringify([{ name: "read", description: "read", parameters: { type: "object" } }]) },
+    });
+    stopChild = async () => { if (proc.exitCode === null) { proc.kill(); await proc.exited; } };
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    expect(await proc.exited).toBe(0); expect(err).toBe("");
+    expect(JSON.parse(out.trim())).toEqual({ abortCalls: supported ? 1 : 0 });
+    expect(events.find((event) => event.type === "session_start")?.approvalTurnAbort).toBe(supported);
+    const ends = events.filter((event) => event.type === "agent_end");
+    const settled = events.filter((event) => event.type === "agent_settled");
+    if (supported) {
+      expect(acknowledgements.find((ack) => ack.id === "approval-abort")).toEqual({ id: "approval-abort", ok: true });
+      expect(ends).toHaveLength(2); // the forced failure and the native abort callback
+      for (const end of ends) expect(end).toMatchObject({ generation: 1, failed: true, error: reason });
+      expect(settled).toEqual([{ type: "agent_settled", generation: 1 }]);
+    } else {
+      expect(acknowledgements.find((ack) => ack.id === "approval-abort")).toEqual({ id: "approval-abort", ok: false, error: "Pi runtime cannot abort the current turn" });
+      expect(ends).toEqual([]);
+      expect(settled).toEqual([]);
+    }
+  } finally {
+    started(); acknowledged();
+    await stopChild?.();
+    server.stop(true);
+  }
+}, 10_000);
+
 
 test("the real extension pins tool session and generation before an awaited budget reply", async () => {
   const tools: any[] = [];

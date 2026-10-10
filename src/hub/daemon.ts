@@ -418,7 +418,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
-  const event = eventLog(join(opts.stateDir, "events.jsonl"));
+  const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
+    if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
+  });
   /**
    * #247: the approved task's research record, built from events.jsonl with the function `ahub research backfill` uses.
    * Never blocks or fails the task flow: a write error is one hub.log line per hub run.

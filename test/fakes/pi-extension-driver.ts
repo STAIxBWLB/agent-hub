@@ -9,6 +9,30 @@ const { default: extension } = await import(String(process.argv[2]));
 extension({ on: (name: string, handler: any) => handlers.set(name, handler), registerProvider: () => {}, registerTool: (def: any) => tools.set(def.name, def) });
 const read = tools.get("read");
 if (!read) throw new Error("the read tool was not registered");
+if (process.argv[3] === "approval-abort" || process.argv[3] === "approval-abort-unsupported") {
+  const supported = process.argv[3] === "approval-abort";
+  let abortCalls = 0;
+  let nativeSettlement: Promise<unknown> | undefined;
+  let shutdown!: () => void;
+  const stopped = new Promise<void>((resolve) => { shutdown = resolve; });
+  const ctx: { sessionManager: { getHeader: () => { id: string }; getSessionFile: () => string; getEntries: () => unknown[] }; shutdown: () => void; abort?: () => void } = {
+    sessionManager: { getHeader: () => ({ id: "approval-session" }), getSessionFile: () => "/tmp/approval-session.jsonl", getEntries: () => [] },
+    shutdown,
+    ...(supported ? { abort: () => {
+      abortCalls++;
+      // Simulate the native callbacks after abort; the extension must retain its approval reason
+      // even though the native assistant reports only an ordinary aborted stop reason.
+      nativeSettlement = handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "aborted", content: [] }] })
+        .then(() => handlers.get("agent_settled")!({}, ctx));
+    } } : {}),
+  };
+  await handlers.get("session_start")!({}, ctx);
+  await handlers.get("agent_start")!({});
+  await stopped;
+  await nativeSettlement;
+  console.log(JSON.stringify({ abortCalls }));
+  process.exit(0);
+}
 if (process.argv[3] === "lineage") {
   const ctx = { abort: () => console.log("UNEXPECTED_NATIVE_ABORT"), sessionManager: { getHeader: () => ({ id: "producer-session" }), getSessionFile: () => "/tmp/producer-session.jsonl" } };
   await handlers.get("session_start")!({}, ctx);

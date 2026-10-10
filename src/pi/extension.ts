@@ -84,6 +84,7 @@ async function poll(pi: ExtensionAPI): Promise<void> {
           shutdown?.();
         } else if (command.type === "abort_budget") {
           if (Number.isSafeInteger(command.generation) && command.generation === turnGeneration) {
+            if (typeof runtimeCtx?.abort !== "function") throw new Error("Pi runtime cannot abort the current turn");
             const generation = turnGeneration, callSessionId = sessionId;
             const reason = command.cause === "approval" && typeof command.reason === "string" && command.reason
               ? command.reason : "execution budget exhausted: elapsed_ms wall cap reached";
@@ -116,7 +117,7 @@ export default function(pi: ExtensionAPI): void {
     const state = ctx.sessionManager.getHeader();
     sessionId = String(state?.id ?? "");
     try {
-      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: true });
+      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: typeof ctx.abort === "function" });
       if (claimed?.ok === false) { ctx.shutdown?.(); return; }
     } catch (error) { ctx.shutdown?.(); throw error; }
     if (!pollStarted) { pollStarted = true; void poll(pi); }

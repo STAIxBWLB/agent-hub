@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Board } from "../src/hub/board.ts";
 import { Tasks } from "../src/hub/tasks.ts";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -27,7 +27,7 @@ const sessionFile = resumed < 0 ? join(dir, "pi-session.jsonl") : process.argv[r
 const sessionId = resumed < 0 ? "pi-session-1" : JSON.parse(readFileSync(sessionFile, "utf8").split("\\n")[0]).id;
 if (resumed < 0) writeFileSync(sessionFile, JSON.stringify({ type: "session", id: sessionId, cwd: process.cwd() }) + "\\n");
 const out = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\\n");
-createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.parse(line); if (m.type === "get_state") out({ id: m.id, success: true, data: { sessionId, sessionFile } }); });
+createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.parse(line); if (m.type === "get_state") out({ id: m.id, success: true, data: { sessionId, sessionFile } }); else if (m.type === "prompt" || m.type === "set_model") out({ id: m.id, success: true }); });
 `);
   return file;
 }
@@ -857,6 +857,25 @@ test("Pi approval expiry count resets on an answered denial and at the actual ne
   expect(readFileSync(join(h.dir, "hub.log"), "utf8")).not.toContain("turn stopped after two unanswered approvals");
 }, 30_000);
 
+test("a failed approval event audit neither strands the grant nor logs private arguments (#253)", async () => {
+  const h = await approvalPi(10_000);
+  await h.event("agent_start", { generation: 1 });
+  const pending = h.post("/tool", { name: "write", toolCallId: "audit-failure", sessionId: h.pi.recoveryMetadata().sessionId, generation: 1, args: { path: "audit.txt", content: "PRIVATE_APPROVAL_PAYLOAD" } });
+  const ask = await h.asked(1);
+  const file = join(h.dir, "events.jsonl"), saved = file + ".saved";
+  renameSync(file, saved); mkdirSync(file); // force telemetry append failure, without failing the authoritative stores
+  try {
+    expect((await h.console_.request({ t: "permit", id: ask.id, option: "allow", surface: "console" })).ok).toBe(true);
+    const result = await (await pending).json() as any;
+    expect(result.failed).toBe(false);
+    expect(readFileSync(join(h.dir, "audit.txt"), "utf8")).toBe("PRIVATE_APPROVAL_PAYLOAD");
+    const log = readFileSync(join(h.dir, "hub.log"), "utf8");
+    expect(log).toContain("permission event recording failed at answered for pi");
+    expect(log).not.toContain("PRIVATE_APPROVAL_PAYLOAD");
+  } finally { rmSync(file, { recursive: true }); renameSync(saved, file); }
+  await h.event("agent_settled", { generation: 1 });
+}, 30_000);
+
 test("a person answering one of several parallel Pi requests keeps their expiries from stopping the turn", async () => {
   const h = await approvalPi(400);
   await h.event("agent_start", { generation: 1 });
@@ -898,6 +917,13 @@ test("an always-cache grant is not an answer: it does not reset the expiry strea
 
 test("two expiries abort the Pi turn through the budget path when the extension supports it; Pi stays attached", async () => {
   const h = await approvalPi(400, true);
+  const notices: { text: string; opts: any }[] = [], deliveries: any[] = [];
+  const publish = h.pi.onMessage, settle = h.pi.onDelivery;
+  h.pi.onMessage = (text: string, opts: any) => { notices.push({ text, opts }); return publish?.(text, opts); };
+  h.pi.onDelivery = (event: any) => { deliveries.push(event); settle?.(event); };
+  const envelope = newEnvelope("user", "run the approval turn", { to: ["pi"] });
+  const ownerPid = h.pi.proc.pid;
+  await h.pi.deliver([envelope], "approval-delivery");
   await h.event("agent_start", { generation: 1 });
   const pending = h.nextCommand();
   expect((await h.call("turn-abort-expiry-one")).text).toContain("approval expired");
@@ -907,19 +933,30 @@ test("two expiries abort the Pi turn through the budget path when the extension 
   expect(command.reason).toContain("no person answered");
   await h.post("/ack", { id: command.id, ok: true });
   await h.event("agent_end", { generation: 1, failed: true, error: command.reason });
+  await h.event("agent_settled", { generation: 1 });
   for (let i = 0; i < 200 && h.pi.state !== "idle"; i++) await Bun.sleep(10);
   expect(h.pi.state).toBe("idle");
   expect(h.pi.state).not.toBe("offline");
   const log = readFileSync(join(h.dir, "hub.log"), "utf8");
   expect(log).toContain("Pi turn stopped after two unanswered approvals");
   expect(log).not.toContain("approval turn abort unsupported");
-  // The next turn runs normally on the same attached Pi.
+  expect(notices).toHaveLength(1);
+  expect(notices[0]!.text).toContain("Pi turn stopped after two unanswered approvals");
+  expect(notices[0]!.opts.to).toEqual(["user"]);
+  expect(notices[0]!.opts.inReplyTo.id).toBe(envelope.id);
+  expect(h.pi.proc.pid).toBe(ownerPid);
+  expect(deliveries.some((event) => event.state === "completed")).toBe(true);
+  // The next delivery runs normally on the same attached Pi.
+  await h.pi.deliver([newEnvelope("user", "next turn", { to: ["pi"] })], "next-delivery");
   await h.event("agent_start", { generation: 2 });
   const again = h.call("turn-abort-next-turn"); const ask = await h.asked(3);
   expect((await h.console_.request({ t: "permit", id: ask.id, option: "allow", surface: "console" })).ok).toBe(true);
   expect((await again).failed).toBe(false);
   expect(existsSync(join(h.dir, "turn-abort-next-turn.txt"))).toBe(true);
+  await h.event("agent_end", { generation: 2, text: "next turn complete" });
   await h.event("agent_settled", { generation: 2 });
+  expect(notices[1]!.text).toBe("next turn complete");
+  expect(h.pi.proc.pid).toBe(ownerPid);
 }, 30_000);
 
 
