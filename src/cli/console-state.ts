@@ -36,10 +36,12 @@ export function terminalText(value: unknown): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""));
 }
-export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted";
+export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted" | "peerClaude" | "peerCodex" | "taskKeyword" | "number" | "issueRef" | "taskRef";
 export interface Span { text: string; tone?: Tone }
 export const PALETTE: Readonly<Record<Tone, string>> = Object.freeze({
   info: "\x1b[36m", strong: "\x1b[1;36m", success: "\x1b[32m", attention: "\x1b[33m", failure: "\x1b[31m", muted: "\x1b[90m",
+  peerClaude: "\x1b[94m", peerCodex: "\x1b[96m",
+  taskKeyword: "\x1b[35m", number: "\x1b[1m", issueRef: "\x1b[4m", taskRef: "\x1b[4;35m",
 });
 export function paint(line: Span[], color: boolean): string {
   return line.map(span => {
@@ -47,6 +49,83 @@ export function paint(line: Span[], color: boolean): string {
     const sgr = span.tone && Object.hasOwn(PALETTE, span.tone) ? PALETTE[span.tone] : undefined;
     return color && sgr && text ? sgr + text + "\x1b[0m" : text;
   }).join("");
+}
+/** Console stream headers only. Tokenize sanitized text; bodies and command output stay plain. */
+export function streamTokens(value: string, eventTone?: Tone, kind?: string): Span[] {
+  const text = terminalText(value);
+  if (kind === "command" || kind === "console") return [{ text }];
+  const peers: Readonly<Record<string, Tone>> = { claude: "peerClaude", codex: "peerCodex" };
+  // Hub-written peer slots only; words such as local/pi/hub in a title do not identify a speaker.
+  const peerSlots = new Set<number>();
+  const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission:| permission )/);
+  if (leading) peerSlots.add(leading[0].lastIndexOf(leading[1]!));
+  const route = text.match(/^\s*(?:[0-9:]+ (?:AM|PM) )?([A-Za-z_][A-Za-z_0-9-]*) -> ([A-Za-z_][A-Za-z_0-9,-]*|\*)/);
+  if (route) {
+    const start = route[0].indexOf(route[1]!); peerSlots.add(start);
+    let at = route[0].lastIndexOf(route[2]!);
+    for (const recipient of route[2]!.split(",")) { peerSlots.add(at); at += recipient.length + 1; }
+  }
+  if (/^\s*\* task #[0-9]+ .+ (?:accepted by|assigned to) [A-Za-z_][A-Za-z_0-9-]*$/.test(text) && !/ declined| reason:/.test(text)) {
+    const owner = text.match(/(?:accepted by|assigned to) ([A-Za-z_][A-Za-z_0-9-]*)$/);
+    if (owner) peerSlots.add(owner.index! + owner[0].lastIndexOf(owner[1]!));
+  }
+  const marker = text.match(/^\s*([.?*!])/);
+  const markerAt = marker ? marker[0].length - 1 : -1;
+  const state = kind === "state" ? text.match(/ is ([A-Za-z_]+)$/) : undefined;
+  const stateAt = state ? state.index! + 4 : -1;
+  const permissionIds = new Set<number>();
+  for (const match of text.matchAll(/\b(?:permission|request|permit) ([0-9]{8})(?=\b)/g)) permissionIds.add(match.index + match[0].length - 8);
+  const taskKeyword = text.match(/^\s*\*?\s*(task)(?![\w-])/i);
+  const taskKeywordAt = taskKeyword ? taskKeyword[0].length - taskKeyword[1]!.length : -1;
+  const out: Span[] = []; let end = 0; let previousToken = ""; let previousStart = -1;
+  for (const match of text.matchAll(/(?<![\p{L}\p{N}_#-])#[0-9]+(?![\p{L}\p{N}_-])|(?<![\p{L}\p{N}_#.:-])(?:[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_%-]|[.:][\p{L}\p{N}])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
+    const token = match[0]; const start = match.index;
+    const gap = text.slice(end, start);
+    if (gap) out.push({ text: gap });
+    let tone: Tone | undefined;
+    // ponytail: legacy notices have no typed reference ranges. Classify task/review prefixes textually;
+    // assign/which #N remains an issue reference until notices carry structured reference spans.
+    if (token.startsWith("#")) {
+      const task = previousToken.toLowerCase() === "task" && /^\s*$/.test(gap);
+      const review = previousToken.toLowerCase() === "review" && /^\s*$/.test(gap) && text[previousStart - 1] === "[" && text[start + token.length] === "]";
+      tone = task || review ? "taskRef" : "issueRef";
+    }
+    else if (start === taskKeywordAt) tone = "taskKeyword";
+    else if (/^[0-9]/.test(token) && !permissionIds.has(start)) tone = "number";
+    else if (peerSlots.has(start) && Object.hasOwn(peers, token)) tone = peers[token];
+    else if (start === markerAt || start === stateAt || (route && token === "->" && start < route[0].length)) tone = eventTone;
+    out.push({ text: token, ...(tone ? { tone } : {}) });
+    previousToken = token; previousStart = start; end = start + token.length;
+  }
+  if (end < text.length) out.push({ text: text.slice(end) });
+  return out;
+}
+/** Wrap plain text first, then project original token spans onto it, preserving trusted slots across continuations. */
+export function wrapStreamTokens(value: string, columns: number, tone?: Tone, kind?: string): Span[][] {
+  const spans = streamTokens(terminalText(value).replace(/\t/g, " "), tone, kind);
+  const text = spans.map(s => s.text).join("");
+  let cursor = 0; let projecting = true; let spanIndex = 0; let spanAt = 0;
+  return wrap(text, columns).map((line, index) => {
+    const content = line.trimStart();
+    const start = projecting ? text.indexOf(content, cursor) : -1;
+    if (!content || start < 0) {
+      if (content) projecting = false;
+      // Only the first physical header can have structural markers. Never infer structure from a continuation.
+      return index === 0 ? streamTokens(line, tone, kind).map(s => ({ text: s.text, ...(s.tone === tone && tone ? { tone } : {}) })) : [{ text: line }];
+    }
+    const end = start + content.length; cursor = end;
+    const out: Span[] = [{ text: line.slice(0, line.length - content.length) }];
+    while (spanIndex < spans.length && spanAt + spans[spanIndex]!.text.length <= start) {
+      spanAt += spans[spanIndex++]!.text.length;
+    }
+    while (spanIndex < spans.length && spanAt < end) {
+      const span = spans[spanIndex]!; const next = spanAt + span.text.length;
+      out.push({ ...span, text: span.text.slice(Math.max(0, start - spanAt), Math.min(span.text.length, end - spanAt)) });
+      if (next > end) break;
+      spanAt = next; spanIndex++;
+    }
+    return out;
+  });
 }
 export function resolveColor(flag: string | undefined, env: { isTTY: boolean; TERM?: string; NO_COLOR?: string }): boolean | Error {
   if (flag === "always") return true;

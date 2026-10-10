@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, terminalText, parseConsoleCommand, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -159,6 +159,123 @@ describe("console colors", () => {
     expect(resolveColor("rainbow", { isTTY: true })).toBeInstanceOf(Error);
     expect(resolveColor("", { isTTY: true })).toBeInstanceOf(Error);
   });
+  test("stream token tones distinguish peers, task keyword, values and both reference kinds", () => {
+    const examples = [
+      "codex: context 7% (fresh, codex_token_usage, measured 6:51:38 AM)",
+      "claude: context 21% (fresh, claude_statusline, measured 6:51:38 AM)",
+      "* task #1 Fix #232 and #233: loopback freePort in tests, faster sealed-study export fixture accepted by codex",
+    ];
+    for (const text of examples) {
+      const spans = streamTokens(text);
+      expect(paint(spans, false)).toBe(text);
+      expect(terminalText(paint(spans, true))).toBe(text);
+      expect(spans.filter(s => s.tone).every(s => !s.text.includes("context") && !s.text.includes("fixture"))).toBe(true);
+    }
+    const task = streamTokens(examples[2]!);
+    expect(task.find(s => s.text === "task")?.tone).toBe("taskKeyword");
+    expect(task.find(s => s.text === "#1")?.tone).toBe("taskRef");
+    expect(task.find(s => s.text === "#232")?.tone).toBe("issueRef");
+    expect(streamTokens(examples[0]!).find(s => s.text === "6:51:38 AM")?.tone).toBe("number");
+    expect(streamTokens("claude: context 21%")[0]?.tone).toBe("peerClaude");
+    expect(streamTokens("codex: context 21%")[0]?.tone).toBe("peerCodex");
+    for (const peer of ["kimi", "pi", "local", "hub", "custom"]) expect(streamTokens(`${peer}: context 21%`)[0]?.tone).toBeUndefined();
+    const tokenTones = ["taskKeyword", "number", "issueRef", "taskRef"] as const;
+    const nonTokenCodes = ["info", "strong", "success", "attention", "failure", "muted", "peerClaude", "peerCodex"].map(t => PALETTE[t as keyof typeof PALETTE]);
+    for (const tone of tokenTones) expect(nonTokenCodes).not.toContain(PALETTE[tone]);
+    expect(PALETTE.taskKeyword).toBe("\x1b[35m"); expect(PALETTE.taskRef).toBe("\x1b[4;35m");
+    expect(PALETTE.issueRef).toBe("\x1b[4m"); expect(PALETTE.number).toBe("\x1b[1m");
+    expect(new Set(tokenTones.map(tone => PALETTE[tone])).size).toBe(4);
+    for (const suffix of [":", ",", ")"]) expect(streamTokens(`#233${suffix}`).find(s => s.text === "#233")?.tone).toBe("issueRef");
+    expect(task.find(s => s.text === "#233")?.tone).toBe("issueRef");
+    for (const text of ["task #3", "Task #3", "[task #3]", "[review #3]", "[REVIEW #3]"]) expect(streamTokens(text).find(s => s.text === "#3")?.tone).toBe("taskRef");
+    for (const text of ["2.", "3:"]) expect(streamTokens(text)[0]?.tone).toBe("number");
+    const attack = streamTokens("codex\x1b[31m: 21%\x1b]52;c;secret\x07 #232");
+    expect(terminalText(paint(attack, true))).toBe("codex: 21% #232");
+    expect(paint(attack, true)).not.toContain("secret");
+  });
+  test("wrapped tokens retain source semantics instead of reclassifying untrusted continuations", () => {
+    const text = permissionText({ ...state().approvals[0]!, peer: "claude", title: 'local hub 3abc -> ! '.repeat(10) }).split("\n")[0]!;
+    const lines = wrapStreamTokens(text, 80, "attention", "permission");
+    expect(lines.flat().filter(s => s.tone === "attention").map(s => s.text)).toEqual(["?"]);
+    expect(lines.flat().filter(s => s.tone === "peerClaude").map(s => s.text)).toEqual(["claude"]);
+    expect(lines.map(line => paint(line, false))).toEqual(wrap(text, 80));
+    const task = "* task #1 " + "long title ".repeat(20) + "accepted by codex";
+    expect(wrapStreamTokens(task, 80, undefined, "notice").flat().find(s => s.text === "codex")?.tone).toBe("peerCodex");
+  });
+  test("permission IDs stay plain in actual notice forms and prose review references stay issues", () => {
+    for (const text of ["permission 12345678 from pi was cancelled", "permission 12345678 from claude approved option allow_once by console (2ms)"]) {
+      expect(streamTokens(text, undefined, "notice").find(s => s.text === "12345678")?.tone).toBeUndefined();
+    }
+    expect(streamTokens("address review #232 comments").find(s => s.text === "#232")?.tone).toBe("issueRef");
+    expect(streamTokens("[review #232]").find(s => s.text === "#232")?.tone).toBe("taskRef");
+  });
+  test("300 KB permission-title projection stays linear and bounded", () => {
+    const text = permissionText({ ...state().approvals[0]!, title: "word ".repeat(60_000) }).split("\n")[0]!;
+    const started = performance.now(); const lines = wrapStreamTokens(text, 80, "attention", "permission");
+    const elapsed = performance.now() - started;
+    expect(lines.map(line => paint(line, false))).toEqual(wrap(text, 80));
+    expect(lines.length).toBeGreaterThan(3000);
+    expect(elapsed).toBeLessThan(1000); // previously 1.6 s for 300 KB because each line rescanned every span
+  });
+  test("real permission title tabs survive plain output identically with color on and off", async () => {
+    const outputs: string[] = [];
+    for (const color of [false, true]) {
+      const f = fixture(); f.terminal.isTTY = false;
+      const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color });
+      f.client.onPush({ t: "permission", ...state().approvals[0]!, peer: "claude", title: "tab\t21%\tpermission title", expiresAt: Date.now() + 10_000 });
+      f.signal(); await running;
+      outputs.push(f.output.join("").replace(/\x1b\[[0-9;]*m/g, ""));
+    }
+    expect(outputs[1]).toBe(outputs[0]);
+    expect(outputs[0]).toContain("tab\t21%\tpermission title");
+  });
+  test("task keyword boundaries and closed permission peer slots follow trusted producers", () => {
+    for (const text of ["task-bot #3", "task_bot #3", "[task #3]"]) expect(streamTokens(text).some(s => s.tone === "taskKeyword")).toBe(false);
+    expect(streamTokens("  ! claude permission 12345678 expired", "failure", "permission").find(s => s.text === "claude")?.tone).toBe("peerClaude");
+  });
+  test("tab-normalized spans match wrapping and projection stays stopped after a miss", () => {
+    const tabbed = "codex:\tcontext\t7% (measured\t6:51:38 AM) #233:";
+    expect(paint(streamTokens(tabbed), false)).toBe(tabbed);
+    expect(wrapStreamTokens(tabbed, 80).map(line => paint(line, false))).toEqual(wrap(tabbed, 80));
+    const text = "* task #1 " + "word ".repeat(14) + "[agent-hub message from user] " + "word ".repeat(20) + "accepted by codex";
+    const lines = wrapStreamTokens(text, 80, "attention", "notice");
+    expect(lines.map(line => paint(line, false))).toEqual(wrap(text, 80));
+    expect(lines[0]!.find(s => s.text === "*")?.tone).toBe("attention");
+    expect(lines.slice(1).flat().every(s => !s.tone)).toBe(true);
+    expect(streamTokens("* task #1 title declined by pi: accepted by codex", undefined, "notice").find(s => s.text === "codex")?.tone).toBeUndefined();
+  });
+  test("only trusted peer slots and state/permission semantics are toned; identifiers stay whole", () => {
+    for (const state of ["busy", "idle", "failed"]) {
+      const spans = streamTokens(`  . local is ${state}`, stateTone(state), "state");
+      expect(spans.find(s => s.text === state)?.tone).toBe(stateTone(state));
+      expect(spans.find(s => s.text === "local")?.tone).toBeUndefined();
+    }
+    const permission = streamTokens(permissionText({ ...state().approvals[0]!, peer: "claude", title: "local hub pi -> ! 3abc 3-abc 2026-10-10T06:51:38Z v1.2.3 127.0.0.1 permission 12345678" }).split("\n")[0]!, "attention", "permission");
+    expect(permission.find(s => s.text === "?")?.tone).toBe("attention");
+    expect(permission.filter(s => s.tone === "peerClaude").map(s => s.text)).toEqual(["claude"]);
+    for (const token of ["local", "hub", "->", "!"]) expect(permission.filter(s => s.text === token).every(s => !s.tone)).toBe(true);
+    expect(permission.filter(s => s.tone === "number")).toEqual([]);
+    expect(streamTokens("custom: context 21%")[0]?.tone).toBeUndefined();
+    for (const line of ["codex: context 21%", "  ! task #1 failed", "pi -> local"]) {
+      const spans = streamTokens(line, "failure", "command");
+      expect(spans.every(s => !s.tone)).toBe(true);
+      expect(paint(spans, true)).toBe(line);
+    }
+  });
+  for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
+    test(`token colors preserve stream wrapping and cursor geometry ${columns}x${rows}`, async () => {
+      const outputs: string[] = [];
+      for (const color of [false, true]) {
+        const f = fixture(columns); f.terminal.rows = rows!;
+        const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color });
+        f.client.onPush({ t: "context", peer: "codex", reading: { percent: 21, measuredAt: NOW, source: "codex_token_usage", freshness: "fresh" } });
+        f.client.onPush({ t: "notice", line: "task #1 Fix #232 and #233 한국어 ".repeat(12) + " accepted by claude" });
+        f.signal(); await running;
+        outputs.push(f.output.join("").replace(/\x1b\[[0-9;]*m/g, ""));
+      }
+      expect(outputs[1]).toBe(outputs[0]);
+    });
+  }
   test("semantic tones come from structured states and events, never body text", () => {
     expect(stateTone("idle")).toBe("success"); expect(stateTone("approved")).toBe("success");
     for (const s of ["busy", "paused", "in_review", "changes_requested", "ready"]) expect(stateTone(s)).toBe("attention");
@@ -226,7 +343,7 @@ describe("console colors", () => {
       f.client.onPush({ t: "event", e: { t: "envelope", env: newEnvelope("pi", "body line", { priority: "important" }) } });
       f.signal(); await running;
       const out = f.output.join("");
-      if (color) { expect(out).toContain(PALETTE.attention); expect(out).toContain("\x1b[0m\n    body line\n"); }
+      if (color) { expect(out).toContain(PALETTE.attention); expect(out).toContain("\n    body line\n"); }
       else expect(out).not.toContain("\x1b");
       expect(f.raw).toEqual([]);
     }
@@ -254,7 +371,7 @@ describe("console colors", () => {
       if (exit === "q") f.input("q"); else if (exit === "signal") f.signal(); else if (exit === "error") f.error(); else f.client.onClose(1006, "gone");
       await running;
       const out = f.output.join("");
-      expect(out.slice(out.lastIndexOf("\x1b[0m"))).not.toMatch(/\x1b\[(?:1;36|36|32|33|31|90)m/);
+      expect(out.slice(out.lastIndexOf("\x1b[0m"))).not.toMatch(/\x1b\[(?:1|4|4;35|1;3[1-6]|3[1-6]|9[0-6])m/);
       expect(out).toContain(RESTORE_CONSOLE);
       if (exit === "error") process.exitCode = 0;
     });
@@ -458,7 +575,7 @@ describe("console layout (#213)", () => {
   });
   test("command output sits at column 4 with message bodies, never where hub lines start", async () => {
     const f = fixture();
-    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false,
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: true,
       runCommand: (_args, output, finished) => { output("#3 proposed pi\n"); output("4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
     f.input(":"); f.input("board"); f.input("\r");
     expect(streamed(f.output)).toEqual(["> board", "    #3 proposed pi", "    4:00:00 PM user -> claude ! approve the deploy now"]);

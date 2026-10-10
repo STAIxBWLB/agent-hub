@@ -13,6 +13,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - A stop-and-archive recorded on an operation whose coordinator predates #215 marks its receipt `schema: 2`, which every older runner and abort refuse before they take the lock, so an older global `ahub recovery resume` can no longer advance an operation being abandoned; checked against the real v0.12.19 source (#227).
 - A `terminal-recovery.json` row that fails validation is unknown for the launcher it may describe, never "no launcher", and the next `ahub codex`, `ahub claude` or `ahub pi` writes it back unchanged; launchers recorded by 0.12.12 or older are also read by their unpinned signature (#228).
 - Keep local-worker hub tool arguments and results out of claude-mem capture; ordinary turns see PII task stubs, and only PII turns may read full local board rows (#230).
+- Console stream lines color peer names, the `task` keyword, numeric values and issue/task references separately, keeping ordinary words and message bodies at the default foreground and preserving plain output and terminal geometry (#239).
 
 ## 0.12.20
 
