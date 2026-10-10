@@ -1399,8 +1399,8 @@ export class Tasks {
   }
 
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
-  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER): Promise<Task> {
-    const task = this.need(id, true);
+  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false): Promise<Task> {
+    const task = this.need(id, true, preEffect);
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
     if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], event: "reassigned", reason: "manual", override: by === USER });
     const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" });

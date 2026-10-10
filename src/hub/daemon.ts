@@ -1291,7 +1291,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "task_assign": {
         const peer = peerArg(a.peer, "peer");
         if (!peer) throw new Error("peer is required");
-        return line(await tasks.assignTo(a.id, peer));
+        return line(await tasks.assignTo(a.id, peer, USER, true));
       }
       case "task_escalate":
         return line(await tasks.escalate(USER, a.id));
@@ -2330,7 +2330,7 @@ export async function startDaemon(opts: DaemonOptions) {
       };
     },
     task: id => board.get(id), publicView: task => tasks.publicView(task, true),
-    assign: (actor, id, peer) => tasks.assignTo(id, peer, actor), escalate: (actor, id) => tasks.escalate(actor, id),
+    assign: (actor, id, peer) => tasks.assignTo(id, peer, actor, true), escalate: (actor, id) => tasks.escalate(actor, id),
     preview: peer => {
       // The operator wrapper runs the same planner again at launch, with runtime endpoints then resolved.
       launcherPreview(peer, peer === "pi" ? ["--mode", "tui"] : [], opts.cwd, opts.stateDir, false);

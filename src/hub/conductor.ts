@@ -25,8 +25,8 @@ export function publicPeerBudget(status: ReturnType<Budget["status"]>, nameable:
 }
 
 const PEER = /^[a-z][a-z0-9-]{0,31}$/;
-const peerId = (value: unknown): string => {
-  if (typeof value !== "string" || /\s/.test(value) || !PEER.test(value) || ["user", "hub", "digest"].includes(value)) throw new Error("peer must be a valid agent peer id");
+const peerId = (value: unknown, preEffect = false): string => {
+  if (typeof value !== "string" || /\s/.test(value) || !PEER.test(value) || ["user", "hub", "digest"].includes(value)) throw new (preEffect ? PreEffectToolRefusal : Error)("peer must be a valid agent peer id");
   return value;
 };
 
@@ -102,11 +102,11 @@ export class ConductorHolds {
 
 export type ConductorStart = { peer: "local" | "kimi" | "pi"; mode: "headless" } | { peer: "claude" | "codex" | "pi"; mode: "tui"; command: string };
 /** Preview commands come from the same launch planner the CLI uses, never caller-supplied shell text. */
-export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string): ConductorStart {
-  if (mode !== undefined && mode !== "headless" && mode !== "tui") throw new Error("mode must be headless or tui");
+export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect = false): ConductorStart {
+  if (mode !== undefined && mode !== "headless" && mode !== "tui") throw new (preEffect ? PreEffectToolRefusal : Error)("mode must be headless or tui");
   if (peer === "claude" || peer === "codex" || (peer === "pi" && mode === "tui")) return { peer, mode: "tui", command: preview(peer) };
   if ((peer === "local" || peer === "kimi" || peer === "pi") && mode !== "tui") return { peer, mode: "headless" };
-  throw new Error("only local, kimi and headless pi may be started by the conductor");
+  throw new (preEffect ? PreEffectToolRefusal : Error)("only local, kimi and headless pi may be started by the conductor");
 }
 
 const numberOrNull = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
@@ -183,7 +183,7 @@ export class Conductor {
       const moved = task?.history.findLast((h) => h.by !== HUB && (OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved"));
       const accepted = task?.history.some((h) => h.event === "accepted");
       if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && !accepted && moved?.by !== USER) {
-        const peer = peerId(args.peer);
+        const peer = peerId(args.peer, true);
         if (peer !== actor) requireAssign(actor, this.hooks.capabilities(), true);
         await this.hooks.assign(actor, task.id, peer);
         const updated = this.hooks.task(task.id);
@@ -203,7 +203,7 @@ export class Conductor {
       if (!task) throw new PreEffectToolRefusal(`no task #${args.id}`);
       if (tool === "hub_task_show") { const result = publicConductorTask(task, this.hooks.publicView); emit({ task: task.id }); return result; }
       if (tool === "hub_task_assign") {
-        const peer = peerId(args.peer);
+        const peer = peerId(args.peer, true);
         await this.hooks.assign(actor, task.id, peer); emit({ task: task.id, peer });
       } else { await this.hooks.escalate(actor, task.id); emit({ task: task.id }); }
       // Task callbacks may return raw objects; always re-read and apply the public view.
@@ -211,11 +211,11 @@ export class Conductor {
       return updated ? publicConductorTask(updated, this.hooks.publicView) : { id: task.id };
     }
     if (tool === "hub_peer_start") {
-      const start = conductorStart(args.peer, args.mode, this.hooks.preview);
+      const start = conductorStart(args.peer, args.mode, this.hooks.preview, true);
       if (start.mode === "headless") await this.hooks.start(start.peer);
       emit({ peer: start.peer }); return start;
     }
-    const peer = peerId(args.peer);
+    const peer = peerId(args.peer, true);
     if (!this.hooks.known(peer)) throw new PreEffectToolRefusal(`unknown peer: ${peer}`);
     if (tool === "hub_peer_hold") { this.holds.hold(peer, actor); this.hooks.pause(peer); }
     else {

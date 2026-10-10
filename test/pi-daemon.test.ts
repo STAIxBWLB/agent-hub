@@ -576,3 +576,33 @@ test("an active Pi turn exiting under auto_start stays offline for reconciliatio
   expect(daemon.bus.peers.get("pi")).toBe(original);
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("turn/tool effects may be partial; inspect its session, then ahub pi");
 });
+
+
+test("Pi conductor entry validation refusals settle receipts before assignment or startup effects (#254)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-validation-daemon-"));
+  const config = { ...DEFAULT_CONFIG, roles: { ...DEFAULT_CONFIG.roles, pi: ["implementer", "verifier", "conductor"] },
+    pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const open = board.propose("claude", { title: "open", class: "implement" });
+  board.update(open.id, "hub", "assigned", { owner: "pi" });
+  const closed = board.propose("claude", { title: "closed", class: "implement" });
+  board.update(closed.id, "pi", "accepted", { owner: "pi", state: "in_progress" });
+  board.update(closed.id, "pi", "approved", { state: "approved" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  const db = new Database(join(stateDir, "hub.db")); cleanup.push(() => db.close());
+  for (const [name, args, message, callId] of [
+    ["hub_task_assign", { id: open.id, peer: "bad peer" }, "peer must be a valid agent peer id", "invalid-peer"],
+    ["hub_task_assign", { id: closed.id, peer: "pi" }, `task #${closed.id} is approved: it can no longer change hands`, "closed-task"],
+    ["hub_peer_start", { peer: "pi", mode: "invalid" }, "mode must be headless or tui", "invalid-mode"],
+  ] as const) {
+    const result = await piToolCall(peer, name, args, callId);
+    expect(result).toEqual({ text: `error: ${message}`, failed: true });
+    expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id=?").get(callId)).toEqual({ state: "done", result: `error: ${message}` });
+    expect(await piToolCall(peer, name, args, callId)).toEqual(result);
+  }
+  expect(board.get(open.id)!.history.at(-1)!.event).toBe("assigned");
+  expect(board.get(closed.id)!.history.at(-1)!.event).toBe("approved");
+  expect(daemon.bus.peers.get("pi")).toBe(peer);
+});
