@@ -79,7 +79,7 @@ export abstract class BasePeer implements PeerAdapter {
     this.onDelivery?.(receipt);
   }
 
-  private clearWatchdog(): void {
+  protected clearWatchdog(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
   }

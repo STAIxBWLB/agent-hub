@@ -1533,3 +1533,7 @@ Confirm readable state/level words with `--color=never`, matching visible text w
 Compare status's shortened informational ids with `status --full`; suggested command ids must always be whole. In `ahub console`,
 run the same commands and confirm their rows stay within the four-column indent and output remains plain.
 Record the exact head and visual verdict here after the owner performs this leg.
+
+## ACP cancellation settlement (#304)
+
+Not run: real Qwen and Kimi cancellation timing remains owed and does not gate the adapter fix, per issue #304. In an operator-approved ACP session for each provider, record the native version, observe prompt activity, send `session/cancel`, and measure until the correlated prompt result. Record what a new prompt receives before that result. Distinguish those measurements from the fake's ordered barrier and cancellation acknowledgement; do not spend a native turn solely to complete this implementation.
