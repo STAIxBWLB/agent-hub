@@ -13,7 +13,7 @@ async function cli(root: string, args: string[], markers: Record<string, string>
   // Bind fixture markers in the wrapper, independently of the test runner's scrubbed child environment.
   const wrapper = join(root, `cli-${crypto.randomUUID()}.ts`);
   writeFileSync(wrapper, `for (const name of ${JSON.stringify(MARKERS)}) delete process.env[name];
-Object.assign(process.env, ${JSON.stringify(markers)}, { AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))} });
+Object.assign(process.env, ${JSON.stringify(markers)}, { COLUMNS: "120", AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))} });
 process.argv = [process.execPath, ${JSON.stringify(CLI)}, ...${JSON.stringify(args)}];
 await import(${JSON.stringify(CLI)});
 `);

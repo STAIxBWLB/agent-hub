@@ -563,14 +563,14 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
 /**
  * A header row, then the rows, each column starting at the same place on every row: two spaces apart, as wide as its
  * widest cell or header (Bun.stringWidth, at most a third of the width, wider cells cut with the marker); the last column
- * takes the rest.
+ * takes the rest. One-shot callers may supply widths for already-wrapped cells; console defaults stay unchanged.
  */
-export function table(head: string[], rows: Span[][], columns: number): Span[][] {
+export function table(head: string[], rows: Span[][], columns: number, explicitWidths?: readonly number[]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));
-  const widths = head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
+  const widths = explicitWidths ? [...explicitWidths] : head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
   const flexible = head.includes("STAGE") ? head.indexOf("TITLE") : head.length - 1;
-  if (head.includes("STAGE")) {
+  if (!explicitWidths && head.includes("STAGE")) {
     // Keep the original columns adjacent; stage meters occupy a fixed right-edge column.
     const room = () => columns - 2 - widths.reduce((sum, value, index) => sum + (index === flexible ? 0 : value), 0) - 2 * (head.length - 1);
     for (const key of ["CLASS", "OWNER", "REVIEWER", "AGE", "STATE"]) {
@@ -579,7 +579,9 @@ export function table(head: string[], rows: Span[][], columns: number): Span[][]
     }
     widths[flexible] = Math.max(0, room());
   }
-  return [head.map(h => span(h, "info")), ...rows].map(row => row.map((cell, i) => {
+  const headerCells = explicitWidths ? head.map((h, i) => wrap(h, Math.max(1, widths[i]!), 0)) : undefined;
+  const headers = headerCells ? Array.from({ length: Math.max(...headerCells.map(cell => cell.length)) }, (_, n) => head.map((_, i) => span(headerCells[i]![n] ?? "", "info"))) : [head.map(h => span(h, "info"))];
+  return [...headers, ...rows].map(row => row.map((cell, i) => {
     if (i === head.length - 1 && flexible === i) return cell;
     const text = fit(cell.text, widths[i]!);
     return { ...cell, text: text + " ".repeat(Math.max(0, widths[i]! - Bun.stringWidth(text)) + (i === head.length - 1 ? 0 : 2)) };

@@ -23,7 +23,7 @@ function fixture() {
       const reply = req.t === "hello" ? { t: "welcome", cwd: root, instanceId: status.instanceId }
         : req.t === "status" ? { status }
         : req.t === "budget" ? { budget, gate: 0.95 }
-        : req.t === "task" ? { text: JSON.stringify(tasks) }
+        : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed") : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
         : {};
       ws.send(JSON.stringify({ ok: true, ...reply, rid: req.rid }));
@@ -49,7 +49,7 @@ function fixture() {
     const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     return { code, stdout, stderr };
   };
-  return { run, status, tasks, budget, requests };
+  return { run, status, tasks, budget, requests, root };
 }
 
 test("status JSON remains byte-identical and adds no quota read; board/budget JSON print their rendered data without color", async () => {
@@ -94,3 +94,20 @@ test("doctor structured checks and sections use declared levels/findings, with i
   expect(text.code).toBe(0); for (const section of ["Tools", "Hub", "Config", "Models", "Memory"]) expect(text.stdout).toContain(`${section}\n`);
   expect(text.stdout).toContain("failures"); for (const line of text.stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 }, 20_000);
+
+for (const filter of ["--ready", "proposed"]) test(`filtered board ${filter} resolves dependencies against the whole board`, async () => {
+  const f = fixture();
+  Object.assign(f.tasks[0]!, { id: 5, deps: [1], ready: true, title: "Ready task" });
+  f.tasks.push({ ...f.tasks[0]!, id: 1, state: "approved", deps: [], title: "Approved prerequisite" } as any);
+  const result = await f.run(["board", filter]);
+  expect(result.code).toBe(0); expect(result.stdout).toContain("ready"); expect(result.stdout).not.toContain("waiting");
+  expect(result.stdout).not.toContain("Approved prerequisite");
+  expect(f.requests.filter(r => r.t === "task").map(r => r.args)).toEqual([filter === "--ready" ? { ready: true } : { state: "proposed" }, {}]);
+});
+
+test("doctor preserves collected findings and its error exit when config parsing throws", async () => {
+  const f = fixture(); writeFileSync(join(f.root, ".agenthub/config.local.json"), "{bad");
+  const result = await f.run(["doctor", "--color=never"]);
+  expect(result.code).toBe(1); expect(result.stdout).toContain("Tools\n"); expect(result.stdout).toContain("fixture 1.0");
+  expect(result.stdout).toContain("claude plugin"); expect(result.stderr.length).toBeGreaterThan(0);
+});

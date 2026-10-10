@@ -76,7 +76,11 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
   const notice = (text: string) => notify(state, text, Date.now());
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
-  const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => index === 0 ? wrapStreamTokens(text, columns, event.tone, event.kind) : wrap(text, columns).map(line => [{ text: line }]));
+  const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => {
+    // Commands receive our usable width and already wrap cells at their own column offsets.
+    if (event.kind === "command" && Bun.stringWidth(text) <= columns) return [[{ text }]];
+    return index === 0 ? wrapStreamTokens(text, columns, event.tone, event.kind) : wrap(text, columns).map(line => [{ text: line }]);
+  });
   const writeStream = (event: ConsoleEvent) => {
     terminal.write(`\x1b[${rows - 4};1H`); // the scroll region ends above the rule and the three footer lines
     for (const line of streamLines(event)) { terminal.write(paint(line, color)); terminal.write("\r\n"); }

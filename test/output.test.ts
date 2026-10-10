@@ -7,9 +7,9 @@ const hold = "abcdef12-1111-2222-3333-444444444444";
 export const outputFixture = {
   status: { pid: 25893, controlPort: 12345, version: "0.12.22", cwd: "/project/agent-hub", peers: {
     claude: { state: "idle", attached: true, queued: 0, context: { used: 0.8, freshness: "fresh", source: "claude_statusline", measuredAt: now - 14_000 } },
-    codex: { state: "busy", attached: true, queued: 2, liveAccepted: settlement, heldBy: hold, holdNote: "waiting for owner review", paused: "manual", context: { used: 0.34, freshness: "fresh", source: "codex_token_usage", measuredAt: now - 60_000 } },
+    codex: { state: "busy", attached: true, queued: 2, liveAccepted: settlement, heldBy: hold, holdNote: `held by needs_review ${hold}; ahub queue resolve ${hold} --action completed|retry|discard --reason <text>`, paused: "manual", context: { used: 0.34, freshness: "fresh", source: "codex_token_usage", measuredAt: now - 60_000 } },
     kimi: { state: "idle", attached: true, permissionMode: "ask-when-needed", context: { used: 0.25, freshness: "fresh", source: "acp_usage_update", measuredAt: now - 120_000 } },
-    pi: { state: "idle", attached: true, toolsOnly: "tools-only: ahub pi", context: { used: null, freshness: "unknown", source: null, measuredAt: null } },
+    pi: { state: "idle", attached: true, toolsOnly: "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", context: { used: null, freshness: "unknown", source: null, measuredAt: null } },
   }, tasks: { approved: 6, in_progress: 1 }, budget: { claude: { windows: [{ id: "5h", used: 0.23, resetsAt: now + 600_000 }] } } },
   tasks: [
     { id: 1, state: "approved", owner: "codex", reviewer: "claude", class: "implement", title: "제주한라대학교 AI 도구를 활용한 구현과 검증 ".repeat(12), created: now - 60_000, signals: [], deps: [] },
@@ -50,7 +50,7 @@ describe("one-shot output", () => {
     expect(titleText).toContain(outputFixture.tasks[0]!.title.replace(/\s/g, ""));
     expect(titleText).toContain("A".repeat(300));
     expect(board).toContain("[pii]");
-    expect(board.replace(/\s/g, "")).toContain("ahubtaskshow3");
+    expect(titleText).toContain("ahubtaskshow3");
     expect(titleText).toContain("after#2");
     const titleColumn = Bun.stringWidth(board.split("\n")[0]!.split("TITLE")[0]!);
     const koreanLines = board.split("\n").filter(line => line.includes("제주") || line.includes("도구") || line.includes("활용한"));
@@ -131,6 +131,60 @@ describe("one-shot output", () => {
     expect(read("REVIEW", "MODEL")).toContain("123456789");
     expect(read("MODEL", "CONTEXT")).toContain(longModel);
     expect(read("CONTEXT")).toContain(longSource);
+  });
+  test("short and unassigned boards retain canonical fields in a pipe", () => {
+    for (const title of ["wip", "Fix it"]) {
+      const board = text(renderBoard([{ id: 1, state: "proposed", class: "implement", title }], undefined, now));
+      expect(board).toContain(title); expect(board).toContain("implement");
+      expect(board).not.toContain("..."); expect(board).toContain("1 task: 1 proposed");
+      expect(board.split("\n")[0]!.trim().split(/\s+/)).toEqual(["ID", "STATE", "CLASS", "TITLE", "STAGE"]);
+    }
+  });
+  test("narrow piped widths preserve short boards and complete cells", () => {
+    for (const columns of [12, ...Array.from({ length: 45 }, (_, i) => i + 36)]) {
+      for (const title of ["wip", "Fix it", "Z".repeat(300)]) {
+        const rendered = renderBoard([{ id: 1, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", title, signals: [] }], columns, now);
+        const board = text(rendered);
+        for (const line of board.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+        expect(board).not.toContain("...");
+        expect(board.match(/Z/g)?.length ?? 0).toBe(title.match(/Z/g)?.length ?? 0);
+        const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === "TITLE"));
+        const titleAt = rendered[headerAt]!.findIndex(cell => cell.text.trim() === "TITLE");
+        const end = rendered.findIndex((line, i) => i > headerAt && line.length === 0);
+        const completeTitle = rendered.slice(headerAt + 1, end < 0 ? undefined : end).map(line => line[titleAt]?.text ?? "").join("").replace(/\s/g, "");
+        expect(completeTitle).toBe(title.replace(/\s/g, ""));
+      }
+    }
+  });
+  test("filtered boards resolve dependencies against the full task list", () => {
+    const approved = { id: 1, state: "approved", title: "done" };
+    const ready = { id: 5, state: "proposed", title: "ready", deps: [1] };
+    const board = text(renderBoard([ready], 80, now, false, [approved, ready]));
+    expect(board).toContain("proposed"); expect(board).not.toContain("waiting"); expect(board).toContain("after #1");
+    expect(text(renderBoard([ready], 80, now, false, [{ ...approved, state: "in_progress" }, ready]))).toContain("waiting");
+  });
+  test("real daemon notices are shown once and actionable ids stay whole", () => {
+    const status = text(renderStatus(outputFixture.status, undefined, now));
+    expect(status.match(/ahub queue resolve/g)).toHaveLength(1);
+    expect(status.match(/tools-only/g)).toHaveLength(2); // link state plus the single detail label
+    const terminal = text(renderStatus(outputFixture.status, 80, now)).replace(/\s/g, "");
+    expect(terminal).toContain(`ahubqueueresolve${hold}`);
+    expect(terminal.match(new RegExp(hold, "g"))).toHaveLength(1);
+    expect(terminal).toContain("byneeds_reviewabcdef12;");
+  });
+  test("budget pauses use their reading rather than a daemon locale clock", () => {
+    const peers = { codex: { state: "paused", paused: "budget: threshold, resets 11:45:12 PM" } };
+    const status = text(renderStatus({ peers, budget: { codex: { windows: [], paused: { reason: "threshold", resetsAt: now + 600_000 } } } }, 80, now));
+    expect(status).toContain("resets in 10m"); expect(status).not.toContain("11:45");
+    const unknown = text(renderStatus({ peers }, 80, now));
+    expect(unknown).toContain("reset unknown"); expect(unknown).not.toContain("11:45");
+  });
+  test("semantic words stay readable at 80 and doctor findings use the available width", () => {
+    expect(text(renderStatus(outputFixture.status, 80, now))).toContain("ask-when-needed");
+    expect(text(renderBoard([{ id: 1, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", title: "Check status words", created: now }], 80, now))).toContain("changes_requested");
+    const doctor = text(renderDoctor([{ section: "Tools", level: "warn", name: "bun", detail: "The available finding column should carry this sentence with plenty of room." }], 80, now));
+    expect(doctor).toContain("The available finding column should carry this sentence with");
+    expect(text(renderDoctor([{ section: "Tools", level: "ok", name: "bun", detail: "first\nsecond" }], 80, now))).toContain("first second");
   });
   test("doctor groups levels and always states a finding", () => {
     const doctor = text(renderDoctor(outputFixture.doctor, 80, now));

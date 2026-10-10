@@ -1,4 +1,4 @@
-import { cells, TABLES, table, fitLine, wrap, relative, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
+import { cells, TABLES, table, fitLine, wrap, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel } from "./status-lines.ts";
 
@@ -18,48 +18,60 @@ const width = (value: string) => Bun.stringWidth(value);
 const peerTone = (id: string): Tone | undefined => id === "claude" ? "peerClaude" : id === "codex" ? "peerCodex" : undefined;
 const shortId = (id: unknown, columns?: number, full = false) => full || columns === undefined ? String(id) : String(id).slice(0, 8);
 function lines(text: string, columns?: number, tone?: Tone, indent = ""): Span[][] {
-  return (columns === undefined ? [flat(indent + text)] : wrap(indent + text, columns)).map(text => [span(text, tone)]);
+  return (columns === undefined ? [flat(indent + text)] : wrap(flat(indent + text), columns)).map(text => [span(text, tone)]);
 }
-/** Prepare complete physical cells for the console table; its clipping path never discards one-shot text. */
+/** Wrap complete cells before handing canonical headers and explicit widths to the shared console table. */
 function rows(head: string[], data: Span[][], columns?: number, details?: Span[][][]): Span[][] {
   if (!data.length) return [];
   const keep = head.map((_, i) => i).filter(i => !data.every(row => flat(row[i]?.text) === "-"));
   head = keep.map(i => head[i]!); data = data.map(row => fitLine(keep.map(i => ({ ...row[i]!, text: flat(row[i]?.text) })), Infinity));
   const natural = head.map((h, i) => Math.max(width(h), ...data.map(row => width(row[i]!.text))));
-  const gap = 2 * (head.length - 1);
-  if (columns === undefined) {
-    const limit = Math.max(natural.reduce((a, b) => a + b, 0) + gap + 2, ...natural.map(n => n * 3));
-    const result = table(head, data, limit);
-    // The console reserves the full remaining width for TITLE before STAGE. Pipes keep natural-width rows.
-    const title = head.indexOf("TITLE");
-    if (head.includes("STAGE") && title >= 0) for (const line of result) {
-      const cell = line[title]!; cell.text = cell.text.trimEnd() + " ".repeat(Math.max(0, natural[title]! - width(cell.text.trimEnd())) + 2);
+  const interleave = (rendered: Span[][], lengths: number[], headerHeight = 1) => {
+    if (!details) return rendered;
+    let at = headerHeight;
+    return [...rendered.slice(0, headerHeight), ...lengths.flatMap((length, i) => { const group = rendered.slice(at, at + length); at += length; return [...group, ...(details[i] ?? [])]; })];
+  };
+  if (columns === undefined) return interleave(table(head, data, Infinity, natural), data.map(() => 1));
+  if (head.length === 1) {
+    const size = Math.min(columns, natural[0]!);
+    const lengths = data.map(row => wrap(row[0]!.text, size, 0).length);
+    const physical = data.flatMap(row => wrap(row[0]!.text, size, 0).map(text => [{ ...row[0]!, text }]));
+    return interleave(table(head, physical, columns, [size]), lengths, wrap(head[0]!, size, 0).length);
+  }
+  // Below the width required by the headers themselves, retain every field in table bands linked by the first id.
+  if (head.reduce((sum, h) => sum + width(h), 0) + 2 * (head.length - 1) > columns) {
+    const bands: number[][] = []; let band = [0];
+    for (let i = 1; i < head.length; i++) {
+      if ([...band, i].reduce((sum, index) => sum + width(head[index]!), 0) + 2 * band.length > columns) {
+        bands.push(band);
+        band = width(head[0]!) + width(head[i]!) + 2 <= columns ? [0] : [];
+      }
+      band.push(i);
     }
-    return details ? [result[0]!, ...result.slice(1).flatMap((line, i) => [line, ...(details[i] ?? [])])] : result;
+    bands.push(band);
+    return bands.flatMap((indices, i) => [...(i ? [[]] : []), ...rows(indices.map(index => head[index]!), data.map(row => indices.map(index => row[index]!)), columns, i === bands.length - 1 ? details : undefined)]);
   }
-  const cap = Math.max(24, Math.floor(columns / 3));
-  const widths = natural.map(n => Math.min(cap, n));
-  const flexible = head.includes("STAGE") ? head.indexOf("TITLE") : head.length - 1;
-  const available = Math.max(head.reduce((sum, h) => sum + width(h), 0), columns - gap - (head.includes("STAGE") ? 2 : 0));
-  while (widths.reduce((a, b) => a + b, 0) > available) {
-    const choices = widths.map((n, i) => ({ i, excess: n - width(head[i]!) })).filter(x => x.excess > 0);
+  const flexible = head.includes("TITLE") ? head.indexOf("TITLE") : head.length - 1;
+  const minimum = head.map(h => width(h));
+  const available = columns - 2 * (head.length - 1);
+  const protectedColumns = new Set(head.map((h, i) => ["STATE", "MODE", "LEVEL"].includes(h) ? i : -1));
+  const widths = natural.map((n, i) => i === flexible ? minimum[i]! : Math.max(minimum[i]!, Math.min(n, Math.max(24, Math.floor(columns / 3)))));
+  // State/mode words stay whole wherever the canonical headers and remaining fields permit it.
+  for (const i of protectedColumns) if (i >= 0) widths[i] = Math.max(minimum[i]!, ...data.flatMap(row => row[i]!.text.split(/\s+/).map(width)));
+  while (widths.reduce((sum, n) => sum + n, 0) > available) {
+    const choices = widths.map((n, i) => ({ i, excess: n - minimum[i]! })).filter(item => item.excess > 0);
     if (!choices.length) break;
-    choices.sort((a, b) => b.excess - a.excess); widths[choices[0]!.i]!--;
+    choices.sort((a, b) => Number(protectedColumns.has(a.i)) - Number(protectedColumns.has(b.i)) || b.excess - a.excess);
+    widths[choices[0]!.i]!--;
   }
+  widths[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, available - widths.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0)));
   const lengths: number[] = [];
   const physical = data.flatMap(row => {
-    const chunks = row.map((cell, i) => wrap(cell.text, Math.max(1, widths[i]!), 0));
+    const chunks = row.map((cell, i) => wrap(cell.text, widths[i]!, 0));
     const length = Math.max(...chunks.map(c => c.length)); lengths.push(length);
     return Array.from({ length }, (_, n) => row.map((cell, i) => ({ ...cell, text: chunks[i]![n] ?? "" })));
   });
-  // Pin widths without adding visible rows: table's measured widths are supplied by its header cells.
-  const paddedHead = head.map((h, i) => h + " ".repeat(Math.max(0, widths[i]! - width(h))));
-  // TITLE/STAGE are structural keys in table(), so keep those exact and let its existing flex logic size TITLE.
-  if (head.includes("STAGE")) { paddedHead[flexible] = "TITLE"; paddedHead[head.indexOf("STAGE")] = "STAGE"; }
-  const rendered = table(paddedHead, physical, columns);
-  if (!details) return rendered;
-  let at = 1;
-  return [rendered[0]!, ...lengths.flatMap((length, i) => { const group = rendered.slice(at, at + length); at += length; return [...group, ...(details[i] ?? [])]; })];
+  return interleave(table(head, physical, columns, widths), lengths);
 }
 function detail(label: string, text: unknown, columns?: number, tone?: Tone): Span[][] {
   return lines(`${label}  ${flat(text)}`, columns, tone, "  ");
@@ -86,9 +98,22 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   const peerDetails = Object.entries(data.peers).map(([id, p]) => {
     const out: Span[][] = [];
     if (p.liveAccepted?.length) { settling = true; out.push(...detail("settling", p.liveAccepted.map((v: string) => shortId(v, columns, full)).join(", "), columns, "attention")); }
-    if (p.heldBy) out.push(...detail("held", `${shortId(p.heldBy, columns, full)}${p.holdNote ? `: ${flat(p.holdNote)}` : ""}; ahub queue resolve ${p.heldBy} --action completed|retry|discard --reason <text>`, columns, "failure"));
-    if (p.paused) out.push(...detail("paused", typeof p.paused === "object" ? `${p.paused.by ?? "paused"}${p.paused.reason ? `: ${p.paused.reason}` : ""}${typeof p.paused.at === "number" ? ` ${relative(p.paused.at, now)}` : ""}` : p.paused, columns, "attention"));
-    if (p.toolsOnly) out.push(...detail("tools-only", p.toolsOnly, columns, "attention"));
+    if (p.heldBy) {
+      const note = flat(p.holdNote ?? "");
+      const command = `ahub queue resolve ${p.heldBy} --action completed|retry|discard --reason <text>`;
+      const normalized = note.startsWith(`held by needs_review ${p.heldBy}`)
+        ? note.replace(`held by needs_review ${p.heldBy}`, `by needs_review ${shortId(p.heldBy, columns, full)}`)
+        : `${shortId(p.heldBy, columns, full)}${note ? `: ${note}` : ""}`;
+      out.push(...detail("held", `${normalized}${note.includes(`ahub queue resolve ${p.heldBy}`) ? "" : `; ${command}`}`, columns, "failure"));
+    }
+    if (p.paused) {
+      const budgetPause = s.budget[id]?.paused;
+      const pauseText = budgetPause ? `budget: ${budgetPause.reason ?? "threshold"}${typeof budgetPause.resetsAt === "number" ? `; resets ${relative(budgetPause.resetsAt, now)}` : "; reset unknown"}`
+        : typeof p.paused === "object" ? `${p.paused.by ?? "paused"}${p.paused.reason ? `: ${p.paused.reason}` : ""}${typeof p.paused.at === "number" ? ` ${relative(p.paused.at, now)}` : ""}`
+        : flat(p.paused).replace(/^(budget: .*), resets .+$/, "$1; reset unknown");
+      out.push(...detail("paused", pauseText, columns, "attention"));
+    }
+    if (p.toolsOnly) out.push(...detail("tools-only", flat(p.toolsOnly).replace(/^tools-only:\s*/, ""), columns, "attention"));
     if (p.requestedModel && p.servedBy && p.requestedModel !== p.servedBy) out.push(...detail("requested model", p.requestedModel, columns));
     if (typeof p.oldestQueuedAt === "number") out.push(...detail(`${id} oldest queued`, relative(p.oldestQueuedAt, now), columns, "muted"));
     return out;
@@ -105,10 +130,10 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (counts) out.push([], ...lines(`TASKS  ${counts} (ahub board)`, columns));
   return out;
 }
-export function renderBoard(tasks: any[], columns?: number, now = Date.now(), _full = false): Span[][] {
+export function renderBoard(tasks: any[], columns?: number, now = Date.now(), _full = false, allTasks = tasks): Span[][] {
   if (!tasks.length) return [[span("no tasks")]];
   const s = initialConsoleState(); s.panel = 3; s.tasks = tasks;
-  const progress = taskProgress(tasks); const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
+  const progress = taskProgress(allTasks); const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
   const data = tasks.map(task => {
     const row = cells(s, task, false, now, stages);
     row[2] = span(row[2]!.text, peerTone(task.owner ?? ""));
@@ -117,7 +142,7 @@ export function renderBoard(tasks: any[], columns?: number, now = Date.now(), _f
     return row;
   });
   const counts = [...new Set(tasks.map(task => task.state))].map(state => `${tasks.filter(task => task.state === state).length} ${state}`).join(", ");
-  return [...rows([...TABLES[3]!], data, columns), [], ...lines(`${tasks.length} tasks: ${counts}`, columns)];
+  return [...rows([...TABLES[3]!], data, columns), [], ...lines(`${plural(tasks.length, "task")}: ${counts}`, columns)];
 }
 export function renderBudget(data: BudgetOutput, columns?: number, now = Date.now(), _full = false): Span[][] {
   const out: Span[][] = [];

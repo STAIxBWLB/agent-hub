@@ -2,7 +2,7 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { syncPermissionDefaults, permissionBoundary, initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
-import { renderStatus } from "../src/cli/output.ts";
+import { renderBoard, renderStatus } from "../src/cli/output.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import type { ConsoleTerminal } from "../src/cli/console.ts";
@@ -583,6 +583,16 @@ describe("console layout (#213)", () => {
     expect(streamed(f.output)).toEqual(["> board", "    #3 proposed pi", "    4:00:00 PM user -> claude ! approve the deploy now"]);
     f.input("q"); await running;
   });
+  test("an 80-column console preserves the board child's wrapped title column", async () => {
+    const f = fixture(); f.terminal.columns = 80;
+    const tasks = [{ id: 1, state: "proposed", class: "implement", owner: "codex", reviewer: "claude", title: "A title with many words ".repeat(30), created: NOW }];
+    const expected = renderBoard(tasks, 76, NOW).map(line => paint(line, false));
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false,
+      runCommand: (_args, output, finished, columns) => { expect(columns).toBe(76); output(expected.join("\n") + "\n"); finished(); return () => {}; } });
+    f.input(":"); f.input("board"); f.input("\r");
+    expect(streamed(f.output)).toEqual(["> board", ...expected.map(line => "    " + line)]);
+    f.input("q"); await running;
+  });
   test("agent strings below a field are quoted, so ; , ) quotes and newlines cannot forge a field, item or sender", () => {
     const s = state(true); s.panel = 3;
     const view = () => renderConsole(s, 200, 40, NOW).join("\n");
@@ -969,7 +979,10 @@ test("permission status preserves unverified, unmanaged and unknown in every con
   for (const permissionMode of ["unverified", "unmanaged", "unknown"]) {
     const s = initialConsoleState(true); s.peers = { claude: { state: "idle", permissionMode } };
     expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
-    expect(renderStatus({ peers: s.peers }, undefined, NOW).map(line => paint(line, false)).join("\n")).toContain(permissionMode);
+    const status = renderStatus({ peers: s.peers }, undefined, NOW);
+    const header = status.find(line => line[0]?.text.trim() === "PEER")!;
+    const peer = status.find(line => line[0]?.text.trim() === "claude")!;
+    expect(peer[header.findIndex(cell => cell.text.trim() === "MODE")]?.text.trim()).toBe(permissionMode);
     s.mode = "stream"; expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
     s.mode = "panels";
     const refused = reduceConsole(s, "m", NOW);

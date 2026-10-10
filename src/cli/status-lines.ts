@@ -15,12 +15,3 @@ export function backendLabel(backend: BackendRow): string {
 export function contextLine(reading: ContextView, time = (at: number) => new Date(at).toISOString()): string {
   return `context ${reading.used === null ? "unknown" : `${Math.round(reading.used * 100)}%`} (${reading.freshness}${reading.source ? `, ${reading.source}` : ""}${reading.measuredAt !== null ? `, measured ${time(reading.measuredAt)}` : ""})`;
 }
-
-export function backendLine(backend: BackendRow): string {
-  return `  model    ${backendLabel(backend)} ${backend.state ?? "unknown"} active ${backend.active ?? 0}` +
-    (backend.requestedModel ? ` requested ${backend.requestedModel}` : "") +
-    (backend.actualModel ? ` actual ${backend.actualModel}` : "") +
-    (backend.provider ? ` provider ${backend.provider}` : "") +
-    (backend.coolingUntil ? ` cooling down until ${backend.coolingUntil} after ${backend.failures ?? "?"} failures` : "") +
-    (backend.failingUntil ? ` last dispatch failed, no load moves until ${backend.failingUntil}` : "");
-}

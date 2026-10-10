@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { backendLabel, backendLine, type PeerRow } from "../src/cli/status-lines.ts";
+import { backendLabel, type PeerRow } from "../src/cli/status-lines.ts";
 
 import { renderStatus } from "../src/cli/output.ts";
 import { paint } from "../src/cli/console-state.ts";
@@ -13,16 +13,12 @@ test("a namespaced alias is printed as it is, an unnamespaced one keeps its kind
   expect(backendLabel({})).toBe("unknown/unknown");
 });
 
-test("a backend line carries the requested and actual model", () => {
-  expect(backendLine({ kind: "mlx", alias: "mlx/fast", state: "ready", active: 0, requestedModel: "mlx/fast", actualModel: "/models/qwen3-8b-mlx" }))
-    .toBe("  model    mlx/fast ready active 0 requested mlx/fast actual /models/qwen3-8b-mlx");
+test("a backend table carries the requested and actual model", () => {
+  const value = renderStatus({ peers: {}, models: { backends: [{ kind: "mlx", alias: "mlx/fast", state: "ready", active: 0, requestedModel: "mlx/fast", actualModel: "/models/qwen3-8b-mlx" }] } }).map(row => paint(row, false)).join("\n");
+  for (const word of ["mlx/fast", "ready", "/models/qwen3-8b-mlx"]) expect(value).toContain(word);
 });
 
 test("#199 a cooling backend says until when and after how many failures", () => {
-  expect(backendLine({ kind: "mlx", alias: "mlx/fast", state: "error", active: 0, coolingUntil: "2026-10-09T00:00:30.000Z", failures: 3 }))
-    .toBe("  model    mlx/fast error active 0 cooling down until 2026-10-09T00:00:30.000Z after 3 failures");
-  expect(backendLine({ kind: "dgx", alias: "dgx/fast", state: "error", active: 0, failingUntil: "2026-10-09T00:00:30.000Z" }))
-    .toBe("  model    dgx/fast error active 0 last dispatch failed, no load moves until 2026-10-09T00:00:30.000Z");
   const rendered = renderStatus({ peers: {}, models: { backends: [{ kind: "mlx", alias: "mlx/fast", state: "error", coolingUntil: "2026-10-09T00:00:30.000Z", failures: 3 }, { kind: "dgx", alias: "dgx/fast", state: "error", failingUntil: "2026-10-09T00:00:30.000Z" }] } }, undefined, Date.parse("2026-10-09T00:00:00.000Z")).map(row => paint(row, false)).join("\n");
   expect(rendered).toContain("in 30s after 3 failures");
   expect(rendered).toContain("in 30s; no load moves until then");

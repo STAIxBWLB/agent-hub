@@ -633,7 +633,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   console: async () => {
     if (args.some(arg => arg !== "--panels" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--color=auto|always|never]");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
-    if (color instanceof Error) return fail(color.message);
+    if (color instanceof Error) return fail("usage: ahub console [--panels] [--color=auto|always|never]");
     await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels"), color });
   },
 
@@ -900,7 +900,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const state = args.find((a) => !a.startsWith("--"));
     const tasks = JSON.parse(await taskOp("hub_task_list", ready ? { ready: true } : state ? { state } : {})) as any[];
     if (options.json) return console.log(JSON.stringify(tasks, null, 2));
-    printOutput(renderBoard(tasks, options.columns, Date.now(), options.full), options.color);
+    const allTasks = ready || state ? JSON.parse(await taskOp("hub_task_list", {})) as any[] : tasks;
+    printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
   },
 
   task: async () => {
@@ -1331,63 +1332,67 @@ const commands: Record<string, () => Promise<void> | void> = {
       checks.push({ section, level, name, detail });
     };
 
-    for (const bin of ["bun", "claude", "codex", "kimi"]) {
-      const v = version(bin);
-      row(!!v, bin, v ?? "not found on PATH");
-    }
-    const up = await healthy();
-    row(up, "ahub daemon", up ? readControl(stateDir)!.url : "not running (ahub up)");
-    if (up) {
-      const hub = await connect();
-      try {
-        const { status } = await hub.request({ t: "status" });
-        const pending = Object.values(status.peers as Record<string, PeerRow>).reduce((n, peer) => n + (peer.needsReview ?? 0), 0);
-        row(!status.deliveryError && pending === 0, "delivery recovery", status.deliveryError ?? (pending ? `${pending} deliveries need review; run ahub queue list` : "journal healthy; no deliveries need review"));
-        const observed = await hub.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId });
-        for (const peer of Object.values(observed.recovery?.peers ?? {}) as { id: string; state: string; sessionId?: string; threadId?: string }[]) {
-          if (!["claude", "codex"].includes(peer.id) || peer.state === "offline") continue;
-          const identity = peer.id === "claude" ? peer.sessionId : peer.threadId;
-          row(!!identity, `${peer.id} recovery ID`, identity ? "recorded" : `missing; verify the current conversation and reconnect with ahub ${peer.id} before upgrading`);
-        }
-      } finally { hub.close(); }
-    }
-    const plugin = pluginState(parseList<InstalledPlugin>(spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
-    row(plugin.state === "current", "claude plugin", plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
+    try {
+      for (const bin of ["bun", "claude", "codex", "kimi"]) {
+        const v = version(bin);
+        row(!!v, bin, v ?? "not found on PATH");
+      }
+      const up = await healthy();
+      row(up, "ahub daemon", up ? readControl(stateDir)!.url : "not running (ahub up)");
+      if (up) {
+        const hub = await connect();
+        try {
+          const { status } = await hub.request({ t: "status" });
+          const pending = Object.values(status.peers as Record<string, PeerRow>).reduce((n, peer) => n + (peer.needsReview ?? 0), 0);
+          row(!status.deliveryError && pending === 0, "delivery recovery", status.deliveryError ?? (pending ? `${pending} deliveries need review; run ahub queue list` : "journal healthy; no deliveries need review"));
+          const observed = await hub.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId });
+          for (const peer of Object.values(observed.recovery?.peers ?? {}) as { id: string; state: string; sessionId?: string; threadId?: string }[]) {
+            if (!["claude", "codex"].includes(peer.id) || peer.state === "offline") continue;
+            const identity = peer.id === "claude" ? peer.sessionId : peer.threadId;
+            row(!!identity, `${peer.id} recovery ID`, identity ? "recorded" : `missing; verify the current conversation and reconnect with ahub ${peer.id} before upgrading`);
+          }
+        } finally { hub.close(); }
+      }
+      const plugin = pluginState(parseList<InstalledPlugin>(spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
+      row(plugin.state === "current", "claude plugin", plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
 
-    const config = loadConfig(cwd);
-    row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
-    for (const line of config.retired ?? []) row(false, "retired setting", line); // issue #83
-    const omni = new OmniRoute(config.omniroute);
-    const gateway = await omni.base();
-    row(gateway ? true : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? false : undefined, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
-    row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
-    if (gateway && omni.apiKey()) {
-      try {
-        const fixed = currentRouting(cwd).local.fixed_model;
-        const served = (await omni.models()).includes(fixed);
-        row(served, "local fixed_model", served ? `${fixed} served` : `${fixed} is not served by the gateway`);
-      } catch { row(undefined, "local fixed_model", "could not read the gateway model inventory"); }
-    }
-    const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
-    row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
-    const mlxConfig = config.mlx;
-    if (mlxConfig.enabled === false) row(true, "pi mlx", "disabled (mlx.enabled=false; local endpoint not probed)");
-    else {
-      const mlx = await inspectMlx({ ...mlxConfig, runtimeDir: mlxConfig.runtimeDir ? resolve(cwd, mlxConfig.runtimeDir) : undefined, modelPath: mlxConfig.modelPath ? resolve(cwd, mlxConfig.modelPath) : undefined });
-      row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
-    }
+      const config = loadConfig(cwd);
+      row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
+      for (const line of config.retired ?? []) row(false, "retired setting", line); // issue #83
+      const omni = new OmniRoute(config.omniroute);
+      const gateway = await omni.base();
+      row(gateway ? true : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? false : undefined, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
+      row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
+      if (gateway && omni.apiKey()) {
+        try {
+          const fixed = currentRouting(cwd).local.fixed_model;
+          const served = (await omni.models()).includes(fixed);
+          row(served, "local fixed_model", served ? `${fixed} served` : `${fixed} is not served by the gateway`);
+        } catch { row(undefined, "local fixed_model", "could not read the gateway model inventory"); }
+      }
+      const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
+      row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
+      const mlxConfig = config.mlx;
+      if (mlxConfig.enabled === false) row(true, "pi mlx", "disabled (mlx.enabled=false; local endpoint not probed)");
+      else {
+        const mlx = await inspectMlx({ ...mlxConfig, runtimeDir: mlxConfig.runtimeDir ? resolve(cwd, mlxConfig.runtimeDir) : undefined, modelPath: mlxConfig.modelPath ? resolve(cwd, mlxConfig.modelPath) : undefined });
+        row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
+      }
 
-    const memory = new MemoryClient();
-    const mem = await memory.health();
-    row(mem.ok, "memory worker", mem.ok ? `claude-mem ${mem.version ?? ""} at ${memory.url}` : `unavailable at ${memory.url} (the hub works without it)`);
-    const bridge = spawnSync("dot", ["ai", "memory", "status"], { encoding: "utf8" });
-    const out = bridge.error ? "" : bridge.stdout.replace(/\x1b\[[0-9;]*m/g, "");
-    for (const tool of ["codex", "kimi"]) {
-      const ready = new RegExp(`✓\\s+${tool} ready`).test(out);
-      row(bridge.error ? undefined : ready, `memory capture: ${tool}`, bridge.error ? "unknown (`dot ai memory status` not available)" : `${ready ? "ready" : "not ready"}, per ` + "`dot ai memory status`");
+      const memory = new MemoryClient();
+      const mem = await memory.health();
+      row(mem.ok, "memory worker", mem.ok ? `claude-mem ${mem.version ?? ""} at ${memory.url}` : `unavailable at ${memory.url} (the hub works without it)`);
+      const bridge = spawnSync("dot", ["ai", "memory", "status"], { encoding: "utf8" });
+      const out = bridge.error ? "" : bridge.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+      for (const tool of ["codex", "kimi"]) {
+        const ready = new RegExp(`✓\\s+${tool} ready`).test(out);
+        row(bridge.error ? undefined : ready, `memory capture: ${tool}`, bridge.error ? "unknown (`dot ai memory status` not available)" : `${ready ? "ready" : "not ready"}, per ` + "`dot ai memory status`");
+      }
+    } finally {
+      // Preserve findings already collected if a later probe (for example config parsing) throws.
+      if (options.json) console.log(JSON.stringify(checks, null, 2));
+      else printOutput(renderDoctor(checks, options.columns, Date.now(), options.full), options.color);
     }
-    if (options.json) console.log(JSON.stringify(checks, null, 2));
-    else printOutput(renderDoctor(checks, options.columns, Date.now(), options.full), options.color);
   },
 };
 

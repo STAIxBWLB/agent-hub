@@ -20,7 +20,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts"],
     ["ahub status --all", "show every registered project"],
     ["ahub logs [-f]", "the last 100 lines of hub.log; -f shows the last 10 and follows it"],
-    ["ahub doctor [--json] [--full] [--color=auto|always|never]", "check the tools, daemon, plugin, gateway, models and memory worker this project uses"],
+    ["ahub doctor [--json] [--color=auto|always|never]", "check the tools, daemon, plugin, gateway, models and memory worker this project uses"],
     ["ahub doctor --orphans [--kill]", "list registrations whose project root is gone; --kill stops their daemons (SIGTERM, then SIGKILL) only after the process identity checks out"],
     ["ahub kill", "stop this project's hub"],
     ["ahub reset [--all] [--yes]", "list, then with --yes stop the hub and discard every queued and needs_review delivery, clear holds and pauses and drop session pointers; --all moves the state directory to .agenthub/archive instead"],
@@ -52,7 +52,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>", "release a delivery held as needs_review: mark it completed, retry it or discard it"],
   ]],
   ["Tasks and review", [
-    ["ahub board [state | --ready] [--json] [--full] [--color=auto|always|never]", "the task board; --ready: proposed tasks with nothing left to wait for"],
+    ["ahub board [state | --ready] [--json] [--color=auto|always|never]", "the task board; --ready: proposed tasks with nothing left to wait for"],
     ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
     ["ahub task assign <id> <peer>", "give a task to a peer yourself; a task that still waits is reserved for that peer instead"],
@@ -64,7 +64,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub remember <text...>", "save a note to the memory all agents share"],
   ]],
   ["Budget", [
-    ["ahub budget [--json] [--full] [--color=auto|always|never]", "quota windows per peer, and who is paused until when"],
+    ["ahub budget [--json] [--color=auto|always|never]", "quota windows per peer, and who is paused until when"],
     ["ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]", "feed a reading by hand (also: test the relay)"],
     ["ahub budget resume <peer>", "override a budget pause; readings are ignored for that peer until the window resets"],
     ["ahub budget execution configure <config.json> | status [id] | disable <id>", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
