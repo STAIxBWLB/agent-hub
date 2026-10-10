@@ -128,6 +128,7 @@ export class AcpPeer extends BasePeer {
   private readonly toolTitles = new Map<string, string>(); // the title a call was announced with, per call id (#138)
   private primed = false;
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
+  private stopping = false;
   private activeDeliveryId: string | undefined;
   private deliveryAccepted = false;
 
@@ -144,6 +145,7 @@ export class AcpPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
+    this.stopping = false;
     const [bin, ...args] = this.opts.cmd;
     // Its own process group, stopped as a whole (#115, as Codex's in #113): an agent CLI may be a launcher with a native child.
     const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -222,18 +224,21 @@ export class AcpPeer extends BasePeer {
     this.permissionMode = mode;
   }
 
-  async stop(): Promise<void> {
-    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP session stopped before settlement" });
+  async stop(reason?: string): Promise<void> {
+    this.stopping = true;
+    if (reason !== undefined) this.turn++; // a requested stop cannot escalate or complete the cancelled turn
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "ACP session stopped before settlement" });
     this.activeDeliveryId = undefined;
     const proc = this.proc;
-    if (!proc) return;
+    if (!proc) { this.setState("offline"); return; }
     await stopOwnedProcess(proc, { group: true }); // also when it exited: what it left in its group fails the stop
     if (this.proc === proc) this.proc = undefined;
+    this.setState("offline");
   }
 
   /** Resolves once the prompt is in flight; the turn result arrives on its own. */
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
-    if (this.state !== "idle") {
+    if (this.state !== "idle" || this.stopping) {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
@@ -313,6 +318,7 @@ export class AcpPeer extends BasePeer {
   }
 
   private onLine(line: string): void {
+    if (this.stopping) return; // buffered native callbacks cannot recreate approvals after peer_stop
     let msg: any;
     try {
       msg = JSON.parse(line);

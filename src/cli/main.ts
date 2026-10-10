@@ -957,6 +957,20 @@ const commands: Record<string, () => Promise<void> | void> = {
   pause: () => hold("pause"),
   resume: () => hold("resume"),
 
+  stop: async () => {
+    const peer = args[0];
+    if (args.length !== 1 || !peer || !/^[a-z][a-z0-9-]{0,31}$/.test(peer)) fail("usage: ahub stop <peer>");
+    const hub = await connect();
+    try {
+      const reply = await hub.request({ t: "peer_stop", peer }, 35_000);
+      if (reply.ok !== true) {
+        const error = String(reply.error ?? "peer stop request refused");
+        fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_stop"/i.test(error) ? `${error}; upgrade the running hub to use ahub stop` : error);
+      }
+      console.log(`${peer}: ${reply.state}`);
+    } finally { hub.close(); }
+  },
+
   permission: async () => {
     const positional = args.filter(arg => arg !== "--yes");
     const [peer, mode] = positional;

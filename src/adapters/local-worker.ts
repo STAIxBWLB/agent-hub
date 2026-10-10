@@ -131,15 +131,15 @@ export class LocalPeer extends BasePeer {
     this.setState("idle");
   }
 
-  async stop(): Promise<void> {
+  async stop(reason?: string): Promise<void> {
     this.endRouteTurn(this.labelTurnId, "failed");
-    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn stopped before settlement" });
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "turn stopped before settlement" });
     this.activeDeliveryId = undefined;
     this.turn++;
     clearTimeout(this.budgetTimer); this.budgetTimer = undefined;
     this.abort?.abort();
+    this.setState("offline"); // fence direct delivery before the bounded memory request awaits
     await this.opts.capture?.end();
-    this.setState("offline");
   }
 
   /** Resolves once the turn is claimed; a turn that cannot reach any model hands the envelopes back through onFailed. */
