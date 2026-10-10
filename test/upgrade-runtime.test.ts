@@ -1015,3 +1015,34 @@ test("a restarted target keeps a fresh choice when the accepted session attaches
     server.stop(true); rmSync(temp, { recursive: true, force: true });
   }
 });
+
+// #225 review: a Claude attached to the target without a session id is judged only after every instance's launch
+// records are read, so a block names a dead instance's launcher that still runs, or the records that cannot be read.
+for (const mode of ["a dead instance's live launcher", "unreadable launch records"] as const) test(`a restarted target's claude attached without an id blocks on ${mode}`, async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-noid-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true, peers: { claude: { id: "claude", state: "idle" } } }));
+  writeFileSync(join(stateDir, "terminal-recovery.json"), mode === "unreadable launch records" ? "{not json" : JSON.stringify([{ peer: "claude", projectRoot: temp, stateDir, instanceId: "i-dead",
+    launcherPid: process.pid, launcherSignature: processSignature(process.pid), launchId: "l-dead", handle: "term-dead-claude", incarnationId: "inc-dead", worktreeId: "wt", env: {} }]));
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: "" }; };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "claude", state: "idle", sessionId: "S" }], blockers: [] },
+    terminals: [{ peer: "claude", handle: "term-claude", incarnationId: "inc", worktreeId: "wt", projectRoot: temp, sessionId: "S", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "peers-restored", restarts: [{ instanceId: "i-dead", at: 1 }], terminals: { "closed:claude": true } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    const err = await makeRecoveryDriver(run).restore(planned, progress, op, "claude", () => {}).then(() => undefined, (e) => e as Error);
+    expect(err?.message).toContain(mode === "unreadable launch records" ? "terminal-recovery.json" : "terminal term-dead-claude is running but no claude session with an id attached yet");
+    expect(calls.some((c) => c[2] === "create")).toBe(false);
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});

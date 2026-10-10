@@ -489,7 +489,9 @@ continues from what the first wrote. `closed:<peer>`, `commitSent`, `fresh`, wai
 and the install flags stay. Restore closes each retired terminal (or finds it
 absent) before relaunching that peer, and a peer whose retired session was an
 accepted new one (fresh choice, fresh start, zero-turn Claude) is relaunched by that
-id, which the operation-fenced waiver already covers. Evidence reads the launch
+id, which the operation-fenced waiver already covers, unless it has nothing to resume
+(a Codex thread with no rollout, a Claude session with no transcript): that one starts
+new under the waiver. Evidence reads the launch
 records of every instance the operation started for the project, the dead ones
 included, and a peer attached to the new instance without a session id is a session
 of unknown identity, never "nothing attached". One restart per project per resume:
