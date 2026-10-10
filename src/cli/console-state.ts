@@ -564,8 +564,8 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const counts = s.taskCounts;
     const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
     const taskCount = span(counts ? `tasks ${counts.approved ?? 0}/${total} approved` : "tasks loading...", counts ? "success" : "attention");
-    const activeNotice = s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
-    if (!activeNotice && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
+    // Let the existing tick/key clear notice state before restoring optional totals.
+    if (!s.notice && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
       footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
     }
     return [rule, ...footer];

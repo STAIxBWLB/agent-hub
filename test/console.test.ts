@@ -913,7 +913,9 @@ describe("whole-board task progress (#246)", () => {
     s.notice = 'no request selected; [ ] selects one'; s.noticeAt = NOW;
     const alerts = renderConsoleLines(s, 80, 24, NOW);
     expect(paint(alerts[2]!, false)).toContain(s.notice); expect(paint(alerts[2]!, false)).not.toContain('tasks 1/3');
+    expect(paint(renderConsoleLines(s, 80, 24, NOW + 10_000)[2]!, false)).toBe('0 approvals');
     s.notice = '';
+    expect(paint(renderConsoleLines(s, 80, 24, NOW + 10_000)[2]!, false)).toContain('tasks 1/3 approved');
     expect(lines.map(line => terminalText(paint(line, true)))).toEqual(lines.map(line => paint(line, false)));
     s.peers = {}; s.budget = { pi: { windows: [{ id: '5h', used: 0.2 }] } };
     expect(paint(renderConsoleLines(s, 80, 24, NOW)[1]!, false)).not.toContain(' | ');
