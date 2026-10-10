@@ -45,7 +45,7 @@ test("ACP quota resets retry an untouched envelope once per window without consu
   }, () => now);
   const peer = new AcpPeer("kimi", {
     cwd: dir, cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal"],
-    onQuotaRefusal: window => { budget.report("kimi", [window], true); reports++; },
+    onQuotaRefusal: window => { budget.report("kimi", [window], true); reports++; return !!budget.record("kimi") && bus.isPaused("kimi"); },
   });
   const undeliverable: string[] = [];
   bus.tap(event => { if (event.t === "undeliverable") undeliverable.push(event.env.id); });
@@ -109,6 +109,78 @@ test("a hard limit skips the checkpoint and falls back to memory; no memory mean
   await bare.settle();
   expect(bare.budget.record("local")).toBeUndefined();
 });
+
+test("a provider hard refusal ends a reading override and supersedes a pending soft checkpoint (#306)", async () => {
+  let release!: (value: string | undefined) => void;
+  const overridden = setup({ canHandOff: () => false });
+  try {
+    overridden.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard" }], true);
+    expect(overridden.budget.override("kimi")).toBe(true);
+    overridden.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard again" }], true);
+    expect(overridden.budget.record("kimi")!.reason).toContain("hard again");
+    expect(overridden.log).toContain("! budget: kimi provider refused again; budget override ended");
+  } finally { overridden.budget.close(); }
+
+  const pending = setup({ canHandOff: () => false, requestCheckpoint: () => new Promise(resolve => { release = resolve; }) });
+  try {
+    pending.budget.report("kimi", [{ id: "5h", used: 0.95, source: "soft" }]);
+    expect(pending.budget.record("kimi")).toBeUndefined();
+    pending.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard refusal" }], true);
+    expect(pending.budget.record("kimi")!.reason).toContain("hard refusal");
+    release("outdated soft checkpoint");
+    for (let i = 0; i < 100 && !pending.budget.recoverySettled; i++) await Bun.sleep(1);
+    expect(pending.budget.recoverySettled).toBe(true);
+    expect(pending.budget.record("kimi")).toMatchObject({ summary: null, reason: "5h window at 100% (hard refusal)" });
+  } finally { pending.budget.close(); }
+});
+
+test("a hard refusal renews an expired restored pause that was waiting for attachment (#306)", () => {
+  const first = setup({ canHandOff: () => false });
+  first.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "old refusal" }], true);
+  const reset = first.budget.record("kimi")!.resetsAt;
+  first.budget.close();
+  const restored = setup({ canHandOff: () => false, attached: () => false }, first.db);
+  restored.clock.now = reset + MIN;
+  try {
+    restored.budget.restore();
+    expect(restored.log).not.toContain("pause kimi");
+    expect(restored.budget.record("kimi")).toBeDefined(); // old record retained for the resume notice
+    restored.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "new refusal" }], true);
+    expect(restored.log).toContain("pause kimi");
+    expect(restored.budget.record("kimi")).toMatchObject({ since: restored.clock.now, resetsAt: restored.clock.now + 300 * MIN, reason: "5h window at 100% (new refusal)" });
+  } finally { restored.budget.close(); }
+});
+
+test("after two quota resets the same original completes once when the provider accepts (#306)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-quota-success-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "quota", instanceId: "success" });
+  const bus = new Bus({ batchMs: 0, journal }); let now = 1_800_000_000_000, reports = 0;
+  const answers: ReturnType<typeof newEnvelope>[] = [];
+  const budget = new Budget(join(dir, "hub.db"), DEFAULT_BUDGET, {
+    pause: id => bus.pause(id), resume: id => bus.resume(id), requestCheckpoint: async () => undefined,
+    platformContext: async () => undefined, canHandOff: () => false, attached: () => true,
+    handoff: async () => [], resumed: () => {}, notify: () => {},
+  }, () => now);
+  const acp = new AcpPeer("kimi", { cwd: dir, cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal", "--quota-refusals", "2"],
+    onQuotaRefusal: window => { reports++; budget.report("kimi", [window], true); return !!budget.record("kimi") && bus.isPaused("kimi"); },
+  });
+  bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") answers.push(event.env); });
+  const until = async (condition: () => boolean) => { for (let i = 0; i < 400 && !condition(); i++) await Bun.sleep(10); expect(condition()).toBe(true); };
+  try {
+    await acp.start(); bus.add(acp);
+    const original = newEnvelope("user", "QUOTA_REFUSAL", { to: ["kimi"] }); bus.publish(original);
+    for (const count of [1, 2]) {
+      await until(() => reports === count && bus.queueIds("kimi").includes(original.id));
+      now = budget.record("kimi")!.resetsAt + MIN; budget.tick();
+    }
+    await until(() => acp.state === "idle" && answers.length === 1 && !bus.hasInFlight("kimi"));
+    await acp.setPermissionMode("ask"); // consumed transport barrier after the last possible native answer
+    expect(answers).toHaveLength(1);
+    expect(answers[0]).toMatchObject({ body: "echo: QUOTA_REFUSAL", trace: original.trace, hop: original.hop + 1, to: ["user"] });
+    expect(journal.list("kimi").filter(row => row.originals.some(env => env.id === original.id) && row.state === "completed")).toHaveLength(1);
+    expect(bus.queueIds("kimi")).toEqual([]); expect(bus.queueSummary("kimi").needsReview).toBe(0);
+  } finally { await acp.stop(); bus.closeJournal(); budget.close(); rmSync(dir, { recursive: true, force: true }); }
+}, 20_000);
 
 test("resume: at the reset time, or on a fresh reading under gate - 0.1; a dip just under the gate or a stale reading does not", async () => {
   const { budget, clock, log, resumed, settle } = setup();

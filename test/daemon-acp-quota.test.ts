@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,6 +6,8 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { AcpPeer } from "../src/adapters/acp.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "../src/hub/db-timeout.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -30,7 +33,7 @@ class Implementer extends BasePeer {
   }
 }
 
-test("a Kimi quota refusal pauses before safe requeue and automatically relays tasks and routing (#306)", async () => {
+async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ahub-acp-quota-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -52,6 +55,11 @@ test("a Kimi quota refusal pauses before safe requeue and automatically relays t
   await implementer.start(); daemon.bus.add(implementer);
   const tools = await ControlClient.connect(dir, { role: "tools", peer: "kimi" });
   cleanup.push(() => tools.close());
+  return { dir, daemon, console_, implementer, tools };
+}
+
+test("a Kimi quota refusal pauses before safe requeue and automatically relays tasks and routing (#306)", async () => {
+  const { dir, daemon, console_, implementer, tools } = await fixture();
   for (const id of [1, 2]) {
     expect((await console_.request({ t: "task", op: "hub_task_propose", args: {
       title: `implement piece ${id}`, class: "implement", owner: "kimi", refs: { paths: [`piece${id}.ts`] },
@@ -80,7 +88,72 @@ test("a Kimi quota refusal pauses before safe requeue and automatically relays t
   expect(JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 3 } })).text).owner).toBe("codex");
   const explanation = await console_.request({ t: "task", op: "route_explain", args: { title: "next piece", class: "implement" } });
   expect(explanation.text).toContain("owner candidate kimi: skipped, paused");
+  await (daemon.bus.peers.get("kimi") as AcpPeer).setPermissionMode("ask"); // consume all earlier native replies
+  const db = new Database(join(dir, "hub.db"), { readonly: true });
+  try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    await until(() => (db.query("SELECT handed_off FROM budget_pauses WHERE peer = ?").get("kimi") as { handed_off: number } | null)?.handed_off === 1);
+  } finally { db.close(); }
   // An acknowledged control request plus completed receiver turns is the barrier for exact-once assertions.
   expect(implementer.received.filter(env => env.kind === "task" && env.refs?.task === "1")).toHaveLength(1);
   expect(implementer.received.filter(env => env.kind === "task" && env.refs?.task === "2")).toHaveLength(1);
+}, 20_000);
+
+test("a refusal after a console override pauses again, keeps all messages and relays new work (#306)", async () => {
+  const { daemon, console_, implementer } = await fixture();
+  const dropped: string[] = [];
+  daemon.bus.tap(event => { if (event.t === "undeliverable") dropped.push(event.env.id); });
+  const first = newEnvelope("user", "QUOTA_REFUSAL first", { to: ["kimi"] }); daemon.bus.publish(first);
+  await until(() => daemon.bus.isPaused("kimi") && daemon.bus.queueIds("kimi").includes(first.id));
+  daemon.bus.setRecoveryHold(true); // hold dispatch, not the daemon's operation authority, while arranging this race
+  const second = newEnvelope("user", "QUOTA_REFUSAL second", { to: ["kimi"] });
+  const third = newEnvelope("user", "QUOTA_REFUSAL third", { to: ["kimi"] });
+  try {
+    expect((await console_.request({ t: "budget", resume: "kimi" })).ok).toBe(true);
+    daemon.bus.publish(second); daemon.bus.publish(third);
+    expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "QUOTA_REFUSAL work", class: "implement" } })).ok).toBe(true);
+  } finally { daemon.bus.setRecoveryHold(false); }
+  await until(() => daemon.bus.isPaused("kimi") && implementer.received.some(env => env.kind === "task" && env.refs?.task === "1"));
+  await (daemon.bus.peers.get("kimi") as AcpPeer).setPermissionMode("ask");
+  const shown = await console_.request({ t: "budget" });
+  expect(shown.budget.kimi.paused.reason).toContain("kimi ACP usage-limit refusal");
+  for (const env of [first, second, third]) expect(daemon.bus.queueIds("kimi").filter(id => id === env.id)).toHaveLength(1);
+  expect(dropped).toEqual([]); expect(daemon.bus.queueSummary("kimi").needsReview).toBe(0);
+  expect(implementer.received.filter(env => env.kind === "task" && env.refs?.task === "1")).toHaveLength(1);
+  expect((await console_.request({ t: "task", op: "route_explain", args: { title: "more work", class: "implement" } })).text).toContain("owner candidate kimi: skipped, paused");
+}, 20_000);
+
+test("a hard refusal supersedes the daemon's pending soft checkpoint before confirming safe requeue (#306)", async () => {
+  const { daemon, console_ } = await fixture();
+  const original = newEnvelope("user", "QUOTA_REFUSAL_OCCUPANCY_HELD", { to: ["kimi"] }); daemon.bus.publish(original);
+  let consumed = false;
+  for (let i = 0; i < 100 && !consumed; i++) {
+    consumed = (await console_.request({ t: "status" })).status.peers.kimi.context?.used === 0.1;
+    if (!consumed) await Bun.sleep(10);
+  }
+  expect(consumed).toBe(true); // native occupancy ACK, not a guess about process readiness
+  expect((await console_.request({ t: "budget", set: { peer: "kimi", used: 0.95, resetsInMs: 600_000 } })).ok).toBe(true);
+  expect((await console_.request({ t: "budget" })).budget.kimi.paused).toBeUndefined();
+  await (daemon.bus.peers.get("kimi") as AcpPeer).setPermissionMode("ask"); // release the held refusal before the mode ACK
+  await until(() => daemon.bus.isPaused("kimi") && daemon.bus.queueIds("kimi").includes(original.id));
+  const shown = await console_.request({ t: "budget" });
+  expect(shown.budget.kimi.paused.reason).toContain("100% (kimi ACP usage-limit refusal)");
+  expect(daemon.bus.queueSummary("kimi").needsReview).toBe(0);
+  expect(daemon.bus.attemptState()).toEqual({});
+}, 20_000);
+
+test("repeated early budget overrides leave only one pending resume notice (#306)", async () => {
+  const { daemon, console_ } = await fixture();
+  const original = newEnvelope("user", "QUOTA_REFUSAL", { to: ["kimi"] }); daemon.bus.publish(original);
+  await until(() => daemon.bus.isPaused("kimi") && daemon.bus.queueIds("kimi").includes(original.id));
+  for (let cycle = 0; cycle < 3; cycle++) {
+    daemon.bus.setRecoveryHold(true);
+    try { expect((await console_.request({ t: "budget", resume: "kimi" })).ok).toBe(true); }
+    finally { daemon.bus.setRecoveryHold(false); }
+    await until(() => daemon.bus.isPaused("kimi"));
+  }
+  await (daemon.bus.peers.get("kimi") as AcpPeer).setPermissionMode("ask");
+  const queue = daemon.bus.snapshot(false).queues.kimi!;
+  expect(queue.filter(env => env.kind === "budget" && env.refs?.budgetResume === "kimi")).toHaveLength(1);
+  expect(queue.filter(env => env.id === original.id)).toHaveLength(1);
 }, 20_000);

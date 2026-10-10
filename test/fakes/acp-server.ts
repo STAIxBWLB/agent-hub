@@ -11,6 +11,7 @@ const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
 const send = (m: unknown) => process.stdout.write(`${JSON.stringify(m)}\n`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let busy = false;
+let quotaRefusals = 0;
 let heldQuotaRefusal: (() => void) | undefined;
 let cancel: (() => void) | undefined;
 // Receipt-order fixture: a later mode reply is an ordered transport barrier after the cancelled prompt result.
@@ -29,11 +30,13 @@ async function prompt(id: number, text: string) {
   busy = true;
   let verdict = "";
   // Opt-in quota fixture only: ordinary prompts and existing cancellation modes are unchanged.
-  if (process.argv.includes("--quota-refusal") && text.includes("QUOTA_REFUSAL")) {
+  if (process.argv.includes("--quota-refusal") && text.includes("QUOTA_REFUSAL") && quotaRefusals < Number(arg("--quota-refusals") ?? Infinity)) {
+    quotaRefusals++;
+    if (text.includes("QUOTA_REFUSAL_OCCUPANCY")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 1, size: 10 } } });
     const message = arg("--quota-error-text") ?? (process.argv.includes("--quota-unrecognized") ? "Authentication required: 403 another provider refusal" : KIMI_2_1_1_5H_REFUSAL_PREFIX + " To continue now, purchase extra usage or upgrade your plan.");
     const refuse = () => { busy = false; cancel = undefined; send({ jsonrpc: "2.0", id, error: { code: -32603, message } }); };
-    if (text.includes("QUOTA_REFUSAL_AFTER_ACTIVITY") || text.includes("QUOTA_REFUSAL_HELD")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "quota fixture activity" } } } });
-    if (text.includes("QUOTA_REFUSAL_HELD")) { heldQuotaRefusal = refuse; cancel = () => { busy = false; }; return; }
+    if (text.includes("QUOTA_REFUSAL_AFTER_ACTIVITY") || (text.includes("QUOTA_REFUSAL_HELD") && !text.includes("OCCUPANCY"))) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "quota fixture activity" } } } });
+    if (text.includes("QUOTA_REFUSAL_HELD") || text.includes("QUOTA_REFUSAL_OCCUPANCY_HELD")) { heldQuotaRefusal = refuse; cancel = () => { busy = false; }; return; }
     return refuse();
   }
   // Occupancy trailing updates (#285): flat `{used, size}` (docs/smoke.md), held for the test's barrier; 2.1.1's

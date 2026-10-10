@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Pause Kimi on its observed ACP 5-hour quota refusal, requeue untouched work safely and automatically relay open tasks through the existing budget policy. (#306)
+- Pause Kimi on its observed ACP 5-hour quota refusal, requeue untouched work only after a confirmed pause and automatically relay open tasks through the existing budget policy; hard refusals end reading overrides and supersede pending soft checkpoints. (#306)
 - Bound SQLite contention on every shared database connection with a per-file busy timeout and a source guard. (#303)
 - Make status, board, budget and doctor output readable with shared tables, color policy, wrapped fields, full identifiers and JSON output; size console child output to its available width (#284).
 - Let unified dashboard peer starts wait 35 seconds for the terminal provider cap plus a response margin; slower headless starts are reported as unconfirmed. Block duplicate in-flight starts, unlock after confirmed answers, and bound an unconfirmed manager start lock by the hub's shared 30-second retry guard or earlier attachment; keep project-local confirmed-start behavior (#298).

@@ -669,14 +669,14 @@ test("an offline peer's occupancy update is dropped at the gate (#285)", async (
 test("only the observed Kimi 2.1.1 five-hour refusal produces the fallback quota window", () => {
   const observed = "Authentication required: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan.";
   expect(acpQuotaRefusal(observed)).toEqual({ id: "5h", used: 1, windowMins: 300, source: "kimi ACP usage-limit refusal" });
-  for (const message of ["session error", "usage limit", "Authentication required: 403 another provider refusal", observed.replace("5-hour", "weekly"), "Qwen quota exhausted"]) expect(acpQuotaRefusal(message)).toBeUndefined();
+  for (const message of ["session error", "usage limit", "Authentication required: 403 another provider refusal", observed.replace("5-hour", "weekly"), "Qwen quota exhausted", "unrelated failure: 5-hour usage limit", "Error: " + observed, observed.toLowerCase()]) expect(acpQuotaRefusal(message)).toBeUndefined();
 });
 
 test("a verified pre-activity quota refusal calls the pause hook before safe retry and emits no ordinary failure", async () => {
   const order: string[] = [], receipts: { id: string; state: string; quota?: true; reason?: string }[] = [], failures: string[] = [];
   let paused = false;
   const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(),
-    onQuotaRefusal: window => { expect(window).toEqual({ id: "5h", used: 1, windowMins: 300, source: "kimi ACP usage-limit refusal" }); paused = true; order.push("quota"); },
+    onQuotaRefusal: window => { expect(window).toEqual({ id: "5h", used: 1, windowMins: 300, source: "kimi ACP usage-limit refusal" }); paused = true; order.push("quota"); return true; },
     onTurnFailure: (_envs, reason) => { failures.push(reason); },
   }); peer = acp;
   acp.onDelivery = receipt => { receipts.push(receipt); if (receipt.id === "quota1") { order.push(receipt.state); expect(paused).toBe(true); } };
@@ -694,7 +694,7 @@ test("a verified pre-activity quota refusal calls the pause hook before safe ret
 
 test("journal-less quota failures carry safe retry metadata after the quota callback", async () => {
   const order: string[] = [], failures: unknown[] = [];
-  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(), onQuotaRefusal: () => { order.push("quota"); } }); peer = acp;
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(), onQuotaRefusal: () => { order.push("quota"); return true; } }); peer = acp;
   acp.onFailed = (envs, metadata) => { order.push("failure"); failures.push({ id: envs[0]!.id, metadata }); };
   await acp.start();
   const env = newEnvelope("user", "QUOTA_REFUSAL");
@@ -706,7 +706,7 @@ test("journal-less quota failures carry safe retry metadata after the quota call
 
 test("known quota after native activity still pauses but is uncertain rather than safe retry", async () => {
   const quotas: unknown[] = [], receipts: { state: string; quota?: true }[] = [], failures: string[] = [];
-  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(), onQuotaRefusal: value => { quotas.push(value); }, onTurnFailure: (_envs, reason) => { failures.push(reason); } }); peer = acp;
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(), onQuotaRefusal: value => { quotas.push(value); return true; }, onTurnFailure: (_envs, reason) => { failures.push(reason); } }); peer = acp;
   acp.onDelivery = receipt => { receipts.push(receipt); };
   await acp.start();
   await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL_AFTER_ACTIVITY")], "acted");
@@ -718,7 +718,7 @@ test("known quota after native activity still pauses but is uncertain rather tha
 test("native identity and unknown error text fence quota recognition", async () => {
   for (const flags of [["--agent-name", "Qwen Code"], ["--no-agent-info"], ["--quota-unrecognized"]]) {
     const quotas: unknown[] = [], receipts: { state: string; quota?: true }[] = [], failures: string[] = [];
-    const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal", ...flags], cwd: process.cwd(), onQuotaRefusal: window => { quotas.push(window); }, onTurnFailure: (_envs, reason) => { failures.push(reason); } }); peer = acp;
+    const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal", ...flags], cwd: process.cwd(), onQuotaRefusal: window => { quotas.push(window); return true; }, onTurnFailure: (_envs, reason) => { failures.push(reason); } }); peer = acp;
     try {
       acp.onDelivery = receipt => { receipts.push(receipt); };
       await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL")], "unknown");
@@ -732,7 +732,7 @@ test("native identity and unknown error text fence quota recognition", async () 
 test("a consumed stale quota refusal cannot change quota, receipts, failures or logs after watchdog expiry", async () => {
   class QuotaWatchdogPeer extends AcpPeer { expireWatchdog(): void { this.onWatchdog(); } }
   const quotas: unknown[] = [], receipts: { state: string }[] = [], failures: string[] = [], logs: string[] = [];
-  const acp = new QuotaWatchdogPeer("kimi", { cmd: [...FAKE, "--quota-refusal", "--mode-delay-ms", "0"], cwd: process.cwd(), onQuotaRefusal: window => { quotas.push(window); }, onTurnFailure: (_envs, reason) => { failures.push(reason); }, log: line => { logs.push(line); } }); peer = acp;
+  const acp = new QuotaWatchdogPeer("kimi", { cmd: [...FAKE, "--quota-refusal", "--mode-delay-ms", "0"], cwd: process.cwd(), onQuotaRefusal: window => { quotas.push(window); return true; }, onTurnFailure: (_envs, reason) => { failures.push(reason); }, log: line => { logs.push(line); } }); peer = acp;
   acp.onDelivery = receipt => { receipts.push(receipt); };
   await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL_HELD")], "stale");
   await until(() => receipts.some(receipt => receipt.state === "accepted")); // fake activity proves the held turn exists
@@ -745,7 +745,7 @@ test("a consumed stale quota refusal cannot change quota, receipts, failures or 
 
 test("journal-less activity prevents safe quota retry metadata even without a delivery acceptance receipt", async () => {
   const quotas: unknown[] = [], failures: unknown[] = [];
-  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(), onQuotaRefusal: window => { quotas.push(window); } }); peer = acp;
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(), onQuotaRefusal: window => { quotas.push(window); return true; } }); peer = acp;
   acp.onFailed = (_envs, metadata) => { failures.push(metadata); };
   await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL_AFTER_ACTIVITY")]);
   await until(() => failures.length === 1 && acp.state === "idle");
@@ -762,4 +762,38 @@ test("agent rejection headers are sanitized before logs, receipts and failure ca
   await until(() => receipts.length === 1 && acp.state === "idle");
   expect(receipts[0]!.reason).toBe(reason); expect(failures).toEqual([reason]);
   expect(logs).toContain(`[kimi] prompt failed: ${reason}`);
+});
+
+for (const confirmation of ["missing", "false", "throw"] as const) test(`quota retry requires a confirmed pause: ${confirmation} (#306)`, async () => {
+  const receipts: { state: string; quota?: true }[] = [];
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(),
+    ...(confirmation === "missing" ? {} : { onQuotaRefusal: () => { if (confirmation === "throw") throw "pause failed"; return false; } }),
+  }); peer = acp;
+  acp.onDelivery = receipt => { receipts.push(receipt); };
+  await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL")], "unconfirmed");
+  await until(() => receipts.length === 1 && acp.state === "idle");
+  expect(receipts).toMatchObject([{ state: "needs_review" }]);
+  expect(receipts[0]!.quota).toBeUndefined();
+});
+
+test("session occupancy before a refusal is not evidence that its prompt ran (#306)", async () => {
+  const receipts: { state: string; quota?: true }[] = [], occupancy: number[] = [], tokens: number[] = [];
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(),
+    onQuotaRefusal: () => true, onUsageDiagnostic: value => { if (value.contextUsed !== undefined) occupancy.push(value.contextUsed); }, onTokens: total => { tokens.push(total); },
+  }); peer = acp; acp.onDelivery = receipt => { receipts.push(receipt); };
+  await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL_OCCUPANCY")], "occupancy-only");
+  await until(() => receipts.length === 1 && acp.state === "idle");
+  expect(occupancy).toEqual([1]); expect(tokens).toEqual([]);
+  expect(receipts).toMatchObject([{ state: "failed_safe", quota: true }]);
+});
+
+test("a plain stop fences a pending prompt's rejection even without a generation bump (#306)", async () => {
+  const failures: unknown[] = [], quotas: unknown[] = [];
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(),
+    onQuotaRefusal: window => { quotas.push(window); return true; }, onTurnFailure: (_envs, reason) => { failures.push(reason); },
+  }); peer = acp; acp.onFailed = envs => { failures.push(envs); };
+  await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL_HELD")]);
+  await until(() => (acp as unknown as { promptActivity: boolean }).promptActivity);
+  await acp.stop(); // stop() rejects its pending RPC; the handler was registered when that RPC was created
+  expect(failures).toEqual([]); expect(quotas).toEqual([]); expect(acp.state).toBe("offline");
 });

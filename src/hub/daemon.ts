@@ -1043,9 +1043,13 @@ export async function startDaemon(opts: DaemonOptions) {
     reading: (peer, windows, hard, at) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }),
     handoff: (peer, context, urgentOnly) => tasks.reassignForPause(peer, context, urgentOnly),
     resumed: (record) => {
+      // Only one pending resume notice is useful after repeated definitive quota refusals.
+      for (const env of bus.snapshot(false).queues[record.peer] ?? []) {
+        if (env.from === HUB && env.kind === "budget" && env.refs?.budgetResume === record.peer) bus.withdraw(env.id);
+      }
       if (record.peer === "kimi") kimiTokens.length = 0; // a new window: the old counts would pause it again at once
       const moved = record.moved.length ? `While you were paused these moved: ${record.moved.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : "Nothing was moved while you were paused.";
-      bus.publish(newEnvelope(HUB, `Your quota window has reset and the hub has resumed you (paused since ${new Date(record.since).toLocaleTimeString()}, ${record.reason}). ${moved} Messages queued for you follow.`, { to: [record.peer], kind: "budget", priority: "important" }));
+      bus.publish(newEnvelope(HUB, `Your quota window has reset and the hub has resumed you (paused since ${new Date(record.since).toLocaleTimeString()}, ${record.reason}). ${moved} Messages queued for you follow.`, { to: [record.peer], kind: "budget", priority: "important", refs: { budgetResume: record.peer } }));
     },
     notify: (line) => { notify(line); feedBudgetPauses(); },
   });
@@ -2169,7 +2173,10 @@ export async function startDaemon(opts: DaemonOptions) {
         log,
         onTokens: onKimiTokens,
         // Pause synchronously before the adapter requeues a provider-refused prompt (#306).
-        onQuotaRefusal: (window) => budget.report("kimi", [window], true),
+        onQuotaRefusal: (window) => {
+          budget.report("kimi", [window], true);
+          return !!budget.record("kimi") && bus.isPaused("kimi");
+        },
         // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
         // context reading (#285 phase 1), never a tokens event or a budget window. The reading is bound to the
         // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid

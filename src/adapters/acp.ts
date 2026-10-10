@@ -78,8 +78,8 @@ export interface AcpOptions {
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void> | void;
   /** The sessionId is the adapter's own: the daemon binds a context reading to it, not to a lookup of its own (#285). */
   onUsageDiagnostic?: (observation: ACPUsageDiagnostic, sessionId: string) => void;
-  /** A verified current-session provider refusal; called before safe retry so the coordinator pauses first. */
-  onQuotaRefusal?: (window: ACPQuotaRefusal) => void;
+  /** Return true only when the current-session refusal has an authoritative quota pause; otherwise hold delivery. */
+  onQuotaRefusal?: (window: ACPQuotaRefusal) => boolean;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
@@ -275,10 +275,10 @@ export class AcpPeer extends BasePeer {
         this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
         const quota = this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
         if (quota) {
-          let reported = true;
-          try { this.opts.onQuotaRefusal?.(quota); }
-          catch (error) { reported = false; this.opts.log?.(`[${this.id}] quota pause failed: ${sanitize((error as Error).message)}`); }
-          const safe = reported && !this.deliveryAccepted && !this.promptActivity;
+          let paused = false;
+          try { paused = this.opts.onQuotaRefusal?.(quota) === true; }
+          catch (error) { this.opts.log?.(`[${this.id}] quota pause failed: ${sanitize(error instanceof Error ? error.message : String(error))}`); }
+          const safe = paused && !this.deliveryAccepted && !this.promptActivity;
           if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: safe ? "failed_safe" : "needs_review", reason, ...(safe ? { quota: true as const } : {}) });
           else if (!deliveryId) this.onFailed?.(envs, safe ? { quota: true } : undefined);
           return; // quota relay owns reassignment, not the ordinary turn-failure path
@@ -348,7 +348,6 @@ export class AcpPeer extends BasePeer {
     if (msg.method === "session/update") {
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
       const u = msg.params?.update;
-      if (this.state === "busy") this.promptActivity = true;
       // Occupancy is the session's, not the turn's: 2.1.1's source text emits usage_update after the prompt
       // resolves, when the peer may already be idle (read from the source, not observed live; #285). So a
       // context-used update is accepted while idle too, but then it must name the current session; in a turn the
@@ -363,6 +362,7 @@ export class AcpPeer extends BasePeer {
         }
       }
       if (this.state !== "busy") return;
+      this.promptActivity = true;
       this.acceptDelivery();
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
       // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the

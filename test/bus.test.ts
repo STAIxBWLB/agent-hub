@@ -3,6 +3,10 @@ import { Bus, type BusEvent, type BusOptions } from "../src/hub/bus.ts";
 import { DIGEST, frame, HUB, keepNotes, newEnvelope, noteLine, sanitize, parseMarker, renderDigest, replyAudience, replyParent, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { DEFAULT_LIMITS, Limiter, type LimitsConfig } from "../src/hub/limits.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 class FakePeer extends BasePeer {
   got: Envelope[] = [];
@@ -63,6 +67,35 @@ for (const paused of [false, true]) test(`quota metadata preserves poison attemp
     expect(bus.queueIds(peer.id).filter(id => id === env.id)).toHaveLength(1);
     expect(bus.attemptState()).toEqual(paused ? {} : { [`${peer.id}:${env.id}`]: 1 });
   } finally { bus.closeJournal(); await peer.stop(); }
+});
+
+test("an ordinary failure still spends an attempt on a paused peer (#306)", async () => {
+  const bus = new Bus({ batchMs: 0 }); const peer = new FakePeer("kimi");
+  peer.deliver = async envs => { peer.set("busy"); bus.pause(peer.id); peer.onFailed?.(envs); };
+  try {
+    await peer.start(); bus.add(peer);
+    const env = newEnvelope("user", "ordinary failure", { to: [peer.id] }); bus.publish(env);
+    for (let n = 0; n < 200 && !bus.queueIds(peer.id).includes(env.id); n++) await Bun.sleep(10);
+    expect(bus.queueIds(peer.id)).toEqual([env.id]);
+    expect(bus.attemptState()).toEqual({ [`${peer.id}:${env.id}`]: 1 });
+  } finally { bus.closeJournal(); await peer.stop(); }
+});
+
+test("quota metadata cannot bypass attempts for a delivery already accepted (#306)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-quota-receipt-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "quota", instanceId: "accepted" });
+  const bus = new Bus({ batchMs: 0, journal }), peer = new FakePeer("kimi"); let deliveryId = "";
+  peer.deliver = async (_envs, id?: string) => { peer.set("busy"); deliveryId = id!; peer.onDelivery?.({ id: id!, state: "accepted" }); };
+  try {
+    await peer.start(); bus.add(peer);
+    const env = newEnvelope("user", "accepted work", { to: [peer.id] }); bus.publish(env);
+    for (let n = 0; n < 200 && !deliveryId; n++) await Bun.sleep(10);
+    expect(deliveryId).not.toBe(""); expect(journal.get(deliveryId)!.state).toBe("accepted");
+    bus.pause(peer.id);
+    peer.onDelivery?.({ id: deliveryId, state: "failed_safe", quota: true });
+    expect(bus.queueIds(peer.id)).toEqual([env.id]);
+    expect(bus.attemptState()).toEqual({ [`${peer.id}:${env.id}`]: 1 });
+  } finally { bus.closeJournal(); await peer.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 async function trio(watchdogMs?: number, opts: Partial<BusOptions> = {}) {
