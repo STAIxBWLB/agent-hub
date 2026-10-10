@@ -1380,7 +1380,19 @@ export class Tasks {
     this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
     if (rejected.rejections >= ESCALATE_AFTER) {
-      const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
+      let moved: Task;
+      try {
+        moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
+      } catch (e) {
+        // The verdict is saved. If the escalation's own write landed too (the owner changed), only the delivery of
+        // the assignment failed: the reviewer gets the saved task and a notice, never a failed tool call (#276). A
+        // failure before that write (the task closed meanwhile, #254) still throws, and assignOwner's throw is what
+        // the ready offer's retry relies on (#231), so escalate() itself stays unguarded.
+        const saved = this.d.board.get(rejected.id);
+        if (!saved?.owner || saved.owner === rejected.owner) throw e;
+        this.releaseNotice(`task ${this.publicTitle(saved)}: the move to ${saved.owner} is saved, but its assignment was not delivered: ${e instanceof Error ? e.message : String(e)}; send it again with: ahub task assign ${saved.id} ${saved.owner}`);
+        return saved;
+      }
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
       this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${moved.owner ?? "its owner"} changes were requested again`, () =>

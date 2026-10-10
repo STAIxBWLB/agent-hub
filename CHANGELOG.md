@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A repeated `changes_requested` whose escalation saved its move but could not publish the assignment returns the saved task with a console notice naming the undelivered delivery and the `ahub task assign` resend command, instead of failing the reviewer's tool call; a failure before the escalation's write still throws (#276).
+
 ## 0.12.22
 
 - Restore the captured Codex approval policy once on a resumed thread after detached ask, show unknown-policy guidance in the CLI, and record direct native Claude child identity so verified crash cleanup can retire its settings file (#270).
