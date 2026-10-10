@@ -22,6 +22,7 @@
 <section aria-labelledby="peers-title"><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"></div></section>
 <section aria-labelledby="permissions-title"><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title"><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div></section>
+<section aria-labelledby="bench-title"><div class="section-head"><h2 id="bench-title">Benchmarks</h2><span id="bench-count" class="meta"></span></div><div id="bench"></div></section>
 </div>
 </main>
 <footer>Loopback session. Private task content stays in the terminal. Reopen with <code>ahub ui</code> when your session expires.</footer>
@@ -226,6 +227,7 @@ function render(snapshot) {
       target.append(row);
     }
   });
+  renderBench(snapshot.bench);
   const stream = $('stream');
   if (!eventCount) { stream.replaceChildren(); empty(stream, 'No activity yet.'); }
   for (const entry of snapshot.events || []) {
@@ -263,6 +265,44 @@ const STREAM_KINDS = ['chat', 'task', 'review', 'status', 'budget', 'presence', 
 let streamFilter = '';
 function applyStreamFilter(node) { node.hidden = streamFilter !== '' && node.dataset.kind !== streamFilter; }
 function refreshStreamEmpty() { const has = $('stream').querySelector('.event:not([hidden])') !== null, any = $('stream').querySelector('.event') !== null; $('stream-empty').hidden = has || !any; }
+// #251: benchmark runs on this machine and arm comparisons per suite. Every bar carries its number as text.
+function renderBench(bench) {
+  const pct = (v) => v === null || v === undefined ? '-' : Math.round(v * 100) + '%';
+  const num = (v) => v === null || v === undefined ? '-' : String(Math.round(v));
+  const dur = (ms) => ms === null || ms === undefined ? '-' : ms < 120000 ? Math.round(ms / 1000) + 's' : Math.round(ms / 60000) + 'm';
+  $('bench-count').textContent = bench ? bench.runs.length + ' runs' : '';
+  update('bench', bench || null, (target) => {
+    if (!bench) return empty(target, 'No benchmark runs. In a project kept for benchmarks, run ahub bench run <suite.json> --arm <label>.');
+    for (const run of bench.runs.slice(0, 8)) {
+      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      const tone = run.state === 'running' ? 'info' : run.state === 'finished' ? 'ok' : run.state === 'unknown' ? '' : 'warn';
+      head.append(el('span', run.suite + ' [' + run.arm + ']', 'label'), el('span', run.state, 'badge ' + tone));
+      const bar = el('progress'); bar.max = run.total || 1; bar.value = run.done; bar.setAttribute('aria-label', run.suite + ' ' + run.arm + ': ' + run.done + ' of ' + run.total + ' attempts');
+      if (run.state === 'running') row.append(el('p', 'now: ' + (run.current || '-') + ' / running ' + dur(Date.now() - Date.parse(run.startedAt)) + ' / ' + (run.total - run.done) + ' attempts left', 'meta'));
+      row.append(head, bar, el('p', run.done + '/' + run.total + ' attempts / pass ' + pct(run.passRate) + ' (' + run.pass + ' pass, ' + run.fail + ' fail, ' + run.timeout + ' timeout, ' + run.error + ' error) / tokens p50 ' + num(run.tokensMedian) + ' / wall p50 ' + dur(run.wallMsMedian), 'meta'));
+      target.append(row);
+    }
+    const suites = new Map();
+    for (const arm of bench.arms) { if (!suites.has(arm.suite)) suites.set(arm.suite, []); suites.get(arm.suite).push(arm); }
+    for (const [suite, arms] of suites) {
+      if (arms.length < 2) continue;
+      const block = el('div', undefined, 'row');
+      block.append(el('div', 'Compare arms: ' + suite, 'label'));
+      for (const [key, label, rate, fmt] of [['passRate', 'Pass rate', true, pct], ['firstPassRate', 'First pass', true, pct], ['tokensMedian', 'Tokens per attempt (p50)', false, num], ['wallMsMedian', 'Wall time per attempt (p50)', false, dur]]) {
+        const values = arms.map((a) => a.measures[key]).filter((v) => v !== null && v !== undefined);
+        const max = rate ? 1 : Math.max(1, ...values);
+        block.append(el('p', label, 'meta'));
+        for (const arm of arms) {
+          const value = arm.measures[key];
+          const line = el('p', arm.arm + ': ' + fmt(value) + ' (' + arm.measures.attempts + ' attempts, ' + arm.runs + ' runs)' + (arm.measures.attempts < 5 ? ', too few to compare' : ''), 'meta');
+          const bar = el('progress'); bar.max = max; bar.value = value === null || value === undefined ? 0 : value; bar.setAttribute('aria-label', label + ', ' + arm.arm + ': ' + fmt(value));
+          block.append(line, bar);
+        }
+      }
+      target.append(block);
+    }
+  });
+}
 function renderStreamChips() {
   const group = $('stream-filters');
   if (group.children.length) return;

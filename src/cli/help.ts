@@ -75,6 +75,11 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub research [--since 30d] [--all] [--json]", "success, first-pass, rework and check-failure rates, tokens and wall time per approved task, from the opt-in research records"],
     ["ahub research export [--format jsonl|csv] [--since 30d] [--all]", "the research records for outside analysis: ids, counts and tokens, never text"],
     ["ahub research backfill", "build this project's research records once from events.jsonl"],
+    ["ahub bench run <suite.json> --arm <label> [--repeat N] [--tasks a,b]", "run a benchmark suite against the peers attached here, in a project kept for benchmarks (it resets the work tree)"],
+    ["ahub bench list|status", "benchmark runs on this machine / the one running now"],
+    ["ahub bench report <run> [--json]", "pass rate, first pass, tokens and wall time per task and overall"],
+    ["ahub bench compare <run|arm>... [--suite <name>] [--json]", "compare arms with 95% bootstrap intervals; inconclusive below 5 attempts per arm"],
+    ["ahub bench export [--format jsonl|csv]", "benchmark records for outside analysis: ids, outcomes and counts, never suite text"],
     ["ahub check-path <file> [--peer <id>]", "other owners' open tasks that claim or changed a file"],
   ]],
   ["Hooks", [

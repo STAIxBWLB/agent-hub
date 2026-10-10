@@ -1984,3 +1984,18 @@ acts on the stopped state directory.
 - A trusted guard uses `PreEffectToolRefusal` only when that operation has performed no task or board effect; PII screening and its telemetry record may precede the refusal. Pi receives the same `error: <message>` refusal as the control client, and its session/call receipt is `done`. Initial task ownership/dependency/state checks and conductor entry peer/mode/assignment/escalation validation opt into the type; shared helpers default to ordinary errors, and conductor checks after an awaited release validation stay ordinary. Generic errors, board readback failures after a write, and receipt settlement write failures remain uncertain/pending and are never repeated. A legacy pending row has no pre-effect proof in its stored fingerprint/state/result, so startup preserves it; neither present board state nor a matching error message establishes historical refusal.
 - Each Pi owner reports one exit with cause, exit code or signal, whether startup completed, whether a turn/tool was active, whether teardown was expected, and the last validated tool name only. TUI shutdown/owner-loss and verified stop teardown lack observed OS status and record unknown. A successfully stopped claimed TUI owner reports once; a never-owned launch reports no invented exit. Internal teardown notices direct inspection and `ahub pi`, without claiming a person requested them. Console notices name the next action or automatic-start state; headless code 0 is still an exit and settles active deliveries as uncertain.
 - With `pi.auto_start`, an unexpected idle headless exit attempts its verified persisted session once in a 60 s window. The daemon owns the attempt/window across adapter replacements, blocks throughout an in-flight attempt, and rearms the 60 s window when that attempt settles. It checks current-owner identity, completed startup, turn/tool inactivity, start serialization, shutdown and recovery before and after awaited receipt drain/session capture. Missing or invalid persisted state leaves Pi offline with `ahub pi` guidance, with no fresh-session fallback. A second exit inside the window stays offline. Requested stops, stale owners, startup failures, active turns/tools and native terminal exits never trigger this automatic path; crash recovery's existing #66 behavior remains separate.
+## Amendment: benchmarks (issue #251)
+
+- `ahub bench` runs a person's suite file (tasks with a starting commit, an optional setup and a verify command)
+  against the peers attached to a hub, in a project opted in with `bench.enabled`, because every attempt resets the work
+  tree (`git checkout --force --detach <ref>`, `git clean -fdx -e .agenthub`). The runner is a console client: it
+  proposes each task as the console does and polls the board, so the task flow is unchanged and no new control request
+  exists. Attempt measures come from #247's `taskRecords` of that task.
+- Results go to `~/.agenthub/bench/<run>.jsonl` (ids, outcomes, exit codes, counts, times; never suite text or command
+  output). A run's state comes from its end record or its runner's liveness (`processLiveness`). Comparisons are
+  derived when asked: per-arm measures and a seeded 95% bootstrap interval of each difference, inconclusive below five
+  attempts per arm.
+- A task that times out stops the run, because an agent may still work in the tree the next attempt would reset.
+  ponytail: a board state to withdraw an open task would let the run continue.
+- The dashboard snapshot carries run summaries and per-arm measures only. `bench run` is a person's (identity gate);
+  reading results is not. Schema and commands: [bench](../bench.md).
