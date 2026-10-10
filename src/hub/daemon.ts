@@ -1981,9 +1981,10 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
         await owner.stop(reason);
         writeStatus();
-        if (owner.state !== "offline") return { ok: false, error: "peer stop did not reach offline; inspect ahub status and its terminal before retrying" };
+        const state = bus.stateOf(peer);
+        if (state !== "offline" || bus.peers.get(peer) !== owner) return { ok: false, error: "peer stop did not reach offline on its owner; inspect ahub status and its terminal before retrying" };
         try { notify(`${peer} stopped by the console; start it again with ahub ${peer}`); } catch { /* owner stop and readback remain authoritative */ }
-        return { ok: true, state: owner.state };
+        return { ok: true, state };
       });
     } catch {
       writeStatus();
@@ -2889,11 +2890,13 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (msg.t) {
       case "permission_default": {
         if (c.role !== "console") return void reply({ ok: false, error: "permission default confirmation is a human console action" });
+        if (typeof msg.peer === "string" && requestedPeerStops.has(msg.peer)) return void reply({ ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" });
         void permissionChange(msg.peer, () => confirmPermissionDefault(msg.peer, msg.confirmed)).then(reply).catch(() => reply({ ok: false, error: "permission default confirmation failed; inspect status" }));
         return;
       }
       case "permission": {
         if (c.role !== "console") return void reply({ ok: false, error: "permission modes are human console commands" });
+        if (typeof msg.peer === "string" && requestedPeerStops.has(msg.peer)) return void reply({ ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" });
         if (msg.peer === undefined) return void reply({ ok: true, peers: Object.fromEntries([...bus.peers].filter(([, p]) => p.state !== "offline").map(([id]) => [id, permissionDisplay(id, bus.peers.get(id))])) });
         void permissionChange(msg.peer, () => changePermission(msg.peer, msg.mode, msg.confirmed)).then(reply).catch(() => reply({ ok: false, error: "permission mode change failed; inspect status" }));
         return;

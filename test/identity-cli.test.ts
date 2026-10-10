@@ -88,7 +88,8 @@ test("the human stop CLI leaves a real daemon's local peer offline and the hub r
     expect(stopped).toEqual({ code: 0, stdout: "local: offline\n", stderr: "" });
     expect(daemon.bus.stateOf("local")).toBe("offline");
     const status = await console_.request({ t: "status" });
-    expect(status.ok).toBe(true); expect(status.status.peers.local.state).toBe("offline");
+    expect(status.t).toBe("status"); expect(status.status.pid).toBe(process.pid);
+    expect(status.status.peers.local.state).toBe("offline");
     const repeated = await cli(root, ["stop", "local"]);
     expect(repeated.code).toBe(1); expect(repeated.stderr).toContain("offline");
   } finally { console_?.close(); await daemon.stop(); model.stop(); rmSync(root, { recursive: true, force: true }); }
