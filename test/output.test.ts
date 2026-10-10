@@ -328,6 +328,13 @@ describe("remaining one-shot outputs", () => {
     expect(text(renderQueueShow(phaseFixture.deliveries[0], 80, now)).replace(/\s/g, "")).toContain(`ahubqueueresolve${hold}`);
     expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [] }], 80, now)).replace(/\s/g, "")).toContain(`ahubprojectsremove${phaseFixture.projects[0]!.id}`);
   });
+  test("new identifier columns preserve full project and turn tokens at80", () => {
+    for (const rendered of [renderProjects(phaseFixture.projects, 80, now, true), renderTurns(phaseFixture.turns, 80, now, true)]) {
+      const expected = rendered[0]![0]!.text.trim() === "PROJECT" ? phaseFixture.projects[0]!.id : phaseFixture.turns[0]!.id;
+      expect(rendered.some(line => line[0]?.text.trim() === expected)).toBe(true);
+      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+    }
+  });
   test("structured views keep public stubs and labels with relative times", () => {
     const queue = text(renderQueueShow(phaseFixture.deliveries[0], undefined, now));
     expect(queue).toContain("[pii]"); expect(queue).toContain("originals 1 body"); expect(queue).toContain("claude"); expect(queue).toContain("codex"); expect(queue).toContain("1m ago");
