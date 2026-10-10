@@ -136,6 +136,7 @@ export class AcpPeer extends BasePeer {
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
   private stopping = false;
   private activeDeliveryId: string | undefined;
+  private activeLegacy: { turn: number; envs: Envelope[] } | undefined;
   private deliveryAccepted = false;
   private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout> } | undefined;
   private promptActivity = false;
@@ -235,6 +236,11 @@ export class AcpPeer extends BasePeer {
   async stop(reason?: string): Promise<void> {
     this.stopping = true;
     this.clearCancelWait();
+    const legacy = this.activeLegacy;
+    this.activeLegacy = undefined;
+    // Journal-less work has no durable receipt: return it before a requested stop
+    // invalidates its generation, while stopping still prevents a drain.
+    if (legacy?.turn === this.turn) this.onFailed?.(legacy.envs);
     if (reason !== undefined) this.turn++; // a requested stop cannot escalate or complete the cancelled turn
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "ACP session stopped before settlement" });
     this.activeDeliveryId = undefined;
@@ -253,6 +259,7 @@ export class AcpPeer extends BasePeer {
     }
     const turn = ++this.turn;
     this.activeDeliveryId = deliveryId;
+    this.activeLegacy = deliveryId ? undefined : { turn, envs };
     this.deliveryAccepted = false;
     this.promptActivity = false;
     this.chunks = [];
@@ -262,6 +269,9 @@ export class AcpPeer extends BasePeer {
     prompt
       .then((result) => {
         if (turn !== this.turn) return; // superseded: these chunks belong to a later turn
+        // This prompt has reported. A synchronous observer stop must not return
+        // completed work as if its native request were still in flight.
+        if (this.activeLegacy?.turn === turn) this.activeLegacy = undefined;
         this.observeUsage(result, "prompt_result");
         this.primed = true;
         const body = this.chunks.join("").trim();
@@ -274,22 +284,25 @@ export class AcpPeer extends BasePeer {
         }
       })
       .catch((e: Error) => {
-        if (turn !== this.turn || this.stopping) return; // cancelled or stopped prompt refusals must not affect the current turn
+        if (turn !== this.turn) {
+          if (this.cancelWait?.turn === turn) this.opts.log?.(`[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
+          return; // cancelled prompt errors are discarded, like their late results
+        }
         const reason = sanitize(e.message);
         this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
-        const quota = this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
+        const quota = !this.stopping && this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
         if (quota) {
           let paused = false;
           try { paused = this.opts.onQuotaRefusal?.(quota) === true; }
           catch (error) { this.opts.log?.(`[${this.id}] quota pause failed: ${sanitize(error instanceof Error ? error.message : String(error))}`); }
           const safe = paused && !this.deliveryAccepted && !this.promptActivity;
           if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: safe ? "failed_safe" : "needs_review", reason, ...(safe ? { quota: true as const } : {}) });
-          else if (!deliveryId) this.onFailed?.(envs, safe ? { quota: true } : undefined);
+          else if (!deliveryId && this.activeLegacy?.turn === turn) { this.activeLegacy = undefined; this.onFailed?.(envs, safe ? { quota: true } : undefined); }
           return; // quota relay owns reassignment, not the ordinary turn-failure path
         }
         this.reportTurnFailure(envs, reason);
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason });
-        else if (!deliveryId) this.onFailed?.(envs);
+        else if (!deliveryId && this.activeLegacy?.turn === turn) { this.activeLegacy = undefined; this.onFailed?.(envs); }
       })
       .finally(() => {
         const waiting = this.cancelWait;
@@ -298,7 +311,8 @@ export class AcpPeer extends BasePeer {
           if (!this.stopping && this.turn === waiting.successor && this.state === "busy") this.setState("idle");
           return;
         }
-        if (turn === this.turn && this.state === "busy") this.setState("idle");
+        if (turn === this.turn && !this.stopping && this.state === "busy") this.setState("idle");
+        if (this.activeLegacy?.turn === turn) this.activeLegacy = undefined;
         if (turn === this.turn && this.activeDeliveryId === deliveryId) this.activeDeliveryId = undefined;
       });
   }
@@ -316,6 +330,7 @@ export class AcpPeer extends BasePeer {
     if (this.state !== "busy") return;
     if (this.cancelWait) { this.clearWatchdog(); return; }
     const cancelledTurn = this.turn;
+    this.activeLegacy = undefined; // the cancelled prompt is discarded, never returned by a later stop
     const durable = !!this.activeDeliveryId;
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
     this.activeDeliveryId = undefined;
@@ -415,7 +430,7 @@ export class AcpPeer extends BasePeer {
       }
       else if (u?.sessionUpdate === "usage_update") this.observeUsage(u, "usage_update");
     } else if (msg.method === "session/request_permission") {
-      if (this.cancelWait || this.stopping) { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
+      if (this.cancelWait) { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
       if (this.state === "busy" && (!msg.params?.sessionId || msg.params.sessionId === this.sessionId)) this.promptActivity = true;
       void this.answerPermission(msg);
     } else if (msg.method && msg.id !== undefined) {
@@ -468,7 +483,7 @@ export class AcpPeer extends BasePeer {
     } finally {
       clearInterval(alive); // also when there is no handler at all
     }
-    const valid = turn === this.turn && !this.cancelWait && !this.stopping && options.some((o) => o.optionId === picked);
+    const valid = turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
     this.send({
       jsonrpc: "2.0",
       id: msg.id,

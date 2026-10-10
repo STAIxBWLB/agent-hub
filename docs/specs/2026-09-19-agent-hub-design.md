@@ -151,7 +151,9 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   when it has one, otherwise what the `tool_call` update announced for the same `toolCallId`.
   A payload that cannot be resolved either way is titled as unresolved and its `allow_always`
   option is withheld, so a blind click cannot grant every later call of the session. The
-  watchdog sends `session/cancel` before forcing idle. `--model` maps to `kimi --model <alias> acp`
+  watchdog sends `session/cancel`. A durable delivery goes offline with `needs_review`;
+  without a journal, the peer stays busy until its cancelled prompt reports, bounded by
+  30 s, then goes offline with queued work retained if no report arrives. `--model` maps to `kimi --model <alias> acp`
   (verified flag). Reusable for `opencode acp`.
 - Local worker (amended in M3): a hub-native tool-calling loop over non-streaming
   `POST /chat/completions` with plain `fetch`, no SDK (the repo keeps zero runtime
@@ -243,9 +245,13 @@ interface Envelope {
 Every queue is bounded (`queue_cap`, default 200): on overflow the oldest non-`important`
 envelope is dropped and reported on the console.
 
-Inactivity watchdog per busy turn (default 300 s) forces `idle` after cancelling the silent
-turn (`session/cancel` for ACP, `turn/interrupt` for Codex); a late result of the cancelled
-turn is discarded. Queues are drained in order on `idle`. Delivery is at-least-once with
+The inactivity watchdog per busy turn defaults to 300 s. ACP sends `session/cancel`: a
+durable delivery goes offline with `needs_review`; on a bus without a journal, the peer
+stays busy until the cancelled prompt reports, then drains on idle. After the 30 s bound
+without a report it goes offline with queued work retained, never idle. Cancelled results
+and errors are discarded; an error during that wait leaves one log line. Other adapters
+keep their cancellation rules (`turn/interrupt` for Codex). Queues drain in order only
+when the adapter is idle. Delivery is at-least-once with
 idempotency by `id`: a failed delivery returns to the queue head and is retried after 1 s, and
 after 3 failures it is reported as undeliverable on the console so one envelope cannot block a
 peer. Peer ids claimed over the control WS must not be `user` or a hub-managed adapter id.

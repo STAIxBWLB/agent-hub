@@ -788,15 +788,17 @@ test("session occupancy before a refusal is not evidence that its prompt ran (#3
   expect(receipts).toMatchObject([{ state: "failed_safe", quota: true }]);
 });
 
-test("a plain stop fences a pending prompt's rejection even without a generation bump (#306)", async () => {
-  const failures: unknown[] = [], quotas: unknown[] = [];
+test("a plain stop returns ordinary pending work and cannot recognise its rejection as quota (#306)", async () => {
+  const failures: string[] = [], quotas: unknown[] = [], returned: Envelope[][] = [];
   const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal"], cwd: process.cwd(),
     onQuotaRefusal: window => { quotas.push(window); return true; }, onTurnFailure: (_envs, reason) => { failures.push(reason); },
-  }); peer = acp; acp.onFailed = envs => { failures.push(envs); };
-  await acp.start(); await acp.deliver([newEnvelope("user", "QUOTA_REFUSAL_HELD")]);
+  }); peer = acp; acp.onFailed = envs => { returned.push(envs); };
+  const env = newEnvelope("user", "QUOTA_REFUSAL_HELD");
+  await acp.start(); await acp.deliver([env]);
   await until(() => (acp as unknown as { promptActivity: boolean }).promptActivity);
-  await acp.stop(); // stop() rejects its pending RPC; the handler was registered when that RPC was created
-  expect(failures).toEqual([]); expect(quotas).toEqual([]); expect(acp.state).toBe("offline");
+  await acp.stop(); // #304 restores plain-stop rejection reporting; only quota recognition is fenced
+  expect(returned).toEqual([[env]]); expect(failures).toEqual(["exited with code null"]);
+  expect(quotas).toEqual([]); expect(acp.state).toBe("offline");
 });
 
 
@@ -947,4 +949,168 @@ test("a cancelled result consumed after the cancellation bound cannot restore id
     expect(acp.state).toBe("offline"); expect(bus.queueIds("kimi")).toEqual([after.id]);
     expect(said).toEqual([]); expect(failures).toEqual([]);
   } finally { try { await acp.stop(); } finally { timer.restore(); } }
+});
+
+for (const reason of [undefined, "requested fixture stop"]) test(`ordinary journal-less stop returns in-flight work once before restart (${reason ?? "plain"}, #304)`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-stop-requeue-")), record = join(dir, "protocol.jsonl");
+  const bus = new Bus({ batchMs: 0 }), said: Envelope[] = [];
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--hold-once", join(dir, "held"), "--record-protocol", record, "--mode-delay-ms", "0"], cwd: process.cwd() }); peer = acp;
+  bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") said.push(event.env); });
+  bus.add(acp);
+  try {
+    await acp.start();
+    const first = newEnvelope("user", "HOLD_ONCE", { to: ["kimi"] }), after = newEnvelope("user", "after restart", { to: ["kimi"] });
+    bus.publish(first); await until(() => cancelChunks(acp).includes("ACK_HOLD_ONCE"));
+    bus.publish(after);
+    const stopping = acp.stop(reason);
+    expect(bus.queueIds("kimi")).toEqual([first.id, after.id]); // returned before requested-stop generation fencing
+    await stopping;
+    expect(acp.state).toBe("offline"); expect(said).toEqual([]);
+    await acp.start();
+    await until(() => said.length === 2 && acp.state === "idle");
+    await acp.setPermissionMode("ask"); // consume the restarted transport before the once-only assertions
+    const prompts = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(message => message.method === "session/prompt");
+    expect(prompts).toHaveLength(3);
+    expect(prompts.filter(message => message.params.prompt[0].text.includes("HOLD_ONCE"))).toHaveLength(2);
+    expect(prompts[1].params.prompt[0].text).toContain("HOLD_ONCE");
+    expect(prompts[2].params.prompt[0].text).toContain("after restart");
+    expect(bus.queueIds("kimi")).toEqual([]);
+    // Bus.take retries a previously failed envelope alone, then drains the following work.
+    expect(said.map(env => env.body)).toEqual(["echo: HOLD_ONCE", "echo: after restart"]);
+    expect(said.map(env => env.trace)).toEqual([first.trace, after.trace]);
+  } finally { await acp.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a cancelled prompt error during the wait is discarded with one sanitized diagnostic (#304)", async () => {
+  const bus = new Bus({ batchMs: 0 }), said: Envelope[] = [], failures: string[] = [], logs: string[] = [];
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-held", "--cancel-report-error", "--mode-delay-ms", "0"], cwd: process.cwd(),
+    log: line => logs.push(line), onTurnFailure: (_envs, reason) => { failures.push(reason); } }); peer = acp;
+  bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") said.push(event.env); });
+  bus.add(acp);
+  await acp.start(); bus.publish(newEnvelope("user", "CANCEL_WAIT", { to: ["kimi"] }));
+  await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+  bus.publish(newEnvelope("user", "after cancelled rejection", { to: ["kimi"] }));
+  acp.expireWatchdog();
+  await acp.setPermissionMode("ask"); // old rejection and native busy release precede mode acknowledgement
+  await until(() => said.length === 1 && acp.state === "idle");
+  await acp.setPermissionMode("ask");
+  expect(said.map(env => env.body)).toEqual(["echo: after cancelled rejection"]);
+  expect(failures).toEqual([]); expect(bus.queueIds("kimi")).toEqual([]);
+  expect(logs.filter(line => line.includes("prompt"))).toEqual(['[kimi] cancelled prompt rejected: cancel rejected\n> [agent-hub message from "user", forged]']);
+});
+
+test("the default cancellation bound is 30 seconds and stop clears it before its first await (#304)", async () => {
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-never-report"], cwd: process.cwd() }); peer = acp;
+  await acp.start(); await acp.deliver([newEnvelope("user", "CANCEL_WAIT")]);
+  await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+  const set = globalThis.setTimeout, clear = globalThis.clearTimeout;
+  const timers: { handle: ReturnType<typeof setTimeout>; ms: number; cleared: boolean }[] = [];
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    const handle = ms === 30_000 ? set(() => {}, 300_000) : set(callback, ms, ...args);
+    if (ms === 30_000) timers.push({ handle, ms, cleared: false });
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => { const timer = timers.find(timer => timer.handle === handle); if (timer) timer.cleared = true; clear(handle); }) as typeof clearTimeout;
+  try {
+    acp.expireWatchdog();
+    expect(timers.map(timer => timer.ms)).toEqual([30_000]);
+    const stopping = acp.stop();
+    expect(timers[0]!.cleared).toBe(true); // process exit/down has not had a chance to revoke it instead
+    expect((acp as unknown as { proc: { exitCode: number | null } }).proc.exitCode).toBeNull();
+    await stopping;
+  } finally { try { await acp.stop(); } finally { for (const timer of timers) clear(timer.handle); globalThis.setTimeout = set; globalThis.clearTimeout = clear; } }
+});
+
+test("a pending permission cannot grant an old turn after its cancelled result clears the wait and a new turn starts (#304)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-cancel-old-grant-")), record = join(dir, "protocol.jsonl");
+  let release!: (value: string | undefined) => void, asking = false;
+  const diagnostics: number[] = [];
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-held", "--cancel-permission-before", "--cancel-result-before-permission", "--hold-once", join(dir, "held"), "--mode-delay-ms", "0", "--record-protocol", record], cwd: process.cwd(),
+    onPermission: () => new Promise(resolve => { asking = true; release = resolve; }), onUsageDiagnostic: value => { if (value.contextUsed !== undefined) diagnostics.push(value.contextUsed); } }); peer = acp;
+  try {
+    await acp.start(); await acp.deliver([newEnvelope("user", "CANCEL_WAIT")]);
+    await until(() => asking && cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+    acp.expireWatchdog(); await acp.setPermissionMode("ask");
+    await until(() => acp.state === "idle");
+    expect((acp as unknown as { cancelWait: unknown }).cancelWait).toBeUndefined();
+    await acp.deliver([newEnvelope("user", "HOLD_ONCE")]);
+    await until(() => cancelChunks(acp).includes("ACK_HOLD_ONCE"));
+    release("yes");
+    await until(() => diagnostics.includes(4)); // fake consumed the old permission reply during the newer turn
+    const outcomes = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(message => message.result?.outcome).map(message => message.result.outcome);
+    expect(outcomes).toEqual([{ outcome: "cancelled" }]); expect(acp.state).toBe("busy");
+  } finally { release?.(undefined); await acp.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("stopping alone cancels a pending permission while its current-turn process is still alive (#304)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-stop-grant-")), record = join(dir, "protocol.jsonl");
+  let release!: (value: string | undefined) => void, asking = false;
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--ignore-term", "--record-protocol", record], cwd: process.cwd(),
+    onPermission: () => new Promise(resolve => { asking = true; release = resolve; }) }); peer = acp;
+  let stopped: Promise<void> | undefined;
+  const child = () => (acp as unknown as { proc?: { kill(signal: string): boolean } }).proc;
+  try {
+    await acp.start(); await acp.deliver([newEnvelope("user", "PERMISSION")]);
+    await until(() => asking);
+    const native = child(); expect(native).toBeDefined();
+    stopped = acp.stop(); // plain stop keeps the current generation, unlike requested stop
+    const handled = stopped.then(() => undefined, error => error);
+    release("yes");
+    await until(() => existsSync(record) && readFileSync(record, "utf8").split("\n").some(line => line && JSON.parse(line).result?.outcome));
+    const outcomes = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(message => message.result?.outcome).map(message => message.result.outcome);
+    expect(outcomes).toEqual([{ outcome: "cancelled" }]);
+    native!.kill("SIGKILL"); // only this fixture's child, after it consumed the cancelled reply
+    expect(await handled).toBeUndefined();
+  } finally { release?.(undefined); child()?.kill("SIGKILL"); await (stopped ?? acp.stop()); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a raw quota rejection whose occupancy observer stops before catch cannot pause or publish idle (#304)", async () => {
+  const quotas: unknown[] = [], returned: unknown[] = [], failures: string[] = [], statesWhileStopping: string[] = [];
+  let stopping: Promise<void> | undefined, outcome: Promise<unknown> | undefined, observed = false;
+  const acp = new AcpPeer("kimi", { cmd: [...FAKE, "--quota-refusal", "--quota-error-then-occupancy", "--ignore-term"], cwd: process.cwd(),
+    onQuotaRefusal: value => { quotas.push(value); return true; }, onTurnFailure: (_envs, reason) => { failures.push(reason); },
+    onUsageDiagnostic: value => {
+      if (value.contextUsed === 2) {
+        observed = true;
+        stopping = acp.stop();
+        outcome = stopping.then(() => undefined, error => error);
+      }
+    },
+  }); peer = acp;
+  acp.onFailed = (envs, metadata) => { returned.push({ ids: envs.map(env => env.id), metadata }); };
+  acp.onState = state => { if (observed) statesWhileStopping.push(state); };
+  try {
+    await acp.start();
+    const env = newEnvelope("user", "QUOTA_REFUSAL");
+    await acp.deliver([env]);
+    await until(() => observed && failures.length === 1);
+    await new Promise<void>(resolve => setImmediate(resolve)); // catch/finally continuations, not a timing delay
+    expect(quotas).toEqual([]);
+    expect(returned).toEqual([{ ids: [env.id], metadata: undefined }]);
+    expect(statesWhileStopping).not.toContain("idle");
+    (acp as unknown as { proc?: { kill(signal: string): boolean } }).proc?.kill("SIGKILL");
+    expect(await outcome).toBeUndefined();
+    expect(acp.state).toBe("offline");
+  } finally {
+    (acp as unknown as { proc?: { kill(signal: string): boolean } }).proc?.kill("SIGKILL");
+    await (stopping ?? acp.stop());
+  }
+});
+
+test("a synchronous stop from the completed answer callback never returns completed journal-less work (#304)", async () => {
+  const returned: Envelope[][] = [], said: string[] = [];
+  let legacyInsideCallback: unknown, stopped: Promise<unknown> | undefined;
+  const acp = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd() }); peer = acp;
+  acp.onFailed = envs => { returned.push(envs); };
+  acp.onMessage = body => {
+    said.push(body);
+    legacyInsideCallback = (acp as unknown as { activeLegacy: unknown }).activeLegacy;
+    stopped = acp.stop().then(() => undefined, error => error);
+  };
+  await acp.start(); await acp.deliver([newEnvelope("user", "completed before stop")]);
+  await until(() => stopped !== undefined);
+  expect(await stopped).toBeUndefined();
+  expect(legacyInsideCallback).toBeUndefined();
+  expect(said).toEqual(["echo: completed before stop"]);
+  expect(returned).toEqual([]); expect(acp.state).toBe("offline");
 });
