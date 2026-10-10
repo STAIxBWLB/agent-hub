@@ -2703,6 +2703,7 @@ export async function startDaemon(opts: DaemonOptions) {
       writeStatus(); return { ok: true, peer, permissionMode: permissionMode(peer) };
     }
     const owner = bus.peers.get(peer);
+    if (peer === "codex" && unattendedPeers.has(peer)) return { ok: false, error: "Codex started --unattended cannot confirm a permission default; restart without --unattended" };
     if (!starting.has(peer) && owner instanceof CodexPeer && owner.state === "offline") return { ok: false, error: "connect the Codex TUI through the hub proxy before confirming its default" };
     if (!starting.has(peer) && owner && owner.state !== "offline") {
       const result = await changePermission(peer, "never-ask", true);
@@ -2734,6 +2735,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const result = await permissionChange(peer, async () => {
       if (stopping) return { ok: false, error: "hub is stopping" };
       const selected = permissionMode(peer);
+      if (owner instanceof CodexPeer && unattendedPeers.has(peer) && selected !== "ask") return { ok: false, error: "Codex started --unattended cannot take a permission mode; restart without --unattended" };
       if (!(owner instanceof AcpPeer && owner.permissionModeState === "unmanaged") && owner.getPermissionMode() !== selected) {
         if (owner instanceof CodexPeer && !owner.proxyAttached) owner.setStartupPermissionMode(selected);
         else await owner.setPermissionMode(selected);

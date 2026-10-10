@@ -45,7 +45,9 @@ test("slow native default confirmation refuses competing decline, duplicate appr
   expect((await rig.mode("kimi", "ask")).permissionMode).toBe("ask");
 });
 
-for (const peer of ["kimi", "codex"]) test(`startup console y reconciles ${peer}'s captured mode before its first native turn`, async () => {
+for (const peer of ["kimi", "codex", "codex-unattended"]) test(`startup console y reconciles ${peer}'s captured mode or refuses its actual unattended launch`, async () => {
+  const actualUnattended = peer === "codex-unattended";
+  const id = actualUnattended ? "codex" : peer;
   let contexts = 0, release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const memory = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
@@ -57,21 +59,28 @@ for (const peer of ["kimi", "codex"]) test(`startup console y reconciles ${peer}
   const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") });
   const port = reservation.port!; reservation.stop(true);
   writeFileSync(bin, `#!${process.execPath}\nimport { appendFileSync } from "node:fs"; import { startFakeAppServer } from ${JSON.stringify(join(import.meta.dir, "fakes/app-server.ts"))}; const url=process.argv[process.argv.indexOf("--listen")+1]; startFakeAppServer(30,Number(new URL(url).port),undefined,0,true,msg=>appendFileSync(${JSON.stringify(record)},JSON.stringify(msg)+"\\n"));\n`, { mode: 0o700 });
-  const rig = await fixture({ codex_bin: bin, permission_modes: { [peer]: "never-ask" }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: `http://127.0.0.1:${memory.port}` } },
-    { cwd, stateDir: join(cwd, "state") }, { codexAppPort: port });
-  const started = rig.client.request({ t: "start", peer });
+  const rig = await fixture({ codex_bin: bin, permission_modes: { [id]: "never-ask" }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: `http://127.0.0.1:${memory.port}` } },
+    { cwd, stateDir: join(cwd, "state") }, { codexAppPort: port, unattended: id === "codex" });
+  const started = rig.client.request({ t: "start", peer: id, args: { unattended: actualUnattended } });
   await until(() => contexts > 0);
-  expect((await rig.client.request({ t: "permission_default", peer, confirmed: true })).permissionMode).toBe("never-ask");
+    const confirmed = await rig.client.request({ t: "permission_default", peer: id, confirmed: true });
+  if (actualUnattended) expect(confirmed.error).toContain("--unattended");
+  else expect(confirmed.permissionMode).toBe("never-ask");
   release(); const ready = await started; expect(ready).toMatchObject({ ok: true });
-  const owner = rig.daemon.bus.peers.get(peer) as CodexPeer | import("../src/adapters/acp.ts").AcpPeer;
-  expect(owner.getPermissionMode()).toBe("never-ask");
-  expect((await rig.client.request({ t: "status" })).status.peers[peer].permissionMode).toBe("never-ask");
+  const owner = rig.daemon.bus.peers.get(id) as CodexPeer | import("../src/adapters/acp.ts").AcpPeer;
+  expect(owner.getPermissionMode()).toBe(actualUnattended ? "ask" : "never-ask");
+  if (actualUnattended) {
+    expect((await rig.client.request({ t: "status" })).status.peers[id].permissionMode).toBeUndefined();
+    expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).not.toContain("confirmed by the console");
+    return;
+  }
+  expect((await rig.client.request({ t: "status" })).status.peers[id].permissionMode).toBe("never-ask");
   if (peer === "codex") {
     const tui = new WebSocket(ready.proxyUrl); cleanup.push(() => tui.close());
     tui.onopen = () => tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui", version: "1" } } }));
     tui.onmessage = event => { if (JSON.parse(String(event.data)).id === 1) { tui.send(JSON.stringify({ method: "initialized" })); tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { cwd: rig.cwd } })); } };
     await until(() => owner.state === "idle");
-    rig.daemon.bus.publish(newEnvelope("user", "one turn", { to: [peer], priority: "important" }));
+    rig.daemon.bus.publish(newEnvelope("user", "one turn", { to: [id], priority: "important" }));
     const requests = () => { try { return readFileSync(record, "utf8").trim().split("\n").map(row => JSON.parse(row)); } catch { return []; } };
     await until(() => requests().some(r => r.method === "turn/start"));
     expect(requests().find(r => r.method === "turn/start").params.approvalPolicy).toBe("never");
