@@ -41,7 +41,7 @@ Example shared or machine-local config:
 - `hub_task_propose` accepts an optional `role` catalog id. Tasks refuses unknown ids or class mismatches before storing a row, with the allowed ids for the task base class. Research/writing aliases use their existing base class. Role ids never change routing, flow roles or permission policy.
 - The board persists the id across restart and ownership changes. Assignment notices include bounded sanitized guidance; review requests include the role's Review duties. If this daemon prepared that native session's matching contract, the owner notice names the id without repeating its body. Externally started plugin sessions have no such receipt and retain the task guidance.
 - PII stubs, task events and research records expose only the role id/identity, never the private task text or role body. A removed definition leaves an id-only unavailable notice.
-- Session roles in research records, board cards and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.
+- Attributed turn preparations are included in opt-in research records as described below. Board cards and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.
 
 - Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.
 
@@ -53,3 +53,9 @@ Example shared or machine-local config:
 - The Roles settings group uses the same registry, machine-local write and undo path. Known ids must match a flow base the peer holds; no role definition or flow authority is editable there. Shared config is never changed. Guidance changes apply at the next peer start.
 - Status, console peer detail and dashboard distinguish configured guidance from a prepared active session, with pending marks. An external MCP/TUI session without a preparation receipt remains unconfirmed; configuration is not model-consumption proof. Definition file changes still require a daemon/MCP restart.
 - `ahub task role <id> <role|none>` changes guidance through Tasks for open tasks only. It keeps ownership, class and permissions and notifies current holders with bounded guidance. Approved roles remain historical. Existing task role identity in research records is not overwritten by later changes.
+
+# Session role research records
+
+- Each attributed completed turn records the role ids, layers and hashes prepared in its native preamble at turn start. Opt-in research JSONL records retain these as `sessionRoles` entries with the peer and turn id; live and backfill use the same events. Role bodies are excluded, including for PII tasks.
+- An explicit empty list means a native contract was prepared with no catalog role. `null` means no preparation receipt, as for an external plugin/TUI session. Older events without the field leave it absent; neither absence nor `null` means zero roles.
+- A pending setting change does not rewrite a running turn. A subsequent native start prepares the new selection. These records establish preparation, not model consumption or role effectiveness. The existing CSV summary columns are unchanged; JSONL includes the full metadata.

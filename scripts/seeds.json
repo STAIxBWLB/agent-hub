@@ -880,6 +880,30 @@
       "replacement": "...permissionStatus(id, p), flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id),",
       "testFile": "test/role-settings.test.ts",
       "testName": "role visibility preserves legacy peer status shape and uses separate metadata (#295)"
+    },
+    {
+      "id": "role-research-preparation",
+      "file": "src/hub/research.ts",
+      "search": "if (e.preparedRoles !== undefined)",
+      "replacement": "if (false)",
+      "testFile": "test/research.test.ts",
+      "testName": "session role research retains attributed preparation identities, empty and unknown without bodies (#295)"
+    },
+    {
+      "id": "role-research-frozen-turn",
+      "file": "src/hub/daemon.ts",
+      "search": "preparedRoles: open.preparedRoles,",
+      "replacement": "preparedRoles: selectedRoles(e.peer, config.roles, roleAssignments, catalog).map(roleIdentity),",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "turn role preparations retain the native start selection across pending edits and restart (#295)"
+    },
+    {
+      "id": "role-research-unknown-session",
+      "file": "src/hub/daemon.ts",
+      "search": "const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;",
+      "replacement": "const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? [];",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "external turns keep preparation unknown despite configured catalog ids (#295)"
     }
   ]
 }

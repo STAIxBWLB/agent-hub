@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Record immutable attributed-turn catalog-role preparations in opt-in research JSONL, preserving unknown external and legacy evidence (#295).
+
 - Add person-only catalog role assignment/clear, task role edits and Roles settings controls with pending guidance metadata (#295).
 
 - Add validated persistent task catalog roles with bounded assignment/review guidance and identity-only records (#295).

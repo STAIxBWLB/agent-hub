@@ -48,6 +48,7 @@ while the store keeps the older records.
 | `createdAt`, `startedAt`, `approvedAt` | proposal, first `in_progress`, approval (ISO) |
 | `wallMs` | from `startedAt` to `approvedAt`, null when the start is not in the events |
 | `activeMs`, `turns`, `filesChanged` | sums over the turns attributed to the task (`turn_end`), the ones ending after the approval included |
+| `sessionRoles` | optional attributed-turn preamble preparations: peer, turn id, role ids/layers/hashes; `roles: []` means prepared without catalog guidance, `roles: null` means unknown; older events leave the field absent. No role bodies or proof of model consumption |
 | `owners`, `reviewer` | the owners in the order they held the task (an owner who gets it back appears again; reports by owner count the task once per owner); the last reviewer |
 | `reviewRounds`, `changesRequested`, `dones` | times it went to review, was sent back, was reported done |
 | `checkPassed`, `checkFailed` | check results; a check that fails produces no done, so dones without a check are `dones - checkPassed` |

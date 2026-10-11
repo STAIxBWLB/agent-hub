@@ -21,7 +21,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { stripUntrusted } from "./config-trust.ts";
-import { eventLog, readEvents, tokenDeltas } from "./events.ts";
+import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
@@ -524,6 +524,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ? contract + "\nManaged bash/git are filesystem read-only while data.readonly is active. Read data and return stdout; use managed write/edit only for unprotected outputs."
     : contract;
   const preparedSessionRoles = new Map<string, string[]>();
+  const preparedSessionRoleIdentities = new Map<string, RoleIdentity[]>();
   function roleState(peer: string) {
     let configured: string[] = [], note: string | undefined;
     try { configured = configuredRoles(peer); } catch { note = "catalog selection is incompatible or unavailable"; }
@@ -541,10 +542,12 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       const selected = selectedRoles(peer, config.roles, roleAssignments, catalog);
       preparedSessionRoles.set(peer, selected.map(role => role.id));
+      preparedSessionRoleIdentities.set(peer, selected.map(roleIdentity));
       if (selected.length) event({ type: "role", peer, actor: "config", stage: "prepared", roles: selected.map(roleIdentity) });
       return dataRoleContract(peer, roleContract(peer, config.roles, selected, config.profile));
     } catch (error) {
       preparedSessionRoles.delete(peer);
+      preparedSessionRoleIdentities.delete(peer);
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
       return dataRoleContract(peer, roleContract(peer, config.roles, [], config.profile));
     }
@@ -1195,7 +1198,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
   const runId = Date.now().toString(36);
   let turnSeq = 0;
-  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution }>();
+  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
   const pendingDeliveryTask = new Map<PeerId, number>();
   const taskAttribution = (peer: PeerId, delivery = turns.get(peer)?.deliveryTask): TaskAttribution => {
     const result = attribute(delivery, board.list("in_progress").filter(t => t.owner === peer).map(t => t.id));
@@ -1956,7 +1959,8 @@ export async function startDaemon(opts: DaemonOptions) {
         turnTasks.set(id, board.list().filter((t) => t.owner === e.peer && ["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state)).map((t) => t.id));
         const start = turnLog && !pii ? snap(`the start of ${id}`) : undefined; // before the peer is handed anything: the tap runs inside setState
         try { turnLog?.begin(id, e.peer, start?.tree); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
-        turns.set(e.peer, { id, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
+        turns.set(e.peer, { id, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
@@ -1975,7 +1979,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }
         // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn.
-        if (e.peer !== "claude" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
+        if (e.peer !== "claude" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
         if (e.peer !== "claude") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
@@ -3497,6 +3501,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Without pushes it stands by, as a replaced session does, and never strands a channel session's deliveries.
         if (msg.channel === false && ws.channelHeld) return sock.close(4000, "a session with channel pushes holds this peer");
         preparedSessionRoles.delete(c.peer); // an external transport has no receipt for this daemon's native preamble
+        preparedSessionRoleIdentities.delete(c.peer);
         ws.claim(sock, msg.channel === false);
         if (kimiPull) { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; }
         if (c.peer === "claude") logPermissionStart(c.peer);

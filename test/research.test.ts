@@ -292,3 +292,23 @@ test("a hub that stops with a record pending writes it once its peers have stopp
   await f.stop();
   expect(readStore(f.file)).toMatchObject([{ task: 1, turns: 1 }]);
 }, 20_000);
+
+test("session role research retains attributed preparation identities, empty and unknown without bodies (#295)", () => {
+  const roles=[{id:"analyst",layer:"shipped" as const,hash:"a".repeat(64)}];
+  Object.assign(roles[0]!, {body:"SECRET-ROLE-BODY"});
+  const events:StampedEvent[]=[task(1,"proposed","proposed",{pii:true}),
+    {v:1,at:at(),type:"role",peer:"kimi",actor:"config",stage:"prepared",roles:[{id:"fact-checker",layer:"project",hash:"b".repeat(64)}]},
+    {v:1,at:at(),type:"turn_end",peer:"kimi",turn:"k1",ms:10,task:1,pii:true,preparedRoles:roles},
+    {v:1,at:at(),type:"turn_end",peer:"kimi",turn:"k2",ms:10,task:1,preparedRoles:[]},
+    {v:1,at:at(),type:"turn_end",peer:"claude",turn:"c1",ms:10,task:1,preparedRoles:null},
+    {v:1,at:at(),type:"turn_end",peer:"codex",turn:"unattributed",ms:10,preparedRoles:roles},
+    task(1,"approved","approved",{pii:true}),task(2,"proposed","proposed"),
+    {v:1,at:at(),type:"turn_end",peer:"kimi",turn:"legacy",ms:10,task:2},task(2,"approved","approved")];
+  const records=taskRecords(events,"role-study",writer); expect(records).toHaveLength(2);
+  expect(records[0]!.sessionRoles).toEqual([{peer:"kimi",turn:"k1",roles:[{id:"analyst",layer:"shipped",hash:"a".repeat(64)}]},{peer:"kimi",turn:"k2",roles:[]},{peer:"claude",turn:"c1",roles:null}]);
+  expect(records[1]!.sessionRoles).toBeUndefined(); expect(records[0]!.pii).toBe(true);
+  roles[0]!.hash="changed"; expect(records[0]!.sessionRoles?.[0]?.roles?.[0]?.hash).toBe("a".repeat(64));
+  expect(JSON.stringify(records)).not.toContain("fact-checker");
+  expect(JSON.stringify(records)).not.toContain("SECRET-ROLE-BODY");
+  const home=temp("session-roles"); appendRecords("role-study",records,home); expect(readStore(researchFile("role-study",home))).toEqual(records);
+});

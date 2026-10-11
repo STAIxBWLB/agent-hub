@@ -21,6 +21,7 @@ class Peer extends BasePeer {
   async start() { this.setState("idle"); }
   async stop() { this.setState("offline"); }
   async deliver(envs: Envelope[]) { this.got.push(...envs); }
+  turn() { this.setState("busy"); this.setState("idle"); }
 }
 async function fixture(managedKimi = false) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-role-settings-"))), state = join(dir, ".agenthub/state"); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -152,4 +153,39 @@ test("role visibility preserves legacy peer status shape and uses separate metad
   expect(status.peers.codex).toEqual({state:"idle",queued:0});
   expect(status.roleInfo.codex.flowRoles).toEqual(["implementer"]);
   expect(status.roleInfo.codex.catalogRoles.pending).toEqual(["backend-engineer"]);
+});
+
+test("turn role preparations retain the native start selection across pending edits and restart (#295)", async () => {
+  const f=await fixture(true), key="catalog_roles.kimi", pushes:any[]=[];
+  f.client.onPush=message=>pushes.push(message);
+  f.client.send({t:"tail"});
+  const events=()=>readEvents(join(f.state,"events.jsonl"));
+  const ended=()=>events().filter(e=>e.type==="turn_end" && e.peer==="kimi");
+  const until=async (condition:()=>boolean)=>{for(let i=0;i<200 && !condition();i++)await Bun.sleep(5);expect(condition()).toBe(true);};
+  expect((await f.client.request({t:"settings_set",key,value:["analyst"]})).ok).toBe(true);
+  expect((await f.client.request({t:"peer_start",peer:"kimi"},15000)).ok).toBe(true);
+  expect((await f.client.request({t:"send",body:"PERMISSION role preparation barrier",to:["kimi"]})).ok).toBe(true);
+  await until(()=>pushes.some(p=>p.t==="permission"));
+  expect((await f.client.request({t:"settings_set",key,value:["fact-checker"]})).ok).toBe(true);
+  const ask=pushes.find(p=>p.t==="permission"); expect((await f.client.request({t:"permit",id:ask.id,option:"yes"})).ok).toBe(true);
+  await until(()=>ended().length===1);
+  const first=ended()[0]; if(first?.type!=="turn_end")throw new Error("missing completed turn");
+  expect(first.preparedRoles).toHaveLength(1); expect(first.preparedRoles?.[0]).toMatchObject({id:"analyst",layer:"shipped"}); expect(first.preparedRoles?.[0]?.hash).toMatch(/^[a-f0-9]{64}$/);
+  expect((await f.client.request({t:"peer_stop",peer:"kimi"},15000)).ok).toBe(true);
+  expect((await f.client.request({t:"peer_start",peer:"kimi"},15000)).ok).toBe(true);
+  expect((await f.client.request({t:"send",body:"restarted role preparation",to:["kimi"]})).ok).toBe(true); await until(()=>ended().length===2);
+  const second=ended()[1]; if(second?.type!=="turn_end")throw new Error("missing restarted turn"); expect(second.preparedRoles?.map(r=>r.id)).toEqual(["fact-checker"]);
+  expect(first.preparedRoles?.map(r=>r.id)).toEqual(["analyst"]);
+  expect((await f.client.request({t:"settings_set",key,value:[]})).ok).toBe(true);
+  expect((await f.client.request({t:"peer_stop",peer:"kimi"},15000)).ok).toBe(true);
+  expect((await f.client.request({t:"peer_start",peer:"kimi"},15000)).ok).toBe(true);
+  expect((await f.client.request({t:"send",body:"empty preparation",to:["kimi"]})).ok).toBe(true); await until(()=>ended().length===3);
+  const third=ended()[2]; if(third?.type!=="turn_end")throw new Error("missing empty turn"); expect(third.preparedRoles).toEqual([]);
+});
+
+test("external turns keep preparation unknown despite configured catalog ids (#295)", async () => {
+  const f=await fixture(); f.peer.turn();
+  const ended=readEvents(join(f.state,"events.jsonl")).find(e=>e.type==="turn_end" && e.peer==="codex");
+  if(ended?.type!=="turn_end")throw new Error("missing external turn");
+  expect(ended.preparedRoles).toBeNull();
 });
