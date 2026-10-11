@@ -26,6 +26,6 @@ export async function attachWatch(client: WatchClient, peer: string, write: (tex
   if (watched.ok !== true) throw new Error(watched.error ?? "hub does not support watch; upgrade it before using this view");
   const status = await client.request({ t: "status" });
   if (status.ok === false) throw new Error(status.error ?? "watch connection closed");
-  const row = status.peers?.[peer];
+  const row = status.status?.peers?.[peer];
   if (row) for (const line of wrap(`${peer}: ${row.state ?? "unknown"}; context ${row.context?.used ?? "unknown"}; q or Ctrl+C quits (approvals: ahub console)`, options.columns())) write(line);
 }

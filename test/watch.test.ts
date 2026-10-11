@@ -62,10 +62,11 @@ test("watch renderer wraps Korean text at 80/120 columns and refuses terminal/he
 test("watch is console only and its client sends watch/status only, including old-hub refusal (#286)", async () => {
   expect(classifyPeerCommand("watch", ["kimi"])).toBe("console");
   const requests: Record<string, unknown>[] = []; const text: string[] = [];
-  const client: WatchClient = { onPush: () => {}, onClose: () => {}, close: () => {}, request: async msg => { requests.push(msg); return { ok: true, peers: { kimi: { state: "busy" } } }; } };
+  const client: WatchClient = { onPush: () => {}, onClose: () => {}, close: () => {}, request: async msg => { requests.push(msg); return { ok: true, status: { peers: { kimi: { state: "busy" } } } }; } };
   await attachWatch(client, "kimi", line => text.push(line), { columns: () => 80, color: false, noThoughts: false });
   client.onPush({ t: "activity", peer: "kimi", item: { kind: "ask", at: 0, turn: 1, text: "901" } });
   expect(requests.map(r => r.t)).toEqual(["watch", "status"]);
+  expect(text.join("\n")).toContain("kimi: busy");
   client.request = async () => ({ ok: false, error: "unknown command: watch" });
   await expect(attachWatch(client, "kimi", () => {}, { columns: () => 80, color: false, noThoughts: false })).rejects.toThrow("unknown command");
   expect(PROTOCOL).toBe(16);
