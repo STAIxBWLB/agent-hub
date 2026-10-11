@@ -13,3 +13,5 @@ Scope: the task flow, assignment, the state machine and the hub's MCP tools. Rea
 - Supervision reasons use structured enums, never history notes, check output or approval titles. Round signatures survive restart; later summaries count only newly joined tasks.
 
 - Pass off-roster ids as data into `assign()` so its trace and every owner/reviewer choice share the membership filter. Refuse a manual off-roster assignment before a board write, including a reservation. Use `reassignForRoster` through the existing assignment delivery path on removal, including in-review ownership while keeping its review state; keep the old owner or reviewer when no eligible replacement exists and emit the guarded public-title notice. Preserve budget-relay behavior when sharing that implementation.
+
+- Kimi TUI routing supplies only watched Kimi ids to the generic pull-only filter; preserve legacy Claude inbox-mode owner/reviewer selection. On a manual in-review reviewer change, withdraw unread old requests and notify the former reviewer through guarded publication; current reviewer authority rejects its late verdict.

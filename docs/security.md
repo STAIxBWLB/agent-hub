@@ -177,3 +177,8 @@ for scoped writes and edits through original or resolved spellings. It applies
 live after a settings write or undo, never changes reads or never-ask, and cannot
 be set through an agent, tools or conductor surface. Claude's daemon response
 withholds the scoped mode on these writes so an older hook grants nothing too.
+
+Kimi's pull-only TUI owns its tool approvals and session. The person's launcher
+merges/removes only the hub MCP entry; the daemon never edits that file and
+refuses headless starts while a stale entry exists. An attached Kimi TUI blocks
+controlled recovery instead of being treated as a hub-owned headless process.

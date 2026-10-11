@@ -398,7 +398,7 @@ export class Tasks {
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    return { pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.pullOnly).map(peer => peer.id), offRoster: KNOWN_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.id === "kimi" && peer.pullOnly).map(peer => peer.id), offRoster: KNOWN_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
@@ -1528,6 +1528,17 @@ export class Tasks {
       const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
       const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, `named reviewer ${peer}`, { reason: "manual" });
+      if (next.state === "in_review" && task.reviewer && task.reviewer !== peer) {
+        const previous = task.reviewer;
+        this.releaseNotice(`task ${this.publicTitle(next)}: could not notify previous reviewer ${previous} that its review request is withdrawn`, () => {
+          for (const env of this.d.bus.snapshot(false).queues[previous] ?? []) {
+            if (env.from === HUB && env.kind === "review" && env.refs?.task === String(task.id)) this.d.bus.withdraw(env.id);
+          }
+          const body = `Review request for task #${task.id} ${this.publicTitle(next)} is withdrawn: its reviewer is now ${peer}. Do not review this task; a late verdict from the previous reviewer is refused.`;
+          if (previous === USER) this.d.notify(body);
+          else this.d.bus.publish(newEnvelope(HUB, body, { to: [previous], kind: "status", priority: "important", refs: { task: String(task.id) }, ...(this.isPii(next) ? { private: true } : {}) }));
+        });
+      }
       if (next.state === "in_review" && peer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${peer}`, () => this.sendReview(next, peer));
       return next;
     }

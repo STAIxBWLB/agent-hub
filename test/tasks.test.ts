@@ -3108,3 +3108,17 @@ test("Tasks reviewer nomination requires the actor's current unique conductor ro
   expect(named).toMatchObject({ owner: before.owner, state: before.state, reviewer: "kimi" });
   expect(named.history.at(-1)).toMatchObject({ by: "claude", event: "reviewer changed" });
 });
+
+test("a named reviewer change withdraws its unread request and notifies the former reviewer (#316)", async () => {
+  const f = await pullTaskFixture();
+  const task = await f.tasks.propose(USER, { title: "review reassigned", class: "implement", owner: "codex" });
+  f.tasks.accept("codex", task.id); await f.tasks.done("codex", task.id, "ready");
+  await f.tasks.assignTo(task.id, "kimi", USER, true, "reviewer");
+  expect(f.bus.snapshot(false).queues.kimi!.filter(env => env.kind === "review")).toHaveLength(1);
+  const changed = await f.tasks.assignTo(task.id, "claude", USER, true, "reviewer");
+  expect(changed).toMatchObject({ reviewer: "claude", owner: "codex", state: "in_review" });
+  const read = f.bus.pull("kimi")!;
+  expect(read.filter(env => env.kind === "review")).toEqual([]);
+  expect(read.find(env => env.refs?.task === String(task.id) && env.kind === "status")!.body).toContain("is withdrawn");
+  await expect(f.tasks.review("kimi", task.id, "approved")).rejects.toThrow("reviewer");
+});

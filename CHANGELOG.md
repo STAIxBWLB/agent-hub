@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Default Kimi to its own pull-only TUI, retain selectable headless ACP, exclude automatic routing to pull-only peers, and let people/conductors name reviewers with withdrawal notices. Keep project MCP changes in the person launcher and refuse unsupported TUI recovery (#316).
+
 - Exclude shared .agents skills and .claude.json from scoped grants; add the person-controlled, live instruction-file protection option, off by default (#323).
 
 - Refuse release publication on stale or nonancestor document stamps; require the release merge commit even when the tree matches green CI (#318).

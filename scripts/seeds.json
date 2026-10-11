@@ -432,6 +432,38 @@
       "replacement": "return line;",
       "testFile": "test/console.test.ts",
       "testName": "tabbed Events headers and bodies stay within panel and stream widths (#319)"
+    },
+    {
+      "id": "kimi-tui-default",
+      "file": "src/hub/start-mode.ts",
+      "search": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\"] as const;",
+      "replacement": "export const START_MODE_PEERS = [\"pi\", \"codex\"] as const;",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "Kimi default and settings floor are TUI, and native hello admits only pull mode (#316)"
+    },
+    {
+      "id": "kimi-review-withdrawal",
+      "file": "src/hub/tasks.ts",
+      "search": "if (next.state === \"in_review\" && task.reviewer && task.reviewer !== peer) {",
+      "replacement": "if (false && next.state === \"in_review\" && task.reviewer && task.reviewer !== peer) {",
+      "testFile": "test/tasks.test.ts",
+      "testName": "a named reviewer change withdraws its unread request and notifies the former reviewer (#316)"
+    },
+    {
+      "id": "kimi-tui-argv",
+      "file": "src/cli/launch.ts",
+      "search": "command.at(-1) !== \"acp\"",
+      "replacement": "false",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "Kimi TUI argv admits only a single executable or exact final acp, and never echoes custom argv (#316)"
+    },
+    {
+      "id": "kimi-recovery-tui-fence",
+      "file": "src/cli/upgrade-runtime.ts",
+      "search": "if (peer.id === \"kimi\" && peer.args?.mode === \"tui\") {",
+      "replacement": "if (false && peer.id === \"kimi\" && peer.args?.mode === \"tui\") {",
+      "testFile": "test/upgrade-runtime.test.ts",
+      "testName": "controlled recovery planning refuses an attached Kimi TUI before effects (#316)"
     }
   ]
 }

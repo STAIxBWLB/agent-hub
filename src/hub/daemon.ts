@@ -446,7 +446,7 @@ class WsPeer extends BasePeer {
   }
 
   recoveryMetadata(): Record<string, unknown> {
-    return { launch: { kind: "claude-channel", peer: this.id } };
+    return { launch: { kind: this.id === "kimi" ? "kimi-tui" : "claude-channel", peer: this.id, ...(this.id === "kimi" ? { mode: "tui" } : {}) } };
   }
 }
 
