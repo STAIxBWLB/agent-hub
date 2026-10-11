@@ -1618,6 +1618,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const mode = permissionDisplay(id, peer);
     return mode === "ask" ? {} : { permissionMode: mode };
   };
+  let lastCodexThread: string | undefined;
   const statusPeerIds = () => {
     if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return bus.knownPeers();
     const open = board.list().filter(task => task.state !== "approved");
@@ -2273,7 +2274,7 @@ export async function startDaemon(opts: DaemonOptions) {
         onTokens: (added) => void addTokens("codex", added),
         onContext: (reading) => contexts.report("codex", reading, contextSession("codex")),
         // #215: before the thread's first turn_start, so the planner can tell which turns belong to which thread.
-        onThread: (thread, fresh) => event({ type: "native_thread", peer: "codex", thread, fresh }),
+        onThread: (thread, fresh) => { lastCodexThread = thread; event({ type: "native_thread", peer: "codex", thread, fresh }); },
         onTurn: (native) => {
           const open = turns.get("codex");
           if (open) turnLog?.native(open.id, native);
@@ -2815,9 +2816,13 @@ export async function startDaemon(opts: DaemonOptions) {
     if (owner?.state === "busy" && !now) return `${peer} is in a turn; retry when it is idle, or pass --now`;
     return undefined;
   }
+  function codexResumeCommand(): string {
+    const owner = bus.peers.get("codex"), thread = owner instanceof CodexPeer ? owner.thread || lastCodexThread : lastCodexThread;
+    return thread && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(thread) ? `ahub codex resume ${thread}` : "ahub codex resume";
+  }
   function retainedTerminalNotice(peer: string): string | undefined {
     const owner = bus.peers.get(peer);
-    if (peer === "codex") return "Check codex's existing terminal and stop any remaining work. Its app-server and proxy stay available, but Codex 0.146.0 exits its TUI on disconnect and does not reconnect automatically; after ahub roster add codex, run ahub codex again or resume its prior native session.";
+    if (peer === "codex") return `Check codex's existing terminal and stop any remaining work. Its app-server and proxy stay available, but Codex 0.146.0 exits its TUI on disconnect and does not reconnect automatically; after ahub roster add codex, resume the previous session with ${codexResumeCommand()}.`;
     return peer === "claude" || owner instanceof PiPeer && owner.mode === "tui"
       ? `Stop ${peer}'s existing work in its retained terminal; removal detaches the hub connection and does not stop that terminal's work.`
       : undefined;
@@ -2866,7 +2871,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       writeStatus();
       const stayed = !after ? board.list().filter(task => task.state !== "approved" && (task.owner === peer || task.reviewer === peer)) : [];
-      return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(!after ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : []), ...stayed.map(task => sanitize(`task ${tasks.publicTitle(task)} stays with ${peer} as ${[task.owner === peer ? "owner" : "", task.reviewer === peer ? "reviewer" : ""].filter(Boolean).join(" and ")} (${task.state})`)), ...(!after && !handoff.length && !stayed.length ? ["No open tasks to hand over."] : [])].join("\n"), ...(!after ? { handoff } : {}) };
+      return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(after && peer === "codex" ? [`Codex 0.146.0 needs a manual return: resume the previous native session with ${codexResumeCommand()}.`] : []), ...(!after ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : []), ...stayed.map(task => sanitize(`task ${tasks.publicTitle(task)} stays with ${peer} as ${[task.owner === peer ? "owner" : "", task.reviewer === peer ? "reviewer" : ""].filter(Boolean).join(" and ")} (${task.state})`)), ...(!after && !handoff.length && !stayed.length ? ["No open tasks to hand over."] : [])].join("\n"), ...(!after ? { handoff } : {}) };
     } catch (error) {
       if (saved) writeStatus();
       return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
@@ -3050,7 +3055,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
       ...((piReceipts?.inFlight ?? 0) !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),
-      ...([...bus.peers].filter(([, peer]) => peer instanceof PiPeer && peer.state !== "busy" && !peer.recoveryReady).map(([id]) => `${id} is not settled`)),
+      ...([...bus.peers].filter(([, peer]) => peer instanceof PiPeer && peer.state !== "busy" && !peer.recoveryReady).map(([id, peer]) => !membershipAllowed(id) && peer instanceof PiPeer && peer.mode === "tui" ? `${id} is not settled; end the retained Pi TUI, then prepare again` : `${id} is not settled`)),
     ],
     integrity: { current: integrityAs(restored?.integrity), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
     peers: Object.fromEntries([...(recoveryPeerSnapshot ?? []), ...Object.values(recoveryPeers()).filter((peer) => !(recoveryPeerSnapshot ?? []).some((saved) => saved.id === peer.id))].map((peer) => {

@@ -740,3 +740,98 @@ test("Pi roster detach bounds uncooperative tool settlement while retaining the 
     await f.resume(true); expect(f.peer.state).toBe("idle");
   } finally { globalThis.setTimeout = originalTimeout; release(); await f.cleanup(); }
 });
+
+for (const namedSession of [false, true]) test(`Pi roster return preserves idle user shell generation after detached native activity (${namedSession ? "named session" : "shipped unnamed event"}) (#315)`, async () => {
+  let calls = 0, userShell = false;
+  const f = await rosterPiFixture(async (_name, _args, _id, _session, _signal, context) => { calls++; userShell = context!.userBash; return { text: "shell result", exitCode: 0 }; });
+  const messages: string[] = []; f.peer.onMessage = text => messages.push(text);
+  try {
+    await f.peer.detachForRoster();
+    await f.post("/event", { type: "agent_start", generation: 1, ...(namedSession ? { sessionId: f.sessionId } : {}) });
+    expect((await f.post("/budget", { unit: "model_calls", generation: 1 })).status).toBe(409);
+    await f.post("/event", { type: "agent_settled", generation: 1, text: "detached personal output", ...(namedSession ? { sessionId: f.sessionId } : {}) });
+    expect(f.peer.state).toBe("offline"); expect(messages).toEqual([]);
+    await f.resume(true);
+    const admission = await f.post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 1 });
+    expect(admission.status).toBe(200);
+    const budget = await admission.json() as any; expect(typeof budget.reservation).toBe("string");
+    const tool = await f.post("/tool", { name: "bash", args: { command: "fixture shell" }, toolCallId: "returned-shell", purpose: "idle_user_bash", generation: 1, sessionId: f.sessionId, reservation: budget.reservation });
+    expect(tool.status).toBe(200); expect(await tool.json()).toMatchObject({ text: "shell result", exitCode: 0, failed: false });
+    expect(calls).toBe(1); expect(userShell).toBe(true); expect(messages).toEqual([]); expect(f.peer.state).toBe("idle");
+  } finally { await f.cleanup(); }
+});
+
+
+for (const busyReturn of [false, true]) test(`Pi ${busyReturn ? "unowned busy return" : "detached owner"} retains only verified monotonic native generation (#315)`, async () => {
+  const f = await rosterPiFixture();
+  const messages: string[] = [], tokens: number[] = [], receipts: any[] = [];
+  f.peer.onMessage = text => messages.push(text); f.peer.onDelivery = receipt => receipts.push(receipt);
+  (f.peer as any).opts.onTokens = (count: number) => tokens.push(count);
+  try {
+    await f.peer.detachForRoster();
+    if (busyReturn) await f.resume(false);
+    await f.post("/event", { type: "agent_start", generation: 3, sessionId: f.sessionId });
+    expect((f.peer as any).budgetGeneration).toBe(3);
+    for (const event of [
+      { generation: 100, sessionId: "wrong-session" }, { generation: 100, sessionId: null },
+      { generation: 3.5 }, { generation: "4" }, { generation: Number.MAX_SAFE_INTEGER + 1 },
+      { generation: -1 }, { generation: 2 }, { generation: 3 },
+    ]) {
+      await f.post("/event", { type: "agent_start", ...event });
+      expect((f.peer as any).budgetGeneration).toBe(3);
+    }
+    await f.post("/event", { type: "tokens", id: "personal", tokens: 99 });
+    await f.post("/event", { type: "activity" });
+    await f.post("/event", { type: "agent_end", generation: 3, text: "personal output" });
+    if (busyReturn) {
+      for (const generation of [2, 3.5, "3", Number.MAX_SAFE_INTEGER + 1, null]) {
+        await f.post("/event", { type: "agent_settled", generation }); expect(f.peer.state).toBe("busy");
+      }
+      await f.post("/event", { type: "agent_settled", generation: 3, sessionId: "wrong-session" }); expect(f.peer.state).toBe("busy");
+    }
+    expect(f.peer.state).toBe(busyReturn ? "busy" : "offline");
+    expect(messages).toEqual([]); expect(tokens).toEqual([]); expect(receipts).toEqual([]);
+    expect((f.peer as any).tuiQueue).toEqual([]); expect(f.budgetCalls()).toBe(0);
+    expect((f.peer as any).timer).toBeUndefined();
+    if (busyReturn) await f.post("/event", { type: "agent_settled", generation: 3 });
+    else await f.resume(true);
+    expect(f.peer.state).toBe("idle");
+    const admission = await f.post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 3 }); expect(admission.status).toBe(200);
+  } finally { await f.cleanup(); }
+});
+
+test("a lost detached Pi owner cannot advance the remembered native generation (#315)", async () => {
+  const f = await rosterPiFixture();
+  try {
+    await f.peer.detachForRoster();
+    await f.post("/event", { type: "agent_start", generation: 1 }); expect((f.peer as any).budgetGeneration).toBe(1);
+    f.owner.kill(); await f.owner.exited;
+    await f.post("/event", { type: "agent_start", generation: 2, sessionId: f.sessionId });
+    expect((f.peer as any).budgetGeneration).toBe(1); expect(f.peer.state).toBe("offline");
+  } finally { await f.cleanup(); }
+});
+
+
+for (const busyReturn of [false, true]) test(`Pi personal activity invalidates cached ID-only empty resume (${busyReturn ? "unowned return" : "detached"}) (#315)`, async () => {
+  const f = await rosterPiFixture();
+  try {
+    const capture = f.peer.captureResume();
+    const snapshot = await f.next(); expect(snapshot.type).toBe("get_session_state");
+    await f.ack(snapshot, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true, empty: true });
+    expect(await capture).toMatchObject({ sessionId: f.sessionId });
+    expect(f.peer.pendingResume).toEqual({ sessionId: f.sessionId });
+    await f.peer.detachForRoster();
+    if (busyReturn) await f.resume(false);
+    await f.post("/event", { type: "agent_start", generation: 1, sessionId: f.sessionId });
+    if (busyReturn) await f.post("/event", { type: "agent_settled", generation: 1 });
+    else await f.resume(true);
+    expect(f.peer.state).toBe("idle");
+    // With no persisted file or configured restoration target, personal activity revokes the cached shortcut.
+    expect(f.peer.pendingResume).toEqual({ sessionId: undefined, sessionFile: undefined });
+    const freshCapture = f.peer.captureResume().catch((error: Error) => error);
+    const reread = await f.next(); expect(reread.type).toBe("get_session_state");
+    await f.ack(reread, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true, empty: true });
+    const result = await freshCapture; expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toContain("session history is not persisted; refusing to recreate it");
+  } finally { await f.cleanup(); }
+});

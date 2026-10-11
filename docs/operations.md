@@ -1027,8 +1027,12 @@ result lists the saved owner/reviewer moves and every assignment that stays. No 
 a detached session and nothing bypasses the journal. Codex 0.146.0
 exits its TUI on the close-4000 disconnect and does not reconnect automatically.
 Its app-server and proxy remain available; after `ahub roster add codex`, run
-`ahub codex` again or resume its previous native session. Removal never closes
+`ahub codex resume <thread-id>` (the full id is printed in the preview, removal
+result and return) or `ahub codex resume` to select its previous native session. Removal never closes
 the terminal window itself. The Claude channel retries and reconnects on return.
+Pi return retains the verified owner's monotonic generation even after refused
+native activity while detached; it shares no personal output and invalidates any
+cached empty-session resume proof after that activity.
 It leaves queued and held deliveries, and existing manual or budget pauses,
 untouched. The queue listing names `off roster` as the membership hold. Returning
 and starting the peer makes retained queued messages available again; held

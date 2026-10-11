@@ -204,7 +204,7 @@
     {
       "id": "roster-result-stop-text",
       "file": "src/hub/daemon.ts",
-      "search": "...(!after && terminalNotice ? [terminalNotice] : []),",
+      "search": "...(!after && terminalNotice ? [terminalNotice] : []), ...(after && peer === \"codex\" ? [`Codex 0.146.0 needs a manual return: resume the previous native session with ${codexResumeCommand()}.`] : []),",
       "replacement": "...[], ",
       "testFile": "test/roster.test.ts",
       "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
@@ -328,6 +328,62 @@
       "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
       "testFile": "test/roster-pi.test.ts",
       "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
+    },
+    {
+      "id": "roster-pi-remember-generation",
+      "file": "src/adapters/pi.ts",
+      "search": "        this.budgetGeneration = event.generation;",
+      "replacement": "        // seeded: drop detached generation",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi roster return preserves idle user shell generation after detached native activity (shipped unnamed event) (#315)"
+    },
+    {
+      "id": "roster-pi-generation-integer",
+      "file": "src/adapters/pi.ts",
+      "search": "event.type === \"agent_start\" && Number.isSafeInteger(event.generation) && event.generation > this.budgetGeneration",
+      "replacement": "event.type === \"agent_start\" && event.generation > this.budgetGeneration",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi detached owner retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-generation-monotonic",
+      "file": "src/adapters/pi.ts",
+      "search": "event.type === \"agent_start\" && Number.isSafeInteger(event.generation) && event.generation > this.budgetGeneration",
+      "replacement": "event.type === \"agent_start\" && Number.isSafeInteger(event.generation)",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi detached owner retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-generation-session",
+      "file": "src/adapters/pi.ts",
+      "search": "const bound = !this.stopping && this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId);",
+      "replacement": "const bound = !this.stopping && this.verifiedOwner();",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi detached owner retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-generation-owner",
+      "file": "src/adapters/pi.ts",
+      "search": "const bound = !this.stopping && this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId);",
+      "replacement": "const bound = !this.stopping && (event.sessionId === undefined || event.sessionId === this.sessionId);",
+      "testFile": "test/pi.test.ts",
+      "testName": "a lost detached Pi owner cannot advance the remembered native generation (#315)"
+    },
+    {
+      "id": "roster-pi-unowned-settlement",
+      "file": "src/adapters/pi.ts",
+      "search": "event.type === \"agent_settled\" && (event.generation === undefined || event.generation === this.budgetGeneration)",
+      "replacement": "event.type === \"agent_settled\"",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi unowned busy return retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-empty-proof",
+      "file": "src/adapters/pi.ts",
+      "search": "        this.noteActivity(); // personal native activity also revokes an earlier ID-only empty-resume proof",
+      "replacement": "        // seeded: retain stale empty-resume proof",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi personal activity invalidates cached ID-only empty resume (detached) (#315)"
     }
   ]
 }

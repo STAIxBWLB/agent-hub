@@ -597,9 +597,19 @@ export class PiPeer extends BasePeer {
   }
 
   private handleBridgeEvent(event: any): void {
+    if (this.rosterDetached || this.rosterUnownedRun) {
+      // The shipped extension's legacy agent_start omits sessionId. Its authenticated bridge
+      // and still-verified owner bind that event to this session; an explicit mismatch never does.
+      const bound = !this.stopping && this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId);
+      if (bound && event.type === "agent_start" && Number.isSafeInteger(event.generation) && event.generation > this.budgetGeneration) {
+        this.budgetGeneration = event.generation;
+        this.noteActivity(); // personal native activity also revokes an earlier ID-only empty-resume proof
+      }
+      if (!bound && event.type !== "session_shutdown") return;
+    }
     if (this.rosterDetached && event.type !== "session_shutdown") return;
     if (this.rosterUnownedRun && event.type !== "session_shutdown") {
-      if (event.type === "agent_settled") {
+      if (event.type === "agent_settled" && (event.generation === undefined || event.generation === this.budgetGeneration)) {
         this.rosterUnownedRun = false; this.agentRunning = false;
         if (!this.stopping && this.verifiedOwner() && !this.activeTools) this.setState("idle");
       }

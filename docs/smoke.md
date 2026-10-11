@@ -1555,7 +1555,7 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
   hub proxy. The TUI reached attached/idle with zero input/output tokens; removal
   closed its socket with 4000, and it printed the off-roster reason and exited 1.
   Re-adding left the preserved proxy/app-server unattached. A person must relaunch
-  through `ahub codex` or resume the prior session after adding it back. No tool
+  with `ahub codex resume <thread-id>` (or the resume picker) after adding it back. No tool
   update or model prompt was run.
 - Pi native TUI: not run. Resource admission deferred the live probe with exit
   75; it was not bypassed. The scripted authenticated bridge tests separately

@@ -2235,8 +2235,9 @@ preview and result name the peer whose retained terminal work the person must
 stop, and the result lists the saved task moves with public titles. Detached
 sessions receive no forced stop notice or journal bypass. Codex 0.146.0 exits
 its TUI on close 4000 rather than retrying. Its app-server/proxy and terminal
-window remain; after adding it back, the person relaunches through ahub codex or
-resumes the prior native session. Automatic return is guaranteed for the Claude
+window remain; preview/removal/return print ahub codex resume with the full
+thread id when known, or the native resume picker. After adding it back the
+person runs that command. Automatic return is guaranteed for the Claude
 channel, not this observed Codex version. The preview names
 roles offered and those without a replacement; the result names every saved
 move and every assignment that stays. An unconfirmed stop reports the skipped
@@ -2251,3 +2252,10 @@ whose verified native owner is alive still blocks controlled recovery under the
 existing settlement fence; the person ends that retained TUI before restart. Broadcasts omit removed
 peers, and a person or agent addressing only removed peers is refused before
 publication. The dashboard roster undo carries peer confirmation.
+
+Pi detached/unowned native activity preserves only monotonic generation from
+the authenticated bridge and verified owner (the legacy unnamed event uses
+that current-session binding; an explicit session mismatch is refused). Personal
+output, tokens and managed turn state remain unclaimed. That activity revokes
+an earlier empty-session resume proof; stale unowned completion cannot release
+the queue.

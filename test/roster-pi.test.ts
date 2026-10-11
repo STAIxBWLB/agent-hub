@@ -140,7 +140,7 @@ test("controlled recovery refuses a removed personal Pi owner until the person e
     const request = { t: "recovery", operationId: "roster-pi-recovery", expectedInstanceId: instance };
     for (const op of ["prepare", "inspect"]) {
       const reply = await client.request({ ...request, op });
-      expect(reply).toMatchObject({ ok: true, recovery: { phase: "preparing", ready: false, blockers: ["pi is not settled"] } });
+      expect(reply).toMatchObject({ ok: true, recovery: { phase: "preparing", ready: false, blockers: ["pi is not settled; end the retained Pi TUI, then prepare again"] } });
     }
     expect((await client.request({ ...request, op: "commit" })).ok).toBe(false);
     expect((await client.request({ ...request, op: "abort" })).ok).toBe(true);

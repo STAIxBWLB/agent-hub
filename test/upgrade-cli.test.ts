@@ -642,7 +642,7 @@ test("installed-layout restart preserves an off-roster peer queue and open task 
       expect(removed.ok).toBe(true); expect(removed.text).toContain("retained planner work stays with claude");
       const taskBefore = JSON.parse((await request({ t: "task", op: "task_show", args: { id } })).text);
       const queueBefore = (await request({ t: "queue", op: "list", peer: "claude" })).deliveries;
-      const originals = queueBefore.flatMap((row: any) => row.originals.map((env: any) => env.id)).sort();
+      const originals = queueBefore.flatMap((row: any) => row.envelopeIds).sort();
       expect(originals.length).toBeGreaterThanOrEqual(2);
       const before = await status(); expect(before.peers.claude).toMatchObject({ state: "offline", rostered: false });
       const plan = await cli(["restart", "--dry-run"]); expect(plan.code).toBe(0);
@@ -663,7 +663,7 @@ test("installed-layout restart preserves an off-roster peer queue and open task 
       expect(after.peers.claude).toMatchObject({ state: "offline", rostered: false, queued: before.peers.claude.queued });
       expect(JSON.parse((await request({ t: "task", op: "task_show", args: { id } })).text)).toEqual(taskBefore);
       const queueAfter = (await request({ t: "queue", op: "list", peer: "claude" })).deliveries;
-      expect(queueAfter.flatMap((row: any) => row.originals.map((env: any) => env.id)).sort()).toEqual(originals);
+      expect(queueAfter.flatMap((row: any) => row.envelopeIds).sort()).toEqual(originals);
       expect(queueAfter.every((row: any) => row.rostered === false && row.holdReason === "off roster")).toBe(true);
       expect((await request({ t: "settings_get" })).roster.find((row: any) => row.peer === "claude").on).toBe(false);
     } finally { peer.close(); }
