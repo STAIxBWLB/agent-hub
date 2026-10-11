@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add explicit non-git shadow repositories for hub facts, snapshots and conservative undo without creating .git (#259).
+
 - Add bounded snapshot-based rich-document review and reverse undo text previews with persistent task baselines and owned converter cleanup (#259).
 
 - Record immutable attributed-turn catalog-role preparations in opt-in research JSONL, preserving unknown external and legacy evidence (#295).

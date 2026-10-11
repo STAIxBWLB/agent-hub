@@ -2398,3 +2398,11 @@ the queue.
 - Review remains within declared task refs/plan/section files. Denylisted and declared private paths are not converted, private-data patterns are withheld and inserted headers are sanitized. No projected document body is added to task history or memory.
 - Previews share an 8-second monotonic deadline, at most 8 files and 12000 UTF-8 presentation bytes. Individual converters remain limited to 5 seconds, no network or writes, with owned-group cleanup on timeout or termination. Format participates in the content/command cache key; changing converter identity invalidates a pair.
 - Raw undo planning, overlap/later-edit refusal and the final pre-restore readback stay authoritative. Linux conversion and native/account/measurement legs remain unavailable or unverified as documented; shadow repositories and override/glob work follow separately.
+
+# Non-git shadow repository amendment, 2026-10-12 (#259)
+
+- Explicit init `--shadow` creates a validated bare `.agenthub/shadow.git` with the project as its explicit work tree; previews contain action metadata only. Real Git projects retain their selection and are refused for shadow creation. No `.git` entry is added.
+- Repo-aware hardened git calls supply snapshot/facts/projected-diff/undo operations. Shadow calls ignore global/system git config and honor the owner-managed `.agenthub/ignore`. Own shadow/runtime/local metadata never enters snapshots or facts, and remains unwritable to managed workers.
+- Snapshots and restore leave HEAD/index unchanged. Metadata links, shared alternate object stores and invalid directories are refused. Missing evidence and later/concurrent raw edits retain existing conservative refusals.
+- Non-dev profiles without a repository disable these features with one notice. Dev named-file facts retain the existing #108 behavior and tests; Git directory facts and snapshots/undo remain unavailable without a repository. This reconciles the profile proposal with its explicit unchanged-dev contract.
+- Native research/account/measurement and custom profile/glob work remain follow-ups, not claims of this source delivery.

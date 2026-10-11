@@ -27,3 +27,15 @@ test("linked or shared shadow metadata is refused without following a different 
   const dir=root(), outside=root();expect(initShadow(outside)).toBe(true);mkdirSync(join(dir,".agenthub"));symlinkSync(join(outside,".agenthub/shadow.git"),join(dir,".agenthub/shadow.git"));expect(repoOf(dir)).toBeUndefined();expect(()=>initShadow(dir)).toThrow("invalid");
   rmSync(join(dir,".agenthub/shadow.git"));expect(initShadow(dir)).toBe(true);const repo=repoOf(dir)!;renameSync(join(repo.dir,"objects"),join(repo.dir,"saved-objects"));symlinkSync(join(outside,".agenthub/shadow.git/objects"),join(repo.dir,"objects"));expect(repoOf(dir)).toBeUndefined();
 });
+
+test("shadow init preview is read-only, apply is idempotent, and ordinary init never opts in (#259)",async()=>{
+  const {init,planInit}=await import("../src/cli/init.ts");const dir=root();const preview=planInit(dir,"research",true);expect(preview.some(item=>item.path.endsWith("shadow.git"))).toBe(true);expect(existsSync(join(dir,".agenthub"))).toBe(false);expect(JSON.stringify(preview)).not.toContain('"shadow":true');
+  const applied=init(dir,"research",true);expect(applied.some(path=>path.endsWith("shadow.git"))).toBe(true);expect(repoOf(dir)?.shadow).toBe(true);expect(existsSync(join(dir,".git"))).toBe(false);expect(readFileSync(join(dir,".agenthub/ignore"),"utf8")).toContain("data/raw/");expect(planInit(dir,"research",true)).toEqual([]);
+  const plain=root();init(plain);expect(repoOf(plain)).toBeUndefined();expect(existsSync(join(plain,".agenthub/shadow.git"))).toBe(false);expect(readFileSync(join(plain,".gitignore"),"utf8")).not.toContain("shadow.git");
+});
+
+test("shadow facts enumerate document folders, honor ignored data and exclude their own metadata (#259)",async()=>{
+  const {Facts}=await import("../src/hub/facts.ts");const dir=root();initShadow(dir);mkdirSync(join(dir,"docs"));mkdirSync(join(dir,"data"));writeFileSync(join(dir,"docs/paper.txt"),"before\n");writeFileSync(join(dir,"data/raw.csv"),"PRIVATE_RAW_DATA_MARKER\n");writeFileSync(join(dir,".agenthub/ignore"),"data/\n");
+  const repo=repoOf(dir)!, facts=new Facts({root:dir,repo,tmp:join(dir,".agenthub/state/facts"),instance:"shadow",scope:()=>({paths:["docs","data/raw.csv",".agenthub/shadow.git/config"],plans:[]}),peers:()=>["claude"],nameable:()=>true});
+  const before=facts.due("claude");expect(before).toBeDefined();if(before)facts.ack("claude",before.id);writeFileSync(join(dir,"docs/paper.txt"),"after\n");const after=facts.due("claude");expect(after?.text).toContain("paper.txt");expect(after?.text).toContain("+after");expect(after?.text).not.toContain("PRIVATE_RAW_DATA_MARKER");expect(after?.text).not.toContain("shadow.git/config");expect(facts.rel("data/raw.csv")).toBeUndefined();
+});

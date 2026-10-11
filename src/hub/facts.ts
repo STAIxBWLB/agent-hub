@@ -1,3 +1,5 @@
+import { repoGitArgs, repoGitEnv, type Repo } from "./snapshots.ts";
+import { isHubWritePath } from "./permission-mode.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -54,6 +56,8 @@ export interface FactScope {
 export interface FactsOptions {
   /** The project root, a real absolute path. */
   root: string;
+  /** An explicitly discovered shadow repository; ordinary git retains its existing cwd semantics. */
+  repo?: Repo;
   /** A private directory for the two sides of a diff. */
   tmp: string;
   /** Names this hub run's offers, so an acknowledgement for another run's offer matches nothing. */
@@ -176,6 +180,9 @@ export class Facts {
     this.root = root;
   }
 
+  private gitArgs(args: string[]): string[] { return hubGitArgv(this.o.repo?.shadow ? repoGitArgs(this.o.repo, args) : args); }
+  private gitEnv(): NodeJS.ProcessEnv { return hubGitEnv({ ...(this.o.repo?.shadow ? repoGitEnv(this.o.repo) : process.env), GIT_OPTIONAL_LOCKS: "0" }); }
+
   /**
    * A project-relative path, or undefined for one outside the project. Resolved as a real path (symlinks and `..` are
    * followed first), so neither a task's refs nor a tool's input can point the hub at a file outside the project.
@@ -194,7 +201,11 @@ export class Facts {
       }
     }
     const r = relative(this.root, real);
-    if (!r || r.startsWith("..") || isAbsolute(r)) return undefined;
+    if (!r || r.startsWith("..") || isAbsolute(r) || this.o.repo?.shadow && isHubWritePath(r)) return undefined;
+    if (this.o.repo?.shadow) {
+      const ignored = Bun.spawnSync(this.gitArgs(["check-ignore", "--no-index", "--quiet", "--", r]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv(), timeout: 3000 });
+      if (ignored.exitCode !== 1) return undefined; // ignored or unavailable policy is not readable fact evidence
+    }
     // Never git's own files, and never what the denylist keeps from every agent.
     return /(^|\/)\.git(\/|$)/i.test(r) || isDenied(r, this.o.deny ?? []) ? undefined : r;
   }
@@ -284,7 +295,7 @@ export class Facts {
     // One path per line: a newline in a name would shift the answers, and git drops a final carriage return (another file).
     files = files.filter((f) => !/[\r\n]/.test(f));
     if (!files.length) return out;
-    const r = Bun.spawnSync(hubGitArgv(["cat-file", "--batch-check=%(objectname) %(objecttype)"]), { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: hubGitEnv({ ...process.env, GIT_OPTIONAL_LOCKS: "0" }) });
+    const r = Bun.spawnSync(this.gitArgs(["cat-file", "--batch-check=%(objectname) %(objecttype)"]), { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: this.gitEnv() });
     if (r.exitCode !== 0) return out;
     r.stdout.toString().split("\n").forEach((line, i) => {
       const [oid, type] = line.split(" ");
@@ -423,7 +434,7 @@ export class Facts {
       if (!files) {
         // Plumbing only, with optional locks off: an agent's own git commands must never meet a lock the hub holds.
         const git = (...args: string[]) => {
-          const r = Bun.spawnSync(hubGitArgv([...args, "--", p]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: hubGitEnv({ ...process.env, GIT_OPTIONAL_LOCKS: "0" }) });
+          const r = Bun.spawnSync(this.gitArgs([...args, "--", p]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv() });
           return r.exitCode === 0 ? r.stdout.toString().split("\0").filter(Boolean) : undefined;
         };
         // Against HEAD, so a staged change counts (a staged move by both names); a repository without a commit yet has
@@ -702,7 +713,7 @@ export class Facts {
   tree(paths: string[], windows: { peer: PeerId; since: number; until?: number }[] = []): string {
     this.boundary();
     const h = createHash("sha1");
-    const head = Bun.spawnSync(hubGitArgv(["rev-parse", "-q", "--verify", "HEAD"]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: hubGitEnv() });
+    const head = Bun.spawnSync(this.gitArgs(["rev-parse", "-q", "--verify", "HEAD"]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: this.gitEnv() });
     h.update(head.exitCode === 0 ? head.stdout.toString().trim() : "no-head").update("\0");
     // The files the members wrote while at work in the cohort count too: a symbol-only overlap names no path, and a
     // tool's write outside the named paths still moves the work the integration checked. What they only read never

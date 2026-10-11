@@ -638,15 +638,15 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: () => {
-    const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json"), ["--profile"], []);
-    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general] [--dry-run --json]");
+    const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow"), ["--profile"], []);
+    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general] [--shadow] [--dry-run --json]");
     const requestedProfile = flags.one["--profile"] === undefined ? undefined : profileName(flags.one["--profile"]);
     if (args.includes("--dry-run")) {
-      const plan = planInit(cwd, requestedProfile);
+      const plan = planInit(cwd, requestedProfile, args.includes("--shadow"));
       return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
     }
     assertLifecycleAvailable();
-    const changed = init(cwd, requestedProfile);
+    const changed = init(cwd, requestedProfile, args.includes("--shadow"));
     registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
   },

@@ -32,10 +32,17 @@
 
 - Peer guidance and profile-specific task schemas use existing MCP/native/local paths. Research defaults use the #295 dev/research catalog, with bases already held. Writing/general do not add catalog groups before measurement.
 - Board/public projections, route explain, terminal/dashboard cards and #247 events/records carry the profile alias and base. Native model ingestion and context retention remain unverified.
-- Bounded rich-document facts/review/undo projections and declared pii.paths/data.readonly policy are supported. Shadow git for non-git folders, custom profile overrides/globs and deeper lifecycle integration remain open in #259. Native ingestion and research measurement remain unverified.
+- Bounded rich-document facts/review/undo projections and declared pii.paths/data.readonly policy are supported. Opt-in shadow git supports non-git folders; custom profile overrides/globs and deeper lifecycle integration remain open in #259. Native ingestion and research measurement remain unverified.
 
 - Accept schemas expose all supported plan fields because an open task keeps its stored profile across a project profile change. Tasks still normalizes by that stored profile; no new plan field changes authority.
 
-- Private and read-only data path policy is now a separate source slice: [data policy](data-policy.md). It applies to declared task paths and managed local/Pi tools. Converter/shadow/custom/live follow-ups remain open.
+- Private and read-only data path policy is now a separate source slice: [data policy](data-policy.md). It applies to declared task paths and managed local/Pi tools. Custom/glob and native/live follow-ups remain open.
 
 - Optional machine-local [text projections](text-projection.md) supply bounded rich-document facts diffs. Converter output is presentation evidence and cannot prove raw-file attribution.
+
+# Non-git folders
+
+- Use `ahub init --profile research --shadow` to create `.agenthub/shadow.git` without a `.git` entry. `--dry-run --json` previews the same action without writes. Existing Git projects are refused for shadow opt-in; ordinary init does not select it.
+- `.agenthub/ignore` contains owner-managed patterns for large/raw data (`data/raw/` initially). Hub snapshots and facts honor it, while runtime/local config and shadow metadata remain excluded. Models gain no permission to write hub metadata.
+- Research/writing/general projects without Git or shadow run the hub with facts/snapshots/undo off and one notice. Legacy dev named-file facts remain supported; Git directory facts, snapshots and undo require a repository.
+- Shadow HEAD/index are not changed by hub snapshots or raw undo. Later-edit and concurrent/unknown-turn guards still apply. Linked/shared/malformed shadow metadata is refused. Native model/account research runs remain unverified.

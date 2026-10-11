@@ -10,7 +10,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub projects [--json] [--color=auto|always|never]", "list registered projects and live status"],
     ["ahub projects remove <id>", "forget a stopped registration (keeps project files)"],
     ["ahub setup [--yes]", "install or update the Claude Code channel plugin from this package, then run doctor"],
-    ["ahub init [--profile dev|research|writing|general] [--dry-run --json]", "preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)"],
+    ["ahub init [--profile dev|research|writing|general] [--shadow] [--dry-run --json]", "preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)"],
     ["ahub help [command]", "this help, or one command's entries; also --help and -h"],
     ["ahub version | --version", "print the installed version"],
   ]],
