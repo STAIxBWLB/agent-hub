@@ -608,6 +608,14 @@
       "replacement": "if (false)",
       "testFile": "test/workflow.test.ts",
       "testName": "phase imports require exact current after edges and preserve accepted owners and reservations (#257)"
+    },
+    {
+      "id": "watch-discard-cancel-buffer",
+      "file": "src/adapters/acp.ts",
+      "search": "if (discardPending) this.clearActivity(); else this.flushActivity();",
+      "replacement": "this.flushActivity();",
+      "testFile": "test/watch.test.ts",
+      "testName": "ACP cancellation discards coalesced chunks at a consumed update barrier (#286)"
     }
   ]
 }
