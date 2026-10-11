@@ -2502,3 +2502,8 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 - Read available guidance with `ahub role list [--group dev|research]` and `ahub role show <id>`. Each definition identifies its layer and content hash. Doctor reports invalid files/selections without printing their contents.
 - Select up to two ids per peer in `catalog_roles` in the shared/local config, with at least one flow base already held by that peer. Empty local lists clear shared selections. This initial slice applies selections at a new daemon/MCP/adapter start; live assignment/settings and task roles follow separately.
 - Defaults preserve the existing flow. Catalog guidance adds no authority or routing preference. Native ingestion/retention and measured benefit remain unverified. Schema, bounds and source notice: [roles](roles.md).
+
+# Project profiles (#259)
+
+- Initialize new projects with `ahub init --profile research|writing|general`; default dev retains its existing templates and contracts. Profile aliases map to the existing base flow and are displayed beside it.
+- Non-dev plans declare paths, section anchors, source ids and claims. Configure completion checks explicitly in machine-local config; selecting a profile never starts a check or study. Schema, examples and pending converter/policy slices: [profiles](profiles.md).

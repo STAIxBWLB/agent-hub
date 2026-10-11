@@ -1,3 +1,4 @@
+import { profileName, projectProfile, type ProfileName } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 // Claude Code channel plugin server (MCP over stdio). Bundled to plugins/agent-hub/server.js.
 // Inbound: hub `deliver` -> notifications/claude/channel. Outbound: the hub_send tool.
@@ -9,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, stateDirFor } from "../hub/control-client.ts";
 import { VERSION } from "../version.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
@@ -39,10 +40,16 @@ function roles(): Record<string, string[]> {
   };
   return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
 }
+function sessionProfile(): ProfileName {
+  let raw: unknown;
+  for (const name of ["config.json", "config.local.json"]) try { const value = JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")).profile; if (value !== undefined) raw = value; } catch { /* missing files retain the prior layer */ }
+  try { return profileName(raw); } catch { console.error("[agent-hub] invalid project profile; retaining dev guidance"); return "dev"; }
+}
+const profile = sessionProfile();
 function sessionRoles(): import("../hub/roles.ts").CatalogRole[] {
   try {
     const read = (name: string) => { let raw: unknown; try { raw = JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")).catalog_roles; } catch { return {}; } return catalogAssignments(raw); };
-    const assignments = catalogAssignments({ ...read("config.json"), ...read("config.local.json") });
+    const assignments = catalogAssignments({ ...projectProfile(profile).catalog_roles, ...read("config.json"), ...read("config.local.json") });
     const catalog = loadRoleCatalog(projectRoot);
     for (const error of catalog.errors) console.error(`[agent-hub] catalog role ${error.id}: ${error.reason}`);
     return selectedRoles(peerId, roles(), assignments, catalog);
@@ -103,9 +110,9 @@ const INSTRUCTIONS = [
   "Start a hub_send text with [IMPORTANT] only when the recipient must see it now (it interrupts a running Codex turn), with [FYI] for a note that needs nobody's turn. Unmarked messages are batched.",
   "Do not acknowledge messages that need no answer; every hub_send costs the other agents a turn.",
   ...(channel ? ["If a push was missed, hub_inbox drains the fallback queue."] : []),
-  roleContract(peerId, roles(), toolsMode ? [] : sessionRoles()),
+  roleContract(peerId, roles(), toolsMode ? [] : sessionRoles(), profile),
 ].join("\n");
-const TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from other agents reach you as prompts, not through this server.", roleContract(peerId, roles())].join("\n");
+const TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from other agents reach you as prompts, not through this server.", roleContract(peerId, roles(), [], profile)].join("\n");
 
 const log = (line: string) => console.error(`[agent-hub] ${line}`);
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
@@ -246,7 +253,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               ]
             : []),
         ]),
-    ...TASK_TOOLS,
+    ...profileTaskTools(profile),
     ...CONDUCTOR_TOOLS,
   ],
 }));

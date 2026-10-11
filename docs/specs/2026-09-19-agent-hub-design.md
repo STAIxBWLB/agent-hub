@@ -2348,3 +2348,9 @@ the queue.
 - Session selections contain up to two ids and must match an existing flow base. Default absence preserves legacy contracts. Native preambles and Claude instructions publish guidance through existing paths; tools-mode instructions omit catalog text to avoid duplicate headless publication.
 - Metadata-only prepared events and read-only list/show/doctor diagnostics do not attest native ingestion or execution. Project text is sanitized at rendering; invalid definitions disclose no contents. No new permission, routing, sandbox or tool authority follows from a catalog role.
 - Task roles, person/settings assignment, pending/session attribution surfaces, later groups and measurement remain follow-up slices. See docs/roles.md for the current contract.
+
+# Project profile amendment, 2026-10-11 (#259)
+
+- Four shipped data profiles map optional named classes onto the unchanged seven base classes. Non-dev proposals persist profile/alias metadata beside the base; routing, reviewers, budgets and outcomes keep consuming the base. Default dev template/contracts/schema and legacy rows retain their prior shape.
+- Profile-aware init preserves existing config and refuses conflicting explicit selections before writes. Peer contracts and task schemas derive from profile data; guidance grants no authority. Non-dev plans carry bounded paths/sections/sources/claims through Tasks and the existing privacy screen, with declared anchor/source overlap.
+- Explicit machine-local alias check commands precede base check commands; profile selection installs no automatic command. Profile/base/alias metadata is shown in board/route/UI and #247 records without task text. Document projections, shadow repositories, path policy and custom data overrides remain subsequent slices. See docs/profiles.md.

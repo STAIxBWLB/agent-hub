@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { profileName } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
@@ -633,12 +634,15 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: () => {
+    const flags = takeFlags(args, ["--profile"], ["--dry-run", "--json"]);
+    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general] [--dry-run --json]");
+    const requestedProfile = flags.one["--profile"] === undefined ? undefined : profileName(flags.one["--profile"]);
     if (args.includes("--dry-run")) {
-      const plan = planInit(cwd);
+      const plan = planInit(cwd, requestedProfile);
       return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
     }
     assertLifecycleAvailable();
-    const changed = init(cwd);
+    const changed = init(cwd, requestedProfile);
     registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
   },

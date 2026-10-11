@@ -1,8 +1,9 @@
+import { profileClass, profileTaskLabel, projectProfile, type ProfileName } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, TASK_MOVE_REASONS, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
+import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -23,13 +24,14 @@ export interface TasksDeps {
   routing: () => Routing;
   cwd: string;
   project: string;
+  profile?: ProfileName;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   memory?: MemoryClient;
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
   /** The completion check configured for a class, if any (local config only; issue #7). */
-  check?: (cls: TaskClass) => string | undefined;
+  check?: (cls: TaskClass, task?: Task) => string | undefined;
   /** Runs one check; the hub runs them one at a time. */
   runCheck?: (command: string) => Promise<{ code: number | null; timedOut: boolean; interrupted?: boolean; tail: string }>;
   /** Hands a saved note to every other peer; it rides on their next delivery. */
@@ -153,13 +155,13 @@ function cleanRefs(input: unknown): TaskRefs {
 }
 
 /** The same for a plan (issue #31): only its four lists, each of short strings. */
-function cleanPlan(input: unknown): TaskPlan {
+function cleanPlan(input: unknown, profile: ProfileName = "dev"): TaskPlan {
   const r = fields(input);
-  return Object.fromEntries(PLAN_KEYS.map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length));
+  return Object.fromEntries((projectProfile(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length));
 }
 
 /** A plan as one line for other owners; the whole plan is on the board. */
-const planText = (plan: TaskPlan = {}) => PLAN_KEYS.filter((k) => plan[k]?.length).map((k) => `${k.replace("_", " ")}: ${plan[k]!.join("; ")}`).join(" | ");
+const planText = (plan: TaskPlan = {}) => ALL_PLAN_KEYS.filter((k) => plan[k]?.length).map((k) => `${k.replace("_", " ")}: ${plan[k]!.join("; ")}`).join(" | ");
 /** What the PII screen reads of a task (#198): the text the patterns are checked against. */
 const screenText = (t: { title: string; detail: string; plan?: TaskPlan }) => [t.title, t.detail, planText(t.plan)].join("\n");
 /** Re-screens of one task whose verdict was unknown, per hub run (#198). */
@@ -517,9 +519,11 @@ export class Tasks {
     // An owner for work that waits is reserved (issue #207): routing offers it to that peer first once it is ready.
     const reserved = this.waitsFor({ deps }).length ? input.owner : undefined;
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
-    if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new PreEffectToolRefusal(`class must be one of ${CLASSES.join(", ")}`);
+    const profile = this.d.profile ?? "dev";
+    let baseGiven: TaskClass | undefined;
+    try { if (given !== undefined) baseGiven = profileClass(given, profile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
-    const plan = cleanPlan(input.plan);
+    const plan = cleanPlan(input.plan, profile);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
     const signals = detectSignals({ ...text, detail: [text.detail, planText(plan)].join("\n") }, this.d.routing(), this.d.cwd);
     // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
@@ -529,7 +533,7 @@ export class Tasks {
     const screening = this.screenOn();
     const screened = screening && !signals.includes("pii") ? await this.screenCall(screenText({ ...text, plan })) : undefined;
     if (screened && screened.label !== "clear") signals.push("pii");
-    let cls = given as TaskClass | undefined;
+    let cls = baseGiven;
     let triaged = false;
     let fenced = false; // a PII task off campus: triage is not asked
     if (!cls && this.d.triage) {
@@ -543,12 +547,12 @@ export class Tasks {
     const defaulted = !cls && input.owner === by;
     if (defaulted) cls = "implement";
     if (!cls) throw new PreEffectToolRefusal(`class is required (one of ${CLASSES.join(", ")}); ${fenced ? "the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one" : "the hub could not name one for you"}`);
-    const draft = { ...text, class: cls };
+    const draft = { ...text, class: cls, ...(profile !== "dev" ? { profile, profileClass: given ?? cls } : {}) };
     let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
     if (screening) task = this.screenedTask(task, screened);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
-    this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
+    this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${profileTaskLabel(task)}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
     // Re-read: a dependency approved while triage was awaited looked for its dependents before this row existed.
     const still = this.waitsFor(task);
     if (still.length) {
@@ -720,7 +724,7 @@ export class Tasks {
    */
   private places(task: Task): { paths: string[]; symbols: string[] } {
     const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map((p) => this.projectPath(p));
-    return { paths: [...new Set(paths)], symbols: task.plan?.symbols ?? [] };
+    return { paths: [...new Set(paths)], symbols: [...(task.plan?.symbols ?? []), ...(task.plan?.sections ?? []).map(v => `section ${v}`), ...(task.plan?.sources ?? []).map(v => `source ${v}`)] };
   }
 
   private roots?: string[];
@@ -744,7 +748,7 @@ export class Tasks {
     return this.d.board.list().flatMap((t) => {
       if (t.id === task.id || !t.owner || t.owner === task.owner || t.owner === this.releasing || !OPEN.includes(t.state) || this.isPii(t)) return [];
       const theirs = this.places(t);
-      const paths = mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
+      const paths = task.profile && t.profile && (task.plan?.sections?.length && t.plan?.sections?.length) ? [] : mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
       const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
       return paths.length || symbols.length ? [{ task: t, paths, symbols }] : [];
     });
@@ -814,11 +818,12 @@ export class Tasks {
       if (!task) throw new Error(`no task #${target}`);
       const a = assign(task, this.states(), routing, { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
       // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
-      return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
+      return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, ...(task.profileClass ? [`profile class ${profileTaskLabel(task)}`] : []), "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     const signals = detectSignals(draft, routing, this.d.cwd);
-    const trace = assign({ class: target.class, signals }, this.states(), routing, this.weights(target.class)).trace;
+    const base = profileClass(target.class, this.d.profile);
+    const trace = [...(this.d.profile && this.d.profile !== "dev" ? [`profile class ${target.class} (base ${base}, ${this.d.profile})`] : []), ...assign({ class: base, signals }, this.states(), routing, this.weights(base)).trace];
     // A draft is not sent to the PII screen (issue #198): a proposal is, and a pii or unknown verdict adds the pii signal.
     return [...workflow, ...(this.screenOn() && !signals.includes("pii") ? [...trace, "pii_screen is on: at proposal a pii or unknown verdict adds signal pii (local only)"] : trace)];
   }
@@ -940,10 +945,10 @@ export class Tasks {
     const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", a.owner, h.withheld)}`);
     const handoff = context && !pii ? this.screen(task, context, "handoff", a.owner, contextWithheld).slice(0, 3000) : "";
-    const facts = [`class ${task.class}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(a)].filter(Boolean).join("; ");
+    const facts = [`class ${profileTaskLabel(task)}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(a)].filter(Boolean).join("; ");
     const plan = planText(task.plan);
     const body = [
-      `Task #${task.id} [${task.class}] ${task.title}`,
+      `Task #${task.id} [${profileTaskLabel(task)}] ${task.title}`,
       task.detail,
       `Facts: ${facts}`,
       plan ? `Plan so far: ${plan}` : "",
@@ -1124,7 +1129,7 @@ export class Tasks {
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
-    const given = plan == null ? undefined : cleanPlan(plan);
+    const given = plan == null ? undefined : cleanPlan(plan, task.profile ?? "dev");
     const cleaned = given && Object.keys(given).length ? given : undefined;
     // A task's signals are fixed when it is proposed: text that matches a PII pattern cannot be let in afterwards.
     if (cleaned && !this.isPii(task) && this.isPii({ signals: detectSignals({ title: "", detail: planText(cleaned), refs: {} }, this.d.routing(), this.d.cwd) })) {
@@ -1250,7 +1255,7 @@ export class Tasks {
       else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE); // done without a separate accept
-    const command = this.d.runCheck ? this.d.check?.(task.class) : undefined;
+    const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
     if (!command) return this.complete(task, by, summary, refs, "", withheld);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
@@ -1294,7 +1299,7 @@ export class Tasks {
         const at = [...u.history].reverse().find((h) => h.event === "done");
         if (u.owner === t.owner || !at || at.at < handedAt(t)) return [];
         const theirs = this.places(u);
-        const paths = mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
+        const paths = t.profile && u.profile && (t.plan?.sections?.length && u.plan?.sections?.length) ? [] : mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
         const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
         return paths.length || symbols.length ? [this.completedNotice(u, { task: t, paths, symbols }, at.note, at.withheld)] : [];
       });
@@ -1464,7 +1469,7 @@ export class Tasks {
       `- List what is unmet in hub_review's unmet, one item each.`,
     ].join("\n");
     const summary = last?.note ? this.screen(task, last.note, "summary", reviewer, last.withheld) : "(no summary)";
-    const body = `Review task #${task.id} [${task.class}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 

@@ -16,7 +16,9 @@ export interface TaskRefs {
 }
 /** What an owner says it will change, before it starts (issue #31). Each list holds short free-text items. */
 export const PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"] as const;
-export type TaskPlan = Partial<Record<(typeof PLAN_KEYS)[number], string[]>>;
+export const DOCUMENT_PLAN_KEYS = ["paths", "sections", "sources", "claims"] as const;
+export const ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims"] as const;
+export type TaskPlan = Partial<Record<(typeof ALL_PLAN_KEYS)[number], string[]>>;
 /** Task outcomes older than this are pruned: demotion (issue #36) reads one week, seven half-lives. */
 export const OUTCOMES_KEPT_MS = 7 * 24 * 3_600_000;
 
@@ -45,6 +47,8 @@ export interface Task {
   title: string;
   detail: string;
   class: TaskClass;
+  profile?: import("./profiles.ts").ProfileName;
+  profileClass?: string;
   owner: PeerId | null;
   reviewer: PeerId | null;
   state: TaskState;
@@ -109,14 +113,15 @@ export class Board {
     // And from before issue #207: existing rows reserve nobody.
     if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
     if (!have.has("sdlc")) this.db.run("ALTER TABLE tasks ADD COLUMN sdlc TEXT");
+    if (!have.has("project_profile")) this.db.run("ALTER TABLE tasks ADD COLUMN project_profile TEXT");
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[] }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[] }): Task {
     const now = Date.now();
     const history: HistoryEntry[] = [{ at: now, by, event: "proposed" }];
     const { lastInsertRowid } = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && t.profile !== "dev" ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null);
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;
@@ -197,5 +202,7 @@ function parse(row: Record<string, unknown>): Task {
     if (col === "sdlc" && row[col] == null) delete out[col];
     else out[col] = JSON.parse(String(row[col]));
   }
+  if (out.project_profile != null) Object.assign(out, JSON.parse(String(out.project_profile)));
+  delete out.project_profile;
   return out as unknown as Task;
 }

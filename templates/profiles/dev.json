@@ -1,0 +1,22 @@
+{
+  "name": "dev",
+  "classes": {
+    "plan": "plan",
+    "implement": "implement",
+    "bulk_edit": "bulk_edit",
+    "test": "test",
+    "review": "review",
+    "summarize": "summarize",
+    "triage": "triage"
+  },
+  "plan_keys": [
+    "paths",
+    "symbols",
+    "signatures",
+    "insertion_points"
+  ],
+  "role_text": {},
+  "catalog_roles": {},
+  "agents": "",
+  "example_checks": []
+}

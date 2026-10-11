@@ -5,7 +5,7 @@ import type { StaySwitchPolicy } from "../models/route/stage.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
 import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
-import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
+import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop, type ToolApproval, type ApprovalProvenance, type ToolContext } from "../local/tools.ts";
@@ -16,6 +16,7 @@ import type { Sidecar } from "../switchyard/sidecar.ts";
 import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
 
 export interface LocalOptions {
+  profile?: import("../hub/profiles.ts").ProfileName;
   cwd: string;
   omni: OmniRoute;
   /** Absent = always the fixed model on OmniRoute. */
@@ -106,7 +107,7 @@ export class LocalPeer extends BasePeer {
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
-        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...TASK_TOOLS, ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
@@ -375,7 +376,7 @@ export class LocalPeer extends BasePeer {
     const route = policy?.route ?? this.opts.route;
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
     const task = policy?.task === undefined ? undefined : Number(policy.task);
-    const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...TASK_TOOLS, ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+    const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);

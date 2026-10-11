@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add data-driven research/writing/general project profiles, base-class aliases, document plans and guidance while preserving dev defaults (#259).
+
 - Add optional bounded dev/research role catalog, shipped/project hashes and MIT notices, read-only CLI diagnostics and existing session guidance paths; preserve default contracts and authority (#295).
 
 - Add opt-in gsd-lite phase checklist guidance over existing board dependencies, reviewer-owned hashed receipts, head-bound approval blockers and read-only state/config exports (#257).

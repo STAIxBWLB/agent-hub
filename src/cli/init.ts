@@ -1,3 +1,4 @@
+import { profileName, projectProfile, type ProfileName } from "../hub/profiles.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -34,7 +35,11 @@ export interface InitChange {
 }
 /** Content is internal to apply, never included in a public preview. */
 interface PlannedWrite extends InitChange { next?: string; }
-function changes(cwd: string): PlannedWrite[] {
+function changes(cwd: string, requested?: ProfileName): PlannedWrite[] {
+  const configPath = join(cwd, ".agenthub", "config.json");
+  const existingProfile = existsSync(configPath) ? profileName(JSON.parse(readFileSync(configPath, "utf8")).profile) : undefined;
+  if (requested !== undefined && existingProfile !== undefined && requested !== existingProfile) throw new Error("init profile differs from existing config; edit the project profile explicitly before refreshing instructions");
+  const profile = projectProfile(requested ?? existingProfile);
   const changed: PlannedWrite[] = [];
   const write = (path: string, next: string, reason: string, managedBlock?: InitChange["managedBlock"]) => {
     const exists = existsSync(path);
@@ -43,11 +48,15 @@ function changes(cwd: string): PlannedWrite[] {
   };
   for (const name of ["config.json", "routing.toml"]) {
     const path = join(cwd, ".agenthub", name);
-    if (!existsSync(path)) write(path, readFileSync(join(TEMPLATES, name), "utf8"), "create missing project defaults");
+    if (!existsSync(path)) {
+      const template = readFileSync(join(TEMPLATES, name), "utf8");
+      const next = name === "config.json" && profile.name !== "dev" ? JSON.stringify({ ...JSON.parse(template), profile: profile.name }, null, 2) + "\n" : template;
+      write(path, next, "create missing project defaults");
+    }
   }
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
-  write(agents, upsertBlock(existing, readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8")), "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
+  write(agents, upsertBlock(existing, profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8")), "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
   const claude = join(cwd, "CLAUDE.md");
   const own = lstatSync(claude, { throwIfNoEntry: false });
   // The write preserves an existing inode, including AGENTS.md -> CLAUDE.md and hard links.
@@ -69,12 +78,12 @@ function changes(cwd: string): PlannedWrite[] {
   return changed;
 }
 /** Read-only metadata, deliberately omitting project/user file contents. */
-export function planInit(cwd: string): InitChange[] {
-  return changes(cwd).map(({ next, ...change }) => change);
+export function planInit(cwd: string, profile?: ProfileName): InitChange[] {
+  return changes(cwd, profile).map(({ next, ...change }) => change);
 }
 /** Returns the paths it changed, applying the same plan as the preview. */
-export function init(cwd: string): string[] {
-  const plan = changes(cwd);
+export function init(cwd: string, profile?: ProfileName): string[] {
+  const plan = changes(cwd, profile);
   mkdirSync(join(cwd, ".agenthub"), { recursive: true });
   for (const change of plan) {
     if (change.action === "delete") unlinkSync(change.path);
