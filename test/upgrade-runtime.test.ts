@@ -1336,3 +1336,26 @@ test("controlled recovery planning refuses an attached Kimi TUI before effects (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the recovery driver emits the Qwen headless command without treating it as Claude (#256)", async () => {
+  const f = claudeRestoreFixture("session-S");
+  try {
+    f.planned.terminals = []; f.planned.source.peers = [{ id: "qwen", state: "idle", args: { model: "qwen-model" } }]; f.op.plan.projects = [f.planned];
+    const calls: string[][] = [];
+    const driver = makeRecoveryDriver(async argv => { calls.push(argv); return { code: 0, stdout: "{}", stderr: "" }; });
+    await driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(calls).toEqual([[process.execPath, "/target/src/cli/main.js", "--project", f.root, "qwen", "--model", "qwen-model"]]);
+  } finally { f.cleanup(); }
+});
+
+
+test("the recovery driver passes the saved Qwen conversation id through its emitted launcher argv (#256)", async () => {
+  const f = claudeRestoreFixture("session-S");
+  try {
+    f.planned.terminals = []; f.planned.source.peers = [{ id: "qwen", state: "idle", sessionId: "qwen-saved", args: { model: "qwen-model" } }]; f.op.plan.projects = [f.planned];
+    const calls: string[][] = [];
+    const driver = makeRecoveryDriver(async argv => { calls.push(argv); return { code: 0, stdout: "{}", stderr: "" }; });
+    await driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(calls).toEqual([[process.execPath, "/target/src/cli/main.js", "--project", f.root, "qwen", "--model", "qwen-model", "--session-id", "qwen-saved"]]);
+  } finally { f.cleanup(); }
+});

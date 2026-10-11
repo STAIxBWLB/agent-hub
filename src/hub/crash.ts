@@ -47,6 +47,8 @@ export function removeSessions(stateDir: string, instanceId?: string): void {
   if (instanceId === undefined || readSessions(stateDir)?.instanceId === instanceId) rmSync(fileOf(stateDir), { force: true });
 }
 
+export const qwenSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value);
+
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
 /**
@@ -62,6 +64,11 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
         return { peer, how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
       case "codex":
         return { peer, how: `codex: its app-server died with the hub; run ahub codex again${str(meta.threadId) ? ` (its conversation was thread ${meta.threadId})` : ""}` };
+      case "qwen": {
+        const sessionId = meta.sessionId;
+        if (!qwenSessionId(sessionId)) return { peer, how: "qwen: saved ACP session identity unavailable; start it deliberately with ahub qwen" };
+        return { peer, resume: { sessionId, ...(model ? { model } : {}) }, how: "qwen: the recorded conversation can be loaded again (ACP session/load)" };
+      }
       case "kimi": {
         const sessionId = str(meta.sessionId);
         if (!sessionId) return { peer, how: "kimi: no session id was recorded; start it again with ahub kimi" };

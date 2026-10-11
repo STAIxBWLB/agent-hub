@@ -36,6 +36,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"],
     ["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"],
     ["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"],
+    ["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", "start optional Qwen Code 0.25.0 ACP (roster.qwen, default off)"],
     ["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"],
     ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
     ["ahub stop <peer>", "human only: stop a hub-owned headless peer; end TUI agents in their terminals"],

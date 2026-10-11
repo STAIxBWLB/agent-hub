@@ -111,7 +111,7 @@ export type ConductorStart = { peer: StartablePeer; mode: "headless" } | { peer:
 export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: StartablePeer) => StartMode): ConductorStart {
   const refuse = (text: string) => new (preEffect ? PreEffectToolRefusal : Error)(text);
   if (mode !== undefined && mode !== "headless" && mode !== "tui") throw refuse("mode must be headless or tui");
-  if (!isStartablePeer(peer)) throw refuse("only claude, codex, kimi, pi and local may be started by the conductor");
+  if (!isStartablePeer(peer)) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen, may be started by the conductor");
   const own = startMode(peer);
   if (mode !== undefined && mode !== own) throw refuse(`${peer} starts ${own} here; a person sets a start mode (ahub settings), the conductor cannot choose one`);
   return own === "tui" ? { peer: peer as "claude" | "codex" | "pi", mode: "tui", command: preview(peer as "claude" | "codex" | "pi") } : { peer, mode: "headless" };

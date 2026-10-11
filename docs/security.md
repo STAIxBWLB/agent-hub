@@ -181,3 +181,10 @@ for scoped writes and edits through original or resolved spellings. It applies
 live after a settings write or undo, never changes reads or never-ask, and cannot
 be set through an agent, tools or conductor surface. Claude's daemon response
 withholds the scoped mode on these writes so an older hook grants nothing too.
+
+Qwen Code's optional production ACP peer requires qwen-code 0.25.0 native identity
+and advertised mode ids before setting a policy or starting work. Its own tools
+have no hub sandbox; auto-edit approves file edits, yolo every tool. Configured
+never-ask still requires the person's confirmation. qwen_cmd is machine-local and
+never editable through settings. Legacy benchmark adapters remain unmanaged by
+this production table. Startup diagnostics withhold native host/payload details.
