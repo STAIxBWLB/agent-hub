@@ -274,3 +274,21 @@ test("outside a repository there is nothing to snapshot", () => {
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   expect(repoOf(dir)).toBeUndefined();
 });
+
+test("task proposal snapshots persist the original baseline and distinguish reused ids from missing evidence (#259)", () => {
+  const top=realpathSync(mkdtempSync(join(tmpdir(),"ahub-task-baseline-"))), db=join(top,"hub.db"); cleanup.push(()=>rmSync(top,{recursive:true,force:true}));
+  const turns=new Turns(db);
+  turns.rememberTaskStart(1,100,"first-tree"); turns.rememberTaskStart(1,100,"later-tree");
+  turns.rememberTaskStart(1,200,"reused-id-tree"); turns.rememberTaskStart(2,100,undefined); turns.rememberTaskStart(2,100,"late-evidence"); turns.close();
+  const read=new Turns(db,true); try {
+    expect(read.taskStart(1,100)).toBe("first-tree"); expect(read.taskStart(1,200)).toBe("reused-id-tree");
+    expect(read.taskStart(2,100)).toBeUndefined(); expect(read.taskStart(3,100)).toBeUndefined();
+  } finally {read.close();}
+});
+
+test("legacy snapshot stores leave a missing task baseline unknown without a migration write (#259)", async () => {
+  const top=realpathSync(mkdtempSync(join(tmpdir(),"ahub-old-baseline-"))), file=join(top,"hub.db"); cleanup.push(()=>rmSync(top,{recursive:true,force:true}));
+  const {Database}=await import("bun:sqlite"), db=new Database(file); db.run("CREATE TABLE legacy (id INTEGER)"); db.close();
+  const turns=new Turns(file,true); try {expect(turns.taskStart(1,100)).toBeUndefined();} finally {turns.close();}
+  const verify=new Database(file,{readonly:true}); try {expect(verify.query("SELECT name FROM sqlite_master WHERE name = 'task_snapshots'").get()).toBeNull();} finally {verify.close();}
+});

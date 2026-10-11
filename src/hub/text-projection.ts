@@ -54,10 +54,12 @@ export class TextProjections {
     if (this.warned.has(ext)) return;
     this.warned.add(ext); this.options.log?.("text projection " + ext + " unavailable; retained original facts behavior");
   }
+  get enabled(): boolean { return Object.keys(this.options.config).length > 0; }
+  handles(file: string): boolean { return !!this.options.config[extname(file).toLowerCase()]; }
   project(file: string): ProjectedText | undefined {
     const ext = extname(file).toLowerCase(), argv = this.options.config[ext];
     if (!argv) return undefined;
-    let fd: number | undefined, scratch: string | undefined;
+    let fd: number | undefined;
     try {
       const root = realPath(this.options.cwd), input = realPath(file);
       if (!input.startsWith(root + "/")) throw new Error("input outside project");
@@ -68,8 +70,31 @@ export class TextProjections {
       while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, got); if (!n) break; got += n; }
       const after = fstatSync(fd);
       if (got !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error("input changed");
+      return this.convert(ext, bytes, () => {
+        const final = fstatSync(fd!);
+        if (final.size !== before.size || final.mtimeMs !== before.mtimeMs) throw new Error("input changed during conversion");
+      });
+    } catch { this.warn(ext); return undefined; }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+  /** Historic raw bytes; optional deadline uses performance.now(), shared across the preview. No current file read. */
+  projectBytes(file: string, bytes: Buffer, deadline?: number): ProjectedText | undefined {
+    const ext = extname(file).toLowerCase();
+    if (!this.options.config[ext]) return undefined;
+    try {
+      const root = realPath(this.options.cwd), input = resolve(root, file);
+      if (!input.startsWith(root + "/") || !Buffer.isBuffer(bytes) || bytes.length > MAX_INPUT) throw new Error("snapshot input cap or path");
+      return this.convert(ext, Buffer.from(bytes), undefined, deadline);
+    } catch { this.warn(ext); return undefined; }
+  }
+  private convert(ext: string, bytes: Buffer, verify?: () => void, deadline?: number): ProjectedText | undefined {
+    const argv = this.options.config[ext];
+    if (!argv) return undefined;
+    let scratch: string | undefined;
+    try {
+      if (deadline !== undefined && (!Number.isFinite(deadline) || deadline <= performance.now())) throw new Error("projection deadline");
       const rawHash = createHash("sha1").update(bytes).digest("hex"), rawBlob = createHash("sha1").update("blob " + bytes.length + "\0").update(bytes).digest("hex");
-      const inputHash = hash(bytes), configHash = commandFingerprint(this.options.cwd, argv), key = hash(inputHash + "\n" + configHash);
+      const inputHash = hash(bytes), configHash = commandFingerprint(this.options.cwd, argv), key = hash(inputHash + "\n" + configHash + "\n" + ext);
       const cacheDir = join(this.options.stateDir, "text-projections"), cache = join(cacheDir, key + ".json");
       try {
         const cached = boundedCache(cache);
@@ -82,21 +107,20 @@ export class TextProjections {
       scratch = realPath(mkdtempSync(join(tmpdir(), "ahub-projection-input-"))); const snapshot = join(scratch, "input" + ext);
       writeFileSync(snapshot, bytes, { mode: 0o400 });
       const result = spawnSync(process.execPath, [join(import.meta.dir, "projection-exec.ts")], {
-        cwd: this.options.cwd, timeout: 8000, maxBuffer: MAX_TEXT * 2, encoding: "utf8",
-        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + "\n(allow file-read* (literal " + sbplString(snapshot) + "))", argv: argv.map(arg => arg === "{input}" ? snapshot : arg) }),
+        cwd: this.options.cwd, timeout: deadline === undefined ? 8000 : Math.ceil(Math.max(1, Math.min(8000, deadline - performance.now()))), maxBuffer: MAX_TEXT * 2, encoding: "utf8",
+        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + "\n(allow file-read* (literal " + sbplString(snapshot) + "))", argv: argv.map(arg => arg === "{input}" ? snapshot : arg), ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.min(5000, deadline - performance.now() - 100)) }) }),
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: "en_US.UTF-8", TERM: "dumb" },
       });
       if (result.error || result.status !== 0) throw new Error("conversion failed");
       const converted = JSON.parse(result.stdout) as { ok?: boolean; text?: string };
       if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\0")) throw new Error("conversion failed");
-      const final = fstatSync(fd);
-      if (final.size !== before.size || final.mtimeMs !== before.mtimeMs) throw new Error("input changed during conversion");
+      verify?.();
       const value = { inputHash, rawHash, rawBlob, configHash, text: converted.text };
       mkdirSync(cacheDir, { recursive: true });
       const temporary = cache + "." + crypto.randomUUID() + ".tmp";
       writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 }); renameSync(temporary, cache);
       return value;
     } catch { this.warn(ext); return undefined; }
-    finally { if (fd !== undefined) closeSync(fd); if (scratch) rmSync(scratch, { recursive: true, force: true }); }
+    finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
   }
 }

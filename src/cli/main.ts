@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+import { matchesPolicy } from "../hub/path-policy.ts";
+import { projectedDiff } from "../hub/projected-diff.ts";
+import { TextProjections } from "../hub/text-projection.ts";
+import { terminalText } from "./console-state.ts";
 import { profileName, projectProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
@@ -1458,7 +1462,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const repo = repoOf(cwd) ?? fail(`${cwd} is not in a git work tree`);
     if (!hasTree(repo.top, startTree) || !hasTree(repo.top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
     // Another peer's turn that overlapped this one in time has its changes in this turn's diff as well.
-    const keep = Math.max(1, Number(projectConfig().snapshots.keep) || 20);
+    const undoConfig = projectConfig();
+    const keep = Math.max(1, Number(undoConfig.snapshots.keep) || 20);
     const overlapping = turnRecords((t) => t.overlapping(turn, keep), { paths: [] as string[], unknown: [] as string[] });
     if (overlapping.unknown.length) fail(`refusing to undo ${id}: these turns of other peers ran at the same time and their changes are not known (still running, cut short, or not snapshotted): ${overlapping.unknown.join(", ")}`);
     let reverted = false;
@@ -1476,6 +1481,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (first.undone) return console.log(`turn ${id} is already undone: its files are as they were before it started`);
     console.log(first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : `turn ${id} changed no files`);
     console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
+    const projections = new TextProjections({ cwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => console.error(line) });
+    const preview = projectedDiff({ repo, from: endTree, to: startTree, paths: first.restore, projections, deny: undoConfig.local.deny, privatePath: path => matchesPolicy(cwd, join(repo.top, path), undoConfig.pii?.paths ?? []) });
+    if (preview) console.log(terminalText("Undo preview (end snapshot to start snapshot):\n" + preview));
+
     if (!args.includes("--yes")) return console.log("nothing was changed; add --yes to restore these files");
     if (args.includes("--context")) {
       console.log(await taskOp("turn_revert", { turn: id }));
