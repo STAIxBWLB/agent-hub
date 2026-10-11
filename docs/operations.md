@@ -2208,7 +2208,12 @@ include the stamped ancestors (CI checks out full history).
 During release preparation, source review precedes restamping. Review each stale
 page against its covered source, correct drift, and use the full SHA of the
 reviewed source commit as `verifiedAgainst`. Record any deferred page and its
-specific unverified claims in the release verification report before tagging.
+specific unverified claims in the release verification report before tagging. Deferred
+pages must still be source-reviewed and current; a deferral is not a stale-stamp waiver.
+The tag gate runs `node scripts/check-docs.mjs --require-fresh` with full history
+before publishing. Stale or nonancestor stamps refuse publication, with the
+release merge-commit instruction; an identical tree and green CI cannot waive this.
+
 Do not advance a stamp solely to clear a notice. Source stamps can name an
 ancestor: the manifest-only follow-up commit need not hash or stamp itself.
 
@@ -2427,3 +2432,19 @@ Legacy Claude pull-only sessions retain their existing automatic owner/reviewer
 selection; the watched-Kimi exclusion does not disable that review path. After
 first creating the Kimi MCP file, run `ahub init` to ignore the untracked file.
 Init leaves existing ignore bytes alone when no Kimi MCP file exists.
+## Scoped grants for instruction files
+
+`ahub settings set scoped_grants.protect_instructions true` asks a person before
+Pi/local scoped writes and edits to `AGENTS.md`, `CLAUDE.md` and `QWEN.md`, and
+withholds automatic permission from the managed Claude hook. Case, compatibility
+forms and both symlink spellings are checked. The default is false: these project
+documents remain editable under scoped grants. Reads, explicit approval and
+never-ask keep their existing behavior.
+
+Use `ahub settings preview scoped_grants.protect_instructions true` before a
+change and `ahub settings undo` to restore it. It is in the Permissions registry,
+writes only machine-local `protect_instruction_files`, and applies immediately
+in the running hub. A dashboard settings session may change it; an ordinary
+session may turn protection on but cannot weaken it. No agent surface changes it.
+Like other machine-local security defaults, loading it requires git to establish
+that the file is untracked; a dropped value is reported by the settings result.

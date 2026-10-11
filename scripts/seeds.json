@@ -424,6 +424,62 @@
       "replacement": "if (false && peer.id === \"kimi\" && peer.args?.mode === \"tui\") {",
       "testFile": "test/upgrade-runtime.test.ts",
       "testName": "controlled recovery planning refuses an attached Kimi TUI before effects (#316)"
+    },
+    {
+      "id": "kimi-launch-override-detach",
+      "file": "src/hub/daemon.ts",
+      "search": "if (sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming) clearKimiAdmission();",
+      "replacement": "if (false && sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming) clearKimiAdmission();",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "a one-launch Kimi TUI override ends at detach and failed launch cleanup (#316)"
+    },
+    {
+      "id": "kimi-terminal-mode-pin",
+      "file": "src/hub/daemon.ts",
+      "search": "...startWords(peer, mode)]",
+      "replacement": "...[peer]]",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "a hub-opened Kimi command pins the selected mode despite a later configuration edit (#316)"
+    },
+    {
+      "id": "offline-acp-permission",
+      "file": "src/adapters/acp.ts",
+      "search": "this.cancelWait || this.state === \"offline\"",
+      "replacement": "this.cancelWait",
+      "testFile": "test/acp.test.ts",
+      "testName": "offline ACP permission requests never reach approvers (journal, #311)"
+    },
+    {
+      "id": "pending-acp-permission-abort",
+      "file": "src/adapters/acp.ts",
+      "search": "for (const wait of this.permissionWaits) wait.abort();",
+      "replacement": "for (const wait of this.permissionWaits) void wait;",
+      "testFile": "test/acp.test.ts",
+      "testName": "watchdog withdraws a pending ACP approval and fences a late person answer (#311)"
+    },
+    {
+      "id": "approval-watchdog-renewal",
+      "file": "src/adapters/acp.ts",
+      "search": "() => this.state === \"busy\" && turn === this.turn && this.touch()",
+      "replacement": "() => {}",
+      "testFile": "test/acp.test.ts",
+      "testName": "a pending approval keeps the turn alive past the watchdog"
+    },
+    {
+      "id": "original-config-path-grant",
+      "file": "src/hub/permission-mode.ts",
+      "search": "&& !isAgentConfigPath(original) && !isHubWritePath(original)",
+      "replacement": "&& !isHubWritePath(original)",
+      "testFile": "test/permission-modes.test.ts",
+      "testName": "pi scoped edit grants exclude every canonical native config segment"
+    },
+    {
+      "id": "events-tab-measurement",
+      "file": "src/cli/console-state.ts",
+      "search": "return text.includes(\"\\t\") ? terminalText(line) : line;",
+      "replacement": "return line;",
+      "testFile": "test/console.test.ts",
+      "testName": "tabbed Events headers and bodies stay within panel and stream widths (#319)"
     }
   ]
 }
