@@ -7057,18 +7057,11 @@ var general_default = {
   example_checks: []
 };
 
-// src/hub/profiles.ts
-var PROFILE_NAMES = ["dev", "research", "writing", "general"];
-var PROFILES = { dev: dev_default, research: research_default, writing: writing_default, general: general_default };
-function profileName(raw) {
-  if (raw === undefined)
-    return "dev";
-  if (typeof raw !== "string" || !PROFILE_NAMES.includes(raw))
-    throw new Error(`profile must be one of ${PROFILE_NAMES.join(", ")}`);
-  return raw;
-}
-var projectProfile = (raw) => PROFILES[profileName(raw)];
-var PROFILE_CLASS_NAMES = [...new Set(Object.values(PROFILES).flatMap((p) => Object.keys(p.classes)))];
+// src/hub/board.ts
+var CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
+var PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
+var ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims"];
+var OUTCOMES_KEPT_MS = 7 * 24 * 3600000;
 
 // src/hub/roles.ts
 import { createHash } from "crypto";
@@ -7429,7 +7422,7 @@ var SHIPPED_ROLES = {
 // src/hub/roles.ts
 var ROLE_SECTIONS = ["Scope", "Not in scope", "Deliverables", "Hub use", "Review duties", "Evidence"];
 var BASES = ["planner", "implementer", "verifier", "reviewer"];
-var CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
+var CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
 var ID = /^[a-z][a-z0-9-]{0,47}$/;
 var PEER = /^[a-z][a-z0-9-]{0,31}$/;
 function parseRole(text, stem, layer) {
@@ -7475,7 +7468,7 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES), body, review, layer, hash: createHash("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES2), body, review, layer, hash: createHash("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -7566,6 +7559,77 @@ function catalogSection(roles) {
 ` + roles.map((role) => sanitize(role.body)).join(`
 
 `);
+}
+
+// src/hub/profiles.ts
+var PROFILE_NAMES = ["dev", "research", "writing", "general"];
+var PROFILES = { dev: dev_default, research: research_default, writing: writing_default, general: general_default };
+function profileName(raw) {
+  if (raw === undefined)
+    return "dev";
+  if (typeof raw !== "string" || !PROFILE_NAMES.includes(raw))
+    throw new Error(`profile must be one of ${PROFILE_NAMES.join(", ")}`);
+  return raw;
+}
+var projectProfile = (raw) => PROFILES[profileName(raw)];
+var profileData = (profile = "dev") => typeof profile === "string" ? projectProfile(profile) : profile;
+var PROFILE_CLASS_NAMES = [...new Set(Object.values(PROFILES).flatMap((p) => Object.keys(p.classes)))];
+function resolveProfile(raw, overrides) {
+  const original = projectProfile(raw);
+  if (overrides === undefined)
+    return original;
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides))
+    throw new Error("profile_overrides must be an object");
+  const data = overrides, allowed = new Set(["classes", "plan_keys", "role_text", "catalog_roles", "agents", "example_checks"]);
+  if (Object.keys(data).some((key) => !allowed.has(key)))
+    throw new Error("unknown profile override field");
+  if (!Object.keys(data).length)
+    return original;
+  const result = { ...original, classes: { ...original.classes }, plan_keys: [...original.plan_keys], role_text: { ...original.role_text }, catalog_roles: Object.fromEntries(Object.entries(original.catalog_roles).map(([peer, ids]) => [peer, [...ids]])), example_checks: [...original.example_checks] };
+  const text = (value, cap) => {
+    if (typeof value !== "string" || value.length > cap)
+      throw new Error("profile text is missing or oversized");
+    return sanitize(value);
+  };
+  if (data.classes !== undefined) {
+    if (!data.classes || typeof data.classes !== "object" || Array.isArray(data.classes) || Object.keys(data.classes).length > 32)
+      throw new Error("profile classes must be a bounded base-class map");
+    for (const [name, base] of Object.entries(data.classes)) {
+      if (!/^[a-z][a-z0-9_]{0,47}$/.test(name) || typeof base !== "string" || !CLASSES.includes(base) || CLASSES.includes(name) && name !== base)
+        throw new Error("profile class must retain an existing base-class meaning");
+      result.classes[name] = base;
+    }
+  }
+  if (data.plan_keys !== undefined) {
+    if (!Array.isArray(data.plan_keys) || !data.plan_keys.length || data.plan_keys.length > ALL_PLAN_KEYS.length || new Set(data.plan_keys).size !== data.plan_keys.length || data.plan_keys.some((key) => !ALL_PLAN_KEYS.includes(key)))
+      throw new Error("profile plan_keys must select distinct supported fields");
+    result.plan_keys = [...data.plan_keys];
+  }
+  if (data.role_text !== undefined) {
+    if (!data.role_text || typeof data.role_text !== "object" || Array.isArray(data.role_text) || Object.keys(data.role_text).length > 8)
+      throw new Error("profile role_text must be bounded guidance");
+    for (const [role, value] of Object.entries(data.role_text)) {
+      if (!["planner", "implementer", "verifier", "reviewer", "conductor"].includes(role))
+        throw new Error("profile role_text must name an existing flow role");
+      result.role_text[role] = text(value, 2000);
+    }
+  }
+  if (data.catalog_roles !== undefined)
+    result.catalog_roles = { ...result.catalog_roles, ...catalogAssignments(data.catalog_roles) };
+  if (data.agents !== undefined)
+    result.agents = text(data.agents, 16000);
+  if (data.example_checks !== undefined) {
+    if (!Array.isArray(data.example_checks) || data.example_checks.length > 16)
+      throw new Error("profile example_checks must be a bounded display list");
+    result.example_checks = data.example_checks.map((value) => text(value, 2000));
+  }
+  return result;
+}
+function mergeProfileOverrides(a, b) {
+  if (a === undefined && b === undefined)
+    return;
+  const left = a ?? {}, right = b ?? {};
+  return { ...left, ...right, ...Object.fromEntries(["classes", "role_text", "catalog_roles"].filter((key) => left[key] !== undefined && right[key] !== undefined).map((key) => [key, { ...left[key], ...right[key] }])) };
 }
 
 // node_modules/zod/v4/core/util.js
@@ -16184,24 +16248,24 @@ var ROLE_TEXT = {
 };
 var DEFAULT_ROLES = defaultPeerRoles(true);
 function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev") {
-  const data = projectProfile(profile);
+  const data = profileData(profile);
   const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
   if (!mine.length)
     return "";
-  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...profile !== "dev" ? [`Project profile ${profile}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
+  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
 `);
 }
 function profileTaskTools(profile = "dev") {
-  if (profile === "dev")
+  if (profile === "dev" || profileData(profile) === projectProfile("dev"))
     return TASK_TOOLS;
-  const data = projectProfile(profile);
+  const data = profileData(profile);
   return TASK_TOOLS.map((tool) => {
     const properties = { ...tool.inputSchema.properties };
     if (tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };
     if (properties.plan && tool.name !== "hub_task_accept")
-      properties.plan = { ...plan, properties: { paths: plan.properties.paths, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
-    return { ...tool, ...tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${profile}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
+      properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+    return { ...tool, ...tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
 
@@ -16222,18 +16286,29 @@ function roles() {
   return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
 }
 function sessionProfile() {
-  let raw;
-  for (const name of ["config.json", "config.local.json"])
-    try {
-      const value = JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8")).profile;
-      if (value !== undefined)
-        raw = value;
-    } catch {}
+  let raw, overrides;
   try {
-    return profileName(raw);
+    for (const name of ["config.json", "config.local.json"]) {
+      let data;
+      try {
+        data = JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8"));
+      } catch (error) {
+        if (error.code === "ENOENT")
+          continue;
+        throw error;
+      }
+      if (data.profile !== undefined)
+        raw = data.profile;
+      overrides = mergeProfileOverrides(overrides, data.profile_overrides);
+    }
+    return resolveProfile(raw, overrides);
   } catch {
-    console.error("[agent-hub] invalid project profile; retaining dev guidance");
-    return "dev";
+    console.error("[agent-hub] invalid project profile overrides; retaining shipped guidance");
+    try {
+      return projectProfile(profileName(raw));
+    } catch {
+      return projectProfile("dev");
+    }
   }
 }
 var profile = sessionProfile();
@@ -16248,7 +16323,7 @@ function sessionRoles() {
       }
       return catalogAssignments(raw);
     };
-    const assignments = catalogAssignments({ ...projectProfile(profile).catalog_roles, ...read("config.json"), ...read("config.local.json") });
+    const assignments = catalogAssignments({ ...profile.catalog_roles, ...read("config.json"), ...read("config.local.json") });
     const catalog = loadRoleCatalog(projectRoot2);
     for (const error of catalog.errors)
       console.error(`[agent-hub] catalog role ${error.id}: ${error.reason}`);
