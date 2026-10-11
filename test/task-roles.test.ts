@@ -106,3 +106,17 @@ test("complete task role guidance respects its 2000-character cap without trunca
   catalog.roles.set(long.id, long); await tasks.assignTo(task.id, "kimi"); await until(() => peers.kimi!.got.length > 0);
   expect(peers.kimi!.got[0]!.body).toContain("exceeds the task guidance limit"); expect(peers.kimi!.got[0]!.body).not.toContain("x".repeat(100)); expect(board.get(task.id)!.owner).toBe("kimi");
 });
+
+
+test("task research records preserve the first assigned role identity across restarts (#295)", () => {
+  const original = { id: "backend-engineer", layer: "project" as const, hash: "a".repeat(64) }, reloaded = { ...original, hash: "b".repeat(64) };
+  const events = [
+    { v: 1 as const, at: "2026-10-12T00:00:00Z", type: "task" as const, id: 1, event: "proposed", by: "user", state: "proposed", owner: null, reviewer: null, class: "implement", role: original.id, roleIdentity: original, pii: false },
+    { v: 1 as const, at: "2026-10-12T00:01:00Z", type: "task" as const, id: 1, event: "accepted", by: "codex", state: "in_progress", owner: "codex", reviewer: "user", class: "implement", role: original.id, roleIdentity: reloaded, pii: false },
+    { v: 1 as const, at: "2026-10-12T00:02:00Z", type: "task" as const, id: 1, event: "approved", by: "user", state: "approved", owner: "codex", reviewer: "user", class: "implement", role: original.id, roleIdentity: reloaded, pii: false },
+  ];
+  const live = taskRecords(events, "fixture", { version: "test", source: "live" }), backfill = taskRecords(events, "fixture", { version: "test", source: "backfill" });
+  expect(live[0]).toMatchObject({ role: original.id, roleIdentity: original }); expect(backfill[0]).toMatchObject({ role: original.id, roleIdentity: original });
+  const unknown = taskRecords(events.map((event, index) => index === 0 ? { ...event, roleIdentity: undefined } : event), "fixture", { version: "test", source: "backfill" });
+  expect(unknown[0]!.role).toBe(original.id); expect(unknown[0]!.roleIdentity).toBeUndefined();
+});

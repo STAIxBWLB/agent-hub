@@ -44,3 +44,5 @@ Example shared or machine-local config:
 - Person task/session role edits, dashboard/console assignment surfaces, session roles in research records and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.
 
 - Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.
+
+- Task research records retain the first observed assigned role identity (the proposal when available). Reloaded definition hashes on later task events do not replace it. A missing original hash remains unknown for live aggregation and backfill.
