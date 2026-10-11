@@ -1,3 +1,4 @@
+import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 // Claude Code channel plugin server (MCP over stdio). Bundled to plugins/agent-hub/server.js.
 // Inbound: hub `deliver` -> notifications/claude/channel. Outbound: the hub_send tool.
 // Claude channels are a research preview; everything Claude-specific stays in this file.
@@ -37,6 +38,15 @@ function roles(): Record<string, string[]> {
     }
   };
   return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
+}
+function sessionRoles(): import("../hub/roles.ts").CatalogRole[] {
+  try {
+    const read = (name: string) => { let raw: unknown; try { raw = JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")).catalog_roles; } catch { return {}; } return catalogAssignments(raw); };
+    const assignments = catalogAssignments({ ...read("config.json"), ...read("config.local.json") });
+    const catalog = loadRoleCatalog(projectRoot);
+    for (const error of catalog.errors) console.error(`[agent-hub] catalog role ${error.id}: ${error.reason}`);
+    return selectedRoles(peerId, roles(), assignments, catalog);
+  } catch { console.error("[agent-hub] catalog role assignment refused: invalid id, shape or flow base"); return []; }
 }
 const MAX_RECONNECT_DELAY_MS = 30_000;
 /** Close codes a retry cannot fix: bad token, wrong project, reserved or taken id, wire version. */
@@ -93,7 +103,7 @@ const INSTRUCTIONS = [
   "Start a hub_send text with [IMPORTANT] only when the recipient must see it now (it interrupts a running Codex turn), with [FYI] for a note that needs nobody's turn. Unmarked messages are batched.",
   "Do not acknowledge messages that need no answer; every hub_send costs the other agents a turn.",
   ...(channel ? ["If a push was missed, hub_inbox drains the fallback queue."] : []),
-  roleContract(peerId, roles()),
+  roleContract(peerId, roles(), toolsMode ? [] : sessionRoles()),
 ].join("\n");
 const TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from other agents reach you as prompts, not through this server.", roleContract(peerId, roles())].join("\n");
 

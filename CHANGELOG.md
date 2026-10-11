@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add optional bounded dev/research role catalog, shipped/project hashes and MIT notices, read-only CLI diagnostics and existing session guidance paths; preserve default contracts and authority (#295).
+
 - Add opt-in gsd-lite phase checklist guidance over existing board dependencies, reviewer-owned hashed receipts, head-bound approval blockers and read-only state/config exports (#257).
 
 - Add person-only `ahub watch kimi|qwen` for bounded, transient headless ACP activity, private-turn stubs and safe terminal rendering (#286). Native TUI verification remains pending.

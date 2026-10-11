@@ -41,6 +41,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", "start optional Qwen Code 0.25.0 ACP (roster.qwen, default off)"],
     ["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"],
     ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
+    ["ahub role list [--group <group>] | show <id>", "read bounded catalog guidance with layer and content hash"],
     ["ahub stop <peer>", "human only: stop a hub-owned headless peer; end TUI agents in their terminals"],
     ["ahub models status [--json] [--color=auto|always|never]", "inspect local model state as labelled fields"],
     ["ahub models setup|start|stop", "prepare or inspect local Ollama MLX (legacy stop is explicit)"],

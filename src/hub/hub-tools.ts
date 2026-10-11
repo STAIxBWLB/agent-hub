@@ -1,3 +1,4 @@
+import { catalogSection, type CatalogRole } from "./roles.ts";
 import { SUPPORTED_PEERS, defaultPeerRoles } from "./peer-catalog.ts";
 // The hub's task tools, defined once: the MCP server (Claude plugin, Kimi, Codex) and the local worker both read this.
 import { NOTE_KINDS } from "./envelope.ts";
@@ -72,8 +73,8 @@ export const ROLE_TEXT: Record<string, string> = {
 
 export const DEFAULT_ROLES: Record<string, string[]> = defaultPeerRoles(true);
 
-export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES): string {
+export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = []): string {
   const mine = (roles[peer] ?? []).map((r) => ROLE_TEXT[r]).filter(Boolean);
   if (!mine.length) return "";
-  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
+  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...(catalog.length ? [catalogSection(catalog)] : []), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
 }

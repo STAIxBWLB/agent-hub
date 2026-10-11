@@ -624,6 +624,30 @@
       "replacement": "task.sdlc && ((this.d.sdlc?.config().mode ?? \"off\") !== \"off\" || this.d.sdlc?.config().workflow === \"gsd-lite\") ?",
       "testFile": "test/workflow.test.ts",
       "testName": "new gsd-lite tasks expose checklist guidance before the first receipt and preserve none defaults (#257)"
+    },
+    {
+      "id": "catalog-existing-base",
+      "file": "src/hub/roles.ts",
+      "search": "if (!role.base.some(base => flow[peer]?.includes(base)))",
+      "replacement": "if (false)",
+      "testFile": "test/roles.test.ts",
+      "testName": "catalog assignment is bounded guidance and cannot grant a flow base or authority (#295)"
+    },
+    {
+      "id": "catalog-body-cap",
+      "file": "src/hub/roles.ts",
+      "search": "sanitize(body).length > 2000",
+      "replacement": "false",
+      "testFile": "test/roles.test.ts",
+      "testName": "role lint accepts eleven shipped definitions and rejects every schema/limit rule (#295)"
+    },
+    {
+      "id": "catalog-render-sanitize",
+      "file": "src/hub/roles.ts",
+      "search": "roles.map(role => sanitize(role.body))",
+      "replacement": "roles.map(role => role.body)",
+      "testFile": "test/roles.test.ts",
+      "testName": "default role contracts preserve d83cb8dd bytes and catalog rendering has two capped sanitized bodies (#295)"
     }
   ]
 }

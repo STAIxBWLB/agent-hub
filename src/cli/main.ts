@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
 import { configureJcodeMcp } from "./jcode-mcp.ts";
@@ -1566,6 +1567,19 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log("Claude Code sessions attached to this hub lost their hub session: relaunch them with ahub claude");
   },
 
+  role: async () => {
+    const catalog = loadRoleCatalog(cwd);
+    if (args[0] === "list") {
+      const { one, rest } = takeFlags(args.slice(1), ["--group"], []);
+      if (rest.length) fail("usage: ahub role list [--group <group>]");
+      return console.log(paint([{ text: JSON.stringify({ roles: [...catalog.roles.values()].filter(role => !one["--group"] || role.group === one["--group"]).map(({ body: _body, review: _review, ...role }) => role), errors: catalog.errors }, null, 2) }], false));
+    }
+    if (args[0] === "show" && args.length === 2) {
+      const role = catalog.roles.get(args[1]!); if (!role) fail("unknown catalog role; run ahub role list");
+      return console.log(paint([{ text: JSON.stringify(role, null, 2) }], false));
+    }
+    fail("usage: ahub role list [--group <group>] | show <id>; assignment surfaces are not shipped yet");
+  },
   doctor: async () => {
     const options = outputOptions();
     if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"), options);
@@ -1585,6 +1599,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     };
 
     try {
+      const catalog = loadRoleCatalog(cwd);
+      for (const error of catalog.errors) row(false, "catalog role", `${error.id}: ${error.reason}`);
+      try {
+        const config = loadConfig(cwd), assigned = catalogAssignments(config.catalog_roles);
+        for (const peer of Object.keys(assigned)) selectedRoles(peer, config.roles, assigned, catalog);
+      } catch { row(false, "catalog roles", "invalid assignment id, shape or flow base"); }
       for (const bin of ["bun", "claude", "codex", "kimi"]) {
         const v = version(bin);
         row(!!v, bin, v ?? "not found on PATH");

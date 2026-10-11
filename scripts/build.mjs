@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 const out = "plugins/agent-hub/server.js";
 const manifest = "plugins/agent-hub/.claude-plugin/plugin.json";
+const roleNotice = readFileSync("templates/roles/NOTICE.md", "utf8");
+const roleNoticeOut = "plugins/agent-hub/ROLE-NOTICE.md";
 const version = JSON.parse(readFileSync("package.json", "utf8")).version;
 
 const result = await Bun.build({ entrypoints: ["src/adapters/claude-channel.ts"], target: "bun", minify: false });
@@ -23,12 +25,13 @@ const read = (file) => {
 };
 
 if (process.argv.includes("--check")) {
-  const stale = [[out, code], [manifest, stamped]].filter(([file, want]) => read(file) !== want).map(([file]) => file);
+  const stale = [[out, code], [manifest, stamped], [roleNoticeOut, roleNotice]].filter(([file, want]) => read(file) !== want).map(([file]) => file);
   if (stale.length) {
     console.error(`${stale.join(", ")} stale against package.json ${version}: run "bun run build" and commit the result`);
     process.exit(1);
   }
 } else {
+  writeFileSync(roleNoticeOut, roleNotice);
   writeFileSync(out, code);
   writeFileSync(manifest, stamped);
   console.log(`built ${out} (${(code.length / 1024).toFixed(0)} KB), plugin ${version}`);

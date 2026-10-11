@@ -39,6 +39,7 @@ for (const path of [
   '.claude-plugin/marketplace.json', 'plugins/agent-hub/server.js',
   'plugins/agent-hub/.claude-plugin/plugin.json', 'plugins/agent-hub/.mcp.json',
   'templates/AGENTS.block.md',
+  'templates/roles/NOTICE.md', 'plugins/agent-hub/ROLE-NOTICE.md',
   'templates/config.json', 'templates/routing.toml',
   'docs/operations.md', 'docs/quickstart.md',
 ]) {
