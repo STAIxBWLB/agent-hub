@@ -2229,3 +2229,9 @@ assignment function as data, so route explain states the same off-roster reason.
 A live write or undo changes only its authorized key, not other config edits.
 Tracked defaults and machine-local overrides are read normally on the next hub
 start. The CLI and dashboard use the settings API and no roster hub tool exists.
+
+Removal orders its steps as membership fence, detach or stop, then handoff. Its
+preview and result name the peer whose retained terminal work the person must
+stop, and the result lists the saved task moves with public titles. Detached
+sessions receive no forced stop notice or journal bypass; a peer still attached
+at handoff uses the existing guarded stop notice.

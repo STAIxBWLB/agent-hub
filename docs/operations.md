@@ -1019,7 +1019,12 @@ adding requires `ahub ui --settings` or a person's terminal. Removal requires th
 peer id as confirmation. Without `--now`, a busy peer is refused. A conductor
 holder cannot be removed until its role is moved.
 
-Removal stops hub-owned runtimes and detaches sessions in a person's terminal.
+Removal fences membership, stops hub-owned runtimes or detaches sessions in a
+person's terminal, and then hands work over. The removal preview and result name
+the peer whose existing work the person must stop in that retained terminal;
+the result lists the saved owner/reviewer moves. No stop notice is forced into
+a detached session and nothing bypasses the journal. A peer still attached when
+the handoff runs receives its existing guarded stop notice.
 It leaves queued and held deliveries, and existing manual or budget pauses,
 untouched. The queue listing names `off roster` as the membership hold. Returning
 and starting the peer makes retained queued messages available again; held

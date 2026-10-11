@@ -293,3 +293,36 @@ test("the same Claude channel client retries removal and reconnects by itself af
     expect((await hub.client.request({ t: "status" })).status.peers.claude).toMatchObject({ state: "idle", queued: 0 });
   } finally { await client.close(); await hub.close(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
 }, 20_000); // Covers MCP startup and the channel's existing reconnect backoff; every wait asserts its observed milestone.
+
+class RosterReplacementPeer extends BasePeer {
+  got: Envelope[] = [];
+  async deliver(envs: Envelope[]) { this.got.push(...envs); }
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+}
+
+test("native removal preview and result name the retained terminal and list its saved task handoff (#315)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-roster-stop-text-"))), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(root, "home");
+  const roles = { ...DEFAULT_CONFIG.roles, claude: ["implementer", "reviewer"] };
+  mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ roles }));
+  const hub = await legacyHub(root, false, {}, { roles }); let actor: ControlClient | undefined;
+  try {
+    actor = await ControlClient.connect(hub.stateDir, { role: "peer", peer: "claude" });
+    const replacement = new RosterReplacementPeer("codex"); hub.daemon.bus.add(replacement); await replacement.start();
+    for (let n = 0; n < 100 && hub.daemon.bus.stateOf("claude") !== "idle"; n++) await hub.client.request({ t: "status" });
+    expect(hub.daemon.bus.stateOf("claude")).toBe("idle");
+    const title = "Move retained terminal work";
+    const proposed = await hub.client.request({ t: "task", op: "hub_task_propose", args: { title, class: "implement", owner: "claude" } });
+    expect(proposed).toMatchObject({ ok: true }); expect(proposed.text).toContain("owner claude");
+    const id = Number(proposed.text.match(/task #(\d+)/)![1]);
+    const preview = await hub.client.request({ t: "settings_preview", key: "roster.claude", value: false });
+    const instruction = "Stop claude's existing work in its retained terminal; removal detaches the hub connection and does not stop that terminal's work.";
+    expect(preview.lines).toContain(instruction); expect(preview.lines.join("\n")).toContain(`task #${id} ${title}`);
+    const removed = await hub.client.request({ t: "settings_set", key: "roster.claude", value: false, confirm: "claude" });
+    expect(removed).toMatchObject({ ok: true, handoff: [{ id, title: `#${id} ${title}`, to: "codex", role: "owner" }] });
+    expect(removed.text).toContain(instruction); expect(removed.text).toContain(`task #${id} ${title}: owner assignment moved to codex`);
+    expect(hub.daemon.bus.stateOf("claude")).toBe("offline");
+    const shown = await hub.client.request({ t: "task", op: "task_show", args: { id } }); expect(JSON.parse(shown.text).owner).toBe("codex");
+  } finally { actor?.close(); await hub.close(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
+});

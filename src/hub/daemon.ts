@@ -2810,10 +2810,18 @@ export async function startDaemon(opts: DaemonOptions) {
     if (owner?.state === "busy" && !now) return `${peer} is in a turn; retry when it is idle, or pass --now`;
     return undefined;
   }
+  function retainedTerminalNotice(peer: string): string | undefined {
+    const owner = bus.peers.get(peer);
+    return peer === "claude" || peer === "codex" || owner instanceof PiPeer && owner.mode === "tui"
+      ? `Stop ${peer}'s existing work in its retained terminal; removal detaches the hub connection and does not stop that terminal's work.`
+      : undefined;
+  }
   async function changeRosterSetting(def: SettingDef, value: SettingValue, source: "dashboard" | "terminal", confirm: unknown, now: boolean, undo = false): Promise<Record<string, unknown>> {
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const peer = def.path[1]!;
     let saved = false;
+    const terminalNotice = retainedTerminalNotice(peer);
+    let handoff: Awaited<ReturnType<Tasks["reassignForRoster"]>> = [];
     try {
       const next = rosterCandidate(def, value, undo), before = onRoster(peer), after = rosterAllows(next, peer, config.pi.enabled);
       if (!after) {
@@ -2845,13 +2853,13 @@ export async function startDaemon(opts: DaemonOptions) {
         permissionModeSources.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
         pendingPermissionDefaults.delete(peer);
         if (mode === "never-ask") pendingPermissionDefaults.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
-        await tasks.reassignForRoster(peer);
+        handoff = await tasks.reassignForRoster(peer);
       } else {
         const owner = bus.peers.get(peer);
         if (owner instanceof PiPeer && owner.mode === "tui") await owner.resumeFromRoster();
       }
       writeStatus();
-      return { ok: true, text: `${peer}: ${after ? "on" : "off"} roster (in force now)` };
+      return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(!after ? (handoff.length ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : ["No tasks were handed over."]) : [])].join("\n"), ...(!after ? { handoff } : {}) };
     } catch (error) {
       if (saved) writeStatus();
       return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
@@ -2940,7 +2948,7 @@ export async function startDaemon(opts: DaemonOptions) {
       try {
         const peer = def.path[1]!, next = rosterCandidate(def, value), on = rosterAllows(next, peer, config.pi.enabled);
         const open = board.list().filter(task => task.state !== "approved" && (task.owner === peer || task.reviewer === peer));
-        return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", ...open.map(task => sanitize(`task ${tasks.publicTitle(task)}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
+        return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...open.map(task => sanitize(`task ${tasks.publicTitle(task)}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
     if (def.group === "Permissions") {
