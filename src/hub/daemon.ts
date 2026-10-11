@@ -3467,6 +3467,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const ws = peer;
         // Without pushes it stands by, as a replaced session does, and never strands a channel session's deliveries.
         if (msg.channel === false && ws.channelHeld) return sock.close(4000, "a session with channel pushes holds this peer");
+        preparedSessionRoles.delete(c.peer); // an external transport has no receipt for this daemon's native preamble
         ws.claim(sock, msg.channel === false);
         if (kimiPull) { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; }
         if (c.peer === "claude") logPermissionStart(c.peer);
