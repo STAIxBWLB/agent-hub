@@ -2531,3 +2531,8 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 - Machine-local text_projection also supplies bounded review and reverse undo previews from stored raw snapshots. Task-proposal baselines survive restart and reviewer changes; missing/private/pruned evidence is unavailable. See [text projections](text-projection.md) for caps and converter requirements.
 - Undo remains a raw-file operation: projected text cannot bypass later-edit, concurrency or unknown-turn refusals. Native model/account ingestion remains unverified.
+
+# Opt-in shadow repository
+
+- `ahub init --profile research|writing|general --shadow [--dry-run --json]` supplies hub-owned snapshot/facts/undo storage for a non-git folder. It creates no `.git` entry and never switches an existing Git project.
+- Maintain `.agenthub/ignore` for large/raw data. Snapshot and facts operations leave the shadow index/HEAD alone; raw undo refusal rules remain authoritative. Shadow metadata stays protected from managed worker writes. See [profiles](profiles.md).

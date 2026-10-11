@@ -932,7 +932,10 @@ export async function startDaemon(opts: DaemonOptions) {
   // the board once per change of it: every boundary asks for them.
   let scopes = new Map<PeerId, FactScope | undefined>();
   const projections = new TextProjections({ cwd: opts.cwd, stateDir: opts.stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log });
-  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []), projection: file => projections.project(file) });
+  const factsRepo = repoOf(opts.cwd);
+  const repositoryFacts = !!factsRepo || profileName(config.profile) === "dev";
+  if (!factsRepo) log(repositoryFacts ? "project has no Git or shadow repository; snapshots/undo and Git directory facts are unavailable; dev named-file facts remain (opt in with ahub init --shadow)" : "project has no Git or shadow repository; facts, snapshots and undo are off (opt in with ahub init --shadow)");
+  const facts: Facts = new Facts({ root: opts.cwd, repo: factsRepo, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => repositoryFacts ? (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)) : undefined, peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []), projection: file => projections.project(file) });
   const progress = new ProgressObserver({
     tasks: () => board.list(),
     isPrivate: () => board.list().some(task => task.state !== "approved" && tasks.isPii(task)),
@@ -951,7 +954,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Whether facts are tracked now. When tracking resumes (a PII task closed), everything observed before is dropped. */
   let factsWereOn = false;
   const factsOn = (): boolean => {
-    const on = turnFree();
+    const on = repositoryFacts && turnFree();
     if (on && !factsWereOn) facts.reset();
     // A PII task opened: every silent cohort speaks again, for good, and its members hear so at once (issue #108).
     if (!on && factsWereOn) for (const cohort of tasks.cohorts.liftAll()) tasks.announceLift(cohort, "a private task opened, and facts are off while it is open");
@@ -1004,6 +1007,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * not injected at every tool call.
    */
   const offerFor = (peer: PeerId, toolUseId?: string) => {
+    if (!repositoryFacts) return undefined;
     if (!capable.has(peer) && facts.pending(peer).filter((o) => !o.done).length >= 3) return undefined;
     const due = facts.due(peer, toolUseId);
     if (due || capable.has(peer) || facts.pending(peer).some((o) => o.probe) || (probes.get(peer) ?? 0) >= 3) return due;
@@ -1238,8 +1242,7 @@ export async function startDaemon(opts: DaemonOptions) {
     event({ type: "supervision_turn", peer, turn: receipt.id, ...(receipt.tokens === undefined ? {} : { tokens: receipt.tokens }), ms: Math.max(0, Date.now() - receipt.at) });
   };
   // Per-turn snapshots (issue #33): a git tree at both turn boundaries, recorded in hub.db for `ahub turns` and `ahub undo`.
-  const repo = config.snapshots.enabled ? repoOf(opts.cwd) : undefined;
-  if (config.snapshots.enabled && !repo) log("snapshots: the project is not in a git work tree, so turns are not recorded");
+  const repo = config.snapshots.enabled ? factsRepo : undefined;
   const turnLog = repo ? new Turns(join(opts.stateDir, "hub.db")) : undefined;
   if (turnLog) startupCleanup.push(() => turnLog.close());
   /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
@@ -1269,7 +1272,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (privateSnapshotWindow()) return "(projected review unavailable: private snapshot window)";
     const created = task.history.find(entry => entry.event === "proposed")?.at;
     const from = created === undefined ? undefined : turnLog.taskStart(task.id, created);
-    if (!from || !hasTree(repo.top, from)) return "(projected review unavailable: original task snapshot is unknown)";
+    if (!from || !hasTree(repo, from)) return "(projected review unavailable: original task snapshot is unknown)";
     const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!)].map(path => relative(opts.cwd, resolve(opts.cwd, path)));
     if (!scopes.length) return "(projected review unavailable: task paths were not declared)";
     const to = snap(`task #${task.id} review`).tree;

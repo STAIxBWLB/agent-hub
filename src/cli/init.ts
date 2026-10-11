@@ -1,3 +1,4 @@
+import { initShadow, repoOf } from "../hub/snapshots.ts";
 import { profileName, projectProfile, type ProfileName } from "../hub/profiles.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -34,18 +35,30 @@ export interface InitChange {
   managedBlock?: "insert" | "replace" | "remove";
 }
 /** Content is internal to apply, never included in a public preview. */
-interface PlannedWrite extends InitChange { next?: string; }
-function changes(cwd: string, requested?: ProfileName): PlannedWrite[] {
+interface PlannedWrite extends InitChange { next?: string; shadow?: true; }
+function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedWrite[] {
+  const repository = shadow ? repoOf(cwd) : undefined;
+  if (shadow && repository && !repository.shadow) throw new Error("project already has a Git work tree; shadow mode is for non-git folders");
+  if (shadow) {
+    const parent = lstatSync(join(cwd, ".agenthub"), { throwIfNoEntry: false });
+    if (parent && (!parent.isDirectory() || parent.isSymbolicLink())) throw new Error(".agenthub must be a project directory, not a link");
+    const own = lstatSync(join(cwd, ".agenthub/shadow.git"), { throwIfNoEntry: false });
+    if (own && !repository?.shadow) throw new Error("existing shadow metadata is invalid; nothing was replaced");
+    const ignore = lstatSync(join(cwd, ".agenthub/ignore"), { throwIfNoEntry: false });
+    if (ignore && (!ignore.isFile() || ignore.isSymbolicLink() || ignore.nlink !== 1)) throw new Error("shadow ignore must be a regular project file, not a link");
+  }
   const configPath = join(cwd, ".agenthub", "config.json");
   const existingProfile = existsSync(configPath) ? profileName(JSON.parse(readFileSync(configPath, "utf8")).profile) : undefined;
   if (requested !== undefined && existingProfile !== undefined && requested !== existingProfile) throw new Error("init profile differs from existing config; edit the project profile explicitly before refreshing instructions");
   const profile = projectProfile(requested ?? existingProfile);
   const changed: PlannedWrite[] = [];
+  if (shadow && !repository?.shadow) changed.push({ action: "create", path: join(cwd, ".agenthub/shadow.git"), reason: "create opt-in shadow Git metadata without .git", shadow: true });
   const write = (path: string, next: string, reason: string, managedBlock?: InitChange["managedBlock"]) => {
     const exists = existsSync(path);
     if (exists && readFileSync(path, "utf8") === next) return;
     changed.push({ action: exists ? "modify" : "create", path, next, reason, ...(managedBlock ? { managedBlock } : {}) });
   };
+  if (shadow && !existsSync(join(cwd, ".agenthub/ignore"))) write(join(cwd, ".agenthub/ignore"), "# Paths excluded from shadow snapshots and facts\ndata/raw/\n", "create editable large/raw data ignore policy");
   for (const name of ["config.json", "routing.toml"]) {
     const path = join(cwd, ".agenthub", name);
     if (!existsSync(path)) {
@@ -69,7 +82,7 @@ function changes(cwd: string, requested?: ProfileName): PlannedWrite[] {
   }
   const ignore = join(cwd, ".gitignore");
   let lines = existsSync(ignore) ? readFileSync(ignore, "utf8") : "";
-  for (const entry of [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml"]) {
+  for (const entry of [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml", ...(shadow ? [".agenthub/shadow.git/"] : [])]) {
     if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
   }
   if (existsSync(join(cwd, KIMI_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", KIMI_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(KIMI_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${KIMI_MCP_FILE}\n`;
@@ -78,15 +91,16 @@ function changes(cwd: string, requested?: ProfileName): PlannedWrite[] {
   return changed;
 }
 /** Read-only metadata, deliberately omitting project/user file contents. */
-export function planInit(cwd: string, profile?: ProfileName): InitChange[] {
-  return changes(cwd, profile).map(({ next, ...change }) => change);
+export function planInit(cwd: string, profile?: ProfileName, shadow = false): InitChange[] {
+  return changes(cwd, profile, shadow).map(({ next, shadow: _shadow, ...change }) => change);
 }
 /** Returns the paths it changed, applying the same plan as the preview. */
-export function init(cwd: string, profile?: ProfileName): string[] {
-  const plan = changes(cwd, profile);
+export function init(cwd: string, profile?: ProfileName, shadow = false): string[] {
+  const plan = changes(cwd, profile, shadow);
   mkdirSync(join(cwd, ".agenthub"), { recursive: true });
   for (const change of plan) {
-    if (change.action === "delete") unlinkSync(change.path);
+    if (change.shadow) initShadow(cwd);
+    else if (change.action === "delete") unlinkSync(change.path);
     else writeFileSync(change.path, change.next!);
   }
   return plan.map(change => change.path);

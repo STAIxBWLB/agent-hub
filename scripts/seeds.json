@@ -684,7 +684,7 @@
     {
       "id": "profile-cli-dry-flags",
       "file": "src/cli/main.ts",
-      "search": "takeFlags(args.filter(arg => arg !== \"--dry-run\" && arg !== \"--json\"), [\"--profile\"], [])",
+      "search": "takeFlags(args.filter(arg => arg !== \"--dry-run\" && arg !== \"--json\" && arg !== \"--shadow\"), [\"--profile\"], [])",
       "replacement": "takeFlags(args, [\"--profile\"], [])",
       "testFile": "test/profiles.test.ts",
       "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
@@ -976,6 +976,46 @@
       "replacement": "undefined",
       "testFile": "test/projection-surfaces.test.ts",
       "testName": "task review projection callbacks are quoted and remain outside task history (#259)"
+    },
+    {
+      "id": "shadow-explicit-worktree",
+      "file": "src/hub/snapshots.ts",
+      "search": "\"--work-tree=\" + repo.top,",
+      "replacement": " ",
+      "testFile": "test/shadow-repo.test.ts",
+      "testName": "shadow snapshots and raw undo work without creating .git or modifying the shadow HEAD/index (#259)"
+    },
+    {
+      "id": "shadow-facts-repository",
+      "file": "src/hub/facts.ts",
+      "search": "this.o.repo?.shadow ? repoGitArgs(this.o.repo, args) : args",
+      "replacement": "args",
+      "testFile": "test/shadow-repo.test.ts",
+      "testName": "shadow facts enumerate document folders, honor ignored data and exclude their own metadata (#259)"
+    },
+    {
+      "id": "shadow-metadata-link",
+      "file": "src/hub/snapshots.ts",
+      "search": "const own = lstatSync(dir, { throwIfNoEntry: false });",
+      "replacement": "const own = lstatSync(dir, { throwIfNoEntry: false }); if (own?.isSymbolicLink()) return { top, dir, prefix: \"\", shadow: true };",
+      "testFile": "test/shadow-repo.test.ts",
+      "testName": "linked or shared shadow metadata is refused without following a different repository (#259)"
+    },
+    {
+      "id": "shadow-project-facts-disabled",
+      "file": "src/hub/daemon.ts",
+      "search": "const repositoryFacts = !!factsRepo || profileName(config.profile) === \"dev\";",
+      "replacement": "const repositoryFacts = true;",
+      "testFile": "test/shadow-daemon.test.ts",
+      "testName": "non-dev projects without Git/shadow disable facts and snapshots with one notice (#259)"
+    },
+    {
+      "id": "shadow-object-descendants",
+      "file": "src/hub/snapshots.ts",
+      "search": "if (st.isSymbolicLink()) return false;",
+      "replacement": "if (st.isSymbolicLink()) return true;",
+      "testFile": "test/shadow-repo.test.ts",
+      "testName": "shadow object fan-out and packed-object links refuse discovery and cached writes outside the project (#259)"
     }
   ]
 }
