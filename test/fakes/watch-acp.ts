@@ -10,6 +10,11 @@ for await (const line of createInterface({ input: process.stdin })) {
   else if (m.method === "session/set_mode") reply(m.id, {});
   else if (m.method === "session/prompt") {
     promptId = m.id;
+    if (process.argv.includes("--pending-cancel")) {
+      update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "PENDING_CANCEL_MARKER" } });
+      update({ sessionUpdate: "usage_update", totalTokens: 1 });
+      continue; // onTokens is the consuming-client barrier, no guessed timing sleep
+    }
     update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "WATCH_ONLY_MARKER " } });
     update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
     for (const [id, kind] of [["read-1", "read"], ["edit-1", "edit"], ["run-1", "execute"]]) {

@@ -187,15 +187,18 @@ export class AcpPeer extends BasePeer {
       this.activityTimer.unref?.();
     } else { this.flushActivity(); this.emitActivity(item.kind, item.text); }
   }
-  private endActivity(reason: string): void {
-    this.flushActivity();
+  private clearActivity(): void {
+    clearTimeout(this.activityTimer); this.activityTimer = undefined; this.activityPending = undefined;
+  }
+  private endActivity(reason: string, discardPending = false): void {
+    if (discardPending) this.clearActivity(); else this.flushActivity();
     this.emitActivity("turn_end", `${reason}; ${Date.now() - this.activityStarted} ms`);
     this.activityOpen = false;
   }
   private readonly permissionWaits = new Set<AbortController>();
 
   protected override setState(next: PeerState): void {
-    if (next === "offline") this.cancelPermissions();
+    if (next === "offline") { this.clearActivity(); this.cancelPermissions(); }
     super.setState(next);
   }
 
@@ -301,7 +304,7 @@ export class AcpPeer extends BasePeer {
   }
 
   async stop(reason?: string): Promise<void> {
-    if (this.activityOpen) this.endActivity("stopped");
+    if (this.activityOpen) this.endActivity("stopped", true);
     this.stopping = true;
     this.cancelPermissions();
     this.clearCancelWait();
@@ -347,7 +350,7 @@ export class AcpPeer extends BasePeer {
         // This prompt has reported. A synchronous observer stop must not return
         // completed work as if its native request were still in flight.
         if (this.activeLegacy?.turn === turn) this.activeLegacy = undefined;
-        this.endActivity(typeof result?.stopReason === "string" ? result.stopReason : "unknown");
+        this.endActivity(typeof result?.stopReason === "string" ? result.stopReason : "unknown", result?.stopReason === "cancelled");
         this.observeUsage(result, "prompt_result");
         this.primed = true;
         const body = this.chunks.join("").trim();
@@ -364,7 +367,7 @@ export class AcpPeer extends BasePeer {
           if (this.cancelWait?.turn === turn) this.opts.log?.(`[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
           return; // cancelled prompt errors are discarded, like their late results
         }
-        this.endActivity("failed");
+        this.endActivity("failed", true);
         const reason = sanitize(e.message);
         this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
         const quota = !this.stopping && this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
@@ -406,7 +409,7 @@ export class AcpPeer extends BasePeer {
   protected override onWatchdog(): void {
     if (this.state !== "busy") return;
     if (this.cancelWait) { this.clearWatchdog(); return; }
-    this.endActivity("watchdog cancelled");
+    this.endActivity("watchdog cancelled", true);
     const cancelledTurn = this.turn;
     this.cancelPermissions();
     this.activeLegacy = undefined; // the cancelled prompt is discarded, never returned by a later stop

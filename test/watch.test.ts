@@ -123,3 +123,23 @@ test("stopping ACP watch flushes one end and fences late updates; unreadable pri
   cleanups.push(() => unknown.stop()); await unknown.start(); await unknown.deliver([newEnvelope("user", "work")]); await until(() => unknown.state === "idle");
   expect(withheld).toHaveLength(1); expect(withheld[0]!.kind).toBe("private");
 });
+
+
+test("ACP cancellation discards coalesced chunks at a consumed update barrier (#286)", async () => {
+  class ExpiringPeer extends AcpPeer { expire(): void { this.onWatchdog(); } }
+  for (const stop of [false, true]) {
+    const rows: Activity[] = []; let stopPromise: Promise<void> | undefined; let consumed = () => {};
+    const barrier = new Promise<void>(resolve => { consumed = resolve; });
+    const peer = new ExpiringPeer("kimi", { cmd: [...fake, "--pending-cancel"], cwd: process.cwd(), onActivity: item => rows.push(item), onTokens: () => {
+      // Called synchronously while the native thought is still coalesced. Cancelling here pins the race.
+      if (stop) stopPromise = peer.stop("requested stop"); else peer.expire();
+      consumed();
+    } });
+    cleanups.push(() => peer.stop()); await peer.start();
+    await peer.deliver([newEnvelope("user", "work")], "cancel-buffer"); await barrier;
+    if (stopPromise) await stopPromise; else await peer.setPermissionMode("ask");
+    expect(rows.map(row => row.kind)).toEqual(["delivery", "turn_end"]);
+    expect(JSON.stringify(rows)).not.toContain("PENDING_CANCEL_MARKER");
+    await peer.stop();
+  }
+});
