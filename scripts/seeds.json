@@ -792,6 +792,46 @@
       "replacement": "was ? codexEffect",
       "testFile": "test/text-projection.test.ts",
       "testName": "projection presentation preserves raw identity and never establishes raw write attribution (#259)"
+    },
+    {
+      "id": "task-role-class-match",
+      "file": "src/hub/roles.ts",
+      "search": "if (!role || !role.classes.includes(cls))",
+      "replacement": "if (!role)",
+      "testFile": "test/task-roles.test.ts",
+      "testName": "task role validation refuses unknown and class-mismatched ids before board writes (#295)"
+    },
+    {
+      "id": "task-role-owner-guidance",
+      "file": "src/hub/tasks.ts",
+      "search": "      this.roleGuidance(task, task.owner!),",
+      "replacement": "      \"\",",
+      "testFile": "test/task-roles.test.ts",
+      "testName": "task role persists and accompanies reassignment and review without changing routing (#295)"
+    },
+    {
+      "id": "task-role-record-id",
+      "file": "src/hub/research.ts",
+      "search": "if (e.role && a.role === undefined) { a.role = e.role;",
+      "replacement": "if (false) { a.role = e.role;",
+      "testFile": "test/task-roles.test.ts",
+      "testName": "task role stubs and records retain id without leaking private text; role text is sanitized (#295)"
+    },
+    {
+      "id": "task-role-complete-cap",
+      "file": "src/hub/roles.ts",
+      "search": "if (text.length > 2000) throw",
+      "replacement": "if (false) throw",
+      "testFile": "test/task-roles.test.ts",
+      "testName": "complete task role guidance respects its 2000-character cap without truncating definitions (#295)"
+    },
+    {
+      "id": "task-role-original-identity",
+      "file": "src/hub/research.ts",
+      "search": "if (e.role && a.role === undefined) { a.role = e.role; if (e.event === \"proposed\" && e.roleIdentity) a.roleIdentity = e.roleIdentity; }",
+      "replacement": "if (e.role) { a.role = e.role; if (e.roleIdentity) a.roleIdentity = e.roleIdentity; }",
+      "testFile": "test/task-roles.test.ts",
+      "testName": "task research records preserve the first assigned role identity across restarts (#295)"
     }
   ]
 }

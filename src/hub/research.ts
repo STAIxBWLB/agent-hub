@@ -19,6 +19,7 @@ export interface PeerUsage { input: number | null; output: number | null; cacheR
 export interface TaskRecord {
   schema: typeof RESEARCH_SCHEMA; kind: "task"; project: string; task: number;
   profile?: string; profileClass?: string;
+  role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string };
   class: string | null; pii: boolean; outcome: "approved";
   /** The proposal time also tells a task from an earlier one with the same id after `ahub reset --all`. */
   createdAt: string | null; startedAt: string | null; approvedAt: string;
@@ -83,7 +84,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.
       if (e.event === "proposed" && tasks.get(e.id)?.createdAt) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
       const a = acc(e.id);
-      a.class = e.class; if (e.profile) { a.profile = e.profile; a.profileClass = e.profileClass; } if (e.pii) a.pii = true;
+      a.class = e.class; if (e.role && a.role === undefined) { a.role = e.role; if (e.event === "proposed" && e.roleIdentity) a.roleIdentity = e.roleIdentity; } if (e.profile) { a.profile = e.profile; a.profileClass = e.profileClass; } if (e.pii) a.pii = true;
       if (e.owner && e.owner !== a.owners.at(-1)) {
         if (a.owners.length) { a.reassignments++; bump(a.reassignedBy, e.reason ?? "none"); }
         a.owners.push(e.owner);

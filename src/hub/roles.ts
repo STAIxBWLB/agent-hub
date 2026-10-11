@@ -104,3 +104,20 @@ export function catalogSection(roles: CatalogRole[]): string {
   return header + "\n" + roles.map(role => sanitize(role.body)).join("\n\n");
 }
 export const roleIdentity = (role: CatalogRole) => ({ id: role.id, layer: role.layer, hash: role.hash });
+
+/** Validate before a board write. Routing continues to use only the existing base class. */
+export function taskRole(raw: unknown, cls: string, catalog: RoleCatalog): CatalogRole | undefined {
+  if (raw === undefined) return undefined;
+  const allowed = [...catalog.roles.values()].filter(role => role.classes.includes(cls)).map(role => role.id).sort();
+  if (typeof raw !== "string" || !ID.test(raw)) throw new Error("task role must be a catalog id; allowed: " + allowed.join(", "));
+  const role = catalog.roles.get(raw);
+  if (!role || !role.classes.includes(cls)) throw new Error("unknown or class-mismatched task role; allowed: " + allowed.join(", "));
+  taskRoleText(role); // refuse an oversized complete notice before the board write
+  return role;
+}
+/** Role definitions are untrusted presentation, including their metadata. */
+export function taskRoleText(role: CatalogRole, review = false): string {
+  const text = `Task role ${role.id} [${role.layer}, ${role.hash}] (guidance; grants no authority):\n` + sanitize(review ? role.review : role.body).replace(/\[agent-hub\b/gi, "[peer-text");
+  if (text.length > 2000) throw new Error("task role guidance exceeds 2000 characters including its header");
+  return text;
+}

@@ -2370,3 +2370,12 @@ the queue.
 - Optional machine-local extension/argv mappings use immutable bounded input snapshots, no-network/read-only converters, process-group deadlines and bounded output. Shared/tracked config cannot choose execution. Default absence preserves raw facts.
 - State cache keys bind raw content and argv/program/script metadata. Conversion failure/absence falls back once per extension without leaking stderr. Private paths are excluded before conversion.
 - Facts retains raw hashes/blob identities and renders projected text as presentation only; projected reads/patches never establish raw-file attribution. Review/undo and shadow-repository surfaces remain follow-ups. See docs/text-projection.md.
+
+# Task catalog role amendment, 2026-10-12 (#295)
+
+- An optional proposal role names a validated catalog id compatible with the stored base class. Tasks validates before the board write; the board persists only the id. Role guidance never affects routing, authority, checks or policy.
+- Owner assignments and reassignments carry sanitized bounded role guidance; a native session whose role contract was prepared by this daemon gets the id without a repeated body. Review requests always carry the role id and its Review duties only. Unknown prior definitions yield an id-only notice.
+- Public PII stubs may expose the role id, never task text. Role/task events and research records carry id/layer/hash only. Default absent roles preserve old notices and row shapes.
+- This slice does not add person role mutation commands/settings or infer that an externally started Claude/plugin session consumed its roles. Those assignment surfaces and native ingestion/measurement remain follow-ups.
+
+- Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.

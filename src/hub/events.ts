@@ -13,7 +13,7 @@ export const EVENTS_SCHEMA = 1;
 export type HubEvent =
   | { type: "permission_mode"; peer: string; from: import("./permission-mode.ts").PermissionMode; to: import("./permission-mode.ts").PermissionMode }
   /** A settings change (#269): the registry key, the value in force before and after (closed words, ids or booleans, never free text) and where it came from. */
-  | { type: "role"; peer: string; actor: "config" | "user"; stage: "prepared" | "assigned"; roles: { id: string; layer: "shipped" | "project"; hash: string }[] }
+  | { type: "role"; peer?: string; task?: number; actor: string; stage: "prepared" | "assigned"; roles: { id: string; layer: "shipped" | "project"; hash: string }[] }
   | { type: "settings"; key: string; from: import("./settings.ts").SettingValue; to: import("./settings.ts").SettingValue; source: "dashboard" | "terminal"; undo?: boolean }
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
@@ -43,7 +43,7 @@ export type HubEvent =
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
   | ({ type: "tokens"; peer: string; n: number } & Partial<TaskAttribution>)
   | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript"; id: string; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
-  | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; profile?: string; profileClass?: string; pii: boolean; reason?: string }
+  | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; profile?: string; profileClass?: string; role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string }; pii: boolean; reason?: string }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[]; symbols?: string[] }[] }
   /** A PII screen verdict (issue #198): what was screened and the closed label, source and category, never the text. */
   | ({ type: "pii_screen" } & ScreenRecord)

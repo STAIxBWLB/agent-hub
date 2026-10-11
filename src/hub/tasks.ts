@@ -1,3 +1,4 @@
+import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
 import { profileClass, profileTaskLabel, projectProfile, type ProfileName } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
@@ -27,6 +28,9 @@ export interface TasksDeps {
   project: string;
   profile?: ProfileName;
   piiPaths?: string[];
+  catalog?: RoleCatalog;
+  /** Role ids whose contract was prepared for the current native session. */
+  sessionRoles?: (peer: PeerId) => string[];
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   memory?: MemoryClient;
@@ -512,7 +516,7 @@ export class Tasks {
     }
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown }): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown }): Promise<Task> {
     // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new PreEffectToolRefusal("title is required");
@@ -559,7 +563,10 @@ export class Tasks {
     const defaulted = !cls && input.owner === by;
     if (defaulted) cls = "implement";
     if (!cls) throw new PreEffectToolRefusal(`class is required (one of ${CLASSES.join(", ")}); ${fenced ? "the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one" : "the hub could not name one for you"}`);
-    const draft = { ...text, class: cls, ...(profile !== "dev" ? { profile, profileClass: given ?? cls } : {}) };
+    let selected;
+    try { selected = taskRole(input.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
+    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" ? { profile, profileClass: given ?? cls } : {}) };
     let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
     if (screening) task = this.screenedTask(task, screened);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
@@ -830,7 +837,7 @@ export class Tasks {
       if (!task) throw new Error(`no task #${target}`);
       const a = assign(task, this.states(), routing, { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
       // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
-      return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, ...(task.profileClass ? [`profile class ${profileTaskLabel(task)}`] : []), "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
+      return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, ...(task.profileClass ? [`profile class ${profileTaskLabel(task)}`] : []), ...(task.role ? [`task role ${task.role} (guidance only)`] : []), "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     const signals = this.signalsFor(draft, routing);
@@ -951,6 +958,19 @@ export class Tasks {
     return next;
   }
 
+  /** A self-claim has no assignment envelope; its tool result carries the same bounded guidance. */
+  claimRoleGuidance(task: Task, peer: PeerId): string {
+    return task.owner === peer && task.state === "in_progress" ? this.roleGuidance(task, peer) : "";
+  }
+
+  private roleGuidance(task: Task, peer: PeerId, review = false): string {
+    if (!task.role) return "";
+    if (!review && this.d.sessionRoles?.(peer).includes(task.role)) return `Task role ${task.role} (already in your session guidance).`;
+    const role = (this.d.catalog ?? loadRoleCatalog(this.d.cwd)).roles.get(task.role);
+    if (role) try { return taskRoleText(role, review); } catch { /* a changed definition cannot break a saved assignment */ }
+    return `Task role ${task.role}: definition unavailable or exceeds the task guidance limit; grants no authority.`;
+  }
+
   /** `contextWithheld`: the PII screen did not clear a budget hand-off (#198); an escalation's reason is the hub's own words. */
   private async sendTask(task: Task, a: Assignment, context?: string, overlap = "", contextWithheld = false): Promise<void> {
     const pii = this.isPii(task);
@@ -963,6 +983,7 @@ export class Tasks {
       `Task #${task.id} [${profileTaskLabel(task)}] ${task.title}`,
       task.detail,
       `Facts: ${facts}`,
+      this.roleGuidance(task, task.owner!),
       plan ? `Plan so far: ${plan}` : "",
       overlap,
       rejected.length ? `Earlier review notes:\n${rejected.join("\n")}` : "",
@@ -1481,7 +1502,8 @@ export class Tasks {
       `- List what is unmet in hub_review's unmet, one item each.`,
     ].join("\n");
     const summary = last?.note ? this.screen(task, last.note, "summary", reviewer, last.withheld) : "(no summary)";
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    const guidance = this.roleGuidance(task, reviewer, true);
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
