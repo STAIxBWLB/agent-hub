@@ -1,7 +1,7 @@
 # agent-hub
 
 Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Code, Pi and a
-hub-owned local-LLM worker collaborate as peers in independent project directories, with
+hub-owned local-LLM worker, with optional Qwen Code and Jcode support, collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
 Status: 0.12.23, control protocol 16. Durable delivery records distinguish queued

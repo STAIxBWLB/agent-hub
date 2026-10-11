@@ -188,3 +188,5 @@ have no hub sandbox; auto-edit approves file edits, yolo every tool. Configured
 never-ask still requires the person's confirmation. qwen_cmd is machine-local and
 never editable through settings. Legacy benchmark adapters remain unmanaged by
 this production table. Startup diagnostics withhold native host/payload details.
+
+Jcode is optional, source/version-fenced and runs native tools without a hub sandbox or hub permission-mode mapping. .jcode joins the scoped-grant exclusion, including lexical/resolved aliases. Only a person writes its unique project MCP entry; foreign/override/symlink entries refuse. The hub owns a private daemon/socket and ACP group, never the global daemon, and copies no credentials. Native diagnostics withhold payloads/hosts. Unproved conversation loads refuse; no fresh replacement is called a restore.

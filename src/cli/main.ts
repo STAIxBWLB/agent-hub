@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { configureJcodeMcp } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
@@ -729,6 +730,27 @@ const commands: Record<string, () => Promise<void> | void> = {
     const launch = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
     if (launch0.warning) console.error(launch0.warning);
     exec(launch.cmd, launch.args, "codex");
+  },
+
+  jcode: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)"); }
+    }
+    assertLifecycleAvailable();
+    const { one, rest } = takeFlags(args, ["--mode", "--model", "--provider-profile", "--session-id"], []);
+    if (rest.length || (one["--mode"] !== undefined && one["--mode"] !== "headless")) fail("usage: ahub jcode [--mode headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>]");
+    if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"])) fail("invalid Jcode session identity");
+    const hub = await connect();
+    try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      if (snapshot?.roster?.find((row: any) => row.peer === "jcode")?.on !== true) fail("jcode is off roster; add it with ahub roster add jcode");
+      const written = configureJcodeMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"));
+      if (written.tracked) console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
+      const reply = await hub.request({ t: "start", peer: "jcode", args: { mode: "headless", model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65_000);
+      if (!reply.ok) fail(reply.error);
+      console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox");
+    } finally { hub.close(); }
   },
 
   qwen: async () => {
@@ -1511,11 +1533,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     };
     const checks: DoctorCheck[] = [];
     const row = (ok: boolean | undefined, name: string, detail: string) => {
-      const section: DoctorCheck["section"] = ["bun", "claude", "codex", "kimi", "qwen"].includes(name) ? "Tools"
+      const section: DoctorCheck["section"] = ["bun", "claude", "codex", "kimi", "qwen", "jcode"].includes(name) ? "Tools"
         : name === "config" || name === "retired setting" ? "Config"
         : name.startsWith("memory") ? "Memory"
         : ["omniroute", "omniroute key", "local fixed_model", "switchyard", "pi mlx"].includes(name) ? "Models" : "Hub";
-      const optional = ["claude", "codex", "kimi", "qwen", "ahub daemon", "switchyard", "pi mlx"].includes(name) || section === "Memory";
+      const optional = ["claude", "codex", "kimi", "qwen", "jcode", "ahub daemon", "switchyard", "pi mlx"].includes(name) || section === "Memory";
       const level: DoctorCheck["level"] = ok === undefined ? (["switchyard", "omniroute"].includes(name) ? "warn" : "unknown") : ok ? "ok" : optional ? "warn" : "fail";
       checks.push({ section, level, name, detail });
     };
@@ -1547,6 +1569,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
       for (const line of config.retired ?? []) row(false, "retired setting", line);
+      if (config.roster.jcode === true) {
+        const v = version(config.jcode_cmd[0]!);
+        row(v?.startsWith("jcode v0.94.0") === true, "jcode", "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged");
+      }
       if (config.roster.qwen === true) {
         const v = version(config.qwen_cmd[0]!);
         row(v === "0.25.0", "qwen", v === "0.25.0" ? "CLI reports 0.25.0; native ACP identity/modes and provider access require a separate live check" : "Qwen Code 0.25.0 executable not confirmed; provider and ACP readiness unknown");

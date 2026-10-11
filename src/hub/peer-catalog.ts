@@ -1,7 +1,7 @@
 /** Native peers the hub knows; membership checks share this list. */
 export const KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
 /** Optional production peers are added explicitly; legacy defaults remain stable. */
-export const OPTIONAL_PEERS = ["qwen"] as const;
+export const OPTIONAL_PEERS = ["qwen", "jcode"] as const;
 export const SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS] as const;
 export type KnownPeer = typeof SUPPORTED_PEERS[number];
 
@@ -19,6 +19,7 @@ const PEER_ROLES: Record<KnownPeer, readonly string[]> = {
   local: ["implementer", "verifier"],
   pi: ["implementer", "verifier"],
   qwen: ["implementer", "verifier"],
+  jcode: ["implementer", "verifier"],
 };
 
 /** Each caller owns its role arrays; changing a project's defaults cannot change another's. */

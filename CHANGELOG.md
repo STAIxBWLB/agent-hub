@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add optional owned Jcode 0.94.0 daemon/ACP and project MCP bridge, with unmanaged native policy, default-off roster and explicit native recovery/tool proof limits (#332).
+
 - Add optional Qwen Code 0.25.0 ACP, off roster by default, with its own verified permission table, headless CLI/preview/stop and recovery command; keep unknown quota and native proof explicit (#256).
 
 - Default Kimi to its own pull-only TUI, retain selectable headless ACP, exclude automatic routing to pull-only peers, and let people/conductors name reviewers with withdrawal notices. Keep project MCP changes in the person launcher and refuse unsupported TUI recovery (#316).

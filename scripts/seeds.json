@@ -388,8 +388,8 @@
     {
       "id": "kimi-code-scoped-grant",
       "file": "src/hub/permission-mode.ts",
-      "search": "\".qwen\", \".kimi\", \".kimi-code\", \".pi\"",
-      "replacement": "\".qwen\", \".kimi\", \".pi\"",
+      "search": "export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([\".claude\", \".codex\", \".qwen\", \".kimi\", \".kimi-code\", \".jcode\", \".pi\", \".mcp.json\", \".agents\", \".claude.json\"]);",
+      "replacement": "export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([\".claude\", \".codex\", \".qwen\", \".kimi\", \".jcode\", \".pi\", \".mcp.json\", \".agents\", \".claude.json\"]);",
       "testFile": "test/permission-modes.test.ts",
       "testName": "Kimi Code project policy is outside scoped grants under literal and folded spellings (#316)"
     },
@@ -512,6 +512,30 @@
       "replacement": "case \"disabled-qwen\": {",
       "testFile": "test/qwen-peer.test.ts",
       "testName": "a crashed owned Qwen resumes its recorded ACP session instead of claiming self-reconnect (#256)"
+    },
+    {
+      "id": "jcode-native-identity",
+      "file": "src/adapters/acp.ts",
+      "search": "if (this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version))",
+      "replacement": "if (false && this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version))",
+      "testFile": "test/jcode-peer.test.ts",
+      "testName": "Jcode source identity drift refuses the peer and cleans its owned daemon (#332)"
+    },
+    {
+      "id": "jcode-load-proof",
+      "file": "src/adapters/acp.ts",
+      "search": "(this.opts.requireLoadSessionEcho && loaded?.sessionId !== resume)",
+      "replacement": "(false && this.opts.requireLoadSessionEcho && loaded?.sessionId !== resume)",
+      "testFile": "test/jcode-peer.test.ts",
+      "testName": "Jcode load without native identity proof refuses before any prompt or restored claim (#332)"
+    },
+    {
+      "id": "jcode-config-path",
+      "file": "src/hub/permission-mode.ts",
+      "search": "\".kimi-code\", \".jcode\",",
+      "replacement": "\".kimi-code\",",
+      "testFile": "test/jcode-peer.test.ts",
+      "testName": "Jcode is off by default, native policy unmanaged, protected from scoped writes and previewed without side effects (#332)"
     }
   ]
 }

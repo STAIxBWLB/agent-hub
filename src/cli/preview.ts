@@ -1,3 +1,4 @@
+import { jcodeCommand } from "../adapters/jcode.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -21,7 +22,7 @@ function nativeCommand(command: string[], trusted: string[]): string[] {
   return command.map((value, i) => value === trusted[i] ? value : REDACTED);
 }
 /** Read-only preview. Inputs passed to shared native builders are redacted before serialization. */
-export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen", raw: string[], cwd: string, stateDir: string, unattended: boolean) {
+export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen" | "jcode", raw: string[], cwd: string, stateDir: string, unattended: boolean) {
   const args = raw.filter(arg => !["--print-command", "--dry-run", "--json"].includes(arg));
   const config = loadConfig(cwd);
   const unresolved: { field: string; reason: string }[] = [];
@@ -61,6 +62,15 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen
     const passthrough = args.filter(arg => !["--unattended", "--safe", "--new"].includes(arg));
     launch.args = launch.args.slice(0, launch.args.length - passthrough.length).concat(passthrough.map(publicArg));
     unresolved.push({ field: "proxyUrl", reason: "assigned when the native adapter starts; preview does not start it" });
+  } else if (tool === "jcode") {
+    const mode = value("--mode") ?? "headless", model = value("--model"), profile = value("--provider-profile"), session = value("--session-id");
+    if (mode !== "headless") throw new Error("Jcode TUI driving is unverified");
+    for (let i = 0; i < args.length; i += 2) if (!["--model", "--mode", "--provider-profile", "--session-id"].includes(args[i]!) || !args[i + 1]) throw new Error("unknown Jcode option");
+    if (session !== undefined && !qwenSessionId(session)) throw new Error("invalid Jcode session identity");
+    const cmd = jcodeCommand(nativeCommand(config.jcode_cmd, ["jcode"]), "acp", UNRESOLVED, UNRESOLVED, model ? REDACTED : undefined, profile || config.jcode_provider_profile ? REDACTED : undefined);
+    launch = { cmd: cmd[0]!, args: cmd.slice(1) };
+    unresolved.push({ field: "ownedDaemon", reason: "private daemon/socket and source-pinned native identity verified at start; preview starts nothing" });
+    unresolved.push({ field: "hubTools", reason: "project MCP bridge required; native tool-call receipt remains unverified" });
   } else if (tool === "qwen") {
     const mode = value("--mode") ?? "headless", model = value("--model");
     if (mode !== "headless") throw new Error("Qwen TUI is not offered before verification");

@@ -64,6 +64,8 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
         return { peer, how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
       case "codex":
         return { peer, how: `codex: its app-server died with the hub; run ahub codex again${str(meta.threadId) ? ` (its conversation was thread ${meta.threadId})` : ""}` };
+      case "jcode":
+        return { peer, how: "jcode: native 0.94.0 load does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
       case "qwen": {
         const sessionId = meta.sessionId;
         if (!qwenSessionId(sessionId)) return { peer, how: "qwen: saved ACP session identity unavailable; start it deliberately with ahub qwen" };

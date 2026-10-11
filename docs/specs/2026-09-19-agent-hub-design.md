@@ -2314,3 +2314,11 @@ the queue.
 - Qwen runs its own tools and has no hub sandbox. Never-ask text and confirmation say yolo approves every tool. Exact canonical hub-tool approval remains bound to the announced call id and this session's server names.
 - Context occupancy carries the native session and acp_usage_update source. No unobserved quota is inferred or automatically paused/handed off; manual pause stays available. Native startup errors and stderr diagnostics withhold host/payload details. A source using Qwen cannot stage a target without Qwen support and then strand its restore after shutdown.
 - CLI/source version drift was observed locally: the installed CLI prints 0.25.0, its package and ACP source say 0.24.1. That installation is not native readiness evidence. Real 0.25.0 provider/turn/quota verification remains owed; fake tests and strict runtime verification are separate proof.
+
+## Amendment: optional owned Jcode peer (#332)
+
+- jcode is optional on the roster, default off, with implementer/verifier guidance and no default routing replacement. Its source-pinned native identity is jcode 0.94.0.
+- A private foreground daemon/socket and ACP client belong to this peer. The global daemon is never adopted or stopped. No automatic update, self-dev or credential copy. The native MCP store must already exist to avoid implicit Codex import.
+- ACP session MCP arrays are ignored natively, so the person launcher manages only agent-hub-jcode, shared:false, in project .jcode/mcp.json. Later override layers, foreign names and links refuse. Daemon starts verify read-only. .jcode is outside scoped grants.
+- Native policy is unmanaged and has no hub sandbox. Hub permission mappings refuse; native quota/consumption are not inferred. Every task mutation stays in Tasks and PII remains at existing redaction/routing boundaries.
+- Native 0.94.0 load lacks identity proof. Controlled recovery refuses before effects, crash recovery is manual and a load without an exact echoed id refuses before a prompt or restored claim. Real provider/tool/teardown evidence and comparative measurement remain unverified.
