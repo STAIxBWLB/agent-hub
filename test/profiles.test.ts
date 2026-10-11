@@ -90,20 +90,20 @@ async function profileCli(dir: string, args: string[]) {
   const cli = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(dir, `cli-${crypto.randomUUID()}.ts`);
   writeFileSync(wrapper, `for (const name of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete process.env[name];\nprocess.env.AGENTHUB_HOME = ${JSON.stringify(join(dir, "home"))};\nprocess.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}];\nawait import(${JSON.stringify(cli)});\n`);
   const proc = Bun.spawn([process.execPath, wrapper], { cwd: dir, stdin: "ignore", stdout: "pipe", stderr: "pipe" }), timer = setTimeout(() => proc.kill("SIGKILL"), 8000);
-  try { const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]); return { code, stdout, stderr }; }
+  try { const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]); if (/SyntaxError|Cannot find module|ModuleNotFound|timed out/i.test(stderr)) throw new Error("CLI fixture setup failed: " + stderr); return { code, stdout, stderr }; }
   finally { clearTimeout(timer); }
 }
 test("profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)", async () => {
   const dir = root();
   for (const args of [["init", "--dry-run"], ["init", "--dry-run", "--json"], ["init", "--profile", "research", "--dry-run"], ["init", "--profile", "research", "--dry-run", "--json"]]) {
-    const preview = await profileCli(dir, args); expect(preview.code, preview.stderr).toBe(0); expect(preview.stdout).toContain("config.json");
+    const preview = await profileCli(dir, args); expect(preview.code).toBe(0); expect(preview.stdout).toContain("config.json");
   }
   expect(planInit(dir)).toHaveLength(4); init(dir, "research");
   const { DEFAULT_CONFIG, startDaemon } = await import("../src/hub/daemon.ts");
   const daemon = await startDaemon({ cwd: dir, stateDir: join(dir, ".agenthub/state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, profile: "research", memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } }); cleanup.push(() => daemon.stop());
   const result = await profileCli(dir, ["task", "propose", "survey", "API landscape", "--owner", "user"]);
-  expect(result.code, result.stderr).toBe(0); expect(result.stderr).toContain('"survey" was taken as the class');
+  expect(result.code).toBe(0); expect(result.stderr).toContain('"survey" was taken as the class');
   const persisted = new Board(join(dir, ".agenthub/state/hub.db")); cleanup.push(() => persisted.close());
   expect(persisted.list()[0]).toMatchObject({ title: "API landscape", class: "summarize", profileClass: "survey" });
 });
