@@ -172,7 +172,7 @@
     {
       "id": "roster-r-catalog",
       "file": "src/hub/roster.ts",
-      "search": "    if (!isKnownPeer(peer)) throw new Error(\"roster contains an unsupported peer\");",
+      "search": "    if (!isSupportedPeer(peer)) throw new Error(\"roster contains an unsupported peer\");",
       "replacement": "    // negative control: unknown key accepted",
       "testFile": "test/roster.test.ts",
       "testName": "roster validates the closed boolean catalog and explicit Pi membership wins its legacy switch (#315)"
