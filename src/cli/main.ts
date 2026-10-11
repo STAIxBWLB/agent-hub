@@ -1025,6 +1025,22 @@ const commands: Record<string, () => Promise<void> | void> = {
     printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
   },
 
+  sdlc: async () => {
+    const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
+    if (sub === "record") {
+      if (args.length !== 3 || !Number.isSafeInteger(id) || id! <= 0 || args[2]!.length > 4096) fail("usage: ahub sdlc record <task> '<receipt JSON>'");
+      let receipt: unknown; try { receipt = JSON.parse(args[2]!); } catch { fail("receipt must be valid JSON"); }
+      return console.log(await taskOp("hub_sdlc_record", { id, receipt }));
+    }
+    if (!["status", "explain"].includes(sub ?? "") || args.length > 2 || (sub === "explain" && id === undefined) || (id !== undefined && (!Number.isSafeInteger(id) || id <= 0))) fail("usage: ahub sdlc status [task] | explain <task>");
+    const hub = await connect();
+    try {
+      const reply = await hub.request({ t: "sdlc", op: sub, ...(id === undefined ? {} : { id }) }, 30_000);
+      if (!reply.ok) fail(reply.error);
+      console.log(JSON.stringify(reply, null, 2));
+    } finally { hub.close(); }
+  },
+
   task: async () => {
     const [sub, ...rest] = args;
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
@@ -1059,10 +1075,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   review: async () => {
-    const { many, rest } = takeFlags(args, [], ["--unmet"]);
+    const { one, many, rest } = takeFlags(args, ["--head"], ["--unmet"]);
     const [id, verdict, ...note] = rest;
     if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]...");
-    console.log(await taskOp("hub_review", { id: Number(id), verdict, note: note.join(" "), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
+    console.log(await taskOp("hub_review", { id: Number(id), verdict, ...(one["--head"] ? { head: one["--head"] } : {}), note: note.join(" "), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
   },
 
   remember: async () => console.log(await taskOp("hub_remember", { text: freeText(args, "ahub remember <text>") })),

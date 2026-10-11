@@ -1,5 +1,6 @@
 import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
+import { loadSdlc } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
@@ -472,6 +473,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   const loadedConfig = opts.config ?? loadConfig(opts.cwd);
+  const lifecycleConfig = loadSdlc(opts.cwd);
   const config = { ...loadedConfig, roster: peerRosterConfig(loadedConfig.roster), permission_modes: permissionDefaults(loadedConfig.permission_modes), roles: { ...loadedConfig.roles }, conductor: { ...DEFAULT_CONFIG.conductor, ...loadedConfig.conductor } };
   let rosterChanging: string | undefined;
   let kimiSessionMode: StartMode | undefined;
@@ -786,6 +788,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let checksClosed = false; // set on stop: a check still queued then must not start and outlive the hub
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
   const tasks: Tasks = new Tasks({
+    sdlc: { config: () => lifecycleConfig },
     board,
     bus,
     executionBudget,
@@ -1315,7 +1318,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -1365,8 +1368,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const result = tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
         return extra ? `${result}\n${extra}` : result;
       }
+      case "hub_sdlc_record":
+        return line(tasks.recordLifecycle(by, a.id, a.receipt));
       case "hub_review":
-        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet));
+        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head));
       case "hub_remember":
         return tasks.remember(by, a);
       case "hub_checkpoint": {
@@ -2819,7 +2824,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: board.list().map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [] };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
@@ -3706,6 +3711,18 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch {
           return void reply({ t: "ui", ok: false, error: "could not start the dashboard" });
         }
+      case "sdlc": {
+        if (c.role !== "console") return void reply({ ok: false, error: "SDLC readback is console only; task owners record ids through hub_sdlc_record" });
+        if (msg.op !== "status" && msg.op !== "explain") return void reply({ ok: false, error: "unknown SDLC operation" });
+        const selected = msg.id === undefined ? board.list().filter(task => task.sdlc) : [board.get(Number(msg.id))].filter((task): task is Task => !!task);
+        if (msg.id !== undefined && (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !selected.length)) return void reply({ ok: false, error: "invalid lifecycle task id" });
+        void (async () => {
+          const rows = [];
+          for (const task of selected.slice(0, 100)) rows.push({ id: task.id, title: tasks.publicTitle(task), ...(tasks.isPii(task) ? {} : { receipt: task.sdlc }), ...await tasks.lifecycleStatus(task.id, msg.id !== undefined) });
+          reply({ ok: true, mode: lifecycleConfig.mode, rows, truncated: selected.length > 100 });
+        })().catch(() => reply({ ok: false, error: "lifecycle readback unavailable" }));
+        return;
+      }
       case "status":
         return void reply({ t: "status", status: status() });
       case "ui_snapshot":

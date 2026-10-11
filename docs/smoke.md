@@ -1583,6 +1583,9 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
   process in a trusted project. Stop ACP and return to a new TUI, preserving queued
   work and task ownership. Unverified.
 
+## Initial SDLC gates (#257)
+
+Unverified: a live repository cycle through merge/release under advise. Fake-gh and task fixture checks are source/unit evidence only. Custom lifecycle gates and full release-readiness presentation remain pending; no live cycle or automatic merge is claimed.
 ## Qwen Code 0.25.0 production peer (#256)
 
 Unverified: real provider handshake, a native model/tool turn, context occupancy,

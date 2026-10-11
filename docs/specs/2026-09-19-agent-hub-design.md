@@ -2306,6 +2306,13 @@ the queue.
 - `protect_instruction_files` is machine-local, boolean, false by default. Only the settings registry exposes it, as `scoped_grants.protect_instructions`, in Permissions, applied live after a write or undo. A person may change it; no agent surface gains a setter. Lowering protection from an ordinary dashboard session is refused.
 - Enabled protection withholds scoped automatic writes/edits to `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, folded like configuration names in both lexical and resolved paths. Reads and explicit approval/never-ask retain their meaning. Default grants remain unchanged. The daemon downgrades a Claude scoped grant reply for a protected write as well as supplying the optional flag to the current hook, so an older hook cannot silently ignore protection.
 
+## Amendment: initial head-bound SDLC gates (#257)
+
+- Optional .agenthub/sdlc.toml selects off/advise/enforce, off by default, with a fixed built-in stage order and bounded explicit required check names. The initial delivery has no custom stage/gate language.
+- Tasks owns optional board artifact receipts and every mutation. Repository, issue/PR ids, claimed local result/head and a reviewed full SHA are distinct from fresh external evidence. Only the owner/reviewer/person records; only the reviewer/person binds a review head. Invalid identities, unsupported externally supplied facts and private-turn cloud records are refused before effects.
+- Enforce rechecks the current PR head, successful required checks, local receipt on that head, GitHub review and complete unresolved-thread readback before approval. Missing/unknown data blocks, a new head invalidates derived readiness, and changes requested needs no green CI. Advise exposes gates without additional blocks; off retains existing transitions. Historical board approval is not approval of a new head.
+- CLI sdlc status/explain reads bounded structured metadata, not remote bodies. Shared console/dashboard views expose unknown external evidence and the next actor/action; they cannot certify freshness. No merge/release authority is granted.
+- Custom definitions, full merge/release presentation, gsd-lite and a native advise cycle remain pending; see docs/sdlc.md.
 ## Amendment: optional Qwen Code 0.25.0 ACP peer (#256)
 
 - `qwen` joins the known catalog with default participation off. Only the project's roster selects it; no second enabled switch or default routing preference is added. Its flow roles default to implementer/verifier, which is guidance, not a claim of native reliability.
