@@ -2295,7 +2295,6 @@ the queue.
 - A person/conductor changing the reviewer of an in-review task withdraws unread prior requests and sends the former reviewer a withdrawal notice. Already-delivered requests cannot be recalled; current reviewer authority rejects a late verdict. Publication failure remains guarded after the saved board change.
 
 - Compatibility: Tasks supplies Kimi TUI ids to the generic pure pull-only filter. Legacy Claude pull-only sessions retain existing automatic owner/reviewer selection and queued inbox requests. Init adds the Kimi ignore for an existing untracked MCP file, preserving previous ignore bytes when the file is absent.
-||||||| 06fb87af
 ## Amendment: offline ACP approval fencing and lexical scoped-path checks (#311, #322)
 
 - ACP cancels new permission requests while offline or waiting for watchdog cancellation, before consulting either approver. Pending permissions carry abort signals to the daemon approval registry and are withdrawn on watchdog cancellation, offline transitions and stop. Late answers cannot grant them; a restarted session may request approval normally.

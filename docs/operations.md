@@ -2432,7 +2432,6 @@ Legacy Claude pull-only sessions retain their existing automatic owner/reviewer
 selection; the watched-Kimi exclusion does not disable that review path. After
 first creating the Kimi MCP file, run `ahub init` to ignore the untracked file.
 Init leaves existing ignore bytes alone when no Kimi MCP file exists.
-||||||| 06fb87af
 ## Scoped grants for instruction files
 
 `ahub settings set scoped_grants.protect_instructions true` asks a person before
