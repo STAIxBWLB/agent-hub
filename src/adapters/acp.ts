@@ -1,3 +1,4 @@
+import { activityText, updateActivity, type Activity, type ActivityKind } from "../hub/activity.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId, type PeerState } from "../hub/envelope.ts";
@@ -93,6 +94,9 @@ export interface AcpOptions {
   onPermission?: (req: PermissionRequest, signal?: AbortSignal) => Promise<string | undefined>;
   /** Tool titles approved once without asking: the hub's own tools, as Codex gets them (issue #72). Exact names only. */
   autoApprove?: (toolTitle: string) => boolean;
+  /** Transient person-only stream; no native update escapes through another observer. */
+  onActivity?: (item: Activity) => void;
+  isPrivateTurn?: () => boolean;
   log?: (line: string) => void;
 }
 
@@ -150,6 +154,44 @@ export class AcpPeer extends BasePeer {
   private deliveryAccepted = false;
   private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout> } | undefined;
   private promptActivity = false;
+  private activityOpen = false;
+  private activityPrivate = false;
+  private activityStub = false;
+  private activityStarted = 0;
+  private activityPending: { kind: "message" | "thought"; text: string } | undefined;
+  private activityTimer: ReturnType<typeof setTimeout> | undefined;
+  private emitActivity(kind: ActivityKind, text: string): void {
+    if (!this.opts.onActivity || !this.activityOpen) return;
+    // Privacy latches for the whole turn, even when the associated task closes mid-turn.
+    try { this.activityPrivate ||= this.opts.isPrivateTurn?.() === true; } catch { this.activityPrivate = true; }
+    if (this.activityPrivate) {
+      if (this.activityStub) return;
+      this.activityStub = true; kind = "private"; text = "Private turn: activity withheld";
+    }
+    try { this.opts.onActivity({ kind, text: activityText(text), at: Date.now(), turn: this.turn }); } catch { /* watch cannot affect delivery */ }
+  }
+  private flushActivity(): void {
+    clearTimeout(this.activityTimer); this.activityTimer = undefined;
+    const pending = this.activityPending; this.activityPending = undefined;
+    if (pending) this.emitActivity(pending.kind, pending.text);
+  }
+  private updateWatch(u: unknown): void {
+    if (!this.opts.onActivity) return;
+    const item = updateActivity(u);
+    if (!item) return;
+    if (item.kind === "message" || item.kind === "thought") {
+      if (this.activityPending?.kind !== item.kind || (this.activityPending.text.length + item.text.length > 4096)) this.flushActivity();
+      if (this.activityPending) this.activityPending.text += item.text;
+      else this.activityPending = { kind: item.kind, text: item.text };
+      this.activityTimer ??= setTimeout(() => this.flushActivity(), 50);
+      this.activityTimer.unref?.();
+    } else { this.flushActivity(); this.emitActivity(item.kind, item.text); }
+  }
+  private endActivity(reason: string): void {
+    this.flushActivity();
+    this.emitActivity("turn_end", `${reason}; ${Date.now() - this.activityStarted} ms`);
+    this.activityOpen = false;
+  }
   private readonly permissionWaits = new Set<AbortController>();
 
   protected override setState(next: PeerState): void {
@@ -259,6 +301,7 @@ export class AcpPeer extends BasePeer {
   }
 
   async stop(reason?: string): Promise<void> {
+    if (this.activityOpen) this.endActivity("stopped");
     this.stopping = true;
     this.cancelPermissions();
     this.clearCancelWait();
@@ -289,7 +332,13 @@ export class AcpPeer extends BasePeer {
     this.deliveryAccepted = false;
     this.promptActivity = false;
     this.chunks = [];
+    this.activityOpen = true;
+    this.activityPrivate = envs.some(env => env.private === true);
+    try { this.activityPrivate ||= this.opts.isPrivateTurn?.() === true; } catch { this.activityPrivate = true; }
+    this.activityStub = false; this.activityStarted = Date.now();
     this.setState("busy");
+    this.emitActivity("delivery", envs.map(env => `${env.from} ${env.id}`).join(", "));
+
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
     const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}` }] });
     prompt
@@ -298,6 +347,7 @@ export class AcpPeer extends BasePeer {
         // This prompt has reported. A synchronous observer stop must not return
         // completed work as if its native request were still in flight.
         if (this.activeLegacy?.turn === turn) this.activeLegacy = undefined;
+        this.endActivity(typeof result?.stopReason === "string" ? result.stopReason : "unknown");
         this.observeUsage(result, "prompt_result");
         this.primed = true;
         const body = this.chunks.join("").trim();
@@ -314,6 +364,7 @@ export class AcpPeer extends BasePeer {
           if (this.cancelWait?.turn === turn) this.opts.log?.(`[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
           return; // cancelled prompt errors are discarded, like their late results
         }
+        this.endActivity("failed");
         const reason = sanitize(e.message);
         this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
         const quota = !this.stopping && this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
@@ -355,6 +406,7 @@ export class AcpPeer extends BasePeer {
   protected override onWatchdog(): void {
     if (this.state !== "busy") return;
     if (this.cancelWait) { this.clearWatchdog(); return; }
+    this.endActivity("watchdog cancelled");
     const cancelledTurn = this.turn;
     this.cancelPermissions();
     this.activeLegacy = undefined; // the cancelled prompt is discarded, never returned by a later stop
@@ -439,6 +491,7 @@ export class AcpPeer extends BasePeer {
       if (this.state !== "busy" || this.cancelWait) return;
       this.promptActivity = true;
       this.acceptDelivery();
+      this.updateWatch(u);
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
       // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the
       // console would be asked to approve a bare tool name. Keep what the call said it would run (issue #31).
@@ -471,6 +524,7 @@ export class AcpPeer extends BasePeer {
   }
 
   private async answerPermission(msg: any): Promise<void> {
+    this.flushActivity();
     const call = msg.params?.toolCall ?? {};
     const once = (msg.params?.options ?? []).find((o: PermissionOption) => o.kind === "allow_once");
     const id = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
@@ -484,6 +538,8 @@ export class AcpPeer extends BasePeer {
     const identity = [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
     if (once && identity) {
       this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`); // the name only: arguments may quote a PII turn
+      this.emitActivity("ask", `${String(msg.id)}: ${activityText(announced ?? call.title)} (automatic)`);
+      this.emitActivity("answered", `${String(msg.id)}: allow_once (automatic)`);
       return this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: once.optionId } } });
     }
     // The approver has to see what runs, not only the tool's name ("Bash"). The request itself carries it
@@ -498,6 +554,7 @@ export class AcpPeer extends BasePeer {
     const named = typeof call.title === "string" && jsonObject(call.title) === undefined ? call.title : announced;
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
     const title: string = raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
+    this.emitActivity("ask", `${String(msg.id)}: ${activityText(title)}; answer in ahub console`);
     const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => (raw !== undefined && !cut) || o.kind !== "allow_always");
     // Only a bare tool name travels on its own (a desktop notice shows it); anything prose-like stays in the title.
     const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;
@@ -515,6 +572,7 @@ export class AcpPeer extends BasePeer {
       this.permissionWaits.delete(controller);
     }
     const valid = !controller.signal.aborted && this.state !== "offline" && turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
+    if (turn === this.turn) this.emitActivity("answered", `${String(msg.id)}: ${valid ? options.find(o => o.optionId === picked)?.kind : "cancelled"}`);
     this.send({
       jsonrpc: "2.0",
       id: msg.id,

@@ -560,6 +560,30 @@
       "replacement": "if (false && next === \"offline\" && this.server) {",
       "testFile": "test/jcode-peer.test.ts",
       "testName": "Jcode stays non-ready across socket unlink until delayed owned-process exit is observed (#332)"
+    },
+    {
+      "id": "watch-private-latch",
+      "file": "src/adapters/acp.ts",
+      "search": "if (this.activityPrivate) {",
+      "replacement": "if (false) {",
+      "testFile": "test/watch.test.ts",
+      "testName": "ACP watch private envelopes and associated PII work produce one stub and latch privacy (#286)"
+    },
+    {
+      "id": "watch-console-authority",
+      "file": "src/hub/daemon.ts",
+      "search": "if (c.role !== \"console\") return void reply({ ok: false, error: \"watch is a person-only console command\" });",
+      "replacement": "if (false) return void reply({ ok: false, error: \"watch is a person-only console command\" });",
+      "testFile": "test/watch.test.ts",
+      "testName": "daemon watch replays/streams only to console; transient markers avoid log, UI, tools and memory (#286)"
+    },
+    {
+      "id": "watch-byte-bound",
+      "file": "src/hub/activity.ts",
+      "search": "while (this.rows.length > this.maxItems || this.bytes > this.maxBytes)",
+      "replacement": "while (this.rows.length > this.maxItems)",
+      "testFile": "test/watch.test.ts",
+      "testName": "activity ring bounds bytes and count, replays then streams without exposing mutable rows (#286)"
     }
   ]
 }

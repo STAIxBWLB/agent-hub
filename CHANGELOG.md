@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add person-only `ahub watch kimi|qwen` for bounded, transient headless ACP activity, private-turn stubs and safe terminal rendering (#286). Native TUI verification remains pending.
+
 - Add optional owned Jcode 0.94.0 daemon/ACP and project MCP bridge, with unmanaged native policy, default-off roster and explicit native recovery/tool proof limits (#332).
 
 - Add initial opt-in SDLC artifact receipts, exact-head approval gates, bounded readbacks and stage/blocker projections; retain off defaults and mark custom/release/live work pending (#257).

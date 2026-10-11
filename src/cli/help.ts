@@ -47,6 +47,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["Messages and approvals", [
     ["ahub say [@peer ...] <text>", "send as the console user (no @peer = broadcast); delivered at once, start the text with [STATUS] to let it batch or [FYI] for the record only"],
+    ["ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]", "person-only transient activity from a headless ACP peer; q quits, approvals stay in console"],
     ["ahub tail", "live stream of messages, states and permission requests"],
     ["ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]", "human only: inspect or set a running peer mode; never-ask requires --yes; config never-ask waits for console y"],
     ["ahub permit <id> <option>", "answer a permission request shown by tail (\"deny\" cancels)"],
