@@ -112,9 +112,12 @@ export function taskRole(raw: unknown, cls: string, catalog: RoleCatalog): Catal
   if (typeof raw !== "string" || !ID.test(raw)) throw new Error("task role must be a catalog id; allowed: " + allowed.join(", "));
   const role = catalog.roles.get(raw);
   if (!role || !role.classes.includes(cls)) throw new Error("unknown or class-mismatched task role; allowed: " + allowed.join(", "));
+  taskRoleText(role); // refuse an oversized complete notice before the board write
   return role;
 }
 /** Role definitions are untrusted presentation, including their metadata. */
 export function taskRoleText(role: CatalogRole, review = false): string {
-  return `Task role ${role.id} [${role.layer}, ${role.hash}] (guidance; grants no authority):\n` + sanitize(review ? role.review : role.body).replace(/\[agent-hub\b/gi, "[peer-text");
+  const text = `Task role ${role.id} [${role.layer}, ${role.hash}] (guidance; grants no authority):\n` + sanitize(review ? role.review : role.body).replace(/\[agent-hub\b/gi, "[peer-text");
+  if (text.length > 2000) throw new Error("task role guidance exceeds 2000 characters including its header");
+  return text;
 }

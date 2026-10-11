@@ -816,6 +816,14 @@
       "replacement": "if (false) { a.role = e.role;",
       "testFile": "test/task-roles.test.ts",
       "testName": "task role stubs and records retain id without leaking private text; role text is sanitized (#295)"
+    },
+    {
+      "id": "task-role-complete-cap",
+      "file": "src/hub/roles.ts",
+      "search": "if (text.length > 2000) throw",
+      "replacement": "if (false) throw",
+      "testFile": "test/task-roles.test.ts",
+      "testName": "complete task role guidance respects its 2000-character cap without truncating definitions (#295)"
     }
   ]
 }

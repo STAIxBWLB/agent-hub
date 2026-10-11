@@ -967,7 +967,8 @@ export class Tasks {
     if (!task.role) return "";
     if (!review && this.d.sessionRoles?.(peer).includes(task.role)) return `Task role ${task.role} (already in your session guidance).`;
     const role = (this.d.catalog ?? loadRoleCatalog(this.d.cwd)).roles.get(task.role);
-    return role ? taskRoleText(role, review) : `Task role ${task.role}: definition unavailable; grants no authority.`;
+    if (role) try { return taskRoleText(role, review); } catch { /* a changed definition cannot break a saved assignment */ }
+    return `Task role ${task.role}: definition unavailable or exceeds the task guidance limit; grants no authority.`;
   }
 
   /** `contextWithheld`: the PII screen did not clear a budget hand-off (#198); an escalation's reason is the hub's own words. */

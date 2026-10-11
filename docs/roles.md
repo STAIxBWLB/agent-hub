@@ -42,3 +42,5 @@ Example shared or machine-local config:
 - The board persists the id across restart and ownership changes. Assignment notices include bounded sanitized guidance; review requests include the role's Review duties. If this daemon prepared that native session's matching contract, the owner notice names the id without repeating its body. Externally started plugin sessions have no such receipt and retain the task guidance.
 - PII stubs, task events and research records expose only the role id/identity, never the private task text or role body. A removed definition leaves an id-only unavailable notice.
 - Person task/session role edits, dashboard/console assignment surfaces, session roles in research records and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.
+
+- Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.

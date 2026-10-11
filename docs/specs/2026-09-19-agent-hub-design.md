@@ -2377,3 +2377,5 @@ the queue.
 - Owner assignments and reassignments carry sanitized bounded role guidance; a native session whose role contract was prepared by this daemon gets the id without a repeated body. Review requests always carry the role id and its Review duties only. Unknown prior definitions yield an id-only notice.
 - Public PII stubs may expose the role id, never task text. Role/task events and research records carry id/layer/hash only. Default absent roles preserve old notices and row shapes.
 - This slice does not add person role mutation commands/settings or infer that an externally started Claude/plugin session consumed its roles. Those assignment surfaces and native ingestion/measurement remain follow-ups.
+
+- Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.

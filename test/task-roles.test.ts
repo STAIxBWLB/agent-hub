@@ -93,3 +93,16 @@ test("daemon task role proposal records only identity and exposes guidance on a 
   expect(JSON.stringify(events)).not.toContain(marker); expect(JSON.stringify(roleEvents)).not.toContain("## Scope");
   expect(taskRecords(events.filter(event => event.type === "task").map(event => ({ ...event, event: "approved", state: "approved" })), "fixture", { version: "test", source: "backfill" })[0]!.role).toBe("backend-engineer");
 });
+
+
+test("complete task role guidance respects its 2000-character cap without truncating definitions (#295)", async () => {
+  const { tasks, board, catalog, peers } = await rig(), original = catalog.roles.get("backend-engineer")!;
+  const long = parseRole(SHIPPED_ROLES["backend-engineer"]! + "\n" + "x".repeat(1900 - original.body.length), "backend-engineer", "project");
+  expect(long.body.length).toBeLessThanOrEqual(2000); expect(() => taskRoleText(long)).toThrow("2000");
+  catalog.roles.set(long.id, long);
+  await expect(tasks.propose("user", { title: "Oversized", class: "implement", role: long.id, owner: "codex" })).rejects.toThrow("2000"); expect(board.list()).toEqual([]);
+  catalog.roles.set(original.id, original);
+  const task = await tasks.propose("codex", { title: "Existing", class: "implement", role: original.id, owner: "codex" });
+  catalog.roles.set(long.id, long); await tasks.assignTo(task.id, "kimi"); await until(() => peers.kimi!.got.length > 0);
+  expect(peers.kimi!.got[0]!.body).toContain("exceeds the task guidance limit"); expect(peers.kimi!.got[0]!.body).not.toContain("x".repeat(100)); expect(board.get(task.id)!.owner).toBe("kimi");
+});
