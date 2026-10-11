@@ -28,8 +28,8 @@ Example shared or machine-local config:
 # Commands and current scope
 
 - `ahub role list [--group <group>]` lists metadata, layers and hashes. `ahub role show <id>` displays the selected definition. Both use terminal sanitization. `ahub doctor` reports invalid definitions or assignments.
-- Catalog assignment/clear through person-only settings, pending session marks, task roles, review-duty notices and board cards are later slices. No CLI or hub tool writes a role definition.
-- This slice covers the library, bounded config/session publication and read-only diagnostics. Native model ingestion, compaction retention and one live role/task cycle are unverified; no study was run in the solo implementation. The parent #295 remains open for task/assignment/record/surface and measurement criteria.
+- Catalog assignment/clear through person-only settings, pending session marks and board cards remain later slices. Task proposal roles and review-duty notices are supported as described below. No CLI or hub tool writes a role definition.
+- The delivered slices cover the library, bounded config/session publication, read-only diagnostics and task role guidance. Native model ingestion, compaction retention and one live role/task cycle are unverified; no study was run in the solo implementation. The parent #295 remains open for person assignment, full session records, surfaces and measurement criteria.
 
 # Attribution
 
