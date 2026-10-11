@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Exclude shared .agents skills and .claude.json from scoped grants; add the person-controlled, live instruction-file protection option, off by default (#323).
+
 - Refuse release publication on stale or nonancestor document stamps; require the release merge commit even when the tree matches green CI (#318).
 - Cancel offline ACP permission requests and withdraw pending approvals on watchdog, offline transition and stop (#311).
 - Check original and resolved write/edit paths before scoped Pi/local grants, including symlinked agent configuration directories (#322).

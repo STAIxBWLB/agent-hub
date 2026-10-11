@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -598,4 +599,66 @@ test("offline ACP withdraws its approval from console and dashboard before a lat
   expect((await rig.client.request({ t: "permit", id: approval.id, option: "yes" })).ok).toBe(false);
   const after = await rig.client.request({ t: "ui_snapshot", after: 0 });
   expect(after.permissions.some((p: any) => p.id === approval.id)).toBe(false);
+});
+
+for (const peer of ["pi", "local"]) test(`${peer} instruction protection switches live, preserves default grants and survives undo (#323)`, async () => {
+  const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "guard-fixture";
+  cleanup.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });
+  let tool = "write", args: Record<string, string> = { path: "ordinary.txt", content: "after" };
+  const model = startFakeModelServer({ script: body => body.messages.at(-1)?.role === "tool" ? { content: String(body.messages.at(-1)?.content) } : { tool_calls: [toolCall(tool, args)] } }); cleanup.push(model.stop);
+  const rig = await fixture({ pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] } });
+  expect((await rig.client.request({ t: "start", peer, args: peer === "pi" ? { backend: "dgx" } : { model: "vllm/test" } })).ok).toBe(true);
+  await rig.mode(peer, "ask-when-needed");
+  const pending: any[] = [], answers: string[] = [];
+  rig.client.onPush = msg => { if (msg.t === "permission") pending.push(msg); }; rig.client.send({ t: "tail" });
+  rig.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === peer) answers.push(event.env.body); });
+  const pi = rig.daemon.bus.peers.get("pi") as PiPeer | undefined;
+  const call = async (name: string, input: Record<string, string>) => {
+    if (peer === "pi") { const launch = pi!.tuiLaunch!; return fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name, args: input, toolCallId: crypto.randomUUID(), sessionId: pi!.recoveryMetadata().sessionId, generation: 0 }) }).then(r => r.json() as Promise<any>); }
+    tool = name; args = input; const before = answers.length;
+    rig.daemon.bus.publish(newEnvelope("user", `operation ${before}`, { to: [peer], priority: "important" }));
+    await until(() => answers.length > before); return { text: answers.at(-1) };
+  };
+  await call("write", { path: "ordinary.txt", content: "after" }); expect(pending).toHaveLength(0);
+  mkdirSync(join(rig.cwd, ".agenthub"), { recursive: true });
+  writeFileSync(join(rig.cwd, ".agenthub", "config.json"), JSON.stringify({ memory: { enabled: false } }));
+  expect(spawnSync("git", ["-C", rig.cwd, "init", "-q"]).status).toBe(0);
+  const setting = "scoped_grants.protect_instructions";
+  const targets = ["AGENTS.md", "CLAUDE.md", "QWEN.md", "agents.md", "claude.md", "qwen.md", "ＡＧＥＮＴＳ.md"];
+  for (const target of targets) {
+    expect((await call("write", { path: target, content: "before" })).text).toContain("wrote");
+    expect((await call("edit", { path: target, old: "before", new: "after" })).text).toContain("edited");
+  }
+  expect(pending).toHaveLength(0);
+  const preview = await rig.client.request({ t: "settings_preview", key: setting, value: true });
+  expect(preview.lines.join(" ")).toContain("Applies now");
+  expect((await rig.client.request({ t: "settings_set", key: setting, value: true })).ok).toBe(true);
+  const parent = join(rig.cwd, "instruction-links"); mkdirSync(parent);
+  for (const target of ["AGENTS.md", "CLAUDE.md", "QWEN.md"]) {
+    const ordinary = join(parent, "ordinary-" + target); writeFileSync(ordinary, "before");
+    symlinkSync(ordinary, join(parent, target)); targets.push("instruction-links/" + target);
+    symlinkSync(join(rig.cwd, target), join(parent, "alias-" + target + ".txt")); targets.push("instruction-links/alias-" + target + ".txt");
+  }
+  for (const target of targets) for (const name of ["write", "edit"]) {
+    const file = join(rig.cwd, target); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "before");
+    const before = pending.length;
+    const result = call(name, name === "write" ? { path: target, content: "after" } : { path: target, old: "before", new: "after" });
+    await until(() => pending.length > before);
+    await rig.client.request({ t: "permit", id: pending.at(-1).id });
+    expect((await result).text).toContain("did not approve"); expect(readFileSync(file, "utf8")).toBe("before");
+  }
+  expect((await rig.client.request({ t: "settings_undo" })).ok).toBe(true);
+  const after = pending.length;
+  expect((await call("write", { path: "AGENTS.md", content: "restored" })).text).toContain("wrote");
+  expect(pending).toHaveLength(after);
+});
+
+test("shared skills and Claude configuration filenames stay outside scoped grants (#323)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-shared-config-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  for (const segment of [".agents", ".AGENTS", ".ａｇｅｎｔｓ", ".claude.json", ".CLAUDE.JSON", ".claude.jſon"]) {
+    const path = join(root, segment);
+    if (segment.toLowerCase().includes("json") || segment.includes("jſon")) writeFileSync(path, "{}");
+    else mkdirSync(path, { recursive: true });
+    expect(isAgentConfigPath(path)).toBe(true); expect(grantablePath(root, path)).toBe(false);
+  }
 });

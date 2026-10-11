@@ -28,6 +28,8 @@ export const MACHINE_LOCAL = [
   "local.network_allow", // the hosts the egress proxy opens (#65)
   "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
 ] as const;
+/** Legacy exported field list stays compatible; new policies use the complete list below. */
+export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files"] as const;
 
 /**
  * Why `.agenthub/<name>` must not set machine-local fields, or undefined when git confirms nobody committed it.
@@ -84,8 +86,8 @@ const drop = (file: Record<string, unknown>, path: string) => {
  * once resolved to the project root). A committed copy of the template sets them to defaults and asks git nothing.
  */
 export function stripUntrusted(file: Record<string, unknown>, defaults: object, cwd: string, name: string): string | undefined {
-  for (const p of MACHINE_LOCAL) if (valueAt(file, p) !== undefined && !chooses(valueAt(file, p))) drop(file, p);
-  const set = MACHINE_LOCAL.filter((p) => {
+  for (const p of ALL_MACHINE_LOCAL) if (valueAt(file, p) !== undefined && !chooses(valueAt(file, p))) drop(file, p);
+  const set = ALL_MACHINE_LOCAL.filter((p) => {
     const v = valueAt(file, p);
     return v !== undefined && JSON.stringify(v) !== JSON.stringify(valueAt(defaults, p));
   });

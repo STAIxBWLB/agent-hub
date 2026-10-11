@@ -2295,3 +2295,9 @@ the queue.
 
 - ACP cancels new permission requests while offline or waiting for watchdog cancellation, before consulting either approver. Pending permissions carry abort signals to the daemon approval registry and are withdrawn on watchdog cancellation, offline transitions and stop. Late answers cannot grant them; a restarted session may request approval normally.
 - Pi and local write/edit approval passes the original path separately from the `guardPath` real target, through every wrapper. Scoped automatic grants require both project-relative forms to avoid protected names. A protected directory symlinked into an ordinary project directory and an ordinary alias into a protected directory both require a person. `realPath` and the post-approval target check remain the authority for effects. Explicit approval and never-ask keep their meaning.
+
+## Amendment: further scoped-grant exclusions and instruction option (#323)
+
+- `.agents` and `.claude.json` join the folded protected configuration names. The dated source inventory records the supported project locations and discovery limits; `.claude.json` is excluded conservatively without a project-loading claim.
+- `protect_instruction_files` is machine-local, boolean, false by default. Only the settings registry exposes it, as `scoped_grants.protect_instructions`, in Permissions, applied live after a write or undo. A person may change it; no agent surface gains a setter. Lowering protection from an ordinary dashboard session is refused.
+- Enabled protection withholds scoped automatic writes/edits to `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, folded like configuration names in both lexical and resolved paths. Reads and explicit approval/never-ask retain their meaning. Default grants remain unchanged. The daemon downgrades a Claude scoped grant reply for a protected write as well as supplying the optional flag to the current hook, so an older hook cannot silently ignore protection.

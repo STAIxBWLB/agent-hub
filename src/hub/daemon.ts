@@ -75,13 +75,15 @@ import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, remov
 import { isStartablePeer, peerStartConfig, PEER_START_RETRY_MS, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
-import { grantablePath, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
+import { grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
+import { projectFileTool } from "../cli/facts-hook.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
   kimi_cmd: string[];
   permission_modes: Record<string, PermissionMode>;
+  protect_instruction_files: boolean;
   /** Loader-owned provenance of requested defaults, before machine-local filtering. */
   permission_default_sources?: Record<string, { mode: PermissionMode; source: string }>;
   codex_bin: string;
@@ -142,6 +144,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
   kimi_cmd: ["kimi", "acp"],
   permission_modes: {},
+  protect_instruction_files: false,
   codex_bin: "codex",
   batch_max: 3,
   batch_ms: 15_000,
@@ -223,6 +226,7 @@ export function loadConfig(cwd: string): HubConfig {
       throw error;
     }
     peerRosterConfig(file.roster);
+    instructionProtection(file.protect_instruction_files);
     permissionDefaults(file.permission_modes); // malformed declarations fail even when trust would drop them
     peerStartConfig(file.peers);
     if (file.terminal != null && (typeof file.terminal !== "object" || Array.isArray(file.terminal))) throw new Error("terminal must be an object");
@@ -261,6 +265,7 @@ export function loadConfig(cwd: string): HubConfig {
     ...DEFAULT_CONFIG,
     ...file,
     permission_modes: permissionDefaults(file.permission_modes),
+    protect_instruction_files: instructionProtection(file.protect_instruction_files),
     permission_default_sources: appliedPermissionSources,
     memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
     roster: peerRosterConfig(file.roster),
@@ -2380,7 +2385,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string, valid: () => boolean = () => true, observe?: ApprovalObserver, originalPath?: string): Promise<ToolApproval> => {
         if (stopping || signal?.aborted || !valid() || !pi.acceptingTools || bus.peers.get("pi") !== pi) return "aborted";
         const selected = permissionMode("pi");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path, originalPath))) {
+        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path, originalPath, config.protect_instruction_files))) {
           observe?.({ source: "automatic", answerEpoch: permissionAnswerEpoch("pi") });
           return true;
         }
@@ -2549,7 +2554,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const permit = async (title: string, tool?: string, signal?: AbortSignal, path?: string, observe?: ApprovalObserver, originalPath?: string): Promise<ToolApproval> => {
         if (stopping || signal?.aborted || bus.peers.get("local") !== local) return "aborted";
         const selected = permissionMode("local");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path, originalPath))) {
+        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path, originalPath, config.protect_instruction_files))) {
           observe?.({ source: "automatic", answerEpoch: permissionAnswerEpoch("local") });
           return true;
         }
@@ -2779,8 +2784,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return storedConfigCache.config;
   };
-  /** Start modes are the one stored setting a running hub takes up: after a settings write, as the files now read. */
-  const applyStartModes = () => { const stored = storedConfig(); if (stored) config.peers = stored.peers; };
+  /** Stored start modes and the scoped instruction policy follow a settings write or undo. */
+  const applyStartModes = () => { const stored = storedConfig(); if (stored) { config.peers = stored.peers; config.protect_instruction_files = stored.protect_instruction_files; } };
   const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
   const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
     settingScalar(def.path[0] === "stay_switch" ? routing.stay_switch : (routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
@@ -2943,7 +2948,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recordSetting(def.key, from, to, source);
       // Config trust (#17) can drop a machine-local field at load: the write happened, and the person is told it will not count.
       const dropped = ignoredLine(storedConfig()?.ignored, def);
-      return { ok: true, text: dropped ? `${def.key}: written, but the hub does not read it (${dropped})` : `${def.key}: ${settingText(to)} (${def.applies === "peer start" ? "applies at the peer's next start" : "applies at the next hub start"})` };
+      return { ok: true, text: dropped ? `${def.key}: written, but the hub does not read it (${dropped})` : `${def.key}: ${settingText(to)} (${def.applies === "live" ? "in force now" : def.applies === "peer start" ? "applies at the peer's next start" : "applies at the next hub start"})` };
     } catch (error) {
       return { ok: false, error: (error as Error).message };
     }
@@ -2982,6 +2987,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
+    if (def.key === "scoped_grants.protect_instructions") return { ok: true, lines: ["Applies now to scoped writes and edits of AGENTS.md, CLAUDE.md and QWEN.md, including symlinks and folded spellings.", "true asks a person; false keeps these documents grantable (the default). Explicit approval and never-ask keep their meaning."] };
     if (def.group === "Permissions") {
       const peer = def.path.at(-1)!;
       return { ok: true, lines: [permissionBoundary(peer), ...(isPermissionMode(value) ? [`${value}: ${permissionGrant(peer, value)}`] : ["inherit: the shared file's default, or ask"])] };
@@ -3501,7 +3507,8 @@ export async function startDaemon(opts: DaemonOptions) {
           const permissionLaunch = peer === "claude" ? claudePermissionLaunch() : undefined;
           const permission = nativeClaude && permissionLaunch && !permissionLaunch.unattended && msg.nativeLaunchId === permissionLaunch.launchId ? permissionMode(peer) : undefined;
           if (permission !== undefined && nativePeer instanceof WsPeer) claudePermissionGenerations.set(peer, nativePeer.sessionGeneration);
-          const permissionReply = phase === "pre" && permission !== undefined ? { permission, projectRoot: opts.cwd } : {};
+          const protectedWrite = config.protect_instruction_files && ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(msg.tool) && !projectFileTool(msg.tool, msg.input, opts.cwd, true);
+          const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: opts.cwd, protectInstructionFiles: config.protect_instruction_files } : {};
           // Permission-only hooks carry no native-turn evidence and must never drive busy state.
           const purpose = permissionLaunch?.hookPurpose ?? msg.hookPurpose;
           const observesNative = purpose === "facts" || purpose === "idle" || purpose === "facts-and-idle" || (purpose === undefined && (config.coordination === "turn-free" || config.task_sweep.enabled || config.roles.claude?.includes("conductor")));
