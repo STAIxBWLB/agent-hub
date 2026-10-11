@@ -17,6 +17,8 @@ interface OutputCell extends Span { atomic?: boolean; items?: string[]; pathItem
 const span = (text: unknown, tone?: Tone, atomic = false): OutputCell => ({ text: String(text ?? ""), ...(tone ? { tone } : {}), ...(atomic ? { atomic: true } : {}) });
 const flat = (value: unknown) => terminalText(value).replace(/[\n\t]/g, " ");
 const width = (value: string) => Bun.stringWidth(value);
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const characters = (value: string) => [...graphemes.segment(value)].map(unit => unit.segment);
 const peerTone = (id: string): Tone | undefined => id === "claude" ? "peerClaude" : id === "codex" ? "peerCodex" : undefined;
 const shortId = (id: unknown, columns?: number, full = false) => full || columns === undefined ? String(id) : String(id).slice(0, 8);
 function lines(text: string, columns?: number, tone?: Tone, indent = ""): Span[][] {
@@ -48,11 +50,14 @@ function itemChunks(cell: OutputCell, columns: number): string[] {
     if (line) chunks.push(line);
     const room = last ? columns : columns - 1;
     const split = width(item) <= room ? [item] : cell.pathItems ? pathChunks(item, room) : wrap(item, room, 0);
-    // The comma must sit right after the item's own end: a split item's last piece keeps at least its last three
-    // characters (a slashless name breaks mid-word, and a one or two character tail would strand them).
-    if (!last && split.length > 1 && split.at(-1)!.length < 3 && !item.includes("/") && split.join("") === item) {
-      const tail = split.splice(-2).join("");
-      split.push(tail.slice(0, Math.max(1, tail.length - 3)), tail.slice(-3));
+    // A slashless split keeps three visible graphemes beside its comma when they fit.
+    // Rebalance complete units, including combining marks/ZWJ sequences, never UTF-16 halves.
+    if (!last && split.length > 1 && !item.includes("/") && characters(split.at(-1)!).filter(unit => width(unit) > 0).length < 3 && split.join("") === item) {
+      const units = characters(split.slice(-2).join(""));
+      let cut = units.length, visible = 0;
+      while (cut > 0 && visible < 3) if (width(units[--cut]!) > 0) visible++;
+      const prefix = units.slice(0, cut).join(""), tail = units.slice(cut).join("");
+      if (visible === 3 && prefix && width(prefix) <= room && width(tail) <= room) split.splice(-2, 2, prefix, tail);
     }
     if (!last) split[split.length - 1] += ",";
     chunks.push(...split.slice(0, -1)); line = split.at(-1)!;
