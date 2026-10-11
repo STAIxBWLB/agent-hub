@@ -68,7 +68,8 @@ confirmation an arrow dismisses it like any key but y, without moving a tab. A p
 chunk can only edit the command line, but a read that holds nothing but arrow
 sequences is that many key presses, so a held key repeats its tab move. In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
-the stream; body lines and command output stay plain, and colour never changes
+the stream; only the header is tab-flattened before tokenizing. Body lines retain
+the previous rendering and stay plain, as does command output; colour never changes
 what the panel's text says.
 
 Peers, Approvals, Tasks and Queue are tables with a header row. A column is as

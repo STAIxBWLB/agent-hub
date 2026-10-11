@@ -87,12 +87,13 @@ async function prompt(id: number, text: string) {
   // Occupancy trailing updates (#285): flat `{used, size}` (docs/smoke.md), held for the test's barrier; 2.1.1's
   // source text emits it after the prompt resolves (read from the source, not observed live). OCCUPANCY is 45%,
   // OCCUPANCY_HIGH 90% (over a 0.8 gate), OCCUPANCY_INVALID the numbers normalizeACPUsage rejects,
-  // OCCUPANCY_UNNAMED names no session. OCCUPANCY_NEAR is 45.45%: the same printed percentage with a different
+  // OCCUPANCY_UNNAMED names no session. OCCUPANCY_ROUND_UP is 45.6%; OCCUPANCY_NEAR is 45.45%: the same printed percentage with a different
   // token count (#309). LATETOTAL and LATECHUNK are the stay-out probes.
   const hold = (update: object, withSession = true) => held.push({ jsonrpc: "2.0", method: "session/update", params: { ...(withSession ? { sessionId: "s1" } : {}), update } });
   const holdTrailing = () => {
     if (text.includes("OCCUPANCY_INVALID")) hold({ sessionUpdate: "usage_update", used: -1, size: 0 });
     else if (text.includes("OCCUPANCY_UNNAMED")) hold({ sessionUpdate: "usage_update", used: 90_000, size: 200_000 }, false);
+    else if (text.includes("OCCUPANCY_ROUND_UP")) hold({ sessionUpdate: "usage_update", used: 91_200, size: 200_000 });
     else if (text.includes("OCCUPANCY_NEAR")) hold({ sessionUpdate: "usage_update", used: 90_900, size: 200_000 });
     else if (text.includes("OCCUPANCY")) hold({ sessionUpdate: "usage_update", used: text.includes("OCCUPANCY_HIGH") ? 180_000 : 90_000, size: 200_000 });
     if (text.includes("LATETOTAL")) hold({ sessionUpdate: "usage_update", totalTokens: 999 });

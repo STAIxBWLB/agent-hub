@@ -1370,3 +1370,66 @@ describe("whole-board task progress (#246)", () => {
     });
   }
 });
+
+
+test("Events flatten tabs only in the header and preserve main's body marker rendering (#309)", () => {
+  const s = state(true); s.panel = 5;
+  const header = "  codex\tis idle", body = "--- from\tuser";
+  s.events = [{ text: header + "\n" + body, kind: "state", tone: "muted" }];
+  const row = cells(s, s.events[0], false, NOW);
+  expect(row.at(-1)).toEqual({ text: "\n" + body });
+  expect(row.slice(0, -1)).toEqual(streamTokens(header.replace(/\t/g, " "), "muted", "state"));
+  for (const columns of [40, 80, 120]) {
+    const legacy = fitLine([{ text: "  " }, { text: header }, { text: "\n" + body }], columns);
+    const rendered = fitLine([{ text: "  " }, ...row], columns);
+    expect(paint(rendered, false)).toBe(paint(legacy, false));
+    expect(paint(rendered, true).replace(/\x1b\[[0-9;]*m/g, "")).toBe(paint(legacy, false));
+  }
+});
+
+const frameOf = (f: ReturnType<typeof fixture>) => f.output.join("").split("\x1b[r\x1b[1;1H").at(-1)!;
+async function consoleFrameContains(f: ReturnType<typeof fixture>, text: string) {
+  for (let n = 0; n < 100 && !frameOf(f).includes(text); n++) await new Promise<void>(resolve => setImmediate(resolve));
+  expect(frameOf(f)).toContain(text);
+}
+
+test("Up and Down in one read move rows rather than opening pasted command text (#309)", async () => {
+  const f = fixture();
+  f.client.request = async () => ({ ok: true, status: { peers: {} }, budget: {}, text: JSON.stringify([1, 2, 3].map(id => ({ id, title: `task ${id}`, state: "proposed", class: "implement", created: Date.now() }))), deliveries: [] });
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false });
+  try {
+    f.input("3"); await consoleFrameContains(f, "task 3");
+    f.input("j"); f.input("j"); expect(frameOf(f)).toContain("> #3");
+    f.input("\x1b[A\x1b[A"); expect(frameOf(f)).toContain("> #1"); expect(frameOf(f)).toContain("? keys");
+    f.input("\x1b[B\x1b[B"); expect(frameOf(f)).toContain("> #3"); expect(frameOf(f)).toContain("? keys");
+    expect(f.sent).toEqual([{ t: "tail" }]);
+  } finally { f.signal(); await running; }
+});
+
+test("all-arrow reads preserve the modal key table (#309)", async () => {
+  const f = fixture();
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false });
+  try {
+    f.input("?");
+    for (const sequence of ["\x1b[A\x1b[A", "\x1b[B\x1b[B", "\x1b[C\x1b[D", "\x1b[A\x1b[B\x1b[C\x1b[D"]) {
+      f.input(sequence); expect(frameOf(f)).toContain("Left/Right panel"); expect(frameOf(f)).toContain("[1 Peers]");
+    }
+    expect(f.sent).toEqual([{ t: "tail" }]);
+  } finally { f.signal(); await running; }
+});
+
+test("all-arrow reads retain a never-ask default confirmation until an explicit answer (#309)", async () => {
+  const f = fixture();
+  f.client.request = async (msg: any) => {
+    f.requests.push(msg);
+    return { ok: true, status: { peers: {}, permissionDefaults: [{ peer: "kimi", mode: "never-ask", source: "config.json" }] }, budget: {}, text: "[]", deliveries: [] };
+  };
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false });
+  try {
+    await consoleFrameContains(f, "enable never-ask default");
+    for (const sequence of ["\x1b[A\x1b[A", "\x1b[B\x1b[B", "\x1b[C\x1b[D", "\x1b[A\x1b[B\x1b[C\x1b[D"]) {
+      f.input(sequence); expect(frameOf(f)).toContain("enable never-ask default"); expect(frameOf(f)).toContain("[1 Peers]");
+    }
+    expect(f.requests.filter(request => request.t === "permission_default")).toEqual([]); expect(f.sent).toEqual([{ t: "tail" }]);
+  } finally { f.signal(); await running; }
+});
