@@ -89,8 +89,8 @@ test("new document plan fields retain existing PII routing and public redaction 
 async function profileCli(dir: string, args: string[]) {
   const cli = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(dir, `cli-${crypto.randomUUID()}.ts`);
   writeFileSync(wrapper, `for (const name of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete process.env[name];\nprocess.env.AGENTHUB_HOME = ${JSON.stringify(join(dir, "home"))};\nprocess.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}];\nawait import(${JSON.stringify(cli)});\n`);
-  const proc = Bun.spawn([process.execPath, wrapper], { cwd: dir, stdin: "ignore", stdout: "pipe", stderr: "pipe" }), timer = setTimeout(() => proc.kill("SIGKILL"), 8000);
-  try { const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]); if (/SyntaxError|Cannot find module|ModuleNotFound|timed out/i.test(stderr)) throw new Error("CLI fixture setup failed: " + stderr); return { code, stdout, stderr }; }
+  const proc = Bun.spawn([process.execPath, wrapper], { cwd: dir, stdin: "ignore", stdout: "pipe", stderr: "pipe" }); let expired = false; const timer = setTimeout(() => { expired = true; proc.kill("SIGKILL"); }, 8000);
+  try { const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]); if (expired || code > 1 || /SyntaxError|Cannot find module|ModuleNotFound|timed out|^error:/im.test(stderr)) throw new Error("CLI fixture setup or timeout failed: " + stderr); return { code, stdout, stderr }; }
   finally { clearTimeout(timer); }
 }
 test("profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)", async () => {
