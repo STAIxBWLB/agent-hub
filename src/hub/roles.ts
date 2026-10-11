@@ -116,5 +116,5 @@ export function taskRole(raw: unknown, cls: string, catalog: RoleCatalog): Catal
 }
 /** Role definitions are untrusted presentation, including their metadata. */
 export function taskRoleText(role: CatalogRole, review = false): string {
-  return `Task role ${role.id} [${role.layer}, ${role.hash}] (guidance; grants no authority):\n` + sanitize(review ? role.review : role.body).replace(/\[agent-hub\b/gi, "[quoted agent-hub");
+  return `Task role ${role.id} [${role.layer}, ${role.hash}] (guidance; grants no authority):\n` + sanitize(review ? role.review : role.body).replace(/\[agent-hub\b/gi, "[peer-text");
 }
