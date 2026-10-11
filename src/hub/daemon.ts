@@ -1,3 +1,4 @@
+import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
@@ -107,6 +108,7 @@ export interface HubConfig {
   profile?: ProfileName;
   pii?: { paths: string[] };
   data?: { readonly: string[] };
+  text_projection?: ProjectionConfig;
   catalog_roles?: Record<string, string[]>;
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
   budget: BudgetConfig;
@@ -247,6 +249,7 @@ export function loadConfig(cwd: string): HubConfig {
     peerRosterConfig(file.roster);
     catalogAssignments(file.catalog_roles);
     profileName(file.profile);
+    projectionConfig(file.text_projection);
     for (const [block, key] of [["pii", "paths"], ["data", "readonly"]] as const) {
       const raw = file[block];
       if (raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(k => k !== key))) throw new Error(block + " must be a bounded path policy block");
@@ -294,6 +297,7 @@ export function loadConfig(cwd: string): HubConfig {
   return {
     ...DEFAULT_CONFIG,
     ...file,
+    ...(file.text_projection !== undefined ? { text_projection: projectionConfig(file.text_projection) } : {}),
     ...(file.pii !== undefined ? { pii: { paths: policyPaths(file.pii.paths, "pii.paths") } } : {}),
     ...(file.data !== undefined ? { data: { readonly: policyPaths(file.data.readonly, "data.readonly") } } : {}),
     permission_modes: permissionDefaults(file.permission_modes),
@@ -899,7 +903,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turn-free facts (issue #108): what the others changed in an owner's files, at its tool calls. Scopes are read from
   // the board once per change of it: every boundary asks for them.
   let scopes = new Map<PeerId, FactScope | undefined>();
-  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []) });
+  const projections = new TextProjections({ cwd: opts.cwd, stateDir: opts.stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log });
+  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []), projection: file => projections.project(file) });
   const progress = new ProgressObserver({
     tasks: () => board.list(),
     isPrivate: () => board.list().some(task => task.state !== "approved" && tasks.isPii(task)),

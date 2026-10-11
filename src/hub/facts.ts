@@ -67,9 +67,12 @@ export interface FactsOptions {
   deny?: string[];
   /** Configured private paths are never read or shown as automatic facts. */
   privatePath?: (path: string) => boolean;
+  /** Bounded machine-local projection; absent retains raw/binary behavior. */
+  projection?: (file: string) => import("./text-projection.ts").ProjectedText | undefined;
 }
 
 interface Version {
+  projected?: true;
   hash: string;
   text?: string;
   /** Git's blob id of the same bytes: a file equal to HEAD's is no change, whatever its stat data says. */
@@ -205,6 +208,8 @@ export class Facts {
    */
   private load(file: string): Omit<Version, "seq"> {
     if (this.rel(join(this.root, file)) !== file) return { hash: "missing" };
+    const projected = this.o.projection?.(join(this.root, file));
+    if (projected) return { hash: projected.rawHash, blob: projected.rawBlob, text: projected.text, projected: true };
     let fd: number | undefined;
     try {
       fd = openSync(join(this.root, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -500,7 +505,7 @@ export class Facts {
       this.touch(peer, file, pre.version);
       if (["Edit", "MultiEdit", "Write"].includes(tool)) {
         this.wrote(peer, file);
-        const expected = this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
+        const expected = !pre.version.projected && this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
         const version = this.observe(file, expected === undefined ? undefined : { peer, expected: sha1(expected) });
         const last = this.transitions.get(file)?.at(-1);
         if (last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === pre.version.hash) this.view(peer).set(file, version);
@@ -509,7 +514,7 @@ export class Facts {
       if (tool === "Read") {
         const version = this.observe(file);
         // Only a whole read of an unchanged file says what the peer saw: no offset or limit, and nothing Read cuts.
-        if (version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined && readWhole(pre.version.text)) this.view(peer).set(file, version);
+        if (!pre.version.projected && version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined && readWhole(pre.version.text)) this.view(peer).set(file, version);
         return this.observeAll();
       }
     }
@@ -537,7 +542,7 @@ export class Facts {
         this.touch(peer, file, was);
         this.wrote(peer, file);
         const now = this.load(file);
-        const matches = was ? codexEffect(was.text, now, change, (a, b) => this.diff(a, b)) : false;
+        const matches = was && !was.projected && !now.projected ? codexEffect(was.text, now, change, (a, b) => this.diff(a, b)) : false;
         const version = this.observe(file, matches ? { peer, expected: now.hash } : undefined);
         const last = this.transitions.get(file)?.at(-1);
         if (was && last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === was.hash) this.view(peer).set(file, version);

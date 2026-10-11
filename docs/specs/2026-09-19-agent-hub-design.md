@@ -2364,3 +2364,9 @@ the queue.
 - These controls do not contain the owner or other native same-user processes. Config policies apply at daemon start; no permission mode overrides managed data policy. Native-account/research legs remain unverified. See docs/data-policy.md.
 
 - Parent directory task scopes containing a configured private path are private too. Automatic facts omit configured private files before reading/showing them, including outside an open private task.
+
+# Text projection amendment, 2026-10-11 (#259)
+
+- Optional machine-local extension/argv mappings use immutable bounded input snapshots, no-network/read-only converters, process-group deadlines and bounded output. Shared/tracked config cannot choose execution. Default absence preserves raw facts.
+- State cache keys bind raw content and argv/program/script metadata. Conversion failure/absence falls back once per extension without leaking stderr. Private paths are excluded before conversion.
+- Facts retains raw hashes/blob identities and renders projected text as presentation only; projected reads/patches never establish raw-file attribution. Review/undo and shadow-repository surfaces remain follow-ups. See docs/text-projection.md.

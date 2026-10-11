@@ -37,3 +37,5 @@
 - Accept schemas expose all supported plan fields because an open task keeps its stored profile across a project profile change. Tasks still normalizes by that stored profile; no new plan field changes authority.
 
 - Private and read-only data path policy is now a separate source slice: [data policy](data-policy.md). It applies to declared task paths and managed local/Pi tools. Converter/shadow/custom/live follow-ups remain open.
+
+- Optional machine-local [text projections](text-projection.md) supply bounded rich-document facts diffs. Converter output is presentation evidence and cannot prove raw-file attribution.
