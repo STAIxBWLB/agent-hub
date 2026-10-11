@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- A person can change the live peer roster through settings, the dashboard or ahub roster: removed peers stop receiving new work while their queued messages, uncertain deliveries and pauses remain available, and open tasks are offered to another eligible peer (#315).
+- A person can change the live peer roster through settings, the dashboard or ahub roster: removed peers stop receiving new work while their queued messages, uncertain deliveries and pauses remain available, and all open owner/reviewer roles are offered to another eligible peer; explicit off-roster messages are retained with a public notice and removal reports both moves and work that stays (#315).
 
 ## 0.12.23
 

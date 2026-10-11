@@ -224,6 +224,94 @@
       "replacement": "for (const line of preview.lines ?? []) console.log(line);",
       "testFile": "test/roster.test.ts",
       "testName": "the real roster CLI uses settings for live changes, stable JSON, and refuses agent shells (#315)"
+    },
+    {
+      "id": "roster-request-fence",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (c.role !== \"console\" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });",
+      "replacement": "    if (c.role !== \"console\" && c.peer && false) return void reply({ ok: false, error: `${c.peer} is off roster` });",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-conductor-start",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };",
+      "replacement": "    if (false) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-late-attach",
+      "file": "src/hub/daemon.ts",
+      "search": "          if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);",
+      "replacement": "          if (sock.readyState === WebSocket.OPEN) ws.attach(sock);",
+      "testFile": "test/roster.test.ts",
+      "testName": "a late preface completion cannot attach an off-roster claimant (#315)"
+    },
+    {
+      "id": "roster-empty-status",
+      "file": "src/hub/daemon.ts",
+      "search": "    return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
+      "replacement": "    return [...ids];",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-dashboard-send",
+      "file": "src/hub/daemon.ts",
+      "search": "        if (off.length && off.length === targets.length) return { ok: false, error: `off roster: ${off.join(\", \")}` };",
+      "replacement": "        if (false) return { ok: false, error: `off roster: ${off.join(\", \")}` };",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-proxy-message",
+      "file": "src/adapters/codex-appserver.ts",
+      "search": "if (this.opts.admitAttach?.() === false) { tui.close(4000, \"codex is off roster\"); return; }",
+      "replacement": "if (false) { tui.close(4000, \"codex is off roster\"); return; }",
+      "testFile": "test/codex.test.ts",
+      "testName": "an admitted Codex proxy socket rechecks live roster before forwarding each request (#315)"
+    },
+    {
+      "id": "roster-transaction-serialized",
+      "file": "src/hub/daemon.ts",
+      "search": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false): Promise<Record<string, unknown>> {\n    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "replacement": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false): Promise<Record<string, unknown>> {\n    if (false) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "testFile": "test/roster-pi.test.ts",
+      "testName": "Pi roster verification serializes roster writes and holds dispatch through its idle replay (#315)"
+    },
+    {
+      "id": "roster-transaction-delivery",
+      "file": "src/hub/daemon.ts",
+      "search": "deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer",
+      "replacement": "deliveryHeld: peer => requestedPeerStops.has(peer)",
+      "testFile": "test/roster-pi.test.ts",
+      "testName": "Pi roster verification serializes roster writes and holds dispatch through its idle replay (#315)"
+    },
+    {
+      "id": "roster-cancel-permission",
+      "file": "src/hub/daemon.ts",
+      "search": "      if (!after) {\n        for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);",
+      "replacement": "      if (!after) {\n        // seeded removal skips pending approval cancellation",
+      "testFile": "test/roster.test.ts",
+      "testName": "native terminal removal cancels its pending approval before any transport teardown (#315)"
+    },
+    {
+      "id": "roster-retained-explicit",
+      "file": "src/hub/bus.ts",
+      "search": "(env.to !== undefined || this.isRostered(id))",
+      "replacement": "this.isRostered(id)",
+      "testFile": "test/roster.test.ts",
+      "testName": "mixed console and dashboard audiences retain removed recipients with one public notice and a visible sender result (#315)"
+    },
+    {
+      "id": "roster-in-review-owner",
+      "file": "src/hub/tasks.ts",
+      "search": "(OPEN.includes(task.state) || roster && task.state === \"in_review\")",
+      "replacement": "OPEN.includes(task.state)",
+      "testFile": "test/roster.test.ts",
+      "testName": "removal hands over in-review ownership and routes the later verdict to the new owner (#315)"
     }
   ]
 }

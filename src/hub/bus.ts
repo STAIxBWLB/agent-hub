@@ -10,6 +10,7 @@ export type BusEvent =
   | { t: "undeliverable"; env: Envelope; peer: PeerId; reason?: string }
   | { t: "stale"; env: Envelope; peer: PeerId; reason: string }
   | { t: "quiet"; env: Envelope; peers: PeerId[]; reason: string }
+  | { t: "off_roster"; env: Envelope; peers: PeerId[] }
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
@@ -176,16 +177,16 @@ export class Bus {
         this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${reason}`));
         return reason; // no publication and no limiter spend for an entirely refused audience
       }
-      if (offRoster.length) env = { ...env, to: env.to!.filter(id => !offRoster.includes(id)) };
+      const admittedEnv = offRoster.length ? { ...env, to: env.to!.filter(id => !offRoster.includes(id)) } : env;
       // Limits count what is sent: the envelope as built (a reply goes to its parent's sender, `digest` is resolved,
       // the priority is capped), never the raw `to`.
       const parent = opts?.inReplyTo?.id;
       // Held back from every recipient (issue #107): nothing goes out, so nothing counts against the sender's limits.
       const hushed = this.hushed(env);
       const heldBack = hushed.length > 0 && hushed.length === this.audience(env).length;
-      let refused = heldBack ? undefined : this.opts.admit?.(env, parent);
+      let refused = heldBack ? undefined : this.opts.admit?.(admittedEnv, parent);
       // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
-      if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {
+      if (refused && env.priority === "important" && !this.opts.admit?.({ ...admittedEnv, priority: "status" }, parent)) {
         // It went out, so the advice on how to send it does not apply.
         this.note(peer.id, noteLine(HUB, "decision", `your [IMPORTANT] message went out as status: ${refused.replace(/[;:] (retry after \d+ s, or )?send it without \[IMPORTANT\]$/, "")}`));
         env = { ...env, priority: "status" };
@@ -196,6 +197,7 @@ export class Bus {
         return refused;
       }
       this.publish(env);
+      if (offRoster.length) this.note(peer.id, noteLine(HUB, "decision", `your message is retained off roster for ${offRoster.join(", ")}; delivered to the other recipients`));
       // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery. It counts as
       // not sent only when nobody got it.
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
@@ -551,7 +553,7 @@ export class Bus {
 
     const hushed = this.hushed(env);
     if (hushed.length) this.emit({ t: "quiet", env, peers: hushed.map((h) => h.peer), reason: hushed[0]!.reason });
-    const targets = this.audience(env).filter((id) => !hushed.some((h) => h.peer === id));
+    const targets = this.audience(env).filter((id) => !hushed.some((h) => h.peer === id) || !this.isRostered(id));
     this.suppressDrain = !!this.journal;
     try { for (const id of targets) {
       const peer = this.peers.get(id);
@@ -580,6 +582,8 @@ export class Bus {
         else void this.drain(id);
       }
     }
+    const offRoster = targets.filter(id => !this.isRostered(id));
+    if (offRoster.length) this.emit({ t: "off_roster", env, peers: offRoster });
     return targets;
   }
 
@@ -600,13 +604,13 @@ export class Bus {
   /** Who an envelope is queued for: its `to`, or every peer but its sender. */
   audience(env: Envelope): PeerId[] {
     const known = new Set([...this.peers.keys(), ...this.queues.keys(), ...(this.journal?.list().map((d) => d.peer) ?? [])]);
-    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && known.has(id) && this.isRostered(id));
+    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && (known.has(id) || !this.isRostered(id)) && (env.to !== undefined || this.isRostered(id)));
   }
 
   /** The recipients of `env` that the silence policy holds it back from, each with why (issue #107). */
   hushed(env: Envelope): { peer: PeerId; reason: string }[] {
     if (!this.opts.silence || env.hop > MAX_HOP || env.priority === "fyi") return [];
-    return this.audience(env).flatMap((peer) => {
+    return this.audience(env).filter(peer => this.isRostered(peer)).flatMap((peer) => {
       const reason = this.opts.silence!(env, peer);
       return reason ? [{ peer, reason }] : [];
     });

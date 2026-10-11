@@ -291,7 +291,7 @@ function settingRow(row, raise) {
 }
 const settingSlots = new Map();
 function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
-function renderSettings(settings) {
+function renderSettings(settings, roster = []) {
   if (!settings || !Array.isArray(settings.rows)) { setText($('settings-session'), ''); settingSlots.clear(); return update('settings', 'none', (target) => empty(target, 'This hub does not report settings.')); }
   const raise = typeof settings.sessionUntil === 'number' && settings.sessionUntil > Date.now();
   // Written only when it changes: a status region that is rewritten every second is read out every second.
@@ -316,13 +316,27 @@ function renderSettings(settings) {
     undoSlot.signature = undoKey; undoSlot.node.replaceChildren();
     if (undoKey) {
       const row = el('div', undefined, 'row'); row.append(el('p', 'Last settings write: ' + undoKey, 'meta'));
-      const actions = el('div', undefined, 'actions'); actions.append(button('Undo last write', {action:'setting_undo'})); row.append(actions); undoSlot.node.append(row);
+      const actions = el('div', undefined, 'actions');
+      if (undoKey.startsWith('roster.')) {
+        const peer = undoKey.slice('roster.'.length), confirm = el('input'); confirm.type = 'text'; confirm.placeholder = 'type ' + peer + ' if undo removes it'; confirm.setAttribute('aria-label', 'Confirm roster undo for ' + peer);
+        const force = el('input'); force.type = 'checkbox'; force.setAttribute('aria-label', 'Stop an active turn now for undo');
+        const undo = el('button', 'Undo last write'); undo.type = 'button'; undo.dataset.mutation = 'project'; undo.addEventListener('click', () => void action({action:'setting_undo', confirm:confirm.value.trim(), now:force.checked}, undo));
+        actions.append(confirm, el('label', 'Stop an active turn now'), force, undo);
+      } else actions.append(button('Undo last write', {action:'setting_undo'}));
+      row.append(actions); undoSlot.node.append(row);
     }
   }
   for (const row of settings.rows) {
+    const membership = roster.find(peer => row.key === 'roster.' + peer.peer);
     const slot = settingSlots.get(row.key), signature = JSON.stringify([row, raise]);
-    if (!slot || slot.signature === signature) continue;
-    slot.signature = signature; slot.node.replaceChildren(settingRow(row, raise));
+    if (!slot) continue;
+    if (slot.signature !== signature) {
+      slot.signature = signature; slot.node.replaceChildren(settingRow(row, raise)); slot.membership = null;
+    }
+    if (membership) {
+      if (!slot.membership) { slot.membership = el('p', '', 'meta'); slot.node.append(slot.membership); }
+      setText(slot.membership, `${membership.state}; ${membership.queued} queued; ${membership.tasks} open tasks`);
+    }
   }
 }
 function syncStarts(snapshot) {
@@ -419,7 +433,7 @@ function render(snapshot) {
     }
   });
   renderBench(snapshot.bench);
-  renderSettings(snapshot.settings);
+  renderSettings(snapshot.settings, snapshot.roster);
   const stream = $('stream');
   if (!eventCount) { stream.replaceChildren(); empty(stream, 'No activity yet.'); }
   for (const entry of snapshot.events || []) {

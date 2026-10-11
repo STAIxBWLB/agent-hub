@@ -2918,3 +2918,26 @@ test("the shared budget relay keeps its existing reviewer-clear and quota notice
   expect(f.board.get(task.id)).toMatchObject({ owner: "kimi", state: "in_review", reviewer: null });
   expect(f.notices.at(-1)).toBe(`task #1 budget review fallback: its reviewer claude is paused and nobody else can review; use ahub review ${task.id}`);
 });
+
+test("removal hands over an in-review owner's work while preserving an irreplaceable reviewer request and verdict (#315)", async () => {
+  const f = await rosterTaskFixture();
+  const task = await f.tasks.propose(USER, { title: "in review removal", class: "implement", owner: "kimi" });
+  f.tasks.accept("kimi", task.id); await f.tasks.done("kimi", task.id, "completion before removal");
+  expect(f.board.get(task.id)!.state).toBe("in_review"); f.off.add("kimi");
+  expect(await f.tasks.reassignForRoster("kimi")).toContainEqual({ id: task.id, title: "#1 in review removal", role: "owner", to: "local" });
+  expect(f.board.get(task.id)).toMatchObject({ owner: "local", state: "in_review" });
+
+  const only = await rosterTaskFixture(["codex", "claude"]);
+  const retained = await only.tasks.propose(USER, { title: "review request retained", class: "implement", owner: "codex" });
+  only.tasks.accept("codex", retained.id); only.off.add("claude"); await only.tasks.reassignForRoster("claude");
+  await only.tasks.done("codex", retained.id, "completion for removed reviewer");
+  expect(only.board.get(retained.id)).toMatchObject({ state: "in_review", reviewer: "claude" });
+  const pending = only.bus.queueList("claude").flatMap(row => row.originals);
+  expect(pending.filter(env => env.kind === "review" && env.refs?.task === String(retained.id))).toHaveLength(1);
+  only.off.delete("claude"); only.bus.rosterChanged("claude");
+  await Promise.resolve(); await Promise.resolve();
+  expect(only.peers.claude!.got.filter(env => env.id === pending[0]!.id)).toHaveLength(1);
+
+  only.off.add("codex"); await only.tasks.review("claude", retained.id, "changes_requested", "fix the completion");
+  expect(only.bus.queueList("codex").flatMap(row => row.originals).some(env => env.body.includes("fix the completion"))).toBe(true);
+});

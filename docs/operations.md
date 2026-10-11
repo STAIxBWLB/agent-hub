@@ -1022,16 +1022,28 @@ holder cannot be removed until its role is moved.
 Removal fences membership, stops hub-owned runtimes or detaches sessions in a
 person's terminal, and then hands work over. The removal preview and result name
 the peer whose existing work the person must stop in that retained terminal;
-the result lists the saved owner/reviewer moves. No stop notice is forced into
-a detached session and nothing bypasses the journal. A peer still attached when
-the handoff runs receives its existing guarded stop notice.
+the preview names the roles offered and those with no eligible replacement; the
+result lists the saved owner/reviewer moves and every assignment that stays. No stop notice is forced into
+a detached session and nothing bypasses the journal.
 It leaves queued and held deliveries, and existing manual or budget pauses,
 untouched. The queue listing names `off roster` as the membership hold. Returning
 and starting the peer makes retained queued messages available again; held
 uncertain work still needs the existing queue resolution command. Open owner and
-reviewer work is offered through the existing reassignment path. If nobody can
+reviewer work, including ownership of `in_review` tasks, is offered through the
+existing reassignment path; a transferred review keeps its review state. If nobody can
 take it, its assignment stays and a notice names the person's next action. Task
-text in a notice uses its public title, so a private task remains a stub.
+text in a notice uses its public title, so a private task remains a stub. A stop
+that is unconfirmed leaves the roster saved and reports that permission reset and
+handoff were not attempted; reapply the removal after checking the runtime.
+
+A hub task, verdict, review or budget message addressed to an off-roster peer
+stays in its retained queue, with one public notice to the person. Task operations
+use the current owner and reviewer after reassignment. A mixed addressed audience
+receives the on-roster copies now and retains the off-roster copies; the sender
+sees the existing notice field (or a decision note for native answers). Broadcasts
+exclude off-roster peers; a person or agent addressing only removed peers is
+refused before publishing. The dashboard roster undo has its own peer-id
+confirmation and optional active-turn stop checkbox.
 
 Without a roster setting, participation keeps the previous defaults. An explicit
 `roster.pi` overrides `pi.enabled`; otherwise that legacy switch continues to

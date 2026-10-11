@@ -830,12 +830,12 @@ test("roster defaults preserve every existing peer and runtime audiences exclude
     const broadcast = newEnvelope("claude", "broadcast");
     expect(bus.offRosterRecipients(broadcast)).toEqual([]);
     expect(bus.publish(broadcast)).toEqual(["codex"]);
-    expect(bus.publish(newEnvelope(USER, "addressed off", { to: ["kimi"] }))).toEqual([]);
-    expect(bus.publish(newEnvelope(USER, "mixed", { to: ["kimi", "claude"] }))).toEqual(["claude"]);
+    expect(bus.publish(newEnvelope(USER, "addressed off", { to: ["kimi"] }))).toEqual(["kimi"]);
+    expect(bus.publish(newEnvelope(USER, "mixed", { to: ["kimi", "claude"] }))).toEqual(["kimi", "claude"]);
     expect(bus.offRosterRecipients(newEnvelope("codex", "targets", { to: ["codex", "kimi", "kimi", "external-peer"] }))).toEqual(["kimi"]);
     await rosterTurnSettled();
     expect(codex.got.map(env => env.body)).toEqual(["broadcast"]); expect(claude.got.map(env => env.body)).toEqual(["mixed"]);
-    expect(kimi.got).toEqual([]); expect(bus.queueIds("kimi")).toEqual([]); expect(bus.attemptState()).toEqual({});
+    expect(kimi.got).toEqual([]); expect(bus.queueList("kimi").flatMap(row => row.originals.map(env => env.body))).toEqual(["addressed off", "mixed"]); expect(bus.attemptState()).toEqual({});
   } finally { bus.closeJournal(); await Promise.all([claude.stop(), codex.stop(), kimi.stop()]); }
 });
 
@@ -855,6 +855,8 @@ test("native all-off recipients refuse before publication/limits; mixed recipien
     expect(admitted.map(env => env.to)).toEqual([["claude"]]); // refused pair spends nothing
     expect(allowed.got.map(env => env.body)).toEqual(["mixed accepted"]); expect(blocked.got).toEqual([]);
     expect(events.filter(event => event.t === "envelope")).toHaveLength(1);
+    expect(bus.queueList("kimi").flatMap(row => row.originals.map(env => env.body))).toEqual(["mixed accepted"]);
+    expect(bus.snapshot().prefaces.codex!.body).toContain("retained off roster for kimi");
   } finally { bus.closeJournal(); await Promise.all([sender.stop(), allowed.stop(), blocked.stop()]); }
 });
 
@@ -914,11 +916,13 @@ test("off-roster important messages cannot steer a busy peer (#315)", async () =
   let on = true; const bus = new Bus({ batchMs: 0, rostered: () => on }), peer = new FakePeer("codex"); peer.canSteer = true; bus.add(peer); await peer.start(); peer.set("busy");
   try {
     on = false; bus.rosterChanged(peer.id);
-    expect(bus.publish(newEnvelope(USER, "off important", { to: [peer.id], priority: "important" }))).toEqual([]);
-    await rosterTurnSettled(); expect(peer.steered).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([]); expect(bus.attemptState()).toEqual({});
+    const retained = newEnvelope(USER, "off important", { to: [peer.id], priority: "important" });
+    expect(bus.publish(retained)).toEqual([peer.id]);
+    await rosterTurnSettled(); expect(peer.steered).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([retained.id]); expect(bus.attemptState()).toEqual({});
     on = true; bus.rosterChanged(peer.id);
     bus.publish(newEnvelope(USER, "on important", { to: [peer.id], priority: "important" })); await rosterTurnSettled();
     expect(peer.steered.map(env => env.body)).toEqual(["on important"]);
+    peer.set("idle"); await rosterTurnSettled(); expect(peer.got.filter(env => env.id === retained.id)).toHaveLength(1);
   } finally { bus.closeJournal(); await peer.stop(); }
 });
 

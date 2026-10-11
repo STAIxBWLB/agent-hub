@@ -2233,5 +2233,15 @@ start. The CLI and dashboard use the settings API and no roster hub tool exists.
 Removal orders its steps as membership fence, detach or stop, then handoff. Its
 preview and result name the peer whose retained terminal work the person must
 stop, and the result lists the saved task moves with public titles. Detached
-sessions receive no forced stop notice or journal bypass; a peer still attached
-at handoff uses the existing guarded stop notice.
+sessions receive no forced stop notice or journal bypass. The preview names
+roles offered and those without a replacement; the result names every saved
+move and every assignment that stays. An unconfirmed stop reports the skipped
+permission reset and handoff after the roster write.
+
+Removal includes in-review ownership (keeping its review state) and reviewer
+roles. Later task messages follow the current owner/reviewer. An explicit
+off-roster recipient is retained, including one recipient of a mixed audience,
+with one public notice to the person; native senders get a decision note and
+console/channel senders get the existing notice field. Broadcasts omit removed
+peers, and a person or agent addressing only removed peers is refused before
+publication. The dashboard roster undo carries peer confirmation.

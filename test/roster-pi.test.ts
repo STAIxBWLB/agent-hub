@@ -72,3 +72,55 @@ for (const idle of [true, false]) test(`daemon Pi roster removal preserves its p
     if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
   }
 });
+
+test("Pi roster verification serializes roster writes and holds dispatch through its idle replay (#315)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-roster-pi-fence-"))), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(root, "home");
+  const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub/config.json"), "{}");
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: "roster-pi-fence", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, roster: { pi: true }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+  const client = await ControlClient.connect(stateDir, { role: "console" }), f = await rosterPiFixture(undefined, { cwd: root, stateDir });
+  const attempted: string[] = [], delivered: string[] = [];
+  const onDeliver = daemon.bus.onDeliver, onDelivered = daemon.bus.onDelivered;
+  daemon.bus.onDeliver = (peer, originals) => { onDeliver?.(peer, originals); if (peer === "pi") attempted.push(...originals.map(env => env.id)); };
+  daemon.bus.onDelivered = (peer, originals) => { onDelivered?.(peer, originals); if (peer === "pi") delivered.push(...originals.map(env => env.id)); };
+  daemon.bus.add(f.peer);
+  try {
+    daemon.bus.pause("pi");
+    expect(await client.request({ t: "settings_set", key: "roster.pi", value: false, confirm: "pi" })).toMatchObject({ ok: true });
+    const adding = client.request({ t: "settings_set", key: "roster.pi", value: true });
+    await client.request({ t: "status" });
+    const snapshot = await f.next(); expect(snapshot.type).toBe("get_session_state");
+    expect(daemon.bus.isRostered("pi")).toBe(true); expect(f.peer.state).toBe("offline");
+    daemon.bus.resume("pi"); // remove the independent pause before the snapshot proof, isolating deliveryHeld
+    expect(daemon.bus.stateOf("pi")).toBe("offline");
+    const original = newEnvelope(USER, "verification-gated original", { to: ["pi"], priority: "important" });
+    expect(await client.request({ t: "send", to: ["pi"], body: original.body, priority: original.priority })).toMatchObject({ ok: true });
+    const queued = daemon.bus.queueList("pi").flatMap(row => row.originals).find(env => env.body === original.body)!;
+    expect(queued).toBeDefined(); expect(daemon.bus.queued("pi")).toBe(1);
+    expect(attempted).toEqual([]); expect(delivered).toEqual([]); expect((f.peer as any).tuiQueue).toEqual([]);
+    expect(daemon.bus.queueList("pi").every(row => row.state === "queued")).toBe(true);
+    expect(await client.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi" })).toMatchObject({ ok: false, error: "roster change for pi is in progress" });
+    expect(daemon.bus.isRostered("kimi")).toBe(true);
+    // Preserve and execute the real bus callback, then observe the synchronous idle replay.
+    // Important work avoids the condensation await, so a missing transient fence starts it here.
+    const onState = f.peer.onState;
+    let replay: { state: string; queued: number; attempted: string[]; states: string[] } | undefined;
+    f.peer.onState = state => {
+      onState?.(state);
+      if (state === "idle" && replay === undefined) replay = { state: f.peer.state, queued: daemon.bus.queued("pi"), attempted: [...attempted], states: daemon.bus.queueList("pi").map(row => row.state) };
+    };
+    await f.ack(snapshot, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true });
+    expect(await adding).toMatchObject({ ok: true });
+    expect(replay).toEqual({ state: "idle", queued: 1, attempted: [], states: ["queued"] });
+    const prompt = await f.next(); expect(prompt.type).toBe("prompt"); expect(prompt.message).toContain(original.body); await f.ack(prompt);
+    await f.post("/event", { type: "agent_start", generation: 1 }); await f.post("/event", { type: "agent_settled", generation: 1, text: "completed" });
+    await client.request({ t: "status" });
+    expect(attempted.filter(id => id === queued.id)).toHaveLength(1); expect(delivered.filter(id => id === queued.id)).toHaveLength(1);
+    expect(daemon.bus.queued("pi")).toBe(0); expect((f.peer as any).tuiQueue).toEqual([]);
+  } finally {
+    client.close(); await f.cleanup(); await daemon.stop(); rmSync(root, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+  }
+});

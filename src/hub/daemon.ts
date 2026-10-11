@@ -1619,10 +1619,11 @@ export async function startDaemon(opts: DaemonOptions) {
     return mode === "ask" ? {} : { permissionMode: mode };
   };
   const statusPeerIds = () => {
+    if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return bus.knownPeers();
     const open = board.list().filter(task => task.state !== "approved");
     const ids = new Set(bus.knownPeers());
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
-    return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (bus.queueSummary(peer).needsReview > 0 || !!bus.queueSummary(peer).liveAccepted?.length) || open.some(task => task.owner === peer || task.reviewer === peer));
+    return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
   const status = () => ({
     ...(crashReport.length ? { crash: crashReport } : {}),
@@ -1898,6 +1899,10 @@ export async function startDaemon(opts: DaemonOptions) {
       log(`STALE ${e.peer}: dropped ${e.env.id} from ${e.env.from}: ${e.reason}`);
       event({ type: "stale", id: e.env.id, from: e.env.from, peer: e.peer, ...(e.env.refs?.task ? { task: e.env.refs.task } : {}) });
     }
+    else if (e.t === "off_roster") {
+      const task = e.env.refs?.task ? board.get(Number(e.env.refs.task)) : undefined;
+      notify(`Message${task ? ` for task ${tasks.publicTitle(task)}` : ""} retained off roster for ${sanitize(e.peers.join(", "))}; it waits until the peer returns or the person resolves its queue.`);
+    }
     else if (e.t === "quiet") {
       log(`QUIET ${e.env.id} from ${e.env.from}: not delivered to ${e.peers.join(", ")} (turn-free cohort)`);
       event({ type: "quiet", id: e.env.id, from: e.env.from, peers: e.peers });
@@ -2127,7 +2132,7 @@ export async function startDaemon(opts: DaemonOptions) {
         writeStatus();
         const state = bus.stateOf(peer);
         if (state !== "offline" || bus.peers.get(peer) !== owner) return { ok: false, error: "peer stop did not reach offline on its owner; inspect ahub status and its terminal before retrying" };
-        try { notify(`${peer} stopped by the console; start it again with ahub ${peer}`); } catch { /* owner stop and readback remain authoritative */ }
+        try { notify(rosterRemoval ? `${peer} stopped for roster removal; add it with ahub roster add ${peer} before starting it again` : `${peer} stopped by the console; start it again with ahub ${peer}`); } catch { /* owner stop and readback remain authoritative */ }
         return { ok: true, state };
       });
     } catch {
@@ -2846,7 +2851,7 @@ export async function startDaemon(opts: DaemonOptions) {
         else if (owner instanceof PiPeer && owner.mode === "tui") await owner.detachForRoster();
         else if (owner && owner.state !== "offline") {
           const result = await stopPeer(peer, true);
-          if (result.ok !== true) throw new Error(`roster saved; ${peer} stop is unconfirmed: inspect ahub status`);
+          if (result.ok !== true) throw new Error(`roster saved; ${peer} stop is unconfirmed; permission reset and task handoff were not attempted; inspect ahub status and reapply ${def.key} false to retry`);
         }
         const mode = config.permission_modes[peer] ?? "ask";
         permissionModes.set(peer, mode === "never-ask" ? "ask" : mode);
@@ -2859,7 +2864,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (owner instanceof PiPeer && owner.mode === "tui") await owner.resumeFromRoster();
       }
       writeStatus();
-      return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(!after ? (handoff.length ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : ["No tasks were handed over."]) : [])].join("\n"), ...(!after ? { handoff } : {}) };
+      const stayed = !after ? board.list().filter(task => task.state !== "approved" && (task.owner === peer || task.reviewer === peer)) : [];
+      return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(!after ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : []), ...stayed.map(task => sanitize(`task ${tasks.publicTitle(task)} stays with ${peer} as ${[task.owner === peer ? "owner" : "", task.reviewer === peer ? "reviewer" : ""].filter(Boolean).join(" and ")} (${task.state})`)), ...(!after && !handoff.length && !stayed.length ? ["No open tasks to hand over."] : [])].join("\n"), ...(!after ? { handoff } : {}) };
     } catch (error) {
       if (saved) writeStatus();
       return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
@@ -2874,7 +2880,6 @@ export async function startDaemon(opts: DaemonOptions) {
     catch (error) { return { error: (error as Error).message }; }
   }
   async function settingsSet(key: unknown, raw: unknown, authority: SettingAuthority, confirm?: unknown, now?: unknown): Promise<Record<string, unknown>> {
-    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const input = settingInput(key, raw);
     if ("error" in input) return { ok: false, error: input.error };
     const { def, value } = input;
@@ -2882,6 +2887,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (refusal) return { ok: false, error: refusal };
     const source = settingSource(authority);
     if (def.group === "Roster") return changeRosterSetting(def, value, source, confirm, now === true);
+    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const peer = def.group === "Permissions" ? def.path.at(-1)! : undefined;
     // The console asks for y before never-ask; here the person types the peer it is for.
     if (value === "never-ask" && confirm !== peer) return { ok: false, error: `never-ask for ${peer} needs its peer id as the confirmation; nothing was changed` };
@@ -2920,12 +2926,12 @@ export async function startDaemon(opts: DaemonOptions) {
   // As at hub start: with no project routing.toml only a pin the overlay sets counts, never the shipped template's own.
   const routingCheck = (routing: Routing) => { const problem = config.mlx.enabled === false ? mlxPinProblem(routing, existsSync(join(opts.cwd, ".agenthub", "routing.toml"))) : undefined; if (problem) throw new Error(problem); };
   async function settingsUndo(authority: SettingAuthority, confirm?: unknown, now?: unknown): Promise<Record<string, unknown>> {
-    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     // The previous version can hold a wider value than the one in force, so undo is never an ordinary session's.
     if (authority === "ordinary") return { ok: false, error: "undo can put back a value that widens what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings undo in a terminal" };
     const def = settingDef(pendingUndo(opts.stateDir));
     if (typeof def === "string") return { ok: false, error: "nothing to undo" };
     if (def.group === "Roster") return changeRosterSetting(def, null, settingSource(authority), confirm, now === true, true);
+    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const read = (): SettingValue => def.store === "routing" ? routingValue(currentRouting(opts.cwd, log), def) : settingScalar(valueAt(storedConfig(), def.path));
     // never-ask is set with its confirmation, never put back by an undo that carries none.
     if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} again (never-ask, or inherit where the shared file holds it) with the confirmation instead; nothing was undone` };
@@ -2947,8 +2953,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (def.group === "Roster") {
       try {
         const peer = def.path[1]!, next = rosterCandidate(def, value), on = rosterAllows(next, peer, config.pi.enabled);
-        const open = board.list().filter(task => task.state !== "approved" && (task.owner === peer || task.reviewer === peer));
-        return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...open.map(task => sanitize(`task ${tasks.publicTitle(task)}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
+        return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
     if (def.group === "Permissions") {
@@ -2997,8 +3002,8 @@ export async function startDaemon(opts: DaemonOptions) {
         const targets = Array.isArray(a.to) ? a.to as string[] : [];
         const off = targets.filter(id => !membershipAllowed(id));
         if (off.length && off.length === targets.length) return { ok: false, error: `off roster: ${off.join(", ")}` };
-        bus.publish(newEnvelope(USER, body, { priority, ...(targets.length ? { to: targets.filter(id => !off.includes(id)) } : {}) }));
-        return { ok: true };
+        bus.publish(newEnvelope(USER, body, { priority, ...(targets.length ? { to: targets } : {}) }));
+        return { ok: true, ...(off.length ? { text: `retained off roster for ${off.join(", ")}` } : {}) };
       }
       case "propose": {
         if (!text("title", 300) || (a.detail !== undefined && !text("detail", 8000)) || (a.class !== undefined && !text("class", 32)) || (a.owner !== undefined && !(typeof a.owner === "string" && PEER_ID.test(a.owner)))) return bad;
@@ -3013,7 +3018,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const result = await hubStart(a.peer, "the dashboard");
         if (result.ok === true) return { ok: true, text: result.already ? `${a.peer} is already attached.` : result.opened ? `Opened a terminal running ${result.command}; ${a.peer} attaches when its TUI is ready.` : `${a.peer} started (headless).` };
         // A refusal the hub worded itself carries the command to run by hand; an adapter's own failure text stays in the log.
-        if (typeof result.command === "string") return { ok: false, error: String(result.error) };
+        if (typeof result.command === "string" || typeof a.peer === "string" && !membershipAllowed(a.peer)) return { ok: false, error: sanitize(String(result.error)) };
         log(`dashboard start ${a.peer} failed: ${String(result.error)}`);
         return { ok: false, error: `${a.peer} did not start; inspect ahub status and hub.log` };
       }
@@ -3407,17 +3412,17 @@ export async function startDaemon(opts: DaemonOptions) {
         let env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
         const offRoster = bus.offRosterRecipients(env);
         if (offRoster.length && offRoster.length === new Set(env.to?.filter(id => id !== env.from)).size) return void reply({ t: "sent", ok: false, error: `off roster: ${offRoster.join(", ")}` });
-        if (offRoster.length) env = { ...env, to: env.to!.filter(id => !offRoster.includes(id)) };
+        const admittedEnv = offRoster.length ? { ...env, to: env.to!.filter(id => !offRoster.includes(id)) } : env;
         // A silent cohort (issue #107): the members it is held back from are left out, the rest get it; the sender is
         // told. Held back from everyone, it costs the sender nothing against its limits.
         const hushed = bus.hushed(env);
         const heldBack = hushed.length > 0 && hushed.length === bus.audience(env).length;
-        const refused = c.peer && !heldBack ? admit(env, inReplyTo?.id) : undefined;
+        const refused = c.peer && !heldBack ? admit(admittedEnv, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
         const targets = bus.publish(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
         if (hushed.length && !targets.length) return void reply({ t: "sent", ok: false, error: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` });
-        return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi", ...(offRoster.length ? { offRoster, rosterNotice: `off roster: ${offRoster.join(", ")}` } : {}), ...(hushed.length ? { hushed: hushed.map((h) => h.peer), notice: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` } : {}) });
+        return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi", ...(offRoster.length ? { offRoster } : {}), ...(hushed.length ? { hushed: hushed.map((h) => h.peer) } : {}), ...((offRoster.length || hushed.length) ? { notice: [offRoster.length ? `retained off roster for ${offRoster.join(", ")}` : "", hushed.length ? `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` : ""].filter(Boolean).join("; ") } : {}) });
       }
       case "facts": {
         // Turn-free facts (issue #108) for Claude's hooks: `pre` before a tool runs (the fact rides back as additional

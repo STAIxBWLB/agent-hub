@@ -1528,6 +1528,19 @@ export class Tasks {
     return this.reassignWork(peer, context, urgentOnly, false);
   }
 
+  /** Read-only preview using the same assignment constraints as the roster relay. */
+  rosterPreview(peer: PeerId): { id: number; title: string; role: "owner" | "reviewer"; to: PeerId | null }[] {
+    const routing = this.d.routing();
+    return this.d.board.list().filter(task => task.state !== "approved" && (task.owner === peer || task.reviewer === peer)).map(task => {
+      const owner = task.owner === peer;
+      const weights = this.weights(task.class);
+      const pii = this.isPii(task);
+      const candidates = owner ? [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter(p => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p) : [];
+      const a = assign(task, this.states(), routing, { ...weights, offRoster: [...(weights.offRoster ?? []), peer], exclude: [peer], candidates, ...(owner ? { waitsFor: this.waitsFor(task) } : task.owner ? { notReviewer: task.owner } : {}) });
+      return { id: task.id, title: this.publicTitle(task), role: owner ? "owner" : "reviewer", to: (owner ? a.owner : a.reviewer) ?? null };
+    });
+  }
+
   /** A roster removal offers work through the quota relay's constraints, preserving assignments nobody can take. */
   async reassignForRoster(peer: PeerId): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
     return this.reassignWork(peer, undefined, false, true);
@@ -1541,7 +1554,7 @@ export class Tasks {
     const contextWithheld = context && this.d.board.list().some((t) => moves(t) && !this.isPii(t)) ? await this.withholds("handoff", context) : false;
     for (const task of this.d.board.list()) {
       if (urgentOnly && !task.signals.includes("urgent")) continue;
-      if (task.owner === peer && OPEN.includes(task.state)) {
+      if (task.owner === peer && (OPEN.includes(task.state) || roster && task.state === "in_review")) {
         const pii = this.isPii(task);
         const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
         // Budget keeps its original release/unassign behaviour. Roster changes the state in
@@ -1559,8 +1572,8 @@ export class Tasks {
         if (roster) {
           if (!next.owner || next.owner === peer) continue;
           this.releaseNotice(`task ${this.publicTitle(next)} moved from ${peer} to ${next.owner} (off roster)`);
-          if (this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline") this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${peer} it moved to ${next.owner}`, () =>
-            this.tell({ ...next, owner: peer }, `Task #${next.id} moved to ${next.owner} (off roster). Stop working on it.`, pii));
+          if (next.state === "in_review" && next.reviewer && next.reviewer !== task.reviewer && next.reviewer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${next.reviewer}`, () => this.sendReview(next, next.reviewer!, `(${peer} owned this and is off roster.)`));
+
         }
         moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
       } else if (task.reviewer === peer && task.state !== "approved") {
