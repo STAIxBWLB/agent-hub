@@ -699,3 +699,28 @@ test("roster settings undo sends typed confirmation and now, and renders live re
   expect(target.all().find(node => node.attrs["aria-label"] === "Confirm roster undo for kimi")).toBe(confirmation);
   expect(confirmation.value).toBe(" kimi ");
 });
+
+test("instruction protection is a live person setting with preview, machine-local write and undo (#323)", async () => {
+  const rig = await hub();
+  expect(spawnSync("git", ["-C", rig.cwd, "init", "-q"]).status).toBe(0);
+  const key = "scoped_grants.protect_instructions";
+  const before = text(rig.file("config.json"));
+  const definition = def(key); expect(definition.applies).toBe("live"); expect(definition.store).toBe("config");
+  const rows = await rig.client.request({ t: "settings_get" });
+  expect(rows.rows.find((row: SettingRow) => row.key === key).value).toBe(false);
+  const preview = await rig.client.request({ t: "settings_preview", key, value: true });
+  expect(preview.lines.join(" ")).toContain("AGENTS.md"); expect(text(rig.file("config.local.json"))).toBeNull();
+  expect((await rig.client.request({ t: "settings_set", key, value: true })).ok).toBe(true);
+  expect(loadConfig(rig.cwd).protect_instruction_files).toBe(true);
+  expect(text(rig.file("config.json"))).toBe(before);
+  expect((await rig.client.request({ t: "settings_undo" })).ok).toBe(true);
+  expect(loadConfig(rig.cwd).protect_instruction_files).toBe(false);
+  for (const role of ["tools", "peer"] as const) {
+    const agent = await ControlClient.connect(rig.stateDir, { role, peer: role === "tools" ? "codex" : "external" }); cleanup.push(() => agent.close());
+    expect((await agent.request({ t: "settings_set", key, value: true })).ok).toBe(false);
+  }
+  const ordinary = await rig.page(), marked = await rig.page(true);
+  expect((await marked.act({ action: "setting", key, value: true })).ok).toBe(true);
+  expect((await ordinary.act({ action: "setting", key, value: false })).ok).toBe(false);
+  expect((await marked.act({ action: "setting", key, value: false })).ok).toBe(true);
+});

@@ -2370,3 +2370,20 @@ prompt was accepted but before history was persisted is not treated as empty:
 its delivery is held, and another start refuses until resume history is verified.
 Inspect and settle the held delivery before deliberately replacing that unpersisted
 session by restarting the hub; the stop never silently chooses a fresh session.
+
+## Scoped grants for instruction files
+
+`ahub settings set scoped_grants.protect_instructions true` asks a person before
+Pi/local scoped writes and edits to `AGENTS.md`, `CLAUDE.md` and `QWEN.md`, and
+withholds automatic permission from the managed Claude hook. Case, compatibility
+forms and both symlink spellings are checked. The default is false: these project
+documents remain editable under scoped grants. Reads, explicit approval and
+never-ask keep their existing behavior.
+
+Use `ahub settings preview scoped_grants.protect_instructions true` before a
+change and `ahub settings undo` to restore it. It is in the Permissions registry,
+writes only machine-local `protect_instruction_files`, and applies immediately
+in the running hub. A dashboard settings session may change it; an ordinary
+session may turn protection on but cannot weaken it. No agent surface changes it.
+Like other machine-local security defaults, loading it requires git to establish
+that the file is untracked; a dropped value is reported by the settings result.
