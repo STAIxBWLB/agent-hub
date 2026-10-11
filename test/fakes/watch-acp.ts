@@ -13,11 +13,11 @@ for await (const line of createInterface({ input: process.stdin })) {
     update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "WATCH_ONLY_MARKER " } });
     update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
     for (const [id, kind] of [["read-1", "read"], ["edit-1", "edit"], ["run-1", "execute"]]) {
-      update({ sessionUpdate: "tool_call", toolCallId: id, title: kind, kind, status: "in_progress", rawInput: { private: "WATCH_ONLY_MARKER" }, locations: [{ path: "source.ts" }] });
+      update({ sessionUpdate: "tool_call", toolCallId: id, title: kind, kind, status: "in_progress", rawInput: kind === "execute" ? { command: "fixture command" } : { private: "WATCH_ONLY_MARKER" }, locations: [{ path: "source.ts" }] });
       update({ sessionUpdate: "tool_call_update", toolCallId: id, status: "completed", content: kind === "edit" ? [{ type: "diff", path: "source.ts", oldText: "old", newText: "new\nline" }] : [{ type: "content", content: { type: "text", text: "WATCH_ONLY_MARKER terminal output" } }] });
     }
     update({ sessionUpdate: "plan", entries: [{ content: "Plan complete", priority: "high", status: "completed" }] });
-    send({ jsonrpc: "2.0", id: 901, method: "session/request_permission", params: { sessionId: "watch-session", toolCall: { toolCallId: "run-1", title: "execute", rawInput: { command: "WATCH_ONLY_MARKER" } }, options: [{ optionId: "no", kind: "reject_once", name: "Deny" }] } });
+    send({ jsonrpc: "2.0", id: 901, method: "session/request_permission", params: { sessionId: "watch-session", toolCall: { toolCallId: "run-1", title: "execute", rawInput: { command: "fixture command" } }, options: [{ optionId: "no", kind: "reject_once", name: "Deny" }] } });
   } else if (m.id === 901 && m.result) {
     update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Final " } });
     update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } });

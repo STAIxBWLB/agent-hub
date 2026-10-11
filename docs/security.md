@@ -194,5 +194,5 @@ Jcode is optional, source/version-fenced and runs native tools without a hub san
 # Transient ACP activity (#286)
 
 - Watch activity can contain file contents, thoughts and command output. It is console-role only, kept in a bounded in-memory ring and exposed only through the `watch` control request. Agent shells, conductor tools, dashboard snapshots, hub tools and memory observers cannot read it. Terminal bodies pass through the console's sanitization and wrapping helpers. Slow sockets close instead of accumulating unbounded output.
-- Private/PII turns show a single stub; the adapter latches privacy for that turn. The existing final-answer bus and terminal approval path remain independent, with their existing privacy rules. Watch never adds activity to either path or any disk log.
+- Private/PII turns show a single stub; the adapter latches privacy for that turn. The existing final-answer bus and native approval paths (console and dashboard) remain independent, with their existing privacy rules. Watch never adds activity to either path or any disk log.
 - There is no Qwen dual-output input file or TUI transport in this slice; Q2-Q6 are unverified and TUI mode stays refused.
