@@ -40,7 +40,7 @@ The #252 gsd-lite option remains guidance, bounded predecessor edges and criteri
 
 ## Delivery and verification state
 
-The initial implementation adds built-in configuration validation, optional board receipts, fake-gh stale-head/required-check tests, Tasks transition gates and CLI/console/dashboard projections. Custom stage/gate definitions, full merge-queue and release-readiness presentation, gsd-lite and a live advise cycle remain pending. A native/account cycle must be recorded separately; no merge or release is implied by this document.
+The initial implementation adds built-in configuration validation, optional board receipts, fake-gh stale-head/required-check tests, Tasks transition gates and CLI/console/dashboard projections. Custom stage/gate definitions, full merge-queue and release-readiness presentation, a dependency-editing/import workflow and a live advise cycle remain pending. The bounded checklist guidance slice below is implemented separately. A native/account cycle must be recorded separately; no merge or release is implied by this document.
 
 ## Initial commands
 
@@ -49,3 +49,28 @@ A per-project `.agenthub/sdlc.toml` may set `mode = "advise"` and `required_chec
 A person records ids and a claimed local receipt with `ahub sdlc record 12 '{"repo":"owner/repo","issue":109,"pr":325,"localHead":"<full SHA>","localResult":"passed","stage":"implement"}'`. Owners/reviewers have the bounded `hub_sdlc_record` tool; it accepts no remote bodies or external-check results. Only the assigned reviewer or person records a reviewed head. `ahub review 12 approved --head <full SHA>` rechecks current evidence before approval. Changes requested does not require green CI.
 
 `ahub sdlc status` lists bounded local projections without polling every remote PR. `ahub sdlc explain 12` or `status 12` performs a fresh structured readback, with a console-only boundary and no remote body retention. Shared console/dashboard projections explicitly show unknown external evidence; they do not certify freshness from cached data. Default task rows and contracts remain unchanged when off.
+
+# gsd-lite checklist guidance
+
+- Select `workflow = "none" | "gsd-lite"` in `.agenthub/sdlc.toml`; none is the default and preserves existing receipts, contracts and traces. Like the SDLC mode, this file is loaded at daemon start. Workflow choice adds guidance; it does not select enforcement.
+- A task's reviewer or the person records `phase` through `hub_sdlc_record` or `ahub sdlc record`. The board owns the receipt, with its actor/history. No writable STATE/PLAN/HANDOFF file is introduced.
+- A phase names a bounded slug `id`, a full `head`, up to 64 existing task/predecessor records and 1..32 criterion records. `tasks` entries use `{ "id": 2, "after": [1] }`; after must match current Tasks.after edges exactly. Imports refuse missing ids, cycles, closures above 256 tasks and ordinary-parent references to private work. They do not edit dependencies, accepted owners or reservations. Create dependencies through the existing `ahub task propose --after` flow.
+- Each criterion has a bounded `id`, boolean `required`, `result` verified|failed|unverified and up to eight hashed refs. Accepted refs are `sha256:<64-hex>`, or `artifact|check|source:<ASCII-reference>@<64-hex>`. Whole phase JSON is at most 32 KiB. The hub never fetches those refs or treats a model's claim as a deterministic check. Verified outcomes are reviewer claims, separately labelled from fresh GitHub checks.
+- Required failed/unverified criteria, unfinished child tasks, changed/unavailable dependencies and missing/stale checklist heads make phase readiness false. In advise/off, board transitions retain their existing behavior; readiness can remain false after a historical approval. Enforce adds phase blockers only to the existing approval transition. Entering review remains possible while criteria are unverified, so the reviewer can inspect and record them.
+- `ahub sdlc status <id>` and `explain` expose the same workflow/phase projection used by the console and dashboard; `ahub route explain` names active workflow guidance. `ahub sdlc export <id>` emits sanitized ids, states, criteria/hashes and two SHA-256 values: `stateHash` hashes that exact projection, `sourceHash` hashes the normalized effective lifecycle configuration (not a code/build attestation). Private exports contain a stub and no phase refs. Exports are read-only derived views and cannot be imported as task authority.
+- Full GSD import, dependency editing, custom lifecycle gates, release readiness and the native advise cycle remain pending. No automatic advance, merge, release, permission change or experiment is included. The default versus gsd-lite #251 comparison is not run during the solo implementation.
+
+Example reviewer receipt (task 2 already depends on task 1):
+
+```json
+{
+  "phase": {
+    "id": "delivery-one",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tasks": [{ "id": 2, "after": [1] }],
+    "criteria": [{ "id": "native-smoke", "required": true, "result": "unverified", "refs": [] }]
+  }
+}
+```
+
+The repeated SHA is a syntax example, not verification evidence. Replace it with the head actually reviewed. A verified criterion requires hashed evidence refs and still does not replace the configured exact-head local/CI gates.

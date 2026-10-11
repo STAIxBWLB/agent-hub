@@ -586,12 +586,44 @@
       "testName": "activity ring bounds bytes and count, replays then streams without exposing mutable rows (#286)"
     },
     {
+      "id": "workflow-reviewer-only",
+      "file": "src/hub/tasks.ts",
+      "search": "if (input && typeof input === \"object\" && \"phase\" in input) {",
+      "replacement": "if (false && input && typeof input === \"object\" && \"phase\" in input) {",
+      "testFile": "test/workflow.test.ts",
+      "testName": "only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)"
+    },
+    {
+      "id": "workflow-required-verdict",
+      "file": "src/hub/workflow.ts",
+      "search": "if (criterion.required && criterion.result !== \"verified\")",
+      "replacement": "if (false)",
+      "testFile": "test/workflow.test.ts",
+      "testName": "only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)"
+    },
+    {
+      "id": "workflow-exact-after",
+      "file": "src/hub/workflow.ts",
+      "search": "if (actual.length !== link.after.length || actual.some(id => !link.after.includes(id)))",
+      "replacement": "if (false)",
+      "testFile": "test/workflow.test.ts",
+      "testName": "phase imports require exact current after edges and preserve accepted owners and reservations (#257)"
+    },
+    {
       "id": "watch-discard-cancel-buffer",
       "file": "src/adapters/acp.ts",
       "search": "if (discardPending) this.clearActivity(); else this.flushActivity();",
       "replacement": "this.flushActivity();",
       "testFile": "test/watch.test.ts",
       "testName": "ACP cancellation discards coalesced chunks at a consumed update barrier (#286)"
+    },
+    {
+      "id": "workflow-first-receipt-guidance",
+      "file": "src/hub/tasks.ts",
+      "search": "((this.d.sdlc?.config().mode ?? \"off\") !== \"off\" || this.d.sdlc?.config().workflow === \"gsd-lite\") ?",
+      "replacement": "task.sdlc && ((this.d.sdlc?.config().mode ?? \"off\") !== \"off\" || this.d.sdlc?.config().workflow === \"gsd-lite\") ?",
+      "testFile": "test/workflow.test.ts",
+      "testName": "new gsd-lite tasks expose checklist guidance before the first receipt and preserve none defaults (#257)"
     }
   ]
 }

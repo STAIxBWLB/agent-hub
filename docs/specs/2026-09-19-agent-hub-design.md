@@ -2335,3 +2335,9 @@ the queue.
 - Headless Kimi/Qwen expose `watch` to console-role clients: bounded memory replay followed by activity pushes, no protocol bump, no peer input or approvals from the view. The CLI displays safe wrapped text; private/PII turns display a stub.
 - Activity contains delivery ids/senders, message/thought chunks, bounded tool summaries, plans, permission request/outcome ids and turn end. It never enters persistent events/logs, UI, tools or cloud memory. Existing final answers still travel through the answer bus.
 - Kimi TUI defaults remain pull-only. Qwen TUI and native visualizer support remain gated by unverified T0 checks. See [verification](../verification/2026-10-11-acp-watch-t0.md).
+
+# gsd-lite amendment, 2026-10-11 (#257)
+
+- Optional workflow none|gsd-lite, none by default, uses existing SDLC receipts and Tasks authority. A reviewer/person-owned checklist stores bounded criterion ids, hashed evidence refs and verified/failed/unverified claims bound to the reviewed head.
+- Existing task/predecessor ids must match current Tasks.after edges; missing/cyclic/private cross-links are refused before effects. Imports do not change task ownership, reservations or dependencies.
+- Required unknown/failed criteria and stale heads keep readiness false. Advise remains nonblocking; enforce adds these only to existing approval gates. Route explain, console/dashboard lifecycle views and read-only hashed exports derive the same board/config state. No second writable workflow store, automatic advance, permissions, merge/release or study execution.
