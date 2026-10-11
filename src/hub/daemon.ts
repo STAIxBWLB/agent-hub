@@ -1,3 +1,5 @@
+import { JcodePeer } from "../adapters/jcode.ts";
+import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
@@ -84,6 +86,9 @@ export interface HubConfig {
   watchdog_ms: number;
   kimi_cmd: string[];
   qwen_cmd: string[];
+  jcode_cmd: string[];
+  jcode_home: string;
+  jcode_provider_profile: string;
   permission_modes: Record<string, PermissionMode>;
   protect_instruction_files: boolean;
   /** Loader-owned provenance of requested defaults, before machine-local filtering. */
@@ -146,6 +151,9 @@ export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
   kimi_cmd: ["kimi", "acp"],
   qwen_cmd: ["qwen", "--acp"],
+  jcode_cmd: ["jcode"],
+  jcode_home: process.env.JCODE_HOME ?? join(homedir(), ".jcode"),
+  jcode_provider_profile: "",
   permission_modes: {},
   protect_instruction_files: false,
   codex_bin: "codex",
@@ -229,6 +237,9 @@ export function loadConfig(cwd: string): HubConfig {
       throw error;
     }
     peerRosterConfig(file.roster);
+    if (file.jcode_cmd !== undefined && (!Array.isArray(file.jcode_cmd) || !file.jcode_cmd.length || file.jcode_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("jcode_cmd must be a nonempty executable argv");
+    if (file.jcode_home !== undefined && (typeof file.jcode_home !== "string" || !isAbsolute(file.jcode_home))) throw new Error("jcode_home must be an absolute path");
+    for (const key of ["jcode_home", "jcode_provider_profile"]) if (file[key] !== undefined && typeof file[key] !== "string") throw new Error(`${key} must be a string`);
     if (file.qwen_cmd !== undefined && (!Array.isArray(file.qwen_cmd) || !file.qwen_cmd.length || file.qwen_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("qwen_cmd must be a nonempty executable argv");
     instructionProtection(file.protect_instruction_files);
     permissionDefaults(file.permission_modes); // malformed declarations fail even when trust would drop them
@@ -1064,7 +1075,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer === "claude" || peer === "codex") void requestCheckpoint(peer, "context").catch(() => {});
     return true;
   });
-  const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi", qwen: "qwen" };
+  const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi", qwen: "qwen", jcode: "jcode" };
   const budgetFeedSeen = new Map<string, string>();
   const feedBudgetPauses = () => {
     for (const hold of budget.persistedPauseDigestRows()) {
@@ -2056,7 +2067,7 @@ export async function startDaemon(opts: DaemonOptions) {
     replacingPi.add(pi);
     try { await pi.stop(); } finally { replacingPi.delete(pi); }
   }
-  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }): Promise<Record<string, unknown>> {
+  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (!membershipAllowed(peer)) return Promise.resolve({ ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` });
     if (rosterChanging === peer) return Promise.resolve({ ok: false, error: `${peer} roster change is in progress` });
@@ -2186,7 +2197,7 @@ export async function startDaemon(opts: DaemonOptions) {
     };
   }
 
-  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }): Promise<Record<string, unknown>> {
+  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
     let unmute: (() => void) | undefined;
     try {
       return await startPeerBody(peer, args, (p) => { unmute = muteState(p); });
@@ -2195,7 +2206,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
 
-  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
+  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
+    if (peer === "jcode" && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Jcode native TUI driving is unverified; use headless" };
     if (peer === "qwen" && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
     if (peer === "kimi") {
       if (args.mode !== undefined && !["headless", "tui"].includes(args.mode)) return { ok: false, error: "invalid Kimi mode" };
@@ -2260,6 +2272,17 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer !== "local") {
       if (existing instanceof PiPeer) await stopPiForReplacement(existing);
       else await existing?.stop();
+    }
+    if (peer === "jcode") {
+      if (args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Jcode native TUI driving is unverified; use headless" };
+      if (!jcodeMcpReady(opts.cwd, opts.stateDir, SERVER_JS)) return { ok: false, error: "Jcode project MCP entry missing or stale; the person runs ahub jcode to configure it" };
+      const jcode = new JcodePeer({ command: config.jcode_cmd, home: config.jcode_home, providerProfile: (args.providerProfile ?? config.jcode_provider_profile) || undefined,
+        ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: opts.cwd, watchdogMs: config.watchdog_ms,
+        preamble: roleContract("jcode", config.roles), log: () => log("Jcode native diagnostic: details withheld") });
+      recoveryTaskPreface("jcode"); await ensurePreface("jcode");
+      try { await jcode.start(); await reconcileNativeStart(peer, jcode); }
+      catch { await jcode.stop().catch(() => {}); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
+      return { ok: true, policy: "unmanaged" };
     }
     if (peer === "qwen") {
       if (args.mode === "tui") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
@@ -3255,6 +3278,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function changePermission(peer: unknown, mode: unknown, confirmed: unknown): Promise<Record<string, unknown>> {
     if (!isSupportedPeer(peer)) return { ok: false, error: "unknown permission peer" };
+    if (peer === "jcode") return { ok: false, error: "Jcode native policy is unmanaged; no hub mode mapping" };
     if (peer === "kimi" && (bus.peers.get(peer) instanceof WsPeer || (!bus.peers.has(peer) && startMode(peer) === "tui"))) return { ok: false, error: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode" };
     if (requestedPeerStops.has(peer)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
     const owner = bus.peers.get(peer);

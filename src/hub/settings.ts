@@ -46,8 +46,8 @@ const perClass = (name: TaskClass): SettingDef[] => [
 export const SETTINGS: readonly SettingDef[] = [
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
-  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
-  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at hub start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "hub start", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
+  ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
+  ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at hub start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "hub start", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
   ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "peer start", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),
   { key: "pi.auto_start", group: "Start", label: "Start Pi with the hub", type: "boolean", store: "config", applies: "hub start", risk: "raises", floor: false, path: ["pi", "auto_start"] },
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
@@ -62,7 +62,7 @@ export const SETTINGS: readonly SettingDef[] = [
  * Never editable from settings, whatever the session: these choose what the hub executes or where secrets and task
  * text go. A key equal to an entry, or below it, is refused by name.
  */
-export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal"] as const;
+export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal"] as const;
 
 /** The definition of a key, or why there is none. */
 export function settingDef(key: unknown): SettingDef | string {

@@ -1597,3 +1597,7 @@ visible boundaries, inbox/tool approval, stop and exact-head results, then recor
 the native version and observed outcome here. No hub-driven Qwen TUI is offered.
 
 Qwen recovery source/fake proof: saved ids pass through the driver and CLI to ACP session/load, and the crash loader restores the recorded id/model. Actual native/provider recovery remains unverified.
+
+## Jcode 0.94.0 peer (#332)
+
+Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.md. Unverified: real provider/model, native project MCP discovery and hub-tool receipt, native tool policy and stop/child teardown. Native automatic restoration is withheld because the pinned ACP load does not prove the id. No benchmark comparison or default replacement ran.

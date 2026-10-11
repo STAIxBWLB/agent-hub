@@ -61,6 +61,10 @@ export interface AcpOptions {
   permissionMode?: PermissionMode;
   /** Production Qwen only; legacy benchmark adapters retain their own native policy. */
   qwen025?: boolean;
+  /** A production adapter's source-pinned identity; no table is inferred from it. */
+  expectedAgent?: { name: string; version: string };
+  /** Vendors with uncertain load semantics must explicitly echo the restored identity. */
+  requireLoadSessionEcho?: boolean;
   /** Bound for native mode acknowledgement; defaults to the handshake deadline. */
   permissionModeTimeoutMs?: number;
   /** Load this earlier session (ACP `session/load`) instead of starting a new one: crash recovery, issue #37. */
@@ -191,6 +195,7 @@ export class AcpPeer extends BasePeer {
       // The configured peer id and command are labels, not an agent-specific mode contract.
       // Installed Kimi Code CLI's ACP initialize advertises this exact name.
       this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
+      if (this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version)) throw new Error("native ACP identity is not verified for this production adapter");
       this.qwenAgent = this.opts.qwen025 === true && this.id === "qwen" && init?.agentInfo?.name === "qwen-code" && init?.agentInfo?.version === "0.25.0";
       if (this.opts.qwen025 && !this.qwenAgent) throw new QwenIdentityError();
       const resume = this.opts.resumeSessionId;
@@ -199,6 +204,7 @@ export class AcpPeer extends BasePeer {
       // them is taken for an answer.
       if (!init?.agentCapabilities?.loadSession) throw new Error(`${this.id} cannot load an earlier session (the agent offers no loadSession)`);
       const loaded = await this.request("session/load", { sessionId: resume, cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
+      if ((loaded?.sessionId !== undefined && loaded.sessionId !== resume) || (this.opts.requireLoadSessionEcho && loaded?.sessionId !== resume)) throw new Error("native ACP load did not confirm the requested conversation; no restored session is claimed");
       return { ...loaded, sessionId: resume };
     };
     const timeout = new Promise<never>((_, reject) => {

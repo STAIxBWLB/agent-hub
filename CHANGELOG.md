@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add optional owned Jcode 0.94.0 daemon/ACP and project MCP bridge, with unmanaged native policy, default-off roster and explicit native recovery/tool proof limits (#332).
+
 - Add initial opt-in SDLC artifact receipts, exact-head approval gates, bounded readbacks and stage/blocker projections; retain off defaults and mark custom/release/live work pending (#257).
 - Add optional Qwen Code 0.25.0 ACP, off roster by default, with its own verified permission table, headless CLI/preview/stop and recovery command; keep unknown quota and native proof explicit (#256).
 

@@ -2,6 +2,7 @@
   "watchdog_ms": 300000,
   "kimi_cmd": ["kimi", "acp"],
   "qwen_cmd": ["qwen", "--acp"],
+  "jcode_cmd": ["jcode"],
   "codex_bin": "codex",
   "pi": { "enabled": false, "auto_start": false, "cmd": ["pi"], "backend": "auto", "dgx_coding": "coding", "dgx_fast": "fast", "max_steps": 30 },
   "batch_max": 3,
@@ -14,7 +15,8 @@
     "kimi": ["implementer", "verifier"],
     "local": ["implementer", "verifier"],
     "pi": ["implementer", "verifier"],
-    "qwen": ["implementer", "verifier"]
+    "qwen": ["implementer", "verifier"],
+    "jcode": ["implementer", "verifier"]
   },
   "budget": { "gate": 0.9, "stale_min": 30, "poll_min": 10, "checkpoint_timeout_s": 90, "kimi_tokens_5h": 0, "wait_max_min": 30 },
   "inference": { "enabled": true, "digest_min_items": 5, "digest_min_chars": 8000, "triage": true },

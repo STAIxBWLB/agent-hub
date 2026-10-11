@@ -14,6 +14,7 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
   const result: Record<string, PermissionMode> = {};
   for (const [peer, mode] of Object.entries(value)) {
     if (!isSupportedPeer(peer)) throw new Error(`permission_modes.${peer}: unsupported peer`);
+    if (peer === "jcode") throw new Error("Jcode native policy is unmanaged; no hub permission_modes.jcode mapping exists");
     if (!isPermissionMode(mode)) throw new Error(`permission_modes.${peer} must be ask, ask-when-needed or never-ask`);
     result[peer] = mode;
   }
@@ -21,12 +22,14 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
 }
 /** Approval frequency does not create a common sandbox across native peers. */
 export function permissionBoundary(peer: string): string {
+  if (peer === "jcode") return "jcode: native policy unmanaged; NO hub sandbox; approvals belong to its native tools";
   if (peer === "pi" || peer === "local") return `${peer}: inside hub sandbox, path guard and denylist`;
   if (peer === "claude" || peer === "codex") return `${peer}: native vendor bounds; no hub sandbox`;
   return `${peer}: runs its own tools; NO hub sandbox`;
 }
 /** What a mode lets a peer do without asking, in one line a person reads before choosing it (#269). */
 export function permissionGrant(peer: string, mode: PermissionMode): string {
+  if (peer === "jcode") return "no verified hub mode mapping; native policy only";
   if (mode === "ask") return peer === "codex" ? "the session's own approval policy applies again" : peer === "kimi" ? "Kimi asks as it does on its own" : peer === "claude" ? "Claude's own permission rules decide" : "every write, edit and shell command asks";
   if (peer === "qwen") return mode === "never-ask" ? "Qwen yolo approves every tool; NO hub sandbox" : "Qwen auto-edit approves file edits; shell commands ask; NO hub sandbox";
   if (peer === "kimi") return mode === "never-ask" ? "Kimi's auto mode: nothing asks" : "Kimi's yolo mode: it asks only where it judges it must";
@@ -36,7 +39,7 @@ export function permissionGrant(peer: string, mode: PermissionMode): string {
 }
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
 /** Native agent policy files are never included in scoped automatic file grants. */
-export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".pi", ".mcp.json", ".agents", ".claude.json"]);
+export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".jcode", ".pi", ".mcp.json", ".agents", ".claude.json"]);
 export const INSTRUCTION_FILES: ReadonlySet<string> = new Set(["agents.md", "claude.md", "qwen.md"]);
 export const isInstructionPath = (path: string): boolean => path.split(/[\\/]/).some(segment => INSTRUCTION_FILES.has(foldSegment(segment)));
 export function instructionProtection(value: unknown): boolean {

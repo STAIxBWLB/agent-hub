@@ -2476,3 +2476,9 @@ by hand. Occupancy is context with a source, never a consumption estimate. Roles
 do not establish that Qwen can reliably replace Kimi before the live leg.
 
 Qwen controlled recovery and automatic crash resume load the recorded conversation with ACP session/load. The emitted launcher passes --session-id; a controlled plan with a missing or unsafe identity refuses before effects. Preview redacts the id. A custom executable argv keeps its wrapper arguments before appended model flags. Native recovery remains unverified.
+
+## Optional Jcode peer
+
+Use ahub roster add jcode, then ahub jcode --mode headless [--model <alias>] [--provider-profile <name>]. The person launcher configures only agent-hub-jcode in .jcode/mcp.json; run ahub init afterwards to ignore the untracked machine-path file. Conductor/dashboard starts read that entry without editing it. Preview starts nothing, and ahub stop jcode stops only the owned private daemon/ACP groups. jcode_cmd, jcode_home and jcode_provider_profile are machine-local and never editable from settings.
+
+Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or runtime mode mapping is invented. Quota and consumption remain unknown. Version 0.94.0 cannot prove native session/load identity, so attached Jcode blocks controlled recovery before effects and crash recovery asks for deliberate native reopening. A requested load without an echoed identity refuses; no fresh session is presented as restored. Provider/tool/native teardown receipts remain unverified in the pinned contract report.

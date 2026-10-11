@@ -270,12 +270,13 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
           continue;
         }
       }
+      if (peer.id === "jcode") { blockers.push("jcode: source-pinned native load cannot prove conversation identity; end the peer and make a new recovery plan before effects"); continue; }
       if (peer.id === "codex" || peer.id === "claude") {
         const session = peer.id === "codex" ? peer.threadId : peer.sessionId;
         if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required; next action: reconnect the original native session and make a new recovery plan`);
         else sessions[peer.id] = session;
-      } else if (peer.id === "qwen") {
-        if (!qwenSessionId(peer.sessionId)) blockers.push("qwen: saved ACP session identity unavailable; end Qwen and make a new recovery plan");
+      } else if (peer.id === "qwen" || peer.id === "jcode") {
+        if (!qwenSessionId(peer.sessionId)) blockers.push(`${peer.id}: saved ACP session identity unavailable; end the peer and make a new recovery plan`);
       } else if (peer.id === "pi" && peer.args?.mode === "tui") {
         if (!peer.sessionId) blockers.push("pi: original session ID is unknown; manual-required; next action: reconnect the original Pi session and make a new recovery plan");
         else sessions.pi = { sessionId: peer.sessionId, ...(peer.sessionFile ? { sessionFile: peer.sessionFile } : {}), ...(peer.args.backend ? { backend: peer.args.backend } : {}), ...(peer.args.model ? { model: peer.args.model } : {}) };
@@ -461,6 +462,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const peers = existsSync(catalog) ? /export const OPTIONAL_PEERS\s*=\s*\[([^\]]*)\]/.exec(readFileSync(catalog, "utf8"))?.[1] : undefined;
         if (!peers || !/["']qwen["']/.test(peers)) throw new FinalRefusal("target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged");
       }
+      if (op.plan.projects.some(p => p.source.peers.some(peer => peer.id === "jcode" && peer.state !== "offline"))) {
+        const catalog = join(target.root, "src/hub/peer-catalog.ts");
+        const peers = existsSync(catalog) ? /export const OPTIONAL_PEERS\s*=\s*\[([^\]]*)\]/.exec(readFileSync(catalog, "utf8"))?.[1] : undefined;
+        if (!peers || !/["']jcode["']/.test(peers)) throw new FinalRefusal("target does not support Jcode; end it and make a new plan, or choose a supporting target; runtimes unchanged");
+      }
       // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
       if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
         throw new FinalRefusal(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
@@ -524,7 +530,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       const live = await inspectRecovery(planned.project);
       if (live.instanceId !== progress.instanceId) throw new Error("target daemon changed before peer restore");
       if (group === "native") {
-        for (const peer of planned.source.peers.filter((p) => ["kimi", "qwen", "local", "pi"].includes(p.id) && p.state !== "offline" && !(p.id === "pi" && p.args?.mode === "tui"))) {
+        for (const peer of planned.source.peers.filter((p) => ["kimi", "qwen", "jcode", "local", "pi"].includes(p.id) && p.state !== "offline" && !(p.id === "pi" && p.args?.mode === "tui"))) {
           const current = live.peers.find((p) => p.id === peer.id);
           if (current && current.state !== "offline") continue;
           const args = [peer.id];
@@ -541,6 +547,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           // one is filtered out above), so a snapshot that recorded no mode still restores it headless.
           if (peer.id === "pi" && typeof peer.args?.mode !== "string") args.push("--mode", "headless");
           if (peer.id === "qwen" && peer.sessionId) args.push("--session-id", peer.sessionId);
+          if (peer.id === "jcode" && peer.sessionId) args.push("--session-id", peer.sessionId);
+          if (peer.id === "jcode" && peer.args?.providerProfile) args.push("--provider-profile", peer.args.providerProfile);
           if (peer.id === "pi") {
             const sessionFile = peer.sessionFile ?? peer.args?.sessionFile;
             if (typeof sessionFile === "string") args.push("--session-file", sessionFile);
