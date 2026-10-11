@@ -9,6 +9,7 @@ results and remaining prerequisites are recorded separately in [the smoke ledger
 `status --all` uses the projects table. `queue show`, `models status` and `budget execution status` show labelled fields; add `--json` for the raw fetched document.
 `report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
+In `projects --json` and `status --all --json`, an unavailable hub that explicitly refuses an inspection for SQLite contention also carries `failure: { "code": "database_busy" }`; it is additive metadata alongside the neutral `error` sentence.
 Text columns are a human interface, not a scripting contract. An identifier accepted as a command argument is whole wherever its available column can hold its own length:
 turn ids, queue ids, project ids, execution budget ids and ids in labelled views. Only status's informational settlement and hold ids are shortened;
 `status --full` keeps those whole too. Identifiers in suggested commands are always whole.

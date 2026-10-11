@@ -435,7 +435,6 @@ test("resume refuses an operation whose stop-and-archive is partway", async () =
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
-
 test("restart failure diagnostics retain only bounded logs and database modes, with private paths redacted (#303)", () => {
   const temp = mkdtempSync(join(tmpdir(), "ahub-restart-diagnostics-"));
   const root = join(temp, "project"), home = join(temp, "home"), artifacts = join(temp, "artifacts");
@@ -568,4 +567,20 @@ test("the installed-layout full-body catch retains diagnostics before cleanup an
     const capture = join(f.output, readdirSync(f.output)[0]!);
     expect(readFileSync(join(capture, "hub.log"), "utf8")).toBe("diagnostic present before cleanup\n");
   } finally { f.cleanup(); }
+});
+
+test("a diagnostic capture failure preserves the original fixture error (#303)", async () => {
+  const f = restartDiagnosticsFixture();
+  try {
+    const unavailable = join(f.temp, "not-a-directory");
+    writeFileSync(unavailable, "occupied");
+    const original = new Error("original fixture failure");
+    await expect(withRestartDiagnostics(async () => { throw original; }, () => ({ root: f.root, home: f.home, operation: undefined }), join(unavailable, "capture"))).rejects.toBe(original);
+  } finally { f.cleanup(); }
+});
+
+test("the installed-layout restart fixture retains diagnostics around its assertions (#303)", () => {
+  const source = readFileSync(import.meta.filename, "utf8");
+  const fixture = source.slice(source.indexOf('test("installed-layout detached restart'), source.indexOf('test(', source.indexOf('test("installed-layout detached restart') + 6));
+  expect(fixture).toContain("await withRestartDiagnostics(async () => {");
 });

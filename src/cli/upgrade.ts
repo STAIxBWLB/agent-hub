@@ -619,6 +619,9 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
     delete op.error; delete op.failure;
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
+  } catch (error) {
+    if (isDatabaseBusy(error)) throw new RecoveryDatabaseBusy();
+    throw error;
   } finally { releaseRunner(); }
 }
 
@@ -670,7 +673,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
       }
       (op.audit ??= []).push({ at, action: "fresh-session", reason, peer, projects: failed.map((p) => p.id) });
-      delete op.failure;
+      delete op.error; delete op.failure;
       op.updatedAt = at; writeOperation(id, op, home);
       return op;
     }

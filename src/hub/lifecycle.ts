@@ -35,7 +35,7 @@ export async function inspectProject(project: Project, timeoutMs = 3000): Promis
     try {
       // Older manifests omit identity. Authenticate first, then require the full current contract.
       client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root,
-        ...(control.projectId ? { projectId: project.id } : {}), ...(control.instanceId ? { instanceId: control.instanceId } : {}) });
+        ...(control.projectId ? { projectId: project.id } : {}), ...(control.instanceId ? { instanceId: control.instanceId } : {}) }, timeoutMs);
       const response = await client.request({ t: "status" }, timeoutMs);
       if (isDatabaseBusyReply(response)) return { state: "unavailable", error: new RecoveryDatabaseBusy().message, failure: { code: "database_busy" } };
       if (!response.status || response.status.projectId !== project.id || !response.status.instanceId || response.status.cwd !== project.root) {

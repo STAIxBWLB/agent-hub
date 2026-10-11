@@ -1,4 +1,4 @@
-import { isDatabaseBusy, RecoveryDatabaseBusy } from "../src/hub/recovery-error.ts";
+import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../src/hub/recovery-error.ts";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -1154,7 +1154,6 @@ test("an operation whose coordinator cannot restart a target is not offered resu
   expect(next.some((line) => line.includes(" resume "))).toBe(false);
 });
 
-
 test("SQLite contention is a named retryable outcome, not an arbitrary error text (#303)", () => {
   for (const error of [{ code: "SQLITE_BUSY" }, { code: "SQLITE_BUSY_RECOVERY" }, Object.assign(new Error("native SQLite contention"), { name: "SQLiteError", errno: 517 }), { code: "SQLITE_LOCKED_SHAREDCACHE" }]) expect(isDatabaseBusy(error)).toBe(true);
   for (const error of [undefined, { code: "SQLITE_ERROR" }, { errno: 19 }, { code: "EIO", errno: 5 }, { code: "ENXIO", errno: 6 }, { code: "SQLITE_BUSYX" }, { code: "SQLITE_IOERR", errno: 5 }, new Error("database is locked")]) expect(isDatabaseBusy(error)).toBe(false);
@@ -1276,4 +1275,43 @@ test("an ordinary disposition failure supersedes an earlier busy annotation (#30
   await expect(disposeRecovery(f.operation.id, { stop: true }, "ordinary act", f.driver, f.home)).rejects.toThrow("ordinary disposition refusal");
   const partial = readOperation<RecoveryOperation>(f.operation.id, f.home);
   expect(partial.error).toContain("ordinary disposition refusal"); expect(partial.failure).toBeUndefined();
+});
+
+test("abort names native contention for the caller without rewriting its receipt (#303)", async () => {
+  const f = await busyPreparedFixture();
+  const before = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  f.driver.abort = async () => { throw nativeBusyAtFixture(); };
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toBeInstanceOf(RecoveryDatabaseBusy);
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.not.toThrow("database is locked");
+  expect(readOperation<RecoveryOperation>(f.operation.id, f.home)).toEqual(before);
+});
+
+test("fresh-session choice clears the old busy sentence together with its failure (#303)", async () => {
+  const f = failedRestore();
+  f.operation.error = new RecoveryDatabaseBusy().message;
+  f.operation.failure = { code: "database_busy", retryable: true };
+  writeOperation(f.operation.id, f.operation, f.home);
+  const chosen = await disposeRecovery(f.operation.id, { fresh: "codex" }, "test fresh session", f.driver, f.home);
+  expect(chosen.error).toBeUndefined(); expect(chosen.failure).toBeUndefined();
+  expect(readOperation<RecoveryOperation>(chosen.id, f.home).error).toBeUndefined();
+});
+
+test("post-commit inspection does not swallow an ordinary error (#303)", async () => {
+  const f = fixture("restart", ["alpha"]), inspect = f.driver.inspect;
+  f.driver.inspect = async (...args) => {
+    if (readOperation<RecoveryOperation>(f.operation.id, f.home).projects[0]!.commitSent) throw new Error("ordinary inspection failure");
+    return inspect(...args);
+  };
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("blocked"); expect(result.error?.startsWith("ordinary inspection failure; next actions:")).toBe(true);
+  expect(result.failure).toBeUndefined(); expect(f.driver.now()).toBe(0);
+  expect(f.calls).not.toContain("start:alpha");
+});
+
+test("a database-busy reply must be a refused request (#303)", () => {
+  for (const fields of [{ code: "database_busy" }, { error: "database is locked" }, { error: "database table is locked" }]) {
+    expect(isDatabaseBusyReply({ ok: false, ...fields })).toBe(true);
+    expect(isDatabaseBusyReply({ ok: true, ...fields })).toBe(false);
+    expect(isDatabaseBusyReply(fields)).toBe(false);
+  }
 });
