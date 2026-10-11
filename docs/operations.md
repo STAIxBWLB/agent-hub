@@ -1038,7 +1038,8 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   committed (config trust); where the hub will not read what was written, the
   reply and the Settings row say so.
 - Authority: a dashboard opened with `ahub ui` reads settings, lowers a mode to
-  `ask`, turns `pi.auto_start` off and changes the Switches group. Everything
+  `ask`, turns `pi.auto_start` off, sets a start mode back to `tui` and changes
+  the Switches group. Everything
   else needs `ahub ui --settings`, whose session may raise for 15 minutes, or
   `ahub settings` in a terminal. `never-ask` needs the peer id typed in the
   dashboard, or `--yes` in the terminal, and a stored never-ask default still
