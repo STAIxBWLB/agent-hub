@@ -768,6 +768,30 @@
       "replacement": "false",
       "testFile": "test/path-policy.test.ts",
       "testName": "private declared paths force local-only before triage even with pattern constraint off (#259)"
+    },
+    {
+      "id": "projection-explicit-input",
+      "file": "src/hub/text-projection.ts",
+      "search": "argv.filter(arg => arg === \"{input}\").length !== 1",
+      "replacement": "false",
+      "testFile": "test/text-projection.test.ts",
+      "testName": "projection argv schema is bounded and requires a separate input placeholder (#259)"
+    },
+    {
+      "id": "projection-local-trust",
+      "file": "src/hub/config-trust.ts",
+      "search": ", \"text_projection\"] as const;",
+      "replacement": "] as const;",
+      "testFile": "test/text-projection.test.ts",
+      "testName": "projection commands are ignored from tracked config and accepted only machine-locally (#259)"
+    },
+    {
+      "id": "projection-raw-attribution",
+      "file": "src/hub/facts.ts",
+      "search": "was && !was.projected && !now.projected ? codexEffect",
+      "replacement": "was ? codexEffect",
+      "testFile": "test/text-projection.test.ts",
+      "testName": "projection presentation preserves raw identity and never establishes raw write attribution (#259)"
     }
   ]
 }

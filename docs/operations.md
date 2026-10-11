@@ -2512,3 +2512,8 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 - Optional pii.paths forces matching declared refs/plans/section files to the on-prem flow before triage and memory, including when ordinary pattern routing is off. Optional data.readonly protects managed local/Pi writes and makes managed commands filesystem read-only.
 - Both lists are empty by default and apply at daemon start. Reads/stdout remain available; command-created files/caches are blocked in read-only mode. Exact path rules, alias handling and evidence: [data policy](data-policy.md).
+
+# Rich-document text projections (#259)
+
+- Configure text_projection only in an untracked machine-local file, with a separate {input} argv argument. Facts uses bounded read-only/no-network conversion and a content/config cache; failure keeps the prior file view and logs a bounded notice.
+- Raw change identity and projected presentation stay separate; private paths never enter conversion. Schema, limits and current surface scope: [text projections](text-projection.md).

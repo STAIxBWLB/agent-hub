@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add machine-local bounded read-only text projections for rich-document facts while preserving raw attribution (#259).
+
 - Add declared private-data routing and managed local/Pi read-only data policy with hardlink-safe command bounds (#259).
 
 - Add data-driven research/writing/general project profiles, base-class aliases, document plans and guidance while preserving dev defaults (#259).
