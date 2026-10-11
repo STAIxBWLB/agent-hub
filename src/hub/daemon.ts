@@ -514,14 +514,17 @@ export async function startDaemon(opts: DaemonOptions) {
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
     if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
   });
+  const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && ["local", "pi"].includes(peer)
+    ? contract + "\nManaged bash/git are filesystem read-only while data.readonly is active. Read data and return stdout; use managed write/edit only for unprotected outputs."
+    : contract;
   function sessionRoleContract(peer: string): string {
     try {
       const selected = selectedRoles(peer, config.roles, roleAssignments, catalog);
       if (selected.length) event({ type: "role", peer, actor: "config", stage: "prepared", roles: selected.map(roleIdentity) });
-      return roleContract(peer, config.roles, selected, config.profile);
+      return dataRoleContract(peer, roleContract(peer, config.roles, selected, config.profile));
     } catch (error) {
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
-      return roleContract(peer, config.roles, [], config.profile);
+      return dataRoleContract(peer, roleContract(peer, config.roles, [], config.profile));
     }
   }
   /**

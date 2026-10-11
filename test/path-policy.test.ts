@@ -89,7 +89,7 @@ test("daemon local adapter propagates read-only policy to managed tool calls (#2
   expect((await client.request({ t: "start", peer: "local", args: { model: "m" } })).ok).toBe(true);
   const peer = daemon.bus.peers.get("local"); expect(peer).toBeDefined(); await peer!.deliver([newEnvelope("user", "fixture write")]);
   for (let i = 0; i < 300 && peer!.state !== "idle"; i++) await Bun.sleep(5);
-  expect(peer!.state).toBe("idle"); expect(model.requests).toHaveLength(2); expect(model.requests[1]!.body.messages.some((m: { role: string; content?: string }) => m.role === "tool" && m.content?.includes("data.readonly"))).toBe(true);
+  expect(peer!.state).toBe("idle"); expect(model.requests).toHaveLength(2); expect(model.requests[0]!.body.messages[0].content).toContain("Managed bash/git are filesystem read-only"); expect(model.requests[1]!.body.messages.some((m: { role: string; content?: string }) => m.role === "tool" && m.content?.includes("data.readonly"))).toBe(true);
   expect(readFileSync(join(dir, "data/raw/input"), "utf8")).toBe("original");
 });
 test("owned Pi bridge keeps read-only data protected even under never-ask (#259)", async () => {

@@ -15,7 +15,7 @@
 - Local/Pi read operations retain access. Managed write/edit refuse protected paths before asking for approval and re-check real targets after approval. With an active read-only policy, hardlinked write targets are refused because their identity cannot be attributed safely to one declared name.
 - Managed command execution (bash and git) becomes filesystem read-only whenever data.readonly is active. It keeps reads and stdout/stderr, allows /dev/null, and grants no project or temporary-directory writes. Commands that create output files or caches must instead return stdout or use managed write/edit for an unprotected output path. This restriction is required by the reproduced hardlink-alias bypass of path-only Seatbelt denies.
 - The command profile and runner must both use read-only mode; the runner refuses a profile that still carries a broad project write grant. No approval or permission mode overrides the data policy. Existing network and credential boundaries stay in force.
-- This policy controls managed local/Pi tools, not the owner or other native processes. The hub's state, receipts and temporary command directory are maintained by the daemon outside the managed command.
+- This policy controls managed local/Pi tools, not the owner or other native processes. The hub's state, receipts, explicitly configured completion checks and temporary command directory are maintained by the daemon outside the managed command.
 
 # Evidence boundary
 
