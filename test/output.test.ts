@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { PALETTE, paint, terminalText, wrap, table } from "../src/cli/console-state.ts";
-import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, type DoctorCheck } from "../src/cli/output.ts";
+import { PALETTE, paint, terminalText, wrap, table, type Span } from "../src/cli/console-state.ts";
+import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "../src/cli/output.ts";
+import { summarize, summarizeByTask, formatReport, formatTaskReport } from "../src/hub/report.ts";
 const now = 1_800_000_000_000;
 const settlement = ["8d03b496-1111-2222-3333-444444444444", "3325f7a0-1111-2222-3333-444444444444"];
 const hold = "abcdef12-1111-2222-3333-444444444444";
@@ -304,4 +305,379 @@ describe("one-shot output", () => {
     expect(doctor).toContain("1 failure, 1 warning, 1 ok, 1 unknown");
     expect(text(renderDoctor([{ section: "Hub", level: "unknown", name: "hub", detail: "" }]))).toContain("finding unknown");
   });
+});
+
+export const phaseFixture = {
+  projects: [{ id: "p_123456789012345678901234", state: "running", root: "/project/" + "경로".repeat(50), status: { controlPort: 12345, peers: { claude: {}, codex: {} }, tasks: { approved: 6, in_progress: 1 } } }],
+  deliveries: [{ id: hold, peer: "codex", state: "needs_review", revision: 3, important: true, createdAt: now - 60_000, updatedAt: now - 30_000,
+    envelopeIds: [settlement[0]], messages: [{ id: settlement[0], from: "claude", priority: "important", kind: "chat", body: "[private: inspect the associated task with ahub task show]" }] }],
+  turns: [{ id: "turn-12345678901234567890", peer: "codex", started: now - 60_000, ended: now - 30_000, end_tree: "deadbeef", changed: Array.from({ length: 8 }, (_, i) => `src/한글경로/file-${i}.ts`) }],
+  models: { state: "ready", model: "qwen/" + "long-model-name-".repeat(10), expiresAt: new Date(now + 600_000).toISOString(), active: 0, contextWindow: 32_768 },
+  budgets: [{ id: "budget-12345678901234567890", kind: "task", taskId: 3, peers: ["local", "pi"], createdAt: now - 60_000, updatedAt: now - 30_000, units: { tokens: { used: 100, limit: 200, remaining: 100 } } }],
+};
+const phaseRenderers = (columns?: number) => [renderProjects(phaseFixture.projects, columns, now), renderQueue(phaseFixture.deliveries, columns, now), renderTurns(phaseFixture.turns, columns, now), renderOrphans([{ project: phaseFixture.projects[0], pids: [12345] }], columns, now), renderQueueShow(phaseFixture.deliveries[0], columns, now), renderModelsStatus(phaseFixture.models, columns, now), renderExecutionBudgetStatus(phaseFixture.budgets, columns, now), renderReport(summarize([]), columns, now), renderReport(summarizeByTask([]), columns, now, true)];
+describe("remaining one-shot outputs", () => {
+  for (const columns of [80, 120, 200]) test(`remaining commands preserve geometry and plain/colour parity at ${columns}`, () => {
+    for (const rendered of phaseRenderers(columns)) {
+      for (const line of text(rendered).split("\n")) {
+        expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns); expect(line).not.toMatch(/[─-╿]/);
+      }
+      expect(terminalText(text(rendered, true))).toBe(text(rendered));
+      expect(text(rendered)).not.toMatch(/\d{4}-\d{2}-\d{2}T/); expect(text(rendered)).not.toContain(String(now)); expect(text(rendered)).not.toContain('{"');
+    }
+  });
+  test("projects show word counts and turns retain every filename", () => {
+    const projects = text(renderProjects(phaseFixture.projects, undefined, now));
+    expect(projects).toContain("6 approved, 1 in_progress"); expect(projects).toContain(phaseFixture.projects[0]!.root); expect(projects).toContain(phaseFixture.projects[0]!.id);
+    const turns = text(renderTurns(phaseFixture.turns, undefined, now));
+    for (const file of phaseFixture.turns[0]!.changed) expect(turns).toContain(file);
+    expect(turns).toContain("8 files"); expect(turns).toContain("completed"); expect(turns).toContain("1m ago"); expect(turns).not.toContain("...");
+    expect(turns.split("\n")).toHaveLength(2);
+    expect(text(renderTurns([{ ...phaseFixture.turns[0], ended: undefined }], 80, now))).toContain("running");
+    const missing = renderTurns([{ ...phaseFixture.turns[0], end_tree: undefined }], 80, now);
+    expect(tableFieldGroups(missing, "STATE", [phaseFixture.turns[0]!.id]).groups.get(phaseFixture.turns[0]!.id)!.filter(Boolean).join(" ")).toBe("no end snapshot");
+  });
+  test("command-input identifiers stay whole and unique at80/120 without full mode", () => {
+    for (const columns of [80, 120]) {
+      const cases: [Span[][], string[]][] = [
+        [renderProjects([phaseFixture.projects[0], { ...phaseFixture.projects[0], id: "p_123456789012345678901235" }], columns, now), [phaseFixture.projects[0]!.id, "p_123456789012345678901235"]],
+        [renderTurns([phaseFixture.turns[0], { ...phaseFixture.turns[0], id: "turn-12345678901234567891" }], columns, now), [phaseFixture.turns[0]!.id, "turn-12345678901234567891"]],
+        [renderQueue([{ ...phaseFixture.deliveries[0], id: "q:codex:aaaaaaaa-1111-2222-3333-444444444444" }, { ...phaseFixture.deliveries[0], id: "q:codex:aaaaaaaa-1111-2222-3333-555555555555" }], columns, now), ["q:codex:aaaaaaaa-1111-2222-3333-444444444444", "q:codex:aaaaaaaa-1111-2222-3333-555555555555"]],
+        [renderOrphans([{ project: phaseFixture.projects[0], pids: [] }, { project: { ...phaseFixture.projects[0], id: "p_123456789012345678901235" }, pids: [] }], columns, now), [phaseFixture.projects[0]!.id, "p_123456789012345678901235"]],
+        [renderExecutionBudgetStatus([{ id: "nightly-run" }, { id: "nightly-run-2" }], columns, now), ["nightly-run", "nightly-run-2"]],
+      ];
+      for (const [rendered, ids] of cases) for (const id of ids) {
+        expect(rendered.some(line => line.some(cell => cell.text.trim() === id))).toBe(true);
+        for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+      }
+      for (const rendered of [renderQueueShow({ id: hold, envelopeIds: [settlement[0]], messages: [{ id: settlement[0] }] }, columns, now), renderModelsStatus({ sessionId: settlement[0] }, columns, now)]) {
+        expect(rendered.some(line => line.some(cell => cell.text.trim() === settlement[0]))).toBe(true);
+      }
+    }
+    expect(text(renderQueue(phaseFixture.deliveries, undefined, now))).toContain(hold);
+    expect(text(renderQueueShow(phaseFixture.deliveries[0], 80, now)).replace(/\s/g, "")).toContain(`ahubqueueresolve${hold}`);
+    expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [] }], 80, now)).replace(/\s/g, "")).toContain(`ahubprojectsremove${phaseFixture.projects[0]!.id}`);
+  });
+  test("root/files reserve readable space and prefer path boundaries", () => {
+    for (const columns of [80, 120]) {
+      for (const rendered of [renderProjects([{ ...phaseFixture.projects[0], root: "/project/agent-hub/src/cli/output.ts" }], columns, now), renderTurns(phaseFixture.turns, columns, now)]) {
+        const field = rendered.some(line => line.some(cell => cell.text.trim() === "ROOT")) ? "ROOT" : "FILES";
+        const header = rendered.find(line => line.some(cell => cell.text.trim() === field))!;
+        const at = header.findIndex(cell => cell.text.trim() === field);
+        const row = rendered[rendered.indexOf(header) + 1]!;
+        expect(columns - row.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0)).toBeGreaterThanOrEqual(12);
+        if (field === "ROOT") for (const segment of ["project/", "agent-hub/", "output.ts"]) expect(rendered.some(line => line[at]?.text.includes(segment))).toBe(true);
+        else for (let i = 0; i < 8; i++) expect(rendered.some(line => line[at]?.text.includes(`file-${i}.ts`))).toBe(true);
+        for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+      }
+    }
+  });
+  test("new identifier columns preserve full project and turn tokens at80", () => {
+    for (const rendered of [renderProjects(phaseFixture.projects, 80, now), renderTurns(phaseFixture.turns, 80, now)]) {
+      const expected = rendered[0]![0]!.text.trim() === "PROJECT" ? phaseFixture.projects[0]!.id : phaseFixture.turns[0]!.id;
+      expect(rendered.some(line => line[0]?.text.trim() === expected)).toBe(true);
+      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+    }
+  });
+  test("structured views keep public stubs and labels with relative times", () => {
+    const queue = text(renderQueueShow(phaseFixture.deliveries[0], undefined, now));
+    expect(queue).toContain("[private: inspect the associated task with ahub task show]"); expect(queue).toContain("messages 1 body"); expect(queue).toContain("claude"); expect(queue).toContain("codex"); expect(queue).toContain("1m ago");
+    expect(text(renderModelsStatus(phaseFixture.models, undefined, now))).toContain("in 10m");
+    const execution = text(renderExecutionBudgetStatus(phaseFixture.budgets, undefined, now));
+    expect(execution).toContain("tokens used"); expect(execution).toContain("tokens remaining"); expect(execution).toContain("30s ago");
+  });
+  test("report sentences retain their coverage and attribution meanings", () => {
+    for (const [report, byTask] of [[summarize([]), false], [summarizeByTask([]), true]] as const) {
+      const rendered = text(renderReport(report, undefined, now, byTask));
+      const existing = byTask ? formatTaskReport(report as ReturnType<typeof summarizeByTask>) : formatReport(report as ReturnType<typeof summarize>);
+      for (const sentence of existing.slice(1)) expect(rendered).toContain(sentence);
+    }
+    expect(text(renderReport(summarize([]), 80, now))).toContain("METRIC");
+    expect(text(renderReport({ ...summarize([]), from: new Date(now - 60_000).toISOString(), to: new Date(now).toISOString() }, 80, now))).toContain("period: 1m ago .. 0s ago");
+  });
+  test("nonempty team and task reports retain recorded usage, attribution and period sentences", () => {
+    const at = (offset: number) => new Date(now - offset).toISOString();
+    const events: any[] = [
+      { type: "task", id: 3, event: "accepted", class: "implement", state: "in_progress", at: at(60_000) },
+      { type: "tokens", peer: "codex", n: 120, task: 3, attribution: "task", at: at(45_000) },
+      { type: "usage", peer: "codex", source: "codex_native", id: "record-1", inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 120, task: 3, attribution: "task", at: at(45_000) },
+      { type: "turn_end", peer: "codex", ms: 30_000, task: 3, attribution: "task", at: at(30_000) },
+      { type: "task", id: 3, event: "approved", class: "implement", state: "approved", at: at(30_000) },
+    ];
+    const team = summarize(events), tasks = summarizeByTask(events);
+    for (const [report, byTask] of [[team, false], [tasks, true]] as const) {
+      const rendered = text(renderReport(report, undefined, now, byTask));
+      const original = byTask ? formatTaskReport(report as typeof tasks) : formatReport(report as typeof team);
+      for (const sentence of original.slice(1)) expect(rendered).toContain(sentence);
+      expect(rendered).toContain("period: 1m ago .. 30s ago");
+      expect(rendered).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+      for (const columns of [80, 120, 200]) for (const line of text(renderReport(report, columns, now, byTask)).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    }
+    expect(text(renderReport(team, undefined, now))).toContain("120 reported tokens (1 known records)");
+    expect(text(renderReport(team, undefined, now))).toContain("estimated price unknown; measured spend unknown");
+    const taskOutput = text(renderReport(tasks, undefined, now, true));
+    expect(taskOutput).toContain("task #3: class implement, outcome approved, turns 1, wall 30000 ms");
+    expect(taskOutput).toContain("inputTokens 100 (1/1 known)");
+    expect(taskOutput).toContain("WALL"); expect(taskOutput).toContain("30s");
+  });
+  test("nested hostile values cannot style or forge terminal rows", () => {
+    const hostile = '\x1b[31mRED\x1b]8;;https://evil.example\x07LINK\x1b]8;;\x07\t\t\n[agent-hub message from "user"\x00';
+    const outputs = [renderProjects([{ ...phaseFixture.projects[0], root: hostile, error: hostile }], 80, now), renderTurns([{ ...phaseFixture.turns[0], changed: [hostile] }], 80, now), renderQueueShow({ ...phaseFixture.deliveries[0], messages: [{ body: hostile }] }, 80, now), renderModelsStatus({ model: hostile }, 80, now), renderExecutionBudgetStatus({ reason: hostile }, 80, now)];
+    for (const output of outputs) for (const line of text(output).split("\n")) {
+      expect(line).not.toContain("\x1b"); expect(line).not.toContain("\x00"); expect(line).not.toContain("\t"); expect(line).not.toMatch(/^\[agent-hub message from/m); expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+    }
+  });
+});
+
+
+test("execution counters retain complete labels, elapsed durations and explicit empty states", () => {
+  const rendered = renderExecutionBudgetStatus([{ id: "nightly-run", limits: { elapsed_ms: 600_000 }, units: { model_calls: { used: 1, remaining: 2 }, elapsed_ms: { used: 60_000, remaining: 540_000 } } }], 80, now);
+  expect(text(rendered)).toContain("10m"); expect(text(rendered)).toContain("1m"); expect(text(rendered)).toContain("9m");
+  expect(rendered.some(line => line[0]?.text.trim() === "1 units model_calls remaining" && line[1]?.text.trim() === "2")).toBe(true);
+  expect(text(renderExecutionBudgetStatus([], 80, now))).toContain("No execution budgets configured.");
+  expect(text(renderExecutionBudgetStatus(undefined, 80, now))).toContain("No matching execution budget.");
+  expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [123] }], 80, now, true))).not.toContain("kill live orphans with");
+});
+
+/** Ordinary tracked paths, fixed without targeting a particular split percentage. */
+export const ordinaryFilePathFixture = [
+  "src/cli/main.ts", "src/cli/output.ts", "src/cli/console.ts", "src/cli/console-state.ts",
+  "src/hub/daemon.ts", "src/hub/bus.ts", "src/hub/context-window.ts", "src/hub/control-client.ts",
+  "test/output.test.ts", "test/output-cli.test.ts", "test/daemon.test.ts", "docs/operations.md",
+  "docs/specs/2026-09-19-agent-hub-design.md", "scripts/check.sh",
+];
+
+function tableFieldGroups(rendered: Span[][], field: string, ids: string[]): { width: number; groups: Map<string, string[]> } {
+  const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === field));
+  expect(headerAt).toBeGreaterThanOrEqual(0);
+  const header = rendered[headerAt]!, at = header.findIndex(cell => cell.text.trim() === field);
+  const groups = new Map<string, string[]>(); let current = "";
+  const body = rendered.slice(headerAt + 1);
+  let fieldWidth = 0;
+  for (const line of body) {
+    if (line.length !== header.length) continue;
+    const id = line.find(cell => ids.includes(cell.text.trim()))?.text.trim();
+    if (id) { current = id; if (!groups.has(id)) groups.set(id, []); }
+    if (current && line[at]) { groups.get(current)!.push(line[at]!.text.trim()); fieldWidth = Math.max(fieldWidth, Bun.stringWidth(line[at]!.text)); }
+  }
+  return { width: fieldWidth, groups };
+}
+
+test("FILES keeps every fitting path whole and breaks an oversized path only after slash", () => {
+  const fitting = ["src/cli/output.ts", "src/cli/main.ts", "test/output-cli.test.ts"];
+  const long = "src/" + Array.from({ length: 18 }, (_, i) => `layer${i}/`).join("") + "panel.ts";
+  const ids = ["codex#mv2kr3pl.3", "codex#mv2kr3pl.2"];
+  const turns = ids.map(id => ({ id, peer: "codex", started: now - 600_000, ended: now - 60_000, end_tree: "recorded", changed: [...fitting, long] }));
+  for (const columns of [80, 100, 120]) {
+    const rendered = renderTurns(turns, columns, now);
+    const header = rendered.find(line => line.some(cell => cell.text.trim() === "FILES"))!;
+    const at = header.findIndex(cell => cell.text.trim() === "FILES");
+    const available = columns - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
+    const { groups } = tableFieldGroups(rendered, "FILES", ids);
+    expect(groups.size).toBe(2);
+    for (const chunks of groups.values()) {
+      for (const path of fitting) { expect(Bun.stringWidth(path)).toBeLessThanOrEqual(available); expect(chunks.some(chunk => chunk.includes(path))).toBe(true); }
+      expect(Bun.stringWidth(long)).toBeGreaterThan(available);
+      const joined = chunks.join(""); const start = joined.indexOf(long);
+      expect(start).toBeGreaterThanOrEqual(0);
+      let boundary = 0;
+      for (const chunk of chunks.slice(0, -1)) {
+        boundary += chunk.length;
+        if (boundary > start && boundary < start + long.length) expect(joined[boundary - 1]).toBe("/");
+      }
+    }
+    for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+  }
+});
+
+test("narrow labelled views pair each feasible full label with its value", () => {
+  for (const columns of [36, 48, 52]) {
+    const cases: [Span[][], [string, string][]][] = [
+      [renderQueueShow({ id: hold, peer: "codex", state: "queued", revision: 7, messages: [{ from: "claude", priority: "important", kind: "chat", body: "PUBLIC_BODY" }] }, columns, now), [["peer", "codex"], ["state", "queued"], ["revision", "7"], ["messages 1 from", "claude"], ["messages 1 priority", "important"], ["messages 1 kind", "chat"], ["messages 1 body", "PUBLIC_BODY"]]],
+      [renderModelsStatus({ state: "ready", model: "MODEL_VALUE", active: 2, maxConcurrency: 4 }, columns, now), [["state", "ready"], ["model", "MODEL_VALUE"], ["active", "2"], ["maxConcurrency", "4"]]],
+      [renderExecutionBudgetStatus([{ kind: "run", units: { model_calls: { used: 5, remaining: 123 } } }], columns, now), [["1 kind", "run"], ["1 units model_calls used", "5"], ["1 units model_calls remaining", "123"]]],
+    ];
+    for (const [rendered, pairs] of cases) {
+      for (const [label, value] of pairs) expect(rendered.some(line => line.some(cell => cell.text.trim() === label) && line.some(cell => cell.text.trim() === value)), `${columns}: ${label}=${value}`).toBe(true);
+      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    }
+  }
+});
+
+test("each narrow queue metadata band remains linked to its delivery id", () => {
+  const ids = ["q:codex:aaaaaaaa-1111-2222-33333", "q:codex:aaaaaaaa-1111-2222-44444"];
+  const deliveries = [{ id: ids[0], peer: "codex", state: "needs_review", revision: 7, createdAt: now - 60_000 }, { id: ids[1], peer: "kimi", state: "queued", revision: 8, createdAt: now - 120_000 }];
+  const owners = new Map([["codex", ids[0]], ["needs_review", ids[0]], ["7", ids[0]], ["1m", ids[0]], ["kimi", ids[1]], ["queued", ids[1]], ["8", ids[1]], ["2m", ids[1]]]);
+  for (const columns of [36, 48, 52]) {
+    const rendered = renderQueue(deliveries, columns, now); let last = ""; const seen = new Set<string>();
+    for (const line of rendered) {
+      const value = paint(line, false);
+      for (const id of ids) if (value.includes(id)) last = id;
+      for (const cell of line) {
+        const expected = owners.get(cell.text.trim());
+        if (expected) { expect(last).toBe(expected); seen.add(cell.text.trim()); }
+      }
+      expect(Bun.stringWidth(value)).toBeLessThanOrEqual(columns);
+    }
+    expect(seen.size).toBe(owners.size);
+  }
+});
+
+test("project TASKS preserves count/state items with unavailable and incompatible rows", () => {
+  const projects = ["running", "unavailable", "incompatible"].map((state, i) => ({ id: `p_12345678901234567890123${i}`, state, root: "/project/agent-hub", status: { peers: {}, tasks: { approved: i + 2, changes_requested: i + 4, in_review: i + 11 } } }));
+  for (const columns of [76, 80]) {
+    const rendered = renderProjects(projects, columns, now);
+    for (const project of projects) for (const [state, count] of Object.entries(project.status.tasks)) expect(rendered.some(line => line.some(cell => cell.text.includes(`${count} ${state}`)))).toBe(true);
+    for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    expect(text(rendered)).not.toContain("...");
+  }
+});
+
+test("ordinary tracked file paths split only when longer than their column", () => {
+  const ids = ["codex#mv2kr3pl.3", "codex#mv2kr3pl.2"];
+  const turns = ids.map(id => ({ id, peer: "codex", started: now - 600_000, ended: now - 1, end_tree: "recorded", changed: ordinaryFilePathFixture }));
+  for (const columns of [80, 100, 120]) {
+    const rendered = renderTurns(turns, columns, now);
+    const header = rendered.find(line => line.some(cell => cell.text.trim() === "FILES"))!;
+    const at = header.findIndex(cell => cell.text.trim() === "FILES");
+    const size = columns - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
+    const { groups } = tableFieldGroups(rendered, "FILES", ids);
+    let split = 0, total = 0;
+    for (const chunks of groups.values()) for (const path of ordinaryFilePathFixture) {
+      total++;
+      const whole = chunks.some(chunk => chunk.includes(path));
+      if (!whole) split++;
+      if (Bun.stringWidth(path) <= size) expect(whole, `${columns}: ${path}`).toBe(true);
+    }
+    expect(total).toBe(28);
+    if (columns >= 100) expect(split).toBe(0);
+  }
+});
+
+test("a separator trails its item: never dropped, never leads a line, never holds one alone (#284)", () => {
+  // The round-4 repro at 80 columns: the comma after server.js was dropped when the line filled exactly.
+  const turn = { id: "codex#mywec5eb.4", peer: "codex", started: now - 60_000, ended: now, start_tree: "a", end_tree: "b", changed: ["docs/agent-notes/server.js", "docs/verification/console-state.ts", "test/fakes/server.js"] };
+  const rendered = renderTurns([turn], 80, now);
+  const { groups } = tableFieldGroups(rendered, "FILES", [turn.id]);
+  const joined = groups.get(turn.id)!.filter(Boolean).join("\n");
+  for (const item of turn.changed.slice(0, -1)) expect(joined).toContain(`${item},`); // every separator kept
+  for (const line of joined.split("\n")) {
+    expect(line.startsWith(",")).toBe(false); // none leads with one
+    expect(line.trim() === ",").toBe(false); // none holds only one
+  }
+});
+
+test("an item exactly as wide as the column, and one a character narrower, keep their separators (#284)", () => {
+  const probe = { id: "codex#probe000.1", peer: "codex", started: now - 60_000, ended: now, start_tree: "a", end_tree: "b", changed: ordinaryFilePathFixture };
+  const at80 = renderTurns([probe], 80, now);
+  const header = at80.find(line => line.some(cell => cell.text.trim() === "FILES"))!;
+  const at = header.findIndex(cell => cell.text.trim() === "FILES");
+  const width = 80 - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
+  for (const size of [width, width - 1]) {
+    // A root-level name of exactly the column width (no slash to break after, so it wraps) after the prefix line.
+    const item = "src/" + "e".repeat(size - "src/".length - ".ts".length) + ".ts";
+    const turn = { ...probe, changed: [item, "src/next.ts"] };
+    const { groups } = tableFieldGroups(renderTurns([turn], 80, now), "FILES", [turn.id]);
+    const joined = groups.get(turn.id)!.filter(Boolean).join("\n");
+    expect(joined.replace(/\n/g, "")).toContain(`${item},`); // the separator rides the last piece of its item
+    for (const line of joined.split("\n")) {
+      expect(line.startsWith(",")).toBe(false);
+      expect(line.trim() === ",").toBe(false);
+    }
+  }
+});
+
+test("projects: a 39-character root takes at most two cell lines at 100 and 120 (#284)", () => {
+  const running = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/workspace/work/dev/agent-hub", state: "running", status: { peers: { claude: {}, codex: {}, kimi: {}, pi: {} }, tasks: { approved: 67, in_progress: 2, in_review: 1, changes_requested: 1 } } };
+  const stopped = { id: "p_571057063528c5dfe26ae138", root: "/Users/yj.lee/workspace/work/dev/hwp-cli", state: "stopped" };
+  for (const columns of [100, 120]) {
+    const rendered = renderProjects([running, stopped], columns, now);
+    // TASKS is not protected: it wraps between its items instead of banding the table to keep its natural width.
+    expect(rendered.filter((line) => line.some((cell) => cell.text.trim() === "PROJECT"))).toHaveLength(1);
+    const { groups } = tableFieldGroups(rendered, "ROOT", [running.id, stopped.id]);
+    // The root wraps at most once (the task list wraps between its items; the root is not floored at 12).
+    expect(groups.get(running.id)!.filter(Boolean).length).toBeLessThanOrEqual(2);
+    const tasksCell = tableFieldGroups(rendered, "TASKS", [running.id, stopped.id]).groups.get(running.id)!.join(" ");
+    for (const item of ["67 approved", "2 in_progress", "1 in_review", "1 changes_requested"]) expect(tasksCell).toContain(item);
+  }
+});
+
+test("turns: time and state cells wrap only when the listing gets shorter for it (#284)", () => {
+  // No turn has more than one file: the cells stay whole at every width.
+  const single = [0, 1].map((n) => ({ id: `pi#single0000.${n}`, peer: "pi", started: now - 6_000_000 * (n + 1), ended: null, start_tree: "a", end_tree: null, changed: n ? ["src/cli/output.ts"] : [] }));
+  for (const columns of [80, 100, 120]) {
+    const rendered = renderTurns(single, columns, now);
+    const ids = single.map((t) => t.id);
+    for (const id of ids) {
+      expect(tableFieldGroups(rendered, "STARTED", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+      expect(tableFieldGroups(rendered, "STATE", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+    }
+  }
+  // A listing where the donation does not pay (the files fit either way): the cells stay whole too.
+  const plain = [{ id: "pi#plain00000.1", peer: "pi", started: now - 6_000_000, ended: null, start_tree: "a", end_tree: null, changed: ["src/cli/main.ts", "src/cli/output.ts", "src/cli/console.ts"] }];
+  const plainRendered = renderTurns(plain, 100, now);
+  expect(tableFieldGroups(plainRendered, "STARTED", [plain[0]!.id]).groups.get(plain[0]!.id)!.filter(Boolean)).toHaveLength(1);
+  // One where it does: the time cell wraps and the row is exactly as tall as its files cell (the wrap rides along).
+  const heavy = [{ id: "pi#heavy00000.1", peer: "pi", started: now - 6_000_000, ended: null, start_tree: "a", end_tree: null, changed: ordinaryFilePathFixture }];
+  const heavyRendered = renderTurns(heavy, 100, now);
+  expect(tableFieldGroups(heavyRendered, "STARTED", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.filter(Boolean)).toHaveLength(2);
+  expect(heavyRendered.length).toBe(1 + tableFieldGroups(heavyRendered, "FILES", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.length);
+});
+
+test("turns: the time and state cells stay whole at 80 columns when the wrap would not shorten the listing (#284)", () => {
+  // The round-5 example: one turn with three files, five with none or one. Nine lines with the cells whole;
+  // the FILES floor (removed in round 5) made it 14 with every time cell wrapped.
+  const turns = [6, 5, 4, 3, 2, 1].map((n) => ({ id: `codex#mgk3x9ab.${n}`, peer: "codex", started: now - 3_600_000 * (n + 1) * (n === 6 ? 1 / 3 : 1), ended: now, start_tree: "a", end_tree: "b", changed: n === 6 ? ["src/cli/output.ts", "src/cli/main.ts", "test/output.test.ts"] : n === 5 ? ["README.md"] : [] }));
+  const rendered = renderTurns(turns, 80, now);
+  expect(rendered.length).toBe(9);
+  const ids = turns.map((t) => t.id);
+  for (const id of ids) {
+    expect(tableFieldGroups(rendered, "STARTED", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+    expect(tableFieldGroups(rendered, "STATE", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+  }
+  // One long file in an otherwise file-free listing: the cells stay whole too (a wrap would tax every row).
+  const long = [1, 2].map((n) => ({ id: `pi#long00000.${n}`, peer: "pi", started: now - 3_600_000 * n, ended: now, start_tree: "a", end_tree: "b", changed: n === 1 ? ["docs/verification/2026-10-10-cli-output-phase2.md"] : [] }));
+  const longRendered = renderTurns(long, 80, now);
+  expect(longRendered.length).toBe(5);
+  const longIds = long.map((t) => t.id);
+  for (const id of longIds) {
+    expect(tableFieldGroups(longRendered, "STARTED", longIds).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+    expect(tableFieldGroups(longRendered, "STATE", longIds).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+  }
+});
+
+test("an oversized path segment loses no character and leaves no slash alone (#284)", () => {
+  const segment = "x".repeat(60);
+  const turn = { id: "pi#seg000000.1", peer: "pi", started: now - 60_000, ended: now, start_tree: "a", end_tree: "b", changed: [`src/${segment}/`, "tail.ts"] };
+  const lines = tableFieldGroups(renderTurns([turn], 80, now), "FILES", [turn.id]).groups.get(turn.id)!.filter(Boolean);
+  // Every character of the cell survives the split (the segment's trailing slash rides its last piece).
+  expect(lines.join("").replace(/\s/g, "")).toBe(`2files:src/${segment}/,tail.ts`);
+  for (const line of lines) expect(line.trim()).not.toBe("/");
+});
+
+test("a narrow banded projects table keeps an all-dash column (#284)", () => {
+  const withTasks = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/agent-hub", state: "running", status: { peers: { a: 1 }, tasks: { approved: 3 } } };
+  const noTasks = { id: "p_fef98853fd7865aa54ad9f29", root: "/Users/yj.lee/workspace/work/dev/agent-hub", state: "stopped" };
+  // Narrow enough that the band tables render per row, without the id column: the dash row keeps its TASKS cell.
+  const text = renderProjects([withTasks, noTasks], 30, now).map((line) => line.map((cell) => cell.text).join("")).join("\n");
+  expect(text).toContain("TASKS");
+  expect(text).toContain("stopped  unknown  -");
+});
+
+test("projects: a task item and its separator stay whole when the column is their width (#284)", () => {
+  const project = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/workspace/work/dev/agent-hub", state: "running", status: { peers: { a: 1 }, tasks: { approved: 18, in_progress: 43, in_review: 76, changes_requested: 18, proposed: 107 } } };
+  for (const columns of [80, 88, 96]) {
+    const text = renderProjects([project], columns, now).map((line) => line.map((cell) => cell.text).join("")).join("\n");
+    expect(text).toContain("18 changes_requested,"); // never "18" / "changes_requested," on separate lines
+  }
+});
+
+test("projects: the ROOT floor starts above 80 columns, so an 80-column table stays flat (#284)", () => {
+  const project = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/agent-hub1", state: "running", status: { peers: { a: 1 }, tasks: { approved: 67, in_progress: 2, in_review: 1, changes_requested: 1 } } };
+  const rendered = renderProjects([project], 80, now);
+  expect(rendered.filter((line) => line.some((cell) => cell.text.trim() === "PROJECT"))).toHaveLength(1);
+  // At 81 the floor applies: the root keeps a quarter of the table and the task list wraps between its items.
+  const wider = renderProjects([project], 81, now);
+  const { groups } = tableFieldGroups(wider, "ROOT", [project.id]);
+  expect(groups.get(project.id)!.filter(Boolean).length).toBeLessThanOrEqual(2);
 });
