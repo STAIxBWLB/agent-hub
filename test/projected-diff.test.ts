@@ -70,3 +70,12 @@ test("absent files and binary presentation failures remain unavailable rather th
   const missing=projectedDiff({repo:f.repo,from:before,to:after,paths:["missing.docx"],projections})!;expect(missing).toContain("absent from both snapshots");expect(missing).not.toContain("unchanged");
   expect(snapshotBytes(f.repo,before,"paper.docx",0)).toBeUndefined();
 });
+
+test("created and deleted projected documents use absent endpoints and converter failure keeps a file-only view (#259)",()=>{
+  const f=fixture();writeFileSync(join(f.dir,"anchor.txt"),"anchor\n");const before=f.snap();writeFileSync(join(f.dir,"paper.docx"),"created text\n");const after=f.snap();const projections=new Projection(f.dir);
+  const created=projectedDiff({repo:f.repo,from:before,to:after,paths:["paper.docx"],projections})!;expect(created).toContain("+created text");
+  const deleted=projectedDiff({repo:f.repo,from:after,to:before,paths:["paper.docx"],projections})!;expect(deleted).toContain("-created text");
+  class Unavailable extends TextProjections {calls=0;override projectBytes():undefined{this.calls++;return undefined;}}
+  const unavailable=new Unavailable({cwd:f.dir,stateDir:join(f.dir,".agenthub/state"),config:{".docx":["/bin/cat","{input}"]}});
+  expect(projectedDiff({repo:f.repo,from:after,to:before,paths:["paper.docx"],projections:unavailable})).toBeUndefined();expect(unavailable.calls).toBe(1);
+});
