@@ -36,7 +36,7 @@
     {
       "id": "pii-public-view",
       "file": "src/hub/tasks.ts",
-      "search": "if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, title: \"[pii]\", detail: \"[pii]\" };",
+      "search": "if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: task.sdlc.stage } } : {}), title: \"[pii]\", detail: \"[pii]\" };",
       "replacement": "if (false) return { ...rest, refs: {}, plan: {}, title: \"[pii]\", detail: \"[pii]\" };",
       "testFile": "test/tasks.test.ts",
       "testName": "a PII task stays on-prem: local only, private envelopes, console review, redacted views, nothing to claude-mem"
