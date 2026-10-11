@@ -34,7 +34,7 @@ export function permissionGrant(peer: string, mode: PermissionMode): string {
 }
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
 /** Native agent policy files are never included in scoped automatic file grants. */
-export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".pi", ".mcp.json"]);
+export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".pi", ".mcp.json"]);
 /**
  * One spelling per name, as a case-insensitive disk sees it: it opens `.mcp.j\u017Fon` (long s) as `.mcp.json`, and
  * HFS+ also ignores the default-ignorable code points (a zero-width joiner inside `.codex` is still `.codex`).

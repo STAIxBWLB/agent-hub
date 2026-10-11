@@ -384,6 +384,14 @@
       "replacement": "        // seeded: retain stale empty-resume proof",
       "testFile": "test/pi.test.ts",
       "testName": "Pi personal activity invalidates cached ID-only empty resume (detached) (#315)"
+    },
+    {
+      "id": "kimi-code-scoped-grant",
+      "file": "src/hub/permission-mode.ts",
+      "search": "\".qwen\", \".kimi\", \".kimi-code\", \".pi\"",
+      "replacement": "\".qwen\", \".kimi\", \".pi\"",
+      "testFile": "test/permission-modes.test.ts",
+      "testName": "Kimi Code project policy is outside scoped grants under literal and folded spellings (#316)"
     }
   ]
 }
