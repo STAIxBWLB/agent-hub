@@ -92,6 +92,7 @@ test("new gsd-lite tasks expose checklist guidance before the first receipt and 
   const r = rig("off"), fresh = r.board.propose(USER, { title: "fresh task", class: "implement" });
   expect(fresh.sdlc).toBeUndefined();
   const projected = r.tasks.publicView(fresh).lifecycle as any;
+  expect(projected).toBeDefined(); // a seeded omission must fail an assertion before any property access
   expect(projected.workflow).toBe("gsd-lite"); expect(projected.phase.blockers).toContain("phase checklist missing");
   expect(projected.next).toBe("phase checklist missing"); expect(projected.actor).toBe("reviewer/person");
   const plain = rig("off", false, "none"), old = plain.board.propose(USER, { title: "fresh task", class: "implement" });
