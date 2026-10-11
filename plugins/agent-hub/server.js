@@ -16299,6 +16299,7 @@ function sessionProfile() {
       }
       if (data.profile !== undefined)
         raw = data.profile;
+      resolveProfile(raw, data.profile_overrides);
       overrides = mergeProfileOverrides(overrides, data.profile_overrides);
     }
     return resolveProfile(raw, overrides);
