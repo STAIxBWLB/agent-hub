@@ -25,7 +25,7 @@ async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; s
   const stateDir = state?.stateDir ?? join(cwd, "state");
   const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: native.codexAppPort ?? 0, codexProxyPort: 0, switchyardPort: 0,
     unattended: native.unattended,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], memory: { ...DEFAULT_CONFIG.memory, enabled: false }, ...config } });
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], memory: { ...DEFAULT_CONFIG.memory, enabled: false }, ...config } });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
   const mode = (peer: string, selected?: string, confirmed = false) => client.request({ t: "permission", peer, mode: selected, confirmed });

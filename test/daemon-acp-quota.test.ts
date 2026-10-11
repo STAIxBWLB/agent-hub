@@ -42,7 +42,7 @@ async function fixture(args: string[] = [], recordProtocol = false, routingOptio
     .replace('[classes.implement]\npeers = ["pi", "local", "codex", "kimi"]', `[classes.implement]\npeers = ${JSON.stringify(routingOptions.implementPeers ?? ["kimi", "codex"])}`);
   writeFileSync(join(dir, ".agenthub/routing.toml"), routing);
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(routingOptions.roster ? { roster: routingOptions.roster } : {}),
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, ...(routingOptions.roster ? { roster: routingOptions.roster } : {}),
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal", ...args, ...(recordProtocol ? ["--record-protocol", join(dir, "protocol.jsonl")] : [])],
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 1 },

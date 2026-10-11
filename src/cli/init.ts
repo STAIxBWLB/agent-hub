@@ -1,5 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { hubGitSync } from "../hub/git.ts";
+import { KIMI_MCP_FILE } from "./kimi-mcp.ts";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
 const BEGIN = "<!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->";
@@ -60,6 +62,7 @@ function changes(cwd: string): PlannedWrite[] {
   for (const entry of [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml"]) {
     if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
   }
+  if (hubGitSync(["ls-files", "--error-unmatch", "--", KIMI_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(KIMI_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${KIMI_MCP_FILE}\n`;
   write(ignore, lines, "ignore runtime state and machine-local configuration");
   return changed;
 }

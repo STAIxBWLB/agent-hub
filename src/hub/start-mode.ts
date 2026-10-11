@@ -8,15 +8,15 @@ import { KNOWN_PEERS, isKnownPeer } from "./peer-catalog.ts";
 export const PEER_START_RETRY_MS = 30_000;
 export const START_MODES = ["tui", "headless"] as const;
 export type StartMode = typeof START_MODES[number];
-/** The peers with both forms. Claude has only a TUI; Kimi (ACP) and the local worker have none the hub attaches to. */
-export const START_MODE_PEERS = ["pi", "codex"] as const;
+/** The peers with both forms. Kimi's TUI is pull-only; Claude has only a TUI and local only headless. */
+export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
 /** Every peer the hub can start itself. */
 export const STARTABLE_PEERS = KNOWN_PEERS;
 export type StartablePeer = typeof STARTABLE_PEERS[number];
 export const isStartablePeer = (value: unknown): value is StartablePeer => isKnownPeer(value);
 
 export type PeerStartConfig = Record<string, { start_mode?: StartMode }>;
-/** The checked `peers` block of the config; throws on anything but `{ pi|codex: { start_mode: "tui"|"headless" } }`. */
+/** The checked per-peer start modes; only peers with both forms may be configured. */
 export function peerStartConfig(value: unknown): PeerStartConfig {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("peers must be an object of per-peer settings");

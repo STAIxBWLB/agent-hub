@@ -13,6 +13,8 @@ import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { KNOWN_PEERS } from "./peer-catalog.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 
+export type TaskAssignmentRole = "owner" | "reviewer";
+
 export interface TasksDeps {
   board: Board;
   bus: Bus;
@@ -396,7 +398,7 @@ export class Tasks {
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    return { offRoster: KNOWN_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.pullOnly).map(peer => peer.id), offRoster: KNOWN_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
@@ -551,7 +553,7 @@ export class Tasks {
       return this.d.board.update(task.id, HUB, "blocked", {}, `waits for ${still.map((id) => `#${id}`).join(", ")}`);
     }
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
-    return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], claim: input.owner === by } : {});
+    return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], namedOwner: input.owner, claim: input.owner === by } : {});
   }
 
   /** Where a screened task's `pii` signal came from, on its history and in events (issue #198); no verdict is a console line by id. */
@@ -856,9 +858,9 @@ export class Tasks {
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
+    const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
 
     if (waits.length) {
       this.releaseNotice(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
@@ -1512,11 +1514,25 @@ export class Tasks {
   }
 
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
-  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false): Promise<Task> {
-    const task = this.need(id, true, preEffect);
+  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner"): Promise<Task> {
+    if (role !== "owner" && role !== "reviewer") throw new (preEffect ? PreEffectToolRefusal : Error)("role must be owner or reviewer");
+    if (role === "reviewer" && by !== USER) {
+      const conductors = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
+      if (conductors.length !== 1 || conductors[0] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user or the configured conductor may name a reviewer");
+    }
+    const task = this.need(id, role === "owner", preEffect);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
+    if (role === "reviewer") {
+      if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer can no longer change`);
+      this.ready(task, preEffect);
+      const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
+      if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
+      const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, `named reviewer ${peer}`, { reason: "manual" });
+      if (next.state === "in_review" && peer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${peer}`, () => this.sendReview(next, peer));
+      return next;
+    }
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
-    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], event: "reassigned", reason: "manual", override: by === USER });
+    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER });
     const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" });
     this.releaseNotice(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
     return next;

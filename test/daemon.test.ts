@@ -36,7 +36,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
     codexAppPort: 0,
     codexProxyPort: 0,
     config: {
-      ...DEFAULT_CONFIG,
+      ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } },
       kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")],
       batch_ms: 30,
       ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [] } } : {}),

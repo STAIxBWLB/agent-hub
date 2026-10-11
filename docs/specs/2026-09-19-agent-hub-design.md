@@ -1812,8 +1812,9 @@ push `accepted` and show none of them.
   push drain needs the peer deliverable (`Bus.deliverable`: not held, idle, not
   pull-only), checked at each loop and again after condensation, so a plain
   session that takes the peer while a push is condensed gets nothing. Its
-  messages stay queued and count as `queued`. Board routing still treats the
-  peer as attached.
+  messages stay queued and count as `queued`. Board routing still sees it as attached, but automatic owner/reviewer
+  selection excludes pull-only peers; only explicit role-specific naming or an
+  honored owner reservation permits assignment.
 - `hub_inbox` sends `inbox`. The daemon answers "not attached yet; retry"
   between welcome and attach, and refuses it for a session with pushes.
   `Bus.pull` is held by every hold a drain respects (`Bus.held`: recovery, an
@@ -2195,13 +2196,13 @@ acts on the stopped state directory.
 
 ## Amendment: TUI by default, headless as opt-in (issue #269, part 2)
 
-- `peers.<id>.start_mode` (`tui` or `headless`, for pi and codex; `tui` when unset) is the mode a start takes when nothing more specific was asked. Claude has only a TUI; Kimi (ACP) and the local worker have no hub-attached TUI and stay headless. The loader refuses a malformed `peers` block.
+- `peers.<id>.start_mode` (`tui` or `headless`, for pi, codex and kimi; `tui` when unset) is the mode a start takes when nothing more specific was asked. Claude has only a TUI; Kimi defaults to its own pull-only TUI, with ACP selectable; local stays headless. The loader refuses a malformed `peers` block.
 - A person typing `ahub pi` gets that mode: the TUI in their terminal by default. `--mode headless` or `--headless` asks for headless. Without a terminal (the console's command line, a script) and with the default asking for the TUI, the CLI sends the console-role `peer_start` request and the hub opens a terminal, or refuses with the command; an option given then is refused, because the fixed command carries none. An explicit `--mode tui` is taken at its word. `ahub codex` and `ahub claude` typed by a person are unchanged.
 - A start the hub makes itself is `hubStart(peer)`: the dashboard's `start_peer` action, `peer_start`, the conductor's `hub_peer_start` and `pi.auto_start` at hub start. With `headless` it starts the peer as before (for Codex: the app-server only). With `tui` it opens a terminal running `<runtime> <CLI entry> --project <root> <peer>` (`--mode tui` for Pi), assembled from the hub's own words and quoted word by word; no caller text is part of it. The peer is reserved before the provider is asked, so starts that arrive together open one terminal, and a second start within 30 seconds of an opened terminal is refused instead of opening another (a failed open frees it at once). A start mode of headless never takes over a Pi that runs in a terminal.
 - Terminal providers, in order: `terminal.open`, a machine-local argv template (`{command}` in exactly one element, plus `{title}` and `{cwd}`; a `MACHINE_LOCAL` field under config trust and on the never-editable list), then Orca (`orca terminal create --worktree id:<id> --command ...`) when the hub runs in an Orca worktree or a recorded launch of the project names one. Each template placeholder is substituted once; only `{command}` is shell-quoted. The opened terminal's environment carries no agent marker and no Orca terminal identity of the hub's own. A provider's error text is logged, not returned. With no provider the start is refused with the manual command; it never falls back to headless. Only the running product wires the real providers; a daemon constructed without them opens nothing.
 - The conductor's `hub_peer_start` no longer takes a mode: it takes the peer's start mode, and a `mode` argument that differs is refused. It may now start claude and codex through the provider, and codex headless when a person set that.
 - Recovery restores each peer in the mode its recorded session had. After an unplanned stop, `pi.auto_start` no longer starts a fresh headless Pi in place of one that ran in a terminal (with or without a recorded session file), unless headless is Pi's start mode. `peers.<id>.start_mode` may be set in the shared config file too: it is not a machine-local field.
-- Settings: `peers.pi.start_mode` and `peers.codex.start_mode` join the registry (group Start, stored in `config.local.json`, raising except to `tui`). They are the one stored setting a running hub takes up: after a settings write the hub re-reads the block, so the mode applies at that peer's next start. The dashboard gains a Start control per peer that is not attached, saying the mode and the provider (or why there is none); it offers no button when the start would be refused. An ordinary session may press it: it runs only the fixed start. The page blocks repeat starts while the request is in flight and unlocks after a confirmed answer, leaving the hub's terminal reopen guard authoritative. The manager waits 35 seconds (the terminal provider cap plus its margin); a slower headless start can end unconfirmed. After an unconfirmed manager result the page holds that project/instance/peer control for `PEER_START_RETRY_MS` (the same 30-second bound as the hub's reopen guard), or until the `starts` snapshot confirms attachment, and names the retry bound. A confirmed project-local dashboard start behaves as before; no manager or settings authority changes.
+- Settings: `peers.pi.start_mode`, `peers.codex.start_mode` and `peers.kimi.start_mode` join the registry (group Start, stored in `config.local.json`, raising except to `tui`). They are the one stored setting a running hub takes up: after a settings write the hub re-reads the block, so the mode applies at that peer's next start. The dashboard gains a Start control per peer that is not attached, saying the mode and the provider (or why there is none); it offers no button when the start would be refused. An ordinary session may press it: it runs only the fixed start. The page blocks repeat starts while the request is in flight and unlocks after a confirmed answer, leaving the hub's terminal reopen guard authoritative. The manager waits 35 seconds (the terminal provider cap plus its margin); a slower headless start can end unconfirmed. After an unconfirmed manager result the page holds that project/instance/peer control for `PEER_START_RETRY_MS` (the same 30-second bound as the hub's reopen guard), or until the `starts` snapshot confirms attachment, and names the retry bound. A confirmed project-local dashboard start behaves as before; no manager or settings authority changes.
 - Control protocol stays 16: `peer_start` is a new console-role request an older hub answers as unknown, and `ui_snapshot` gains the optional `starts` list.
 - Migration: Pi's default changes from headless to its TUI. `ahub settings set peers.pi.start_mode headless` (or the same key in `config.local.json`) keeps a headless auto-started Pi; scripts add `--headless`.
 
@@ -2259,3 +2260,34 @@ that current-session binding; an explicit session mismatch is refused). Personal
 output, tokens and managed turn state remain unclaimed. That activity revokes
 an earlier empty-session resume proof; stale unowned completion cannot release
 the queue.
+
+
+## Amendment: Kimi TUI as the default pull-only peer (#316)
+
+- One id, kimi, owns either an attached pull-only WsPeer or headless ACP. The unset
+  start mode is tui for existing and new projects; upgrade announces the change
+  once with `ahub settings set peers.kimi.start_mode headless`. A person's one-start
+  mode override also controls that launch's admission, without changing the setting.
+- Only a person's launcher atomically merges or removes the agent-hub entry in
+  `.kimi-code/mcp.json`. It preserves foreign meanings, warns if tracked, and a
+  preview writes nothing. Init ignores the untracked machine-path file. A daemon
+  headless start refuses a stale entry with the human cleanup command. TUI argv
+  derives only from a single executable or an exact trailing acp word.
+- In TUI mode only a peer hello with channel false is admitted. It reads queued
+  chat/task/review via hub_inbox, journaled completed once, and answers via hub_send.
+  It has no push, steer, busy state, watchdog, console approval, hub permission
+  mode, automatic quota pause/handoff, context reading, shared final answer or
+  session resume. Status surfaces pull-only, waiting and last read. Stop belongs
+  to the person in the native terminal. A live TUI blocks headless replacement;
+  after detach the same queue and open tasks reach ACP, without continuing its
+  session in the TUI.
+- Pure routing excludes every automatic pull-only candidate, including automatic
+  singleton escalation/handoff. Explicit proposer owner/own claim, validated owner
+  assign and honored persisted reservation are named. Reviewer assign is person or
+  conductor only, preserves task state and uses the existing guarded review request;
+  dependencies must be approved first. No roster/PII/pause/capability guard is bypassed.
+- Kimi Code 2.1.1 source preflight confirms trusted ACP workspace MCP file discovery
+  and a separately connected same-name session overlay. The engine does not carry
+  MCP initialize instructions into its model request: tool descriptions and the
+  managed AGENTS block carry the pull rules. Live trust/discovery and model tool
+  use remain unverified in smoke.md.

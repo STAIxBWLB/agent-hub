@@ -255,6 +255,10 @@ export function assign(
     exclude?: PeerId[];
     /** Live membership supplied as data; routing never reads the roster store. */
     offRoster?: PeerId[];
+    /** Watched peers take work only on an explicit nomination, never a routing singleton. */
+    pullOnly?: PeerId[];
+    namedOwner?: PeerId;
+    namedReviewer?: PeerId;
     candidates?: PeerId[];
     notReviewer?: PeerId;
     waitsFor?: number[];
@@ -287,6 +291,8 @@ export function assign(
 
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     if (opts.offRoster?.includes(peer)) return "off roster";
+    const named = role === "owner" ? opts.namedOwner ?? reserved : opts.namedReviewer;
+    if (opts.pullOnly?.includes(peer) && named !== peer) return "pull-only: takes work when named or when it claims it";
     if (!Object.hasOwn(states, peer)) return "not attached";
     if (opts.exclude?.includes(peer)) return "excluded (declined or replaced)";
     if (states[peer] === "offline") return "offline";
@@ -374,8 +380,8 @@ export function assign(
       // Reviewer candidates (issue #92): the review class's peers first, then peers holding the reviewer role, deduped.
       const classPeers = routing.classes.review?.peers ?? [];
       const rolePeers = Object.keys(opts.roles ?? {}).filter((p) => opts.roles![p]!.includes("reviewer"));
-      trace.push(`  reviewer candidates: [classes.review] peers ${classPeers.join(", ") || "none"}${rolePeers.length ? `; reviewer role ${rolePeers.join(", ")}` : ""}`);
-      reviewer = pick([...new Set([...classPeers, ...rolePeers])], "reviewer", owner ?? opts.notReviewer);
+      trace.push(opts.namedReviewer === undefined ? `  reviewer candidates: [classes.review] peers ${classPeers.join(", ") || "none"}${rolePeers.length ? `; reviewer role ${rolePeers.join(", ")}` : ""}` : `  reviewer candidate explicitly named: ${opts.namedReviewer}`);
+      reviewer = pick(opts.namedReviewer === undefined ? [...new Set([...classPeers, ...rolePeers])] : [opts.namedReviewer], "reviewer", owner ?? opts.notReviewer);
       trace.push(reviewer ? `reviewer: ${reviewer}` : "reviewer: none, done will approve directly");
       const reviewerHold = reviewer ? peerEntry(opts.held, reviewer) : undefined;
       if (reviewerHold) trace.push(`  hold: ${reviewer}'s queue is held: ${reviewerHold} (it receives the review once the hold is resolved)`);

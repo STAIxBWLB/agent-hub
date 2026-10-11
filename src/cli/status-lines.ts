@@ -1,7 +1,7 @@
 import type { ContextView } from "../hub/context-window.ts";
 // What `ahub status` prints for a peer and for a model backend, kept pure so it can be checked.
 
-export interface PeerRow { permissionMode?: string; context?: ContextView; state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; attached?: boolean; toolsOnly?: string; paused?: string; servedBy?: string; requestedModel?: string }
+export interface PeerRow { permissionMode?: string; context?: ContextView; state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; attached?: boolean; toolsOnly?: string; pullOnly?: boolean; lastInboxAt?: number | null; permissionNote?: string; paused?: string; servedBy?: string; requestedModel?: string }
 export interface BackendRow { kind?: string; alias?: string; state?: string; active?: number; requestedModel?: string; actualModel?: string; provider?: string; coolingUntil?: string; failures?: number; failingUntil?: string }
 
 /** Aliases are already namespaced ("dgx/coding"); only an alias that is not gets its kind in front of it. */

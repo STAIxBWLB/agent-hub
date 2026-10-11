@@ -129,6 +129,24 @@ test("a proposer's redirect needs assign capability to hand its task to another 
   } finally { holds.close(); }
 });
 
+test("reviewer naming is conductor-only even when the proposer can redirect ownership (#316)", async () => {
+  const holds = new ConductorHolds(":memory:");
+  const assigned: { actor: string; peer: string; role?: string }[] = [];
+  const controller = new Conductor(holds, {
+    roles: () => ({ codex: ["conductor"] }), capabilities: () => ({ claude: ["assign"], codex: ["assign"] }),
+    status: () => ({ peers: [], taskCounts: {}, approvals: [] }), task: () => ({ ...task(), state: "proposed" }),
+    publicView: value => ({ ...value }), assign: async (actor, _id, peer, role) => { assigned.push({ actor, peer, ...(role ? { role } : {}) }); },
+    escalate: async () => task(), preview: peer => `ahub ${peer}`, startMode: () => "headless", start: async () => {}, known: () => true, pause: () => {}, release: () => {}, audit: () => {},
+  });
+  try {
+    await controller.execute("claude", "hub_task_assign", { id: 12, peer: "kimi" });
+    await expect(controller.execute("claude", "hub_task_assign", { id: 12, peer: "kimi", role: "reviewer" })).rejects.toThrow("explicit conductor");
+    await controller.execute("codex", "hub_task_assign", { id: 12, peer: "kimi", role: "reviewer" });
+    await expect(controller.execute("codex", "hub_task_assign", { id: 12, peer: "kimi", role: "other" })).rejects.toThrow("role must be owner or reviewer");
+    expect(assigned).toEqual([{ actor: "claude", peer: "kimi" }, { actor: "codex", peer: "kimi", role: "reviewer" }]);
+  } finally { holds.close(); }
+});
+
 test("controller binds mutations to actor, public results and ids-only audit", async () => {
   const holds = new ConductorHolds(":memory:");
   const events: ConductEvent[] = [];

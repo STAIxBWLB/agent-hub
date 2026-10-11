@@ -22,7 +22,7 @@ async function hub(id: string) {
     codexAppPort: 0,
     codexProxyPort: 0,
     config: {
-      ...DEFAULT_CONFIG,
+      ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")],

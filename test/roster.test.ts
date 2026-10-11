@@ -15,7 +15,7 @@ import { realPath } from "../src/hub/project.ts";
 async function legacyHub(root: string, enabled: boolean, roster: PeerRoster = {}, extra: Partial<HubConfig> = {}, codexAppPort = 0, hooks: { taskSweepNow?: () => number } = {}) {
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
   const daemon = await startDaemon({ ...hooks, cwd: root, stateDir, projectId: "roster-legacy-project", controlPort: 0, codexAppPort, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, ...extra, roster, batch_ms: 0, pi: { ...DEFAULT_CONFIG.pi, enabled, auto_start: false },
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, ...extra, roster, batch_ms: 0, pi: { ...DEFAULT_CONFIG.pi, enabled, auto_start: false },
       memory: { ...DEFAULT_CONFIG.memory, ...extra.memory, enabled: extra.memory?.enabled ?? false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
   const client = await ControlClient.connect(stateDir, { role: "console" });

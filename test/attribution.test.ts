@@ -33,7 +33,7 @@ test("daemon writes delivery task on native tokens and turn_end even without own
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-attribution-"));
   const daemon = await startDaemon({
     cwd: join(import.meta.dir, ".."), stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false },
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false },
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")] },
   });
   let client: ControlClient | undefined;
