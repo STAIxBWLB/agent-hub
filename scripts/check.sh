@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 node scripts/check-docs.mjs
 bun install --frozen-lockfile >/dev/null
 bun x tsc --noEmit
+bun scripts/check-roles.ts
 bun scripts/build.mjs --check
 node scripts/check-package.mjs
 

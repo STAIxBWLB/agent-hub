@@ -2341,3 +2341,10 @@ the queue.
 - Optional workflow none|gsd-lite, none by default, uses existing SDLC receipts and Tasks authority. A reviewer/person-owned checklist stores bounded criterion ids, hashed evidence refs and verified/failed/unverified claims bound to the reviewed head.
 - Existing task/predecessor ids must match current Tasks.after edges; missing/cyclic/private cross-links are refused before effects. Imports do not change task ownership, reservations or dependencies.
 - Required unknown/failed criteria and stale heads keep readiness false. Advise remains nonblocking; enforce adds these only to existing approval gates. Route explain, console/dashboard lifecycle views and read-only hashed exports derive the same board/config state. No second writable workflow store, automatic advance, permissions, merge/release or study execution.
+
+# Role catalog amendment, 2026-10-11 (#295)
+
+- Separate optional catalog guidance from unchanged flow roles/authority. Eleven shipped dev/research definitions and bounded project overrides carry flat headers, six fixed sections, content hashes and source notices.
+- Session selections contain up to two ids and must match an existing flow base. Default absence preserves legacy contracts. Native preambles and Claude instructions publish guidance through existing paths; tools-mode instructions omit catalog text to avoid duplicate headless publication.
+- Metadata-only prepared events and read-only list/show/doctor diagnostics do not attest native ingestion or execution. Project text is sanitized at rendering; invalid definitions disclose no contents. No new permission, routing, sandbox or tool authority follows from a catalog role.
+- Task roles, person/settings assignment, pending/session attribution surfaces, later groups and measurement remain follow-up slices. See docs/roles.md for the current contract.

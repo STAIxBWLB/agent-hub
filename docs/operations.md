@@ -2496,3 +2496,9 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 - Set `workflow = "gsd-lite"` in `.agenthub/sdlc.toml` for the next daemon start; default none preserves the existing flow. Mode advise displays checklist blockers without blocking, while enforce checks them at approval.
 - The task reviewer/person records phase criteria via `ahub sdlc record <id> '<receipt JSON>'`. Existing tasks and predecessor ids must match the board; import does not move owners or edit dependencies. Use the existing task propose `--after` command to create edges.
 - `ahub sdlc status <id>`, `explain <id>` and `export <id>` read the same current board/config projection. Export hashes are projection/config hashes, with no external text, extra authority or verification claim. Schema and example: [SDLC](sdlc.md#gsd-lite-checklist-guidance).
+
+# Catalog session guidance (#295)
+
+- Read available guidance with `ahub role list [--group dev|research]` and `ahub role show <id>`. Each definition identifies its layer and content hash. Doctor reports invalid files/selections without printing their contents.
+- Select up to two ids per peer in `catalog_roles` in the shared/local config, with at least one flow base already held by that peer. Empty local lists clear shared selections. This initial slice applies selections at a new daemon/MCP/adapter start; live assignment/settings and task roles follow separately.
+- Defaults preserve the existing flow. Catalog guidance adds no authority or routing preference. Native ingestion/retention and measured benefit remain unverified. Schema, bounds and source notice: [roles](roles.md).
