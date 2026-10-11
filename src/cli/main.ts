@@ -42,14 +42,14 @@ import { parseSince, readEvents } from "../hub/events.ts";
 import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { appendRecords, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
-import { formatReport, summarize, formatTaskReport, summarizeByTask } from "../hub/report.ts";
+import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
-import { paint, permissionBoundary, resolveColor, type Span } from "./console-state.ts";
-import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, type DoctorCheck } from "./output.ts";
+import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
+import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -117,6 +117,10 @@ function outputOptions() {
   if (color instanceof Error) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
   return { color: color === true, json: args.includes("--json"), full: args.includes("--full"),
     columns: outputWidth({ isTTY: !!process.stdout.isTTY, columns: process.stdout.columns, COLUMNS: process.env.COLUMNS }) };
+}
+/** Remove only presentation flags from read-only command positional arguments. */
+function outputArguments(): string[] {
+  return args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color="));
 }
 function printOutput(lines: Span[][], color: boolean): void {
   for (const line of lines) console.log(paint(line, color));
@@ -219,15 +223,10 @@ async function projectRows() {
   finally { registry.close(); }
 }
 
-async function printProjects(json = false) {
-  const rows = await projectRows();
-  if (json) return console.log(JSON.stringify(rows, null, 2));
-  for (const row of rows) {
-    console.log(`${row.id}  ${row.state.padEnd(12)} ${row.root}`);
-    if (row.status) console.log(`  peers ${Object.keys(row.status.peers ?? {}).length}, control ${row.status.controlPort}, tasks ${JSON.stringify(row.status.tasks ?? {})}`);
-    if (row.error) console.log(`  ${row.error}`);
-  }
-  if (!rows.length) console.log("No registered projects. Run ahub init in a project directory.");
+async function printProjects(options: ReturnType<typeof outputOptions>) {
+  const projects = await projectRows();
+  if (options.json) return console.log(JSON.stringify(projects, null, 2));
+  printOutput(renderProjects(projects, options.columns, Date.now()), options.color);
 }
 
 /** Full command line of a live process, undefined once it is gone. */
@@ -270,43 +269,40 @@ function orphanPids(project: Project): number[] {
 
 const processGone = (pid: number): boolean => !processCommandLine(pid);
 
-async function killOrphan(pid: number, root: string): Promise<boolean> {
+async function killOrphan(pid: number, root: string, diagnostic: (text: string) => void = text => console.log(text)): Promise<boolean> {
   if (!hubDaemonCommand(pid, root)) {
-    console.log(`    pid ${pid}: command line is not this project's hub daemon; refusing to kill`);
+    diagnostic(`    pid ${pid}: command line is not this project's hub daemon; refusing to kill`);
     return false;
   }
   try { process.kill(pid, "SIGTERM"); } catch { return true; } // exited meanwhile
   const graceful = Date.now() + 3_000;
   while (Date.now() < graceful && !processGone(pid)) await Bun.sleep(100);
-  if (processGone(pid)) { console.log(`    pid ${pid}: stopped with SIGTERM`); return true; }
+  if (processGone(pid)) { diagnostic(`    pid ${pid}: stopped with SIGTERM`); return true; }
   // The PID may have been reused since SIGTERM; verify identity again before escalating.
   if (!hubDaemonCommand(pid, root)) {
-    console.log(`    pid ${pid}: identity changed after SIGTERM; refusing SIGKILL`);
+    diagnostic(`    pid ${pid}: identity changed after SIGTERM; refusing SIGKILL`);
     return false;
   }
   try { process.kill(pid, "SIGKILL"); } catch { return true; }
   const hard = Date.now() + 2_000;
   while (Date.now() < hard && !processGone(pid)) await Bun.sleep(100);
   if (!processGone(pid)) {
-    console.log(`    pid ${pid}: still alive after SIGKILL`);
+    diagnostic(`    pid ${pid}: still alive after SIGKILL`);
     return false;
   }
-  console.log(`    pid ${pid}: killed with SIGKILL`);
+  diagnostic(`    pid ${pid}: killed with SIGKILL`);
   return true;
 }
 
-async function orphanDoctor(kill: boolean): Promise<void> {
-  const orphans = registeredProjects().filter((project) => !existsSync(project.root));
-  if (!orphans.length) return console.log("no orphaned hub registrations");
-  console.log("orphaned hub registrations (the project root is gone):");
+async function orphanDoctor(kill: boolean, options: ReturnType<typeof outputOptions>): Promise<void> {
+  const orphans = registeredProjects().filter(project => !existsSync(project.root)).map(project => ({ project, pids: orphanPids(project) }));
+  if (options.json) console.log(JSON.stringify(orphans, null, 2));
+  else printOutput(renderOrphans(orphans, options.columns, Date.now(), kill), options.color);
   let failed = 0;
-  for (const project of orphans) {
-    const pids = orphanPids(project);
-    console.log(`  ${project.id}  ${project.root}${pids.length ? `  live pid ${pids.join(", ")}` : "  no live process"}`);
-    if (!kill) continue;
-    for (const pid of pids) if (!(await killOrphan(pid, project.root))) failed++;
-  }
-  if (!kill) console.log("kill live orphans with `ahub doctor --orphans --kill`, then forget each row with `ahub projects remove <id>`");
+  const diagnostic = (text: string) => options.json
+    ? console.error(paint([{ text }], false))
+    : printOutput(wrap(text, options.columns ?? Infinity).map(text => [{ text }]), options.color);
+  if (kill) for (const { project, pids } of orphans) for (const pid of pids) if (!(await killOrphan(pid, project.root, diagnostic))) failed++;
   if (failed) fail(`${failed} orphaned hub process(es) could not be stopped`);
 }
 
@@ -559,8 +555,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       console.log("registration removed; project files were kept");
       return;
     }
-    if (args.some((arg) => arg !== "--json")) fail("usage: ahub projects [--json]");
-    await printProjects(args.includes("--json"));
+    const options = outputOptions();
+    if (outputArguments().length) fail("usage: ahub projects [--json] [--full] [--color=auto|always|never]");
+    await printProjects(options);
   },
 
   ui: async () => {
@@ -804,17 +801,19 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   models: async () => {
-    const action = args[0] ?? "status";
+    const action = outputArguments()[0] ?? "status";
+    const options = action === "status" ? outputOptions() : undefined;
+    const showStatus = (data: unknown) => options!.json ? console.log(JSON.stringify(data, null, 2)) : printOutput(renderModelsStatus(data, options!.columns, Date.now()), options!.color);
     const configured = projectConfig().mlx;
     if (configured.enabled === false) {
-      if (action === "status") return console.log(JSON.stringify({ state: "disabled", enabled: false }, null, 2));
+      if (action === "status") return showStatus({ state: "disabled", enabled: false });
       if (["setup", "start", "stop"].includes(action)) fail("MLX is disabled by mlx.enabled=false; models commands do not manage shared Ollama");
       fail("usage: ahub models setup|status|start|stop");
     }
     const runtimeDir = configured.runtimeDir ? resolve(cwd, configured.runtimeDir) : join(homedir(), ".agenthub", "runtimes", "mlx");
     const modelPath = configured.modelPath ? resolve(cwd, configured.modelPath) : join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
     const mlxOptions = configured.provider === "ollama" ? configured : { ...configured, runtimeDir, modelPath };
-    if (action === "status") return console.log(JSON.stringify(await inspectMlx(mlxOptions), null, 2));
+    if (action === "status") return showStatus(await inspectMlx(mlxOptions));
     if (action === "start") { const handle = await ensureMlx(mlxOptions); return console.log(JSON.stringify(handle.status(), null, 2)); }
     if (action === "stop") { await stopMlx(mlxOptions); return console.log("MLX stopped"); }
     if (action !== "setup") fail("usage: ahub models setup|status|start|stop");
@@ -844,17 +843,17 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   queue: async () => {
-    const [operation = "list", ...rest] = args;
+    const options = outputOptions();
+    const [operation = "list", ...rest] = outputArguments();
     const hub = await connect();
     try {
       if (operation === "list") {
         const { one, rest: flags } = takeFlags(rest, ["--peer"], []);
-        if (flags.some((flag) => flag !== "--json")) fail("usage: ahub queue list [--peer <id>] [--json]");
+        if (flags.length) fail("usage: ahub queue list [--peer <id>] [--json] [--full] [--color=auto|always|never]");
         const result = await hub.request({ t: "queue", op: "list", ...(one["--peer"] ? { peer: one["--peer"] } : {}) });
         if (!result.ok) fail(result.error);
-        if (flags.includes("--json")) return console.log(JSON.stringify(result.deliveries, null, 2));
-        for (const row of result.deliveries) console.log(`${row.id}  ${row.peer}  ${row.state}  revision ${row.revision}${row.important ? "  important" : ""}`);
-        if (!result.deliveries.length) console.log("no retained deliveries");
+        if (options.json) return console.log(JSON.stringify(result.deliveries, null, 2));
+        printOutput(renderQueue(result.deliveries, options.columns, Date.now()), options.color);
         return;
       }
       const [id, ...flags] = rest;
@@ -863,9 +862,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (!shown.ok) fail(shown.error);
       if (operation === "show") {
         if (flags.length) fail("usage: ahub queue show <id>");
-        return console.log(JSON.stringify(shown.delivery, null, 2));
+        if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
+        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now()), options.color);
       }
-      const { one, rest: extra } = takeFlags(flags, ["--action", "--reason"], []);
+      const { one, rest: extra } = takeFlags(args.slice(2), ["--action", "--reason"], []);
       if (extra.length || !["completed", "retry", "discard"].includes(one["--action"] ?? "") || !one["--reason"]?.trim()) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text>");
       const result = await hub.request({ t: "queue", op: "resolve", id, revision: shown.delivery.revision, action: one["--action"], reason: one["--reason"] });
       if (!result.ok) fail(result.error);
@@ -892,17 +892,19 @@ const commands: Record<string, () => Promise<void> | void> = {
   budget: async () => {
     const options = outputOptions();
     const hub = await connect();
-    if (args[0] === "execution") {
-      const op = args[1] ?? "status";
-      let request: Record<string, unknown> = { t: "execution_budget", op, ...(args[2] ? { id: args[2] } : {}) };
+    if (outputArguments()[0] === "execution") {
+      const op = outputArguments()[1] ?? "status";
+      let request: Record<string, unknown> = { t: "execution_budget", op, ...(outputArguments()[2] ? { id: outputArguments()[2] } : {}) };
       if (op === "configure") {
-        if (!args[2]) { hub.close(); fail("usage: ahub budget execution configure <config.json>"); }
-        try { request = { t: "execution_budget", op, config: JSON.parse(readFileSync(args[2]!, "utf8")) }; }
+        if (!outputArguments()[2]) { hub.close(); fail("usage: ahub budget execution configure <config.json>"); }
+        try { request = { t: "execution_budget", op, config: JSON.parse(readFileSync(outputArguments()[2]!, "utf8")) }; }
         catch { hub.close(); fail("cannot read execution budget JSON configuration"); }
       }
       const result = await hub.request(request); hub.close();
       if (!result.ok) fail(result.error);
-      return console.log(JSON.stringify(result.budgets ?? result.budget ?? { disabled: result.disabled }, null, 2));
+      const data = result.budgets ?? result.budget ?? { disabled: result.disabled };
+      if (op !== "status" || options.json) return console.log(JSON.stringify(data, null, 2));
+      return printOutput(renderExecutionBudgetStatus(result.budgets, options.columns, Date.now()), options.color);
     }
     let set: Record<string, unknown> | undefined;
     if (args[0] === "resume") {
@@ -1110,7 +1112,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   status: async () => {
     const options = outputOptions();
-    if (args.includes("--all")) return printProjects(options.json);
+    if (args.includes("--all")) return printProjects(options);
     const hub = await connect();
     try {
       const { status } = await hub.request({ t: "status" });
@@ -1208,15 +1210,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatResearch(r).join("\n"));
   },
   report: () => {
+    const options = outputOptions();
     const by = args.indexOf("--by");
     if (by >= 0 && args[by + 1] !== "task") return fail("--by takes task");
     const events = readEvents(join(stateDir, "events.jsonl"), since());
-    if (by >= 0) {
-      const r = summarizeByTask(events);
-      return console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatTaskReport(r).join("\n"));
-    }
-    const r = summarize(events);
-    console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatReport(r).join("\n"));
+    const data = by >= 0 ? summarizeByTask(events) : summarize(events);
+    if (options.json) return console.log(JSON.stringify(data, null, 2));
+    printOutput(renderReport(data, options.columns, Date.now(), by >= 0), options.color);
   },
   facts: async () => {
     if (!args.includes("--hook")) return fail("usage: ahub facts --hook (a Claude Code PreToolUse, PostToolUse and Stop hook)");
@@ -1271,17 +1271,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
   },
   turns: () => {
-    const { one, rest } = takeFlags(args, ["--limit"], []);
-    const rows = turnRecords((t) => t.list(rest[0], Number(one["--limit"]) || 20), []);
-    if (!rows.length) return console.log("no turns recorded (they need a git work tree and snapshots.enabled)");
-    for (const r of rows) {
-      const shown = r.changed.slice(0, 5).join(", ") + (r.changed.length > 5 ? ", ..." : "");
-      const files = r.changed.length ? `: ${shown}` : "";
-      let status = "";
-      if (!r.ended) status = " (running)";
-      else if (!r.end_tree) status = " (no end snapshot)";
-      console.log(`${r.id}  ${new Date(r.started).toLocaleString()}${status}  ${r.changed.length} files${files}`);
-    }
+    const options = outputOptions();
+    const { one, rest } = takeFlags(outputArguments(), ["--limit"], []);
+    const turns = turnRecords(t => t.list(rest[0], Number(one["--limit"]) || 20), []);
+    if (options.json) return console.log(JSON.stringify(turns, null, 2));
+    printOutput(renderTurns(turns, options.columns, Date.now()), options.color);
   },
   undo: async () => {
     const id = args.find((a) => !a.startsWith("--")) ?? fail("usage: ahub undo <turn> [--yes] [--context]");
@@ -1414,7 +1408,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   doctor: async () => {
     const options = outputOptions();
-    if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"));
+    if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"), options);
     const version = (bin: string) => {
       const res = spawnSync(bin, ["--version"], { encoding: "utf8" });
       return res.status === 0 ? res.stdout.trim().split("\n")[0]! : undefined;
