@@ -2412,3 +2412,18 @@ prompt was accepted but before history was persisted is not treated as empty:
 its delivery is held, and another start refuses until resume history is verified.
 Inspect and settle the held delivery before deliberately replacing that unpersisted
 session by restarting the hub; the stop never silently chooses a fresh session.
+
+A pull-only Kimi TUI has no controlled restore or resume. While it is attached,
+upgrade/restart planning stops before effects and asks the person to end Kimi in
+that terminal and make a new plan. Headless Kimi restoration stays headless even
+though the unset launch mode now means TUI; older targets keep their legacy
+command without a mode flag. Native recovery remains unverified.
+
+Changing a reviewer on a task in review withdraws unread requests and tells the
+former reviewer its request is withdrawn. A delivered request cannot be recalled,
+but a later verdict from that former reviewer is refused by current authority.
+
+Legacy Claude pull-only sessions retain their existing automatic owner/reviewer
+selection; the watched-Kimi exclusion does not disable that review path. After
+first creating the Kimi MCP file, run `ahub init` to ignore the untracked file.
+Init leaves existing ignore bytes alone when no Kimi MCP file exists.

@@ -62,7 +62,7 @@ function changes(cwd: string): PlannedWrite[] {
   for (const entry of [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml"]) {
     if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
   }
-  if (hubGitSync(["ls-files", "--error-unmatch", "--", KIMI_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(KIMI_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${KIMI_MCP_FILE}\n`;
+  if (existsSync(join(cwd, KIMI_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", KIMI_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(KIMI_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${KIMI_MCP_FILE}\n`;
   write(ignore, lines, "ignore runtime state and machine-local configuration");
   return changed;
 }

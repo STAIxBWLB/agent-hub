@@ -149,3 +149,16 @@ test("the person's Kimi TUI launcher writes MCP then runs the configured fake wi
   expect(native.mcp.mcpServers["agent-hub"]).toMatchObject({ command: "bun", env: { AGENTHUB_PEER_ID: "kimi", AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PROJECT_DIR: hub.cwd } });
   expect(native.mcp.mcpServers["agent-hub"].env).not.toHaveProperty("AGENTHUB_MODE");
 });
+
+test("Kimi TUI argv admits only a single executable or exact final acp, and never echoes custom argv (#316)", async () => {
+  const { buildKimiTuiLaunch } = await import("../src/cli/launch.ts");
+  expect(buildKimiTuiLaunch(["/fixture/kimi"])).toMatchObject({ cmd: "/fixture/kimi", args: [] });
+  expect(buildKimiTuiLaunch(["/fixture/wrapper", "--safe", "acp"])).toMatchObject({ cmd: "/fixture/wrapper", args: ["--safe"] });
+  expect(buildKimiTuiLaunch(["/fixture/wrapper", "acp"], "fixture-model")).toMatchObject({ args: ["--model", "fixture-model"] });
+  for (const tail of ["serve", "ACP", "acp ", "CUSTOM_ARG_SECRET"]) {
+    let reason = "";
+    try { buildKimiTuiLaunch(["/fixture/PRIVATE_COMMAND", tail]); } catch (error) { reason = (error as Error).message; }
+    expect(reason).toContain("kimi_cmd"); expect(reason).toContain("ahub kimi --mode headless");
+    expect(reason).not.toContain(tail); expect(reason).not.toContain("PRIVATE_COMMAND");
+  }
+});

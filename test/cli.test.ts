@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { init, removeBlock, upsertBlock } from "../src/cli/init.ts";
@@ -8,6 +8,7 @@ import { allocatePorts } from "../src/hub/ports.ts";
 import { nextStep, parseList, pluginState } from "../src/cli/setup.ts";
 import { VERSION } from "../src/version.ts";
 import { childEnv } from "../src/hub/child-process.ts";
+import { hubGitSync } from "../src/hub/git.ts";
 import { freeText } from "../src/cli/free-text.ts";
 
 const settingsStates: string[] = [];
@@ -32,6 +33,25 @@ test("ahub init adds the machine's own config to an existing .gitignore once (is
   init(dir);
   expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n.agenthub/state/\n.agenthub/config.local.json\n.agenthub/routing.local.toml\n");
   expect(init(dir)).toEqual([]);
+});
+
+// #316: the Kimi MCP file holds machine paths, so init ignores it only when it exists and git does not track it.
+test("ahub init ignores an untracked Kimi MCP file, once, and leaves other cases alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  init(dir);
+  expect(readFileSync(join(dir, ".gitignore"), "utf8")).not.toContain(".kimi-code/mcp.json");
+  mkdirSync(join(dir, ".kimi-code"), { recursive: true });
+  writeFileSync(join(dir, ".kimi-code/mcp.json"), "{}\n");
+  init(dir);
+  expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".kimi-code/mcp.json\n");
+  expect(init(dir)).toEqual([]);
+  const tracked = mkdtempSync(join(tmpdir(), "agenthub-"));
+  mkdirSync(join(tracked, ".kimi-code"), { recursive: true });
+  writeFileSync(join(tracked, ".kimi-code/mcp.json"), "{}\n");
+  hubGitSync(["init"], { cwd: tracked, encoding: "utf8" });
+  hubGitSync(["add", ".kimi-code/mcp.json"], { cwd: tracked, encoding: "utf8" });
+  init(tracked);
+  expect(existsSync(join(tracked, ".gitignore")) ? readFileSync(join(tracked, ".gitignore"), "utf8") : "").not.toContain(".kimi-code/mcp.json");
 });
 
 // Any CLAUDE.md stops Claude Code from loading AGENTS.md, so init takes back the block older versions put there.

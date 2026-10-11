@@ -157,3 +157,8 @@ config file; such an edit changes participation only at the next hub start. A
 live settings write or undo applies its own roster key and does not adopt other
 file edits. External ids outside the known native catalog keep their prior
 admission rules.
+
+Kimi's pull-only TUI owns its tool approvals and session. The person's launcher
+merges/removes only the hub MCP entry; the daemon never edits that file and
+refuses headless starts while a stale entry exists. An attached Kimi TUI blocks
+controlled recovery instead of being treated as a hub-owned headless process.

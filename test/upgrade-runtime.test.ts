@@ -1296,3 +1296,43 @@ test("ordinary inspectProject keeps 3-second connect and status-request caps by 
     expect(f.requests).toEqual(["hello", "status"]);
   } finally { f.close(); await result; clock.restore(); f.cleanup(); }
 });
+
+for (const supportsModes of [false, true]) test(`the recovery driver keeps headless Kimi headless on a ${supportsModes ? "mode-aware" : "legacy"} target (#316)`, async () => {
+  const f = claudeRestoreFixture("session-S");
+  const target = mkdtempSync(join(tmpdir(), "ahub-kimi-target-"));
+  try {
+    if (supportsModes) { mkdirSync(join(target, "src/hub"), { recursive: true }); writeFileSync(join(target, "src/hub/start-mode.ts"), 'export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;\n'); }
+    f.op.targetRoot = target; f.op.plan.projects = [f.planned];
+    f.planned.terminals = [];
+    f.planned.source.peers = [{ id: "kimi", state: "idle", args: { model: "saved-model", mode: "headless" } }];
+    const calls: string[][] = [];
+    const driver = makeRecoveryDriver(async argv => { calls.push(argv); return { code: 0, stdout: "{}", stderr: "" }; });
+    await driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(calls).toEqual([[process.execPath, join(target, "src/cli/main.js"), "--project", f.root, "kimi", "--model", "saved-model", ...(supportsModes ? ["--mode", "headless"] : [])]]);
+    f.planned.source.peers[0]!.args!.mode = "tui";
+    await expect(driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("cannot be restored as a headless worker");
+    expect(calls).toHaveLength(1);
+  } finally { f.cleanup(); rmSync(target, { recursive: true, force: true }); }
+});
+
+test("controlled recovery planning refuses an attached Kimi TUI before effects (#316)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-kimi-recovery-")), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(root, "home");
+  const registry = new Registry(join(root, "home", "registry.db"));
+  mkdirSync(join(root, "project")); const project = registry.register(join(root, "project")); registry.close();
+  const daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  const kimi = await ControlClient.connect(project.stateDir, { role: "peer", peer: "kimi", channel: false });
+  try {
+    const calls: string[][] = [];
+    const source = await inspectRecovery(project);
+    expect(source.peers.find(peer => peer.id === "kimi")?.args?.mode).toBe("tui");
+    const plan = await makeUpgradePlan("restart", VERSION, project.root, async argv => { calls.push(argv); return { code: 0, stdout: "{}", stderr: "" }; });
+    expect(plan.projects[0]!.blockers.some(reason => reason.includes("pull-only terminal has no automatic restore"))).toBe(true);
+    expect(calls).toEqual([]); expect(daemon.bus.peers.get("kimi")!.state).toBe("idle");
+  } finally {
+    kimi.close(); await daemon.stop();
+    if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

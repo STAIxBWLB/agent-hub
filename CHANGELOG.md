@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Default Kimi to its own pull-only TUI, retain selectable headless ACP, exclude automatic routing to pull-only peers, and let people/conductors name reviewers with withdrawal notices. Keep project MCP changes in the person launcher and refuse unsupported TUI recovery (#316).
+
 - Exclude Kimi Code project configuration under .kimi-code from scoped automatic write/edit grants, alongside the legacy .kimi policy directory (#316).
 
 - A person can change the live peer roster through settings, the dashboard or ahub roster: removed peers stop receiving new work while their queued messages, uncertain deliveries and pauses remain available, and all open owner/reviewer roles are offered to another eligible peer; explicit off-roster messages are retained with a public notice and removal reports both moves and work that stays (#315).
