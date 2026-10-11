@@ -574,7 +574,7 @@ test("an item exactly as wide as the column, and one a character narrower, keep 
   const at = header.findIndex(cell => cell.text.trim() === "FILES");
   const width = 80 - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
   for (const size of [width, width - 1]) {
-    // A root-level name of exactly the column width (no slash to break after, so it wraps) after the prefix line.
+    // A path of exactly the column width (or one narrower) breaks after src/ before its oversized segment.
     const item = "src/" + "e".repeat(size - "src/".length - ".ts".length) + ".ts";
     const turn = { ...probe, changed: [item, "src/next.ts"] };
     const { groups } = tableFieldGroups(renderTurns([turn], 80, now), "FILES", [turn.id]);
@@ -681,3 +681,107 @@ test("projects: the ROOT floor starts above 80 columns, so an 80-column table st
   const { groups } = tableFieldGroups(wider, "ROOT", [project.id]);
   expect(groups.get(project.id)!.filter(Boolean).length).toBeLessThanOrEqual(2);
 });
+
+test("slashless emoji tails remain complete Unicode characters at every width (#284)", () => {
+  const item = "n".repeat(42) + "😀😀😀";
+  const turn = { id: "pi#unicode001.1", peer: "pi", started: now - 60_000, ended: now, start_tree: "a", end_tree: "b", changed: [item, "z.ts"] };
+  for (let columns = 36; columns <= 120; columns++) {
+    const rendered = renderTurns([turn], columns, now);
+    const chunks = tableFieldGroups(rendered, "FILES", [turn.id]).groups.get(turn.id)!.filter(Boolean);
+    for (const chunk of chunks) expect(chunk.isWellFormed()).toBe(true);
+    expect(chunks.join("").replace(/\s/g, "")).toBe(`2files:${item},z.ts`);
+    for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+  }
+});
+
+const tailTurn = { id: "pi#tailcheck.1", peer: "pi", started: "invalid", ended: now, start_tree: "a", end_tree: "b" };
+function tailColumnRoom() {
+  const probe = { ...tailTurn, changed: ["n".repeat(200), "z.ts"] };
+  const header = renderTurns([probe], 80, now).find(line => line.some(cell => cell.text.trim() === "FILES"))!;
+  const at = header.findIndex(cell => cell.text.trim() === "FILES");
+  return 80 - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0) - 1; // comma reserved
+}
+function tailItemLines(item: string) {
+  const turn = { ...tailTurn, changed: [item, "z.ts"] }, rendered = renderTurns([turn], 80, now);
+  const chunks = tableFieldGroups(rendered, "FILES", [turn.id]).groups.get(turn.id)!.filter(Boolean);
+  expect(chunks.join("").replace(/\s/g, "")).toBe(`2files:${item},z.ts`); // complete content exactly once
+  for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+  return chunks;
+}
+
+test("a split slashless item keeps exactly three visible complete characters beside its comma (#284)", () => {
+  const room = tailColumnRoom();
+  const ascii = "n".repeat(room + 1), chunks = tailItemLines(ascii);
+  expect(chunks.find(chunk => chunk.includes(","))!.split(",")[0]).toBe("nnn");
+  for (const unit of ["😀", "é", "👩🏽‍💻"]) {
+    const item = "n".repeat(room - Bun.stringWidth(unit)) + unit.repeat(3);
+    const pieces = tailItemLines(item);
+    expect(pieces.find(chunk => chunk.includes(","))!.split(",")[0]).toBe(unit.repeat(3));
+    for (const piece of pieces) expect(piece.isWellFormed()).toBe(true);
+  }
+});
+
+test("the three-character tail rule never rebalances a path split after slash (#284)", () => {
+  const room = tailColumnRoom(), item = "src/" + "n".repeat(room + 1);
+  const chunks = tailItemLines(item);
+  expect(chunks.find(chunk => chunk.includes(","))!.split(",")[0]).toBe("n");
+  expect(chunks).toContain("src/");
+});
+
+test("an oversized segment reserves its trailing slash beside the comma (#284)", () => {
+  const room = tailColumnRoom(), item = "src/" + "n".repeat(room) + "/";
+  const chunks = tailItemLines(item);
+  expect(chunks.some(chunk => /^\/,?$/.test(chunk))).toBe(false);
+  expect(chunks.find(chunk => chunk.includes(","))!.split(",")[0]).toBe("n/");
+});
+
+test("projects TASKS remains flexible and leaves the wide ROOT column its available space (#284)", () => {
+  const project = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/workspace/work/dev/agent-hub", state: "running", status: { peers: { a: 1 }, tasks: { approved: 67, in_progress: 2, in_review: 1, changes_requested: 1 } } };
+  for (const [columns, rootSpace] of [[110, 28], [120, 34]] as const) {
+    const rendered = renderProjects([project], columns, now), header = rendered.find(line => line.some(cell => cell.text.trim() === "ROOT"))!;
+    expect(header.map(cell => cell.text.trim())).toEqual(["PROJECT", "STATE", "PEERS", "TASKS", "ROOT"]);
+    const consumed = header.slice(0, -1).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
+    expect(columns - consumed).toBe(rootSpace);
+    const tasks = tableFieldGroups(rendered, "TASKS", [project.id]).groups.get(project.id)!.filter(Boolean).join(" ");
+    for (const item of ["67 approved", "2 in_progress", "1 in_review", "1 changes_requested"]) expect(tasks).toContain(item);
+    for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+  }
+});
+
+test("15,470 tail-corpus renders preserve characters, three-character tails and geometry at 36 to 120 (#284)", () => {
+  const alphabets: Record<string, (length: number) => string> = {
+    ascii: length => "abcdefghijklmnopqrstuvwxyz0123456789".repeat(9).slice(0, length),
+    hangul: length => "가나다라마바사아자차카타파하".repeat(20).slice(0, length),
+    mixed: length => Array.from({ length }, (_, index) => index % 3 ? "x" : "한").join(""),
+    emoji: length => Array.from({ length }, (_, index) => index % 4 ? "e" : "😀").join(""),
+    "emoji tail": length => "n".repeat(Math.max(0, length - 3)) + "😀😀😀",
+    "with spaces": length => Array.from({ length }, (_, index) => index % 7 === 6 ? " " : "w").join(""),
+    combining: length => Array.from({ length }, (_, index) => index % 2 ? "́" : "e").join(""),
+  };
+  const mk = (changed: string[]) => [{ id: "codex#mywec5eb.4", peer: "codex", started: now - 2 * 86_400_000, ended: now, start_tree: "a", end_tree: "b", changed }];
+  const failures = { malformed: 0, width: 0, content: 0, separator: 0, shortTail: 0 };
+  let renders = 0;
+  for (const [kind, generate] of Object.entries(alphabets)) for (let columns = 36; columns <= 120; columns++) {
+    const probe = renderTurns(mk(["src/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.ts", "b.ts"]), columns, now);
+    const header = probe.find(line => line.some(cell => paint([cell], false).trim() === "FILES"))!;
+    const at = header.findIndex(cell => paint([cell], false).trim() === "FILES");
+    const cellWidth = Math.max(5, columns - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(paint([cell], false)), 0));
+    for (const length of [cellWidth - 2, cellWidth - 1, cellWidth, cellWidth + 1, cellWidth + 2, cellWidth + 3, cellWidth + 4, 2 * cellWidth - 1, 2 * cellWidth, 2 * cellWidth + 1, 2 * cellWidth + 2, 2 * cellWidth + 3, 3 * cellWidth + 1]) for (const afterPath of [false, true]) {
+      const item = generate(Math.max(4, length)), items = afterPath ? ["src/a.ts", item, "z.ts"] : [item, "z.ts"];
+      const rendered = renderTurns(mk(items), columns, now); renders++;
+      for (const line of rendered) {
+        if (!line.every(cell => cell.text.isWellFormed())) failures.malformed++;
+        if (Bun.stringWidth(paint(line, false)) > columns) failures.width++;
+      }
+      const files = rendered.find(line => line.some(cell => paint([cell], false).trim() === "FILES" && cell.tone === "info"))!;
+      const index = files.findIndex(cell => paint([cell], false).trim() === "FILES");
+      const chunks = rendered.slice(rendered.indexOf(files) + 1).filter(line => line.length === files.length).map(line => paint([line[index]!], false).trimEnd());
+      if (chunks.join("").replace(/\s+/g, "") !== `${items.length} files: ${items.join(", ")}`.replace(/\s+/g, "")) failures.content++;
+      if (chunks.some(chunk => /^\s*,/.test(chunk))) failures.separator++;
+      const comma = chunks.find(chunk => chunk.includes(item.slice(-1) + ","));
+      if (comma && !kind.includes("spaces") && !chunks.some(chunk => chunk.includes(item + ",")) && [...comma.split(",")[0]!.trim()].length < 3) failures.shortTail++;
+    }
+  }
+  expect(renders).toBe(15_470);
+  expect(failures).toEqual({ malformed: 0, width: 0, content: 0, separator: 0, shortTail: 0 });
+}, 20_000);
