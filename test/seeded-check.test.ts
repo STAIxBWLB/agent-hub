@@ -49,3 +49,11 @@ test("seed copy uses current tracked bytes and excludes state, outputs, dependen
     expect(readFileSync(join(root, "src/guard.ts"), "utf8")).toBe("current tracked edit");
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(output, { recursive: true, force: true }); }
 });
+
+
+test("seed classification ignores an echoed source error property but rejects real error diagnostics (#315)", () => {
+  const source = '187 | expect(reply).toMatchObject({ ok: false, error: "peer is off roster" });\n';
+  const assertion = 'error: expect(received).toMatchObject(expected)\n(fail) roster guard [1ms]\n 0 pass\n 1 fail\n';
+  expect(classifyRun(source + assertion, 1, "roster guard", true)).toBe("detected");
+  expect(() => classifyRun('error: actual setup failure\n' + assertion, 1, "roster guard", true)).toThrow("setup, compiler");
+});

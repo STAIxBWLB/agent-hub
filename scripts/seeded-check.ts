@@ -38,7 +38,7 @@ export function copyTracked(root: string, destination: string): void {
 }
 export function classifyRun(output: string, code: number | null, name: string, seeded: boolean): "green" | "detected" {
   const text = output.replace(/\x1b\[[0-9;]*m/g, "");
-  if (/timed out|timeout|check: pid .*still running|SyntaxError|Cannot find module|ModuleNotFound|error: (?!expect\()/im.test(text)) throw new Error("invalid detection: setup, compiler or timeout failure");
+  if (/timed out|timeout|check: pid .*still running|SyntaxError|Cannot find module|ModuleNotFound|^error: (?!expect\()/im.test(text)) throw new Error("invalid detection: setup, compiler or timeout failure");
   const records = [...text.matchAll(/^\((pass|fail)\) (.+?)(?: \[[^\]]+\])?\r?$/gm)];
   const expected = records.filter((m) => m[2] === name);
   if (expected.length !== 1 || records.length !== 1) throw new Error("invalid detection: named test missing or unrelated test result");
