@@ -58,7 +58,4 @@ Date: 2026-10-11. Baseline: `06fb87afbdb315d2b6d7e6455c5084b1998cb724`. Source: 
 
 - #318: local fixture history proves a release merge commit passes and an equal-tree squash fails with the named instruction; 5 documentation tests passed.
 - #310/#311/#319/#322: focused regressions passed (8 pass, 0 fail, 10940 assertions). Journal and journal-less offline ACP, pending approval withdrawal across console/dashboard, restart, 500 ms / 2 s native delays, all protected symlink names for Pi/local, explicit approval, never-ask and ordinary symlinks covered.
-- PR #325 ready at 5647038: exact-head CI 38118982960 passed both platforms and 54 seeded guards. PR #326 ready at b665d7c: local full 2078/0, exact-head CI 38119442660 passed both platforms and 54 guards. No merge/release. Native account/runtime legs: unverified.
-
-- #316: preserved prior draft as dd21965, integrated safety commits and #323. An unrelated reset/cherry-pick at 16:09 changed the original worktree during verification; it is left untouched. Solo work continues at `.worktrees/solo-316`, branch `feat/316-kimi-tui-solo`, based on protected 3fb2335. Full/seeded validation pending resource admission; previous three compatibility failures fixed in code.
-- Full vault enrichment was skipped for this repository-local coding audit: the issue bodies and repository instructions define the implementation contracts, with no unresolved person or institutional entity.
+- Full repository gate and seeded guards: pending. Native account/runtime legs: unverified.

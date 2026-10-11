@@ -2287,10 +2287,14 @@ the queue.
   conductor only, preserves task state and uses the existing guarded review request;
   dependencies must be approved first. No roster/PII/pause/capability guard is bypassed.
 - Kimi Code 2.1.1 source preflight confirms trusted ACP workspace MCP file discovery
-  and session-passed MCP entries shadow same-name workspace entries. The workspace baseline may still connect its entry. The engine does not carry
+  and a separately connected same-name session overlay. The engine does not carry
   MCP initialize instructions into its model request: tool descriptions and the
   managed AGENTS block carry the pull rules. Live trust/discovery and model tool
   use remain unverified in smoke.md.
+- Recovery for #316: an attached Kimi TUI carries `launch.mode: tui` and blocks controlled upgrade/restart planning before effects, with the human end-and-replan instruction. It is never restored as an ACP worker. Headless restoration explicitly selects headless when the staged target catalog includes Kimi modes; legacy targets retain their old no-mode command. The target catalog read is a stated source-capability shortcut.
+- A person/conductor changing the reviewer of an in-review task withdraws unread prior requests and sends the former reviewer a withdrawal notice. Already-delivered requests cannot be recalled; current reviewer authority rejects a late verdict. Publication failure remains guarded after the saved board change.
+
+- Compatibility: Tasks supplies Kimi TUI ids to the generic pure pull-only filter. Legacy Claude pull-only sessions retain existing automatic owner/reviewer selection and queued inbox requests. Init adds the Kimi ignore for an existing untracked MCP file, preserving previous ignore bytes when the file is absent.
 ## Amendment: offline ACP approval fencing and lexical scoped-path checks (#311, #322)
 
 - ACP cancels new permission requests while offline or waiting for watchdog cancellation, before consulting either approver. Pending permissions carry abort signals to the daemon approval registry and are withdrawn on watchdog cancellation, offline transitions and stop. Late answers cannot grant them; a restarted session may request approval normally.
@@ -2301,11 +2305,6 @@ the queue.
 - `.agents` and `.claude.json` join the folded protected configuration names. The dated source inventory records the supported project locations and discovery limits; `.claude.json` is excluded conservatively without a project-loading claim.
 - `protect_instruction_files` is machine-local, boolean, false by default. Only the settings registry exposes it, as `scoped_grants.protect_instructions`, in Permissions, applied live after a write or undo. A person may change it; no agent surface gains a setter. Lowering protection from an ordinary dashboard session is refused.
 - Enabled protection withholds scoped automatic writes/edits to `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, folded like configuration names in both lexical and resolved paths. Reads and explicit approval/never-ask retain their meaning. Default grants remain unchanged. The daemon downgrades a Claude scoped grant reply for a protected write as well as supplying the optional flag to the current hook, so an older hook cannot silently ignore protection.
-
-- Recovery for #316: an attached Kimi TUI carries `launch.mode: tui` and blocks controlled upgrade/restart planning before effects, with the human end-and-replan instruction. It is never restored as an ACP worker. Headless restoration explicitly selects headless when the staged target catalog includes Kimi modes; legacy targets retain their old no-mode command. The target catalog read is a stated source-capability shortcut.
-- A person/conductor changing the reviewer of an in-review task withdraws unread prior requests and sends the former reviewer a withdrawal notice. Already-delivered requests cannot be recalled; current reviewer authority rejects a late verdict. Publication failure remains guarded after the saved board change.
-
-- Compatibility: Tasks supplies Kimi TUI ids to the generic pure pull-only filter. Legacy Claude pull-only sessions retain existing automatic owner/reviewer selection and queued inbox requests. Init adds the Kimi ignore for an existing untracked MCP file, preserving previous ignore bytes when the file is absent.
 
 ## Amendment: optional Qwen Code 0.25.0 ACP peer (#256)
 

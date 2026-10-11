@@ -1191,7 +1191,7 @@ pause/handoff, shared final answer or session resume. Read quota and approve too
 in Kimi's own TUI; a person can pause the hub queue by hand. End the native terminal
 session there, not with `ahub stop kimi`.
 
-Automatic routing never picks a pull-only Kimi owner or reviewer, even as the only
+Automatic routing never picks a pull-only owner or reviewer, even as the only
 candidate. A proposer can name the owner or claim its own task; a person or the
 conductor can name an owner or reviewer with
 `ahub task assign <id> kimi --role owner|reviewer`. A waiting task reserves its
@@ -2418,6 +2418,20 @@ its delivery is held, and another start refuses until resume history is verified
 Inspect and settle the held delivery before deliberately replacing that unpersisted
 session by restarting the hub; the stop never silently chooses a fresh session.
 
+A pull-only Kimi TUI has no controlled restore or resume. While it is attached,
+upgrade/restart planning stops before effects and asks the person to end Kimi in
+that terminal and make a new plan. Headless Kimi restoration stays headless even
+though the unset launch mode now means TUI; older targets keep their legacy
+command without a mode flag. Native recovery remains unverified.
+
+Changing a reviewer on a task in review withdraws unread requests and tells the
+former reviewer its request is withdrawn. A delivered request cannot be recalled,
+but a later verdict from that former reviewer is refused by current authority.
+
+Legacy Claude pull-only sessions retain their existing automatic owner/reviewer
+selection; the watched-Kimi exclusion does not disable that review path. After
+first creating the Kimi MCP file, run `ahub init` to ignore the untracked file.
+Init leaves existing ignore bytes alone when no Kimi MCP file exists.
 ## Scoped grants for instruction files
 
 `ahub settings set scoped_grants.protect_instructions true` asks a person before
@@ -2434,21 +2448,6 @@ in the running hub. A dashboard settings session may change it; an ordinary
 session may turn protection on but cannot weaken it. No agent surface changes it.
 Like other machine-local security defaults, loading it requires git to establish
 that the file is untracked; a dropped value is reported by the settings result.
-
-A pull-only Kimi TUI has no controlled restore or resume. While it is attached,
-upgrade/restart planning stops before effects and asks the person to end Kimi in
-that terminal and make a new plan. Headless Kimi restoration stays headless even
-though the unset launch mode now means TUI; older targets keep their legacy
-command without a mode flag. Native recovery remains unverified.
-
-Changing a reviewer on a task in review withdraws unread requests and tells the
-former reviewer its request is withdrawn. A delivered request cannot be recalled,
-but a later verdict from that former reviewer is refused by current authority.
-
-Legacy Claude pull-only sessions retain their existing automatic owner/reviewer
-selection; the watched-Kimi exclusion does not disable that review path. After
-first creating the Kimi MCP file, run `ahub init` to ignore the untracked file.
-Init leaves existing ignore bytes alone when no Kimi MCP file exists.
 
 ## Optional Qwen Code peer
 
