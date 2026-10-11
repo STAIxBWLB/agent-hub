@@ -10,7 +10,7 @@ import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecisi
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
-import { KNOWN_PEERS } from "./peer-catalog.ts";
+import { SUPPORTED_PEERS } from "./peer-catalog.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, type SdlcConfig, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
@@ -400,7 +400,7 @@ export class Tasks {
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    return { pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.id === "kimi" && peer.pullOnly).map(peer => peer.id), offRoster: KNOWN_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.id === "kimi" && peer.pullOnly).map(peer => peer.id), offRoster: SUPPORTED_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */

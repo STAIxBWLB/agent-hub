@@ -1586,3 +1586,14 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
 ## Initial SDLC gates (#257)
 
 Unverified: a live repository cycle through merge/release under advise. Fake-gh and task fixture checks are source/unit evidence only. Custom lifecycle gates and full release-readiness presentation remain pending; no live cycle or automatic merge is claimed.
+## Qwen Code 0.25.0 production peer (#256)
+
+Unverified: real provider handshake, a native model/tool turn, context occupancy,
+owned stop/recovery and the first authoritative quota refusal. Fake ACP tests are
+separate evidence. CLI --version returned 0.25.0 locally but installed package and
+ACP source returned 0.24.1; this drift is not a native readiness claim. Select
+roster.qwen and a verified qwen_cmd before the live leg. Confirm mode ids and
+visible boundaries, inbox/tool approval, stop and exact-head results, then record
+the native version and observed outcome here. No hub-driven Qwen TUI is offered.
+
+Qwen recovery source/fake proof: saved ids pass through the driver and CLI to ACP session/load, and the crash loader restores the recorded id/model. Actual native/provider recovery remains unverified.

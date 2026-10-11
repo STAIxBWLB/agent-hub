@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Add initial opt-in SDLC artifact receipts, exact-head approval gates, bounded readbacks and stage/blocker projections; retain off defaults and mark custom/release/live work pending (#257).
+- Add optional Qwen Code 0.25.0 ACP, off roster by default, with its own verified permission table, headless CLI/preview/stop and recovery command; keep unknown quota and native proof explicit (#256).
 
 - Default Kimi to its own pull-only TUI, retain selectable headless ACP, exclude automatic routing to pull-only peers, and let people/conductors name reviewers with withdrawal notices. Keep project MCP changes in the person launcher and refuse unsupported TUI recovery (#316).
 - Exclude shared .agents skills and .claude.json from scoped grants; add the person-controlled, live instruction-file protection option, off by default (#323).

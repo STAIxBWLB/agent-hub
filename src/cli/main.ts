@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
+import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
-import { isKnownPeer } from "../hub/peer-catalog.ts";
+import { isSupportedPeer } from "../hub/peer-catalog.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
@@ -730,6 +731,22 @@ const commands: Record<string, () => Promise<void> | void> = {
     exec(launch.cmd, launch.args, "codex");
   },
 
+  qwen: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("qwen", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview Qwen launch: invalid arguments or configuration (details withheld)"); }
+    }
+    assertLifecycleAvailable();
+    const { one, rest } = takeFlags(args, ["--mode", "--model", "--session-id"], []);
+    if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"])) fail("invalid Qwen session identity");
+    if (rest.length || (one["--mode"] !== undefined && one["--mode"] !== "headless")) fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
+    const hub = await connect();
+    try {
+      const reply = await hub.request({ t: "start", peer: "qwen", args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}), ...(one["--session-id"] ? { sessionId: one["--session-id"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
+      if (!reply.ok) fail(reply.error);
+      console.log(reply.already ? "qwen is already attached" : "qwen attached (headless); use ahub say @qwen and the console for approvals");
+    } finally { hub.close(); }
+  },
   kimi: async () => {
     if (args.includes("--print-command") || args.includes("--dry-run")) {
       try { return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2)); }
@@ -1109,7 +1126,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   roster: async () => {
     const options = outputOptions(), flags = args.filter(arg => arg.startsWith("--")), positional = outputArguments().filter(arg => arg !== "--yes" && arg !== "--now");
     const [sub = "list", peer, ...extra] = positional;
-    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !isKnownPeer(peer)) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
+    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !isSupportedPeer(peer)) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
     const hub = await connect();
     try {
       const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused")); return reply; };
@@ -1510,11 +1527,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     };
     const checks: DoctorCheck[] = [];
     const row = (ok: boolean | undefined, name: string, detail: string) => {
-      const section: DoctorCheck["section"] = ["bun", "claude", "codex", "kimi"].includes(name) ? "Tools"
+      const section: DoctorCheck["section"] = ["bun", "claude", "codex", "kimi", "qwen"].includes(name) ? "Tools"
         : name === "config" || name === "retired setting" ? "Config"
         : name.startsWith("memory") ? "Memory"
         : ["omniroute", "omniroute key", "local fixed_model", "switchyard", "pi mlx"].includes(name) ? "Models" : "Hub";
-      const optional = ["claude", "codex", "kimi", "ahub daemon", "switchyard", "pi mlx"].includes(name) || section === "Memory";
+      const optional = ["claude", "codex", "kimi", "qwen", "ahub daemon", "switchyard", "pi mlx"].includes(name) || section === "Memory";
       const level: DoctorCheck["level"] = ok === undefined ? (["switchyard", "omniroute"].includes(name) ? "warn" : "unknown") : ok ? "ok" : optional ? "warn" : "fail";
       checks.push({ section, level, name, detail });
     };
@@ -1545,7 +1562,11 @@ const commands: Record<string, () => Promise<void> | void> = {
 
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
-      for (const line of config.retired ?? []) row(false, "retired setting", line); // issue #83
+      for (const line of config.retired ?? []) row(false, "retired setting", line);
+      if (config.roster.qwen === true) {
+        const v = version(config.qwen_cmd[0]!);
+        row(v === "0.25.0", "qwen", v === "0.25.0" ? "CLI reports 0.25.0; native ACP identity/modes and provider access require a separate live check" : "Qwen Code 0.25.0 executable not confirmed; provider and ACP readiness unknown");
+      } // issue #83
       const omni = new OmniRoute(config.omniroute);
       const gateway = await omni.base();
       row(gateway ? true : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? false : undefined, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");

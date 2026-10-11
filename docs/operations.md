@@ -2452,3 +2452,27 @@ that the file is untracked; a dropped value is reported by the settings result.
 ## SDLC artifact receipts and gates
 
 The initial #257 lifecycle is off without .agenthub/sdlc.toml. Advise shows blockers; enforce checks head-bound review and approval transitions. See [the SDLC contract](sdlc.md) for the fixed stage order, required check names, claimed local receipts, console-only readbacks and pending custom/release/live parts. Owners/reviewers record bounded identities through hub_sdlc_record; these grant no additional authority.
+## Optional Qwen Code peer
+
+Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
+from default class preferences. `ahub qwen [--mode headless] [--model <alias>]`
+starts its ACP peer. `--print-command` previews; TUI is refused until #286's
+verification. `ahub stop qwen` stops the owned process group. A conductor may start
+it only through the selected roster and existing capabilities.
+
+The supported native ACP identity is qwen-code 0.25.0. A CLI version label alone
+is insufficient: startup verifies its native identity/version and advertised mode
+ids before any prompt. The observed local installation reports CLI 0.25.0 while
+its package/ACP source says 0.24.1; do not call that installation ready. Configure
+`qwen_cmd` only in untracked config.local.json with a verified 0.25.0 executable.
+The provider's tunnel/relay, if needed, must already be available. Startup cannot
+prove network readiness from a version command.
+
+Modes: ask maps to default, scoped frequency maps to auto-edit, never-ask maps to
+yolo. Qwen yolo approves every tool outside any hub sandbox; its own vendor bounds
+apply. Auto and plan are not hub mode mappings. Unknown quota refusals are not
+classified as authoritative quota; until a real pinned refusal is recorded, pause
+by hand. Occupancy is context with a source, never a consumption estimate. Roles
+do not establish that Qwen can reliably replace Kimi before the live leg.
+
+Qwen controlled recovery and automatic crash resume load the recorded conversation with ACP session/load. The emitted launcher passes --session-id; a controlled plan with a missing or unsafe identity refuses before effects. Preview redacts the id. A custom executable argv keeps its wrapper arguments before appended model flags. Native recovery remains unverified.

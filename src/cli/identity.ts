@@ -1,4 +1,4 @@
-import { isKnownPeer } from "../hub/peer-catalog.ts";
+import { isSupportedPeer } from "../hub/peer-catalog.ts";
 
 export type CliIdentity =
   | { role: "console" }
@@ -42,14 +42,14 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
   // The subcommand is the first argument that is not --json, which the command accepts anywhere.
   if (command === "bench") return args.find((arg) => arg !== "--json") === "run" ? "console" : "allowed";
   if (command === "budget") return !args.length || args.every((arg) => arg === "--json" || arg === "--full" || arg.startsWith("--color=")) ? "allowed" : "console";
-  if (isKnownPeer(command) || ["pause", "resume"].includes(command)) return "conductor";
+  if (isSupportedPeer(command) || ["pause", "resume"].includes(command)) return "conductor";
   if (["help", "version", "--version", "say", "status", "board", "report", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
   return "console";
 }
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[]): string {
-  if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "pi", "local", "stop", "models", "say", "queue", "tail", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "logs", "export", "report", "research", "bench", "sdlc", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
+  if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "qwen", "pi", "local", "stop", "models", "say", "queue", "tail", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "logs", "export", "report", "research", "bench", "sdlc", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "bench"].includes(command)) {
     const sub = command === "bench" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "setup", "start", "stop", "remove", "export", "backfill", "run", "report", "compare"].includes(sub)) return `${command} ${sub}`;

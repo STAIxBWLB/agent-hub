@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId, type PeerState } from "../hub/envelope.ts";
 import { acpQuotaRefusal, type ACPQuotaRefusal } from "./acp-quota.ts";
-import { KIMI_MODE_IDS, type PermissionMode } from "../hub/permission-mode.ts";
+import { KIMI_MODE_IDS, QWEN_MODE_IDS, type PermissionMode } from "../hub/permission-mode.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
@@ -59,6 +59,8 @@ export interface AcpOptions {
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
   launchModel?: string;
   permissionMode?: PermissionMode;
+  /** Production Qwen only; legacy benchmark adapters retain their own native policy. */
+  qwen025?: boolean;
   /** Bound for native mode acknowledgement; defaults to the handshake deadline. */
   permissionModeTimeoutMs?: number;
   /** Load this earlier session (ACP `session/load`) instead of starting a new one: crash recovery, issue #37. */
@@ -105,6 +107,9 @@ export function canonicalMcpToolName(announcedTitle: string | undefined, serverN
 }
 
 class RpcTimeoutError extends Error {}
+export class QwenIdentityError extends Error {
+  constructor() { super("Qwen Code 0.25.0 native identity is not verified; check the executable and its advertised ACP version"); }
+}
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
@@ -123,6 +128,7 @@ export class AcpPeer extends BasePeer {
   private permissionMode: PermissionMode;
   private modeUnknown = false;
   private kimiAgent = false;
+  private qwenAgent = false;
   private availableModes = new Set<string>();
   private proc: ChildProcessWithoutNullStreams | undefined;
   private sessionId = "";
@@ -185,6 +191,8 @@ export class AcpPeer extends BasePeer {
       // The configured peer id and command are labels, not an agent-specific mode contract.
       // Installed Kimi Code CLI's ACP initialize advertises this exact name.
       this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
+      this.qwenAgent = this.opts.qwen025 === true && this.id === "qwen" && init?.agentInfo?.name === "qwen-code" && init?.agentInfo?.version === "0.25.0";
+      if (this.opts.qwen025 && !this.qwenAgent) throw new QwenIdentityError();
       const resume = this.opts.resumeSessionId;
       if (!resume) return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
       // The agent replays the session as updates while it loads; they arrive before the peer is idle, so none of
@@ -205,7 +213,7 @@ export class AcpPeer extends BasePeer {
       // must be reset for the configured ask default before any prompt; a fresh ask session stays untouched.
       const resetResumed = this.opts.resumeSessionId && typeof session.modes?.currentModeId === "string" && session.modes.currentModeId !== KIMI_MODE_IDS.ask;
       // Other ACP vendors retain their native policy, including reported non-default modes on resume.
-      if (this.kimiAgent && (this.permissionMode !== "ask" || resetResumed)) await this.setPermissionMode(this.permissionMode);
+      if (this.qwenAgent || (this.kimiAgent && (this.permissionMode !== "ask" || resetResumed))) await this.setPermissionMode(this.permissionMode);
     } catch (e) {
       this.setState("offline");
       if (this.proc === proc) {
@@ -218,13 +226,13 @@ export class AcpPeer extends BasePeer {
 
   getPermissionMode(): PermissionMode { return this.permissionMode; }
   get permissionModeState(): PermissionMode | "unknown" | "unmanaged" {
-    return !this.kimiAgent ? "unmanaged" : this.modeUnknown ? "unknown" : this.permissionMode;
+    return !this.kimiAgent && !this.qwenAgent ? "unmanaged" : this.modeUnknown ? "unknown" : this.permissionMode;
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (!this.kimiAgent) throw new Error(`${this.id} permission mode ${mode} unmanaged: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
+    if (!this.kimiAgent && !this.qwenAgent) throw new Error(`${this.id} permission mode ${mode} unmanaged: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
     if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown after an unanswered change; restart the peer before changing modes`);
-    const id = KIMI_MODE_IDS[mode];
+    const id = (this.qwenAgent ? QWEN_MODE_IDS : KIMI_MODE_IDS)[mode];
     if (!this.sessionId || !this.proc || !this.availableModes.has(id)) throw new Error(`${this.id} permission mode ${mode} unavailable: session does not offer ${id}`);
     try {
       await this.request("session/set_mode", { sessionId: this.sessionId, modeId: id }, this.opts.permissionModeTimeoutMs ?? HANDSHAKE_MS);
