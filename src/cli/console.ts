@@ -235,12 +235,16 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       terminal.raw(true);
       removers.push(terminal.onData(text => {
         // A pasted chunk can only edit text, never approve, confirm or run commands. Bracketed-paste delimiters are stripped.
-        // Under the modal key table it does nothing at all.
+        // Under the modal key table it does nothing at all. A read holding nothing but arrow sequences is that many
+        // key presses (key repeat, a slow link), not a paste (#309): each arrow reaches the reducer on its own.
         if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"].includes(text)) {
-          if (state.help && state.mode === "panels") return;
-          if (state.confirm?.type === "permission_default") { draw(); return; }
-          state.confirm = undefined; state.optionChoice = undefined; state.editing = true;
-          state.input += terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/\n/g, " "); draw();
+          if (/^(?:\x1b\[[ABCD])+$/.test(text)) { for (const key of text.match(/\x1b\[[ABCD]/g)!) handle(key); }
+          else {
+            if (state.help && state.mode === "panels") return;
+            if (state.confirm?.type === "permission_default") { draw(); return; }
+            state.confirm = undefined; state.optionChoice = undefined; state.editing = true;
+            state.input += terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/\n/g, " "); draw();
+          }
         } else handle(text);
       }));
       removers.push(terminal.onResize(() => {

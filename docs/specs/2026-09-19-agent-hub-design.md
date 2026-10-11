@@ -1480,6 +1480,15 @@ approval. Deny is direct. Pending requests include expiry and are withdrawn by
 `permission_closed` on any answer or cancellation. Answer audits have no title.
 Panels expose Peers, Approvals, Tasks, Queue and Events with bounded polling and
 Unicode cell widths, fall back below 80x24, and restore terminal state on exit.
+Tabs change with the digits 1 to 5 or with Left and Right, wrapping at both
+ends, with the digit's guards and resets (an arrow under a confirmation dismisses
+it like any key but y, without moving a tab); a read holding nothing but arrow
+sequences is that many key presses, never a paste. An Events row's header is
+tokenized by the stream's own tokenizer on the same tab-flattened text, with the
+event's tone and kind; body lines stay plain, and selection changes only the
+`>` marker. The tail prints a peer's context reading once and repeats it only
+when the printed line changes apart from its time (the printed percentage, the
+freshness, the source, or known against unknown).
 
 Whole-board progress (#246) uses one pure `taskProgress` function shared by the
 console and hashed dashboard script. It reads only public id/state/deps fields;

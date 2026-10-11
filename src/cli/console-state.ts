@@ -305,7 +305,7 @@ export function permissionText(a: Pick<Approval, "id" | "peer" | "title" | "opti
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
-  ["Panels", ["1-5 panel", "j/k or arrows move", "Enter view", "j/k scroll a view"]],
+  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode"]],
   ["Tasks", ["a assign (then y)", "r review"]],
@@ -441,7 +441,11 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
   if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
-  if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) { s.panel = Number(key); s.selection = 0; s.detail = undefined; s.requestDetail = undefined; return done(); }
+  const switchPanel = (panel: number) => { s.panel = panel; s.selection = 0; s.detail = undefined; s.requestDetail = undefined; return done(); };
+  if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
+  // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
+  // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
+  if (s.mode === "panels" && (key === "\x1b[C" || key === "\x1b[D") && !s.optionChoice) return switchPanel((s.panel + (key === "\x1b[C" ? 0 : 3)) % 5 + 1);
   if (key === "?") {
     if (s.mode === "stream") effects.push({ type: "keys" });
     else s.help = !s.help;
@@ -555,7 +559,10 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
   }
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
   const [header, ...body] = String(row.text).split("\n");
-  return [span(header, row.tone), ...(body.length ? [span("\n" + body.join("\n"))] : [])];
+  // The header goes through the stream's own tokenizer with the event's tone and kind, on the same tab-flattened
+  // text the stream tokenizes, so an event reads the same in both places (#309); body lines stay plain, as in the
+  // stream. Colour off concatenates to the same bytes.
+  return [...streamTokens((header ?? "").replace(/\t/g, " "), row.tone, row.kind), ...(body.length ? [span("\n" + body.join("\n"))] : [])];
 }
 /**
  * A header row, then the rows, each column starting at the same place on every row: two spaces apart, as wide as its
