@@ -216,6 +216,14 @@
       "replacement": "await tasks.reassignForRoster(peer);",
       "testFile": "test/roster.test.ts",
       "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
+    },
+    {
+      "id": "roster-terminal-safe-settings-preview",
+      "file": "src/cli/main.ts",
+      "search": "for (const line of preview.lines ?? []) console.log(paint([{ text: line }], false));",
+      "replacement": "for (const line of preview.lines ?? []) console.log(line);",
+      "testFile": "test/roster.test.ts",
+      "testName": "the real roster CLI uses settings for live changes, stable JSON, and refuses agent shells (#315)"
     }
   ]
 }

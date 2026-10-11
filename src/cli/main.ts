@@ -1107,11 +1107,11 @@ const commands: Record<string, () => Promise<void> | void> = {
           const rl = createInterface({ input: process.stdin, output: process.stdout });
           try { confirm = (await rl.question(`Type ${rosterPeer} to confirm this roster undo: `)).trim(); } finally { rl.close(); }
         }
-        return console.log((await request({ t: "settings_undo", ...(confirm ? { confirm } : {}) })).text);
+        return console.log(paint([{ text: (await request({ t: "settings_undo", ...(confirm ? { confirm } : {}) })).text }], false));
       }
       if (sub === "set" && flags.includes("--preview")) {
         const preview = await request({ t: "settings_preview", key, value });
-        for (const line of preview.lines ?? []) console.log(line);
+        for (const line of preview.lines ?? []) console.log(paint([{ text: line }], false));
         // Each side is `route explain`: the task line, "if it were assigned now:", then the trace.
         for (const task of preview.tasks ?? []) console.log([task.before[0], "  before:", ...task.before.slice(2).map((line: string) => `    ${line}`), "  after:", ...task.after.slice(2).map((line: string) => `    ${line}`)].join("\n"));
         if (preview.hidden) console.log(`${preview.hidden} more open tasks are not shown`);
@@ -1119,8 +1119,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       if (sub === "set") {
         const reply = await request({ t: "settings_set", key, value, now: flags.includes("--now"), ...(flags.includes("--yes") && peer ? { confirm: peer } : {}) });
-        console.log(reply.text);
-        if (typeof reply.note === "string" && reply.note) console.log(reply.note);
+        console.log(paint([{ text: reply.text }], false));
+        if (typeof reply.note === "string" && reply.note) console.log(paint([{ text: reply.note }], false));
         return;
       }
       const view = await request({ t: "settings_get" });

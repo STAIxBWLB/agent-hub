@@ -208,6 +208,11 @@ test("the real roster CLI uses settings for live changes, stable JSON, and refus
     return { code, stdout, stderr };
   };
   try {
+    const codex = new RosterReplacementPeer("codex"); hub.daemon.bus.add(codex); await codex.start();
+    const hostile = await hub.client.request({ t: "task", op: "hub_task_propose", args: { title: "\x1b[31mTerminal hostile title\x1b[0m", class: "implement", owner: "codex" } });
+    expect(hostile.ok).toBe(true);
+    const preview = await cli(["settings", "set", "roster.codex", "false", "--preview"]);
+    expect(preview.code).toBe(0); expect(preview.stdout).toContain("Terminal hostile title"); expect(preview.stdout).not.toContain("\x1b");
     const first = await cli(["roster", "--json"]); expect(first.code).toBe(0);
     expect(JSON.parse(first.stdout)).toEqual((await hub.client.request({ t: "settings_get" })).roster);
     expect(first.stdout).toBe((await cli(["roster", "--json"])).stdout);
