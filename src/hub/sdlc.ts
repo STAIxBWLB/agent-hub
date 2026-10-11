@@ -1,3 +1,4 @@
+import { phaseReceipt, type PhaseReceipt, type PhaseView } from "./workflow.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -6,9 +7,10 @@ import { childEnv, stopOwnedProcess } from "./child-process.ts";
 export const SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"] as const;
 export type SdlcStage = typeof SDLC_STAGES[number];
 export type SdlcMode = "off" | "advise" | "enforce";
-export interface SdlcConfig { mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; }
+export interface SdlcConfig { workflow?: "gsd-lite"; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; }
 export interface SdlcReceipt {
   stage: SdlcStage;
+  phase?: PhaseReceipt;
   repo?: string;
   issue?: number;
   pr?: number;
@@ -36,14 +38,16 @@ export function sdlcConfig(value: unknown): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
+  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const mode = raw.mode ?? "off";
   if (mode !== "off" && mode !== "advise" && mode !== "enforce") throw new Error("sdlc.mode: expected off, advise or enforce");
+  const workflow = raw.workflow ?? "none";
+  if (workflow !== "none" && workflow !== "gsd-lite") throw new Error("sdlc.workflow: expected none or gsd-lite");
   const checks = raw.required_checks ?? [];
   if (!Array.isArray(checks) || checks.length > 32 || checks.some(c => typeof c !== "string" || !c.trim() || c.length > 120 || /[\r\n\x00-\x1f]/.test(c)) || new Set(checks).size !== checks.length) throw new Error("sdlc.required_checks: expected at most 32 unique nonempty names");
   const stages = raw.stages ?? [...SDLC_STAGES];
   if (!Array.isArray(stages) || stages.length !== SDLC_STAGES.length || stages.some((stage, i) => stage !== SDLC_STAGES[i])) throw new Error("sdlc.stages: use spec, plan, implement, review, verify, merge, release in that order; custom stages are not supported yet");
-  return { mode, requiredChecks: [...checks] as string[], stages: [...stages] as SdlcStage[] };
+  return { mode, requiredChecks: [...checks] as string[], stages: [...stages] as SdlcStage[], ...(workflow === "gsd-lite" ? { workflow } : {}) };
 }
 
 export function loadSdlc(cwd: string): SdlcConfig {
@@ -55,8 +59,9 @@ export function loadSdlc(cwd: string): SdlcConfig {
 export function sdlcReceipt(value: unknown, previous: SdlcReceipt = { stage: "spec" }): SdlcReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc receipt: expected an object");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["stage", "repo", "issue", "pr", "reviewedHead", "localHead", "localResult"].includes(key)) throw new Error(`sdlc receipt.${key}: unsupported or externally observed field`);
+  for (const key of Object.keys(raw)) if (!["stage", "repo", "issue", "pr", "reviewedHead", "localHead", "localResult", "phase"].includes(key)) throw new Error(`sdlc receipt.${key}: unsupported or externally observed field`);
   const next = { ...previous };
+  if (raw.phase !== undefined) next.phase = phaseReceipt(raw.phase);
   if (raw.stage !== undefined) {
     if (!(SDLC_STAGES as readonly unknown[]).includes(raw.stage)) throw new Error("sdlc receipt.stage: unknown stage");
     next.stage = raw.stage as SdlcStage;
@@ -71,6 +76,7 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt = { stage: "sp
   // A new artifact cannot inherit another PR's review or local gate.
   if (next.repo !== previous.repo || next.pr !== previous.pr) {
     delete next.head; delete next.observed;
+    if (raw.phase === undefined) delete next.phase;
     if (raw.reviewedHead === undefined) delete next.reviewedHead;
     if (raw.localHead === undefined) delete next.localHead;
     if (raw.localResult === undefined) delete next.localResult;
@@ -96,8 +102,8 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     ...(sha(p.mergeCommit?.oid) ? { mergeCommit: p.mergeCommit.oid } : {}) };
 }
 
-export interface SdlcStatus { mode: SdlcMode; stage: SdlcStage; blockers: string[]; ready: boolean; actor: string; next: string; }
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence): SdlcStatus {
+export interface SdlcStatus { workflow?: "gsd-lite"; phase?: PhaseView; mode: SdlcMode; stage: SdlcStage; blockers: string[]; ready: boolean; actor: string; next: string; }
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, phase?: PhaseView): SdlcStatus {
   const stage = receipt?.stage ?? "spec", blockers: string[] = [];
   if (!receipt?.repo || !receipt.issue) blockers.push("issue identity missing");
   if (!receipt?.pr) blockers.push("PR identity missing");
@@ -115,7 +121,11 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
     if (evidence.pendingReviews !== 0) blockers.push("review requests pending or unknown");
     if (evidence.unresolved !== 0) blockers.push("review threads unresolved or unknown");
   }
-  return { mode: config.mode, stage, blockers, ready: blockers.length === 0,
+  if (config.workflow === "gsd-lite") {
+    blockers.push(...(phase?.blockers ?? ["phase board evidence unknown"]));
+    if (!evidence || receipt?.phase?.head !== evidence.head) blockers.push("phase checklist head missing or stale");
+  }
+  return { ...(config.workflow ? { workflow: config.workflow, ...(phase ? { phase } : {}) } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
     actor: stage === "review" || stage === "verify" ? "reviewer" : stage === "merge" || stage === "release" ? "person" : "owner/planner",
     next: blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
 }

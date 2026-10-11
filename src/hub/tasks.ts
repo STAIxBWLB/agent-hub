@@ -1,3 +1,4 @@
+import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
@@ -329,7 +330,7 @@ export class Tasks {
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
-    return { ...rest, ...(task.sdlc && (this.d.sdlc?.config().mode ?? "off") !== "off" ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(task.sdlc && (this.d.sdlc?.config().mode ?? "off") !== "off" ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -807,18 +808,19 @@ export class Tasks {
 
   /** Same code as assignment, without doing it. `routing`: a candidate policy to explain under (the settings preview, #269). */
   explain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }, routing: Routing = this.d.routing()): string[] {
+    const workflow = this.d.sdlc?.config().workflow === "gsd-lite" ? [`workflow: gsd-lite (${this.d.sdlc.config().mode}); checklist guidance, board dependencies authoritative`] : [];
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
       const a = assign(task, this.states(), routing, { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
       // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
+      return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     const signals = detectSignals(draft, routing, this.d.cwd);
     const trace = assign({ class: target.class, signals }, this.states(), routing, this.weights(target.class)).trace;
     // A draft is not sent to the PII screen (issue #198): a proposal is, and a pii or unknown verdict adds the pii signal.
-    return this.screenOn() && !signals.includes("pii") ? [...trace, "pii_screen is on: at proposal a pii or unknown verdict adds signal pii (local only)"] : trace;
+    return [...workflow, ...(this.screenOn() && !signals.includes("pii") ? [...trace, "pii_screen is on: at proposal a pii or unknown verdict adds signal pii (local only)"] : trace)];
   }
 
   /** Public read path: every generated line is screened, including profile/config-derived trace fields. */
@@ -1065,14 +1067,26 @@ export class Tasks {
     const task = this.need(id, false, true);
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
     const next = sdlcReceipt(input, task.sdlc);
+    if (input && typeof input === "object" && "phase" in input) {
+      this.mine(task, by, "reviewer", true);
+      if (next.phase) validatePhaseLinks(task, next.phase, id => this.d.board.get(id), t => this.isPii(t));
+    }
     if (next.reviewedHead !== task.sdlc?.reviewedHead) this.mine(task, by, "reviewer", true);
     return this.d.board.update(task.id, by, "lifecycle", { sdlc: next });
   }
 
+  private workflowView(task: Task) {
+    return phaseView(this.d.sdlc?.config() ?? sdlcConfig(undefined), task, id => this.d.board.get(id), t => this.isPii(t));
+  }
+  workflowExport(id: unknown): Record<string, unknown> {
+    const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    const state = { id: task.id, state: task.state, stage: task.sdlc?.stage ?? "spec", ...(this.isPii(task) ? { private: true } : { phase: this.workflowView(task) ?? null }) };
+    return { schema: 1, workflow: config.workflow ?? "none", state, stateHash: workflowHash(state), sourceHash: workflowHash(config) };
+  }
   async lifecycleStatus(id: unknown, refresh = true): Promise<SdlcStatus> {
     const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const evidence = task.sdlc && !this.isPii(task) && refresh && config.mode !== "off" ? await readSdlcPr(task.sdlc, this.d.sdlc?.gh) : undefined;
-    return sdlcStatus(config, task.sdlc, evidence);
+    return sdlcStatus(config, task.sdlc, evidence, this.workflowView(task));
   }
 
   private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<void> {
@@ -1082,7 +1096,7 @@ export class Tasks {
     const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, this.d.sdlc?.gh) : undefined;
     const current = this.need(task.id, false, true);
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
-    const status = sdlcStatus(config, receipt, evidence);
+    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current));
     const blockers = transition === "review" ? status.blockers.filter(blocker => ["issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)) : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
     if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);

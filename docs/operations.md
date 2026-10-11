@@ -2490,3 +2490,9 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 - Kimi's default is its own pull-only TUI (#316). Watch requires `ahub kimi --mode headless`; its own TUI remains visible in its native terminal. Qwen requires roster participation and verified ACP 0.25.0. `ahub qwen --mode tui` remains refused.
 - Protocol stays 16; a same-protocol older daemon answers the new request as unknown, which the CLI reports. No automatic pane opening is included in this slice.
 - Native T0 limits: [ACP watch verification](verification/2026-10-11-acp-watch-t0.md).
+
+# gsd-lite lifecycle guidance (#257)
+
+- Set `workflow = "gsd-lite"` in `.agenthub/sdlc.toml` for the next daemon start; default none preserves the existing flow. Mode advise displays checklist blockers without blocking, while enforce checks them at approval.
+- The task reviewer/person records phase criteria via `ahub sdlc record <id> '<receipt JSON>'`. Existing tasks and predecessor ids must match the board; import does not move owners or edit dependencies. Use the existing task propose `--after` command to create edges.
+- `ahub sdlc status <id>`, `explain <id>` and `export <id>` read the same current board/config projection. Export hashes are projection/config hashes, with no external text, extra authority or verification claim. Schema and example: [SDLC](sdlc.md#gsd-lite-checklist-guidance).

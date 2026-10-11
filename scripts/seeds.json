@@ -584,6 +584,30 @@
       "replacement": "while (this.rows.length > this.maxItems)",
       "testFile": "test/watch.test.ts",
       "testName": "activity ring bounds bytes and count, replays then streams without exposing mutable rows (#286)"
+    },
+    {
+      "id": "workflow-reviewer-only",
+      "file": "src/hub/tasks.ts",
+      "search": "if (input && typeof input === \"object\" && \"phase\" in input) {",
+      "replacement": "if (false && input && typeof input === \"object\" && \"phase\" in input) {",
+      "testFile": "test/workflow.test.ts",
+      "testName": "only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)"
+    },
+    {
+      "id": "workflow-required-verdict",
+      "file": "src/hub/workflow.ts",
+      "search": "if (criterion.required && criterion.result !== \"verified\")",
+      "replacement": "if (false)",
+      "testFile": "test/workflow.test.ts",
+      "testName": "only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)"
+    },
+    {
+      "id": "workflow-exact-after",
+      "file": "src/hub/workflow.ts",
+      "search": "if (actual.length !== link.after.length || actual.some(id => !link.after.includes(id)))",
+      "replacement": "if (false)",
+      "testFile": "test/workflow.test.ts",
+      "testName": "phase imports require exact current after edges and preserve accepted owners and reservations (#257)"
     }
   ]
 }

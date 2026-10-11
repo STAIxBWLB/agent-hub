@@ -1053,11 +1053,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   sdlc: async () => {
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
     if (sub === "record") {
-      if (args.length !== 3 || !Number.isSafeInteger(id) || id! <= 0 || args[2]!.length > 4096) fail("usage: ahub sdlc record <task> '<receipt JSON>'");
+      if (args.length !== 3 || !Number.isSafeInteger(id) || id! <= 0 || Buffer.byteLength(args[2]!) > 32768) fail("usage: ahub sdlc record <task> '<receipt JSON>'");
       let receipt: unknown; try { receipt = JSON.parse(args[2]!); } catch { fail("receipt must be valid JSON"); }
       return console.log(await taskOp("hub_sdlc_record", { id, receipt }));
     }
-    if (!["status", "explain"].includes(sub ?? "") || args.length > 2 || (sub === "explain" && id === undefined) || (id !== undefined && (!Number.isSafeInteger(id) || id <= 0))) fail("usage: ahub sdlc status [task] | explain <task>");
+    if (!["status", "explain", "export"].includes(sub ?? "") || args.length > 2 || (["explain", "export"].includes(sub ?? "") && id === undefined) || (id !== undefined && (!Number.isSafeInteger(id) || id <= 0))) fail("usage: ahub sdlc status [task] | explain <task> | export <task>");
     const hub = await connect();
     try {
       const reply = await hub.request({ t: "sdlc", op: sub, ...(id === undefined ? {} : { id }) }, 30_000);

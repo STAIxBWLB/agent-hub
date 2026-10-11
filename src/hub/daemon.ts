@@ -3735,6 +3735,9 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       case "sdlc": {
         if (c.role !== "console") return void reply({ ok: false, error: "SDLC readback is console only; task owners record ids through hub_sdlc_record" });
+        if (msg.op === "export") {
+          try { return void reply({ ok: true, export: tasks.workflowExport(msg.id) }); } catch { return void reply({ ok: false, error: "workflow export unavailable" }); }
+        }
         if (msg.op !== "status" && msg.op !== "explain") return void reply({ ok: false, error: "unknown SDLC operation" });
         const selected = msg.id === undefined ? board.list().filter(task => task.sdlc) : [board.get(Number(msg.id))].filter((task): task is Task => !!task);
         if (msg.id !== undefined && (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !selected.length)) return void reply({ ok: false, error: "invalid lifecycle task id" });
