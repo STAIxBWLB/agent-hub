@@ -354,17 +354,54 @@ test("Qwen: the announced MCP identity, not the argument-JSON title, is what may
 
 // review of #13: an approval longer than the watchdog must not cancel the turn it belongs to.
 test("a pending approval keeps the turn alive past the watchdog", async () => {
-  const { bus, said } = await setup({
-    watchdogMs: 150,
-    onPermission: async () => {
-      await new Promise((r) => setTimeout(r, 600));
-      return "yes";
-    },
-  });
-  bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
-  await until(() => said.length === 1);
-  expect(said[0]!.body).toBe("echo: PERMISSION permission=yes");
-  expect(peer!.state).not.toBe("offline");
+  const set = globalThis.setTimeout, clear = globalThis.clearTimeout, interval = globalThis.setInterval;
+  const watchdogs: { handle: ReturnType<typeof setTimeout>; callback: () => void; cleared: boolean }[] = [];
+  let keepalive: (() => void) | undefined;
+  globalThis.setTimeout = ((callback: () => void, ms?: number, ...args: any[]) => {
+    if (ms !== 150) return set(callback, ms, ...args);
+    const handle = set(() => {}, 300_000);
+    watchdogs.push({ handle, callback, cleared: false }); return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+    const timer = watchdogs.find(timer => timer.handle === handle); if (timer) timer.cleared = true;
+    clear(handle);
+  }) as typeof clearTimeout;
+  globalThis.setInterval = ((callback: () => void, ms?: number, ...args: any[]) => {
+    if (ms === 50) keepalive = callback;
+    return interval(callback, ms, ...args);
+  }) as typeof setInterval;
+  try {
+    for (const delay of [500, 2000]) {
+      let entered!: () => void, answer!: (value: string) => void, completed!: () => void;
+      const pending = new Promise<void>(resolve => { entered = resolve; });
+      const completion = new Promise<void>(resolve => { completed = resolve; });
+      keepalive = undefined;
+      const { bus, said } = await setup({ watchdogMs: 150,
+        env: { FAKE_ACP_DELAY_MS: String(delay), FAKE_ACP_PERMISSION_DELAY_MS: "200" },
+        onPermission: async () => { entered(); return new Promise<string>(resolve => { answer = resolve; }); },
+      });
+      bus.tap(event => { if (event.t === "state" && event.peer === "kimi" && event.state === "idle") completed(); });
+      bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
+      await pending;
+      expect(keepalive).toBeDefined();
+      // Observe successive keepalive renewals, then expire only still-live timers from the previous interval.
+      // This simulates several watchdog periods during approval without racing native I/O before or after it.
+      for (let tick = 0; tick < 4; tick++) {
+        const previous = watchdogs.at(-1)!;
+        keepalive!();
+        expect(previous.cleared).toBe(true);
+        if (!previous.cleared) previous.callback();
+        expect(peer!.state).toBe("busy");
+      }
+      answer("yes"); await completion;
+      expect(said[0]!.body).toBe("echo: PERMISSION permission=yes");
+      expect(peer!.state).not.toBe("offline");
+      await peer!.stop();
+    }
+  } finally {
+    for (const timer of watchdogs) clear(timer.handle);
+    globalThis.setTimeout = set; globalThis.clearTimeout = clear; globalThis.setInterval = interval;
+  }
 });
 
 test("only a bare tool name travels apart from the title", async () => {
@@ -1113,4 +1150,49 @@ test("a synchronous stop from the completed answer callback never returns comple
   expect(legacyInsideCallback).toBeUndefined();
   expect(said).toEqual(["echo: completed before stop"]);
   expect(returned).toEqual([]); expect(acp.state).toBe("offline");
+});
+
+for (const durable of [true, false]) test(`offline ACP permission requests never reach approvers (${durable ? "journal" : "no journal"}, #311)`, async () => {
+  const timer = trackCancelBound();
+  const replies: any[] = [], consulted: string[] = [];
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-never-report"], cwd: process.cwd(), cancelWaitMs: 53,
+    onPermission: async req => { consulted.push(req.title); return "yes"; }, autoApprove: title => { consulted.push(title); return true; } });
+  peer = acp;
+  try {
+    await acp.start();
+    await acp.deliver([newEnvelope("user", "SLOW", { to: ["kimi"] })], durable ? "offline-delivery" : undefined);
+    acp.expireWatchdog();
+    if (!durable) timer.expire();
+    expect(acp.state).toBe("offline");
+    const internals = acp as unknown as { send: (msg: any) => void; onLine: (line: string) => void };
+    const send = internals.send.bind(acp);
+    internals.send = msg => { replies.push(msg); send(msg); };
+    for (const title of ["Bash: rm -rf x", "mcp__agent-hub__hub_send"]) internals.onLine(JSON.stringify({ jsonrpc: "2.0", id: 991, method: "session/request_permission", params: { sessionId: "s1", toolCall: { title }, options: [{ kind: "allow_once", optionId: "yes" }] } }));
+    expect(consulted).toEqual([]);
+    expect(replies.map(r => r.result.outcome.outcome)).toEqual(["cancelled", "cancelled"]);
+    await acp.stop(); await acp.start();
+    const done = new Promise<void>(resolve => { acp.onState = state => { if (state === "idle") resolve(); }; });
+    await acp.deliver([newEnvelope("user", "PERMISSION", { to: ["kimi"] })]); await done;
+    expect(consulted.length).toBeGreaterThan(0); expect(acp.state).toBe("idle");
+  } finally { try { await acp.stop(); } finally { timer.restore(); } }
+});
+
+test("watchdog withdraws a pending ACP approval and fences a late person answer (#311)", async () => {
+  let answer!: (value: string) => void, entered!: () => void;
+  const pending = new Promise<void>(resolve => { entered = resolve; });
+  let signal: AbortSignal | undefined;
+  const acp = new CancelWaitingPeer("kimi", { cmd: FAKE, cwd: process.cwd(), onPermission: async (_req, cancellation) => {
+    signal = cancellation; entered(); return new Promise<string>(resolve => { answer = resolve; });
+  } });
+  peer = acp;
+  const responses: any[] = [];
+  const internals = acp as unknown as { send: (msg: any) => void };
+  const send = internals.send.bind(acp); internals.send = msg => { if (msg.result?.outcome) responses.push(msg.result.outcome); send(msg); };
+  await acp.start();
+  await acp.deliver([newEnvelope("user", "PERMISSION", { to: ["kimi"] })], "pending-permission");
+  await pending; acp.expireWatchdog();
+  await until(() => responses.length === 1);
+  expect(signal?.aborted).toBe(true); expect(responses).toEqual([{ outcome: "cancelled" }]);
+  answer("yes"); await new Promise<void>(resolve => setImmediate(resolve));
+  expect(responses).toEqual([{ outcome: "cancelled" }]); expect(acp.state).toBe("offline");
 });

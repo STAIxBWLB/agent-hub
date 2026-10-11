@@ -4,7 +4,7 @@
 // A failed or timed-out hub decides nothing, leaving Claude's native permission rules in effect.
 import { relative, resolve, isAbsolute } from "node:path";
 import { realPath } from "../hub/project.ts";
-import { isAgentConfigPath, isPermissionMode, hardLinked, isHubWritePath } from "../hub/permission-mode.ts";
+import { isAgentConfigPath, isInstructionPath, isPermissionMode, hardLinked, isHubWritePath } from "../hub/permission-mode.ts";
 import { ControlClient } from "../hub/control-client.ts";
 
 /** A library call may target another hub; only the managed command hook inherits that target's native identity. */
@@ -14,7 +14,7 @@ export function nativeHookIdentity(stateDir: string, peer: string, env: NodeJS.P
 }
 
 /** Only resolving project paths outside the hub/native configuration directories receive a file grant. */
-export function projectFileTool(tool: unknown, input: unknown, projectRoot: unknown): boolean {
+export function projectFileTool(tool: unknown, input: unknown, projectRoot: unknown, protectInstructions = false): boolean {
   if (typeof projectRoot !== "string" || !isAbsolute(projectRoot) || !input || typeof input !== "object" || Array.isArray(input)) return false;
   const args = input as Record<string, unknown>;
   const key = ["Read", "Edit", "Write", "MultiEdit"].includes(String(tool)) ? "file_path" : tool === "NotebookEdit" ? "notebook_path" : ["LS", "Glob", "Grep"].includes(String(tool)) ? "path" : undefined;
@@ -24,7 +24,8 @@ export function projectFileTool(tool: unknown, input: unknown, projectRoot: unkn
   if (!optional && args[key] === undefined) return false;
   try {
     const root = realPath(projectRoot);
-    const protectedPath = (path: string) => isAgentConfigPath(path) || isHubWritePath(path);
+    const mutates = ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(String(tool));
+    const protectedPath = (path: string) => isAgentConfigPath(path) || isHubWritePath(path) || (protectInstructions && mutates && isInstructionPath(path));
     const safe = (path: string) => {
       const requested = resolve(root, path), lexical = relative(root, requested);
       if (protectedPath(lexical)) return false;
@@ -67,7 +68,7 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
     }, timeoutMs);
     if (phase !== "pre" || !res?.ok) return undefined;
     const permission = isPermissionMode(res.permission) ? res.permission : "ask";
-    const fileTool = projectFileTool(input.tool_name, input.tool_input, res.projectRoot);
+    const fileTool = projectFileTool(input.tool_name, input.tool_input, res.projectRoot, res.protectInstructionFiles === true);
     const allow = input.hook_event_name === "PreToolUse" && (permission === "never-ask" || permission === "ask-when-needed" && fileTool);
     const text = typeof res.text === "string" && res.text ? res.text : undefined;
     if (!allow && !text) return undefined;

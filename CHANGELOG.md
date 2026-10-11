@@ -5,6 +5,14 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Default Kimi to its own pull-only TUI, retain selectable headless ACP, exclude automatic routing to pull-only peers, and let people/conductors name reviewers with withdrawal notices. Keep project MCP changes in the person launcher and refuse unsupported TUI recovery (#316).
+||||||| 06fb87af
+- Exclude shared .agents skills and .claude.json from scoped grants; add the person-controlled, live instruction-file protection option, off by default (#323).
+
+- Refuse release publication on stale or nonancestor document stamps; require the release merge commit even when the tree matches green CI (#318).
+- Cancel offline ACP permission requests and withdraw pending approvals on watchdog, offline transition and stop (#311).
+- Check original and resolved write/edit paths before scoped Pi/local grants, including symlinked agent configuration directories (#322).
+- Measure console fitting after tab normalization and header sanitization, preventing Events body rows from overflowing (#319).
+- Make the pending-approval watchdog regression use controlled renewals instead of a real-time response margin (#310).
 
 - Exclude Kimi Code project configuration under .kimi-code from scoped automatic write/edit grants, alongside the legacy .kimi policy directory (#316).
 
