@@ -2471,3 +2471,5 @@ apply. Auto and plan are not hub mode mappings. Unknown quota refusals are not
 classified as authoritative quota; until a real pinned refusal is recorded, pause
 by hand. Occupancy is context with a source, never a consumption estimate. Roles
 do not establish that Qwen can reliably replace Kimi before the live leg.
+
+Qwen controlled recovery and automatic crash resume load the recorded conversation with ACP session/load. The emitted launcher passes --session-id; a controlled plan with a missing or unsafe identity refuses before effects. Preview redacts the id. A custom executable argv keeps its wrapper arguments before appended model flags. Native recovery remains unverified.

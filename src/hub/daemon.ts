@@ -1,7 +1,7 @@
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
-import { buildKimiLaunch } from "../cli/launch.ts";
+import { buildKimiLaunch, buildQwenLaunch } from "../cli/launch.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -2258,7 +2258,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (peer === "qwen") {
       if (args.mode === "tui") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
-      const launch = buildKimiLaunch(config.qwen_cmd, args.model);
+      const launch = buildQwenLaunch(config.qwen_cmd, args.model);
       const qwen = new AcpPeer("qwen", {
         cmd: [launch.cmd, ...launch.args], qwen025: true, permissionMode: permissionMode("qwen"),
         ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),

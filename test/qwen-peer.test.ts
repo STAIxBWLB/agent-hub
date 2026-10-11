@@ -1,3 +1,4 @@
+import { crashPlan, writeSessions } from "../src/hub/crash.ts";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ import { peerRosterConfig, rosterAllows } from "../src/hub/roster.ts";
 const FAKE = [process.execPath, join(import.meta.dir, "fakes/acp-server.ts"), "--agent-name", "qwen-code", "--agent-version", "0.25.0", "--modes", "default,auto-edit,yolo"];
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const until = async (condition: () => boolean) => { for (let i = 0; i < 300 && !condition(); i++) await Bun.sleep(10); expect(condition()).toBe(true); };
+const until = async (condition: () => boolean, diagnostic?: () => string) => { for (let i = 0; i < 300 && !condition(); i++) await Bun.sleep(10); expect(condition(), diagnostic?.()).toBe(true); };
 
 for (const mode of ["ask", "ask-when-needed", "never-ask"] as const) test(`Qwen 0.25.0 uses its own ${mode} table and exact hub-tool binding (#256)`, async () => {
   const root = mkdtempSync(join(tmpdir(), "qwen-mode-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -67,4 +68,22 @@ test("Qwen is optional on the roster, role-guided, previewed without execution a
   expect(replies[0]).toContain("qwen ping");
   expect((await client.request({ t: "permission", peer: "qwen", mode: "ask-when-needed" })).permissionMode).toBe("ask-when-needed");
   expect((await client.request({ t: "peer_stop", peer: "qwen" })).ok).toBe(true); expect(daemon.bus.peers.get("qwen")!.state).toBe("offline");
+});
+
+
+test("a crashed owned Qwen resumes its recorded ACP session instead of claiming self-reconnect (#256)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "qwen-crash-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const stateDir = join(root, "state"), record = join(root, "loaded"); mkdirSync(stateDir);
+  expect(crashPlan([{ peer: "qwen", meta: { sessionId: "qwen-saved", launch: { model: "qwen-model" } } }])[0]?.resume).toEqual({ sessionId: "qwen-saved", model: "qwen-model" });
+  expect(crashPlan([{ peer: "qwen", meta: {} }])[0]?.how).toContain("identity unavailable");
+  writeSessions(stateDir, { instanceId: "crashed", at: Date.now(), peers: [{ peer: "qwen", meta: { sessionId: "qwen-saved", launch: { model: "qwen-model" } } }] });
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, qwen_cmd: [...FAKE, "--record-load", record], roster: { qwen: true },
+      recovery: { ...DEFAULT_CONFIG.recovery, auto_resume_after_crash: true },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } }); cleanups.push(() => daemon.stop());
+  await until(() => daemon.bus.peers.get("qwen")?.state === "idle" && existsSync(record), () => readFileSync(join(stateDir, "hub.log"), "utf8"));
+  expect(readFileSync(record, "utf8")).toBe("qwen-saved");
+  expect(daemon.bus.peers.get("qwen")?.recoveryMetadata?.().sessionId).toBe("qwen-saved");
+  const preview = launcherPreview("qwen", ["--session-id", "private-session"], root, stateDir, false);
+  expect(JSON.stringify(preview)).not.toContain("private-session");
 });

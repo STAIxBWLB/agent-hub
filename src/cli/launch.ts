@@ -393,6 +393,13 @@ export function buildKimiLaunch(command: string[], model?: string): Launch {
   return { cmd: cmd!, args: model ? ["--model", model, ...args] : args };
 }
 
+/** Qwen flags follow the configured executable argv, including wrapper/script arguments. */
+export function buildQwenLaunch(command: string[], model?: string): Launch {
+  const [cmd, ...args] = command;
+  if (!cmd) throw new Error("qwen_cmd must name an executable");
+  return { cmd, args: [...args, ...(model ? ["--model", model] : [])] };
+}
+
 /** The configured ACP argv has a TUI form only when its exact final word is the ACP subcommand. */
 export function buildKimiTuiLaunch(command: string[], model?: string): Launch {
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("kimi_cmd must name an executable");

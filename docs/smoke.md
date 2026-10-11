@@ -1592,3 +1592,5 @@ ACP source returned 0.24.1; this drift is not a native readiness claim. Select
 roster.qwen and a verified qwen_cmd before the live leg. Confirm mode ids and
 visible boundaries, inbox/tool approval, stop and exact-head results, then record
 the native version and observed outcome here. No hub-driven Qwen TUI is offered.
+
+Qwen recovery source/fake proof: saved ids pass through the driver and CLI to ACP session/load, and the crash loader restores the recorded id/model. Actual native/provider recovery remains unverified.

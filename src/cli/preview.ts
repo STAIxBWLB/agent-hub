@@ -1,3 +1,4 @@
+import { qwenSessionId } from "../hub/crash.ts";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../hub/daemon.ts";
@@ -5,7 +6,7 @@ import { childEnv } from "../hub/child-process.ts";
 import { relayModelIds } from "../models/relay.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
 import { startModeOf } from "../hub/start-mode.ts";
-import { buildLaunch, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, claudeObservationHooks, type Launch } from "./launch.ts";
+import { buildLaunch, buildKimiLaunch, buildQwenLaunch, buildKimiTuiLaunch, nativeLaunchEnv, claudeObservationHooks, type Launch } from "./launch.ts";
 import { kimiMcpPlan } from "./kimi-mcp.ts";
 
 const REDACTED = "[redacted]";
@@ -63,8 +64,11 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen
   } else if (tool === "qwen") {
     const mode = value("--mode") ?? "headless", model = value("--model");
     if (mode !== "headless") throw new Error("Qwen TUI is not offered before verification");
-    for (let i = 0; i < args.length; i += 2) if (!["--model", "--mode"].includes(args[i]!) || !args[i + 1]) throw new Error("unknown Qwen option");
-    launch = buildKimiLaunch(nativeCommand(config.qwen_cmd, ["qwen", "--acp"]), model ? REDACTED : undefined);
+    for (let i = 0; i < args.length; i += 2) if (!["--model", "--mode", "--session-id"].includes(args[i]!) || !args[i + 1]) throw new Error("unknown Qwen option");
+    const sessionId = value("--session-id");
+    if (sessionId !== undefined && !qwenSessionId(sessionId)) throw new Error("invalid Qwen session identity");
+    if (sessionId) unresolved.push({ field: "sessionId", reason: "requested through ACP session/load at start; preview does not load or expose it" });
+    launch = buildQwenLaunch(nativeCommand(config.qwen_cmd, ["qwen", "--acp"]), model ? REDACTED : undefined);
     unresolved.push({ field: "nativeIdentity", reason: "Qwen Code 0.25.0 identity and permission modes are checked at ACP initialization; preview starts nothing" });
   } else if (tool === "kimi") {
     const model = value("--model");

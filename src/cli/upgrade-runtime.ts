@@ -1,3 +1,4 @@
+import { qwenSessionId } from "../hub/crash.ts";
 import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -273,6 +274,8 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         const session = peer.id === "codex" ? peer.threadId : peer.sessionId;
         if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required; next action: reconnect the original native session and make a new recovery plan`);
         else sessions[peer.id] = session;
+      } else if (peer.id === "qwen") {
+        if (!qwenSessionId(peer.sessionId)) blockers.push("qwen: saved ACP session identity unavailable; end Qwen and make a new recovery plan");
       } else if (peer.id === "pi" && peer.args?.mode === "tui") {
         if (!peer.sessionId) blockers.push("pi: original session ID is unknown; manual-required; next action: reconnect the original Pi session and make a new recovery plan");
         else sessions.pi = { sessionId: peer.sessionId, ...(peer.sessionFile ? { sessionFile: peer.sessionFile } : {}), ...(peer.args.backend ? { backend: peer.args.backend } : {}), ...(peer.args.model ? { model: peer.args.model } : {}) };
@@ -537,6 +540,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           // #269: `ahub pi` without a mode now takes Pi's start mode (tui by default). This Pi ran headless (a terminal
           // one is filtered out above), so a snapshot that recorded no mode still restores it headless.
           if (peer.id === "pi" && typeof peer.args?.mode !== "string") args.push("--mode", "headless");
+          if (peer.id === "qwen" && peer.sessionId) args.push("--session-id", peer.sessionId);
           if (peer.id === "pi") {
             const sessionFile = peer.sessionFile ?? peer.args?.sessionFile;
             if (typeof sessionFile === "string") args.push("--session-file", sessionFile);

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
 import { isSupportedPeer } from "../hub/peer-catalog.ts";
@@ -736,11 +737,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       catch { fail("cannot preview Qwen launch: invalid arguments or configuration (details withheld)"); }
     }
     assertLifecycleAvailable();
-    const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
-    if (rest.length || (one["--mode"] !== undefined && one["--mode"] !== "headless")) fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>]");
+    const { one, rest } = takeFlags(args, ["--mode", "--model", "--session-id"], []);
+    if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"])) fail("invalid Qwen session identity");
+    if (rest.length || (one["--mode"] !== undefined && one["--mode"] !== "headless")) fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
     const hub = await connect();
     try {
-      const reply = await hub.request({ t: "start", peer: "qwen", args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
+      const reply = await hub.request({ t: "start", peer: "qwen", args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}), ...(one["--session-id"] ? { sessionId: one["--session-id"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
       if (!reply.ok) fail(reply.error);
       console.log(reply.already ? "qwen is already attached" : "qwen attached (headless); use ahub say @qwen and the console for approvals");
     } finally { hub.close(); }
