@@ -60,12 +60,13 @@ its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
 without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
 Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
-ends), never while a command is being edited or a choice is open. A pasted
+ends), never while a command is being edited or a choice is open; under a
+confirmation an arrow dismisses it like any key but y, without moving a tab. A pasted
 chunk can only edit the command line, but a read that holds nothing but arrow
 sequences is that many key presses, so a held key repeats its tab move. In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
-the stream; body lines and command output stay plain, and with colour off the
-panel is byte-identical to before.
+the stream; body lines and command output stay plain, and colour never changes
+what the panel's text says.
 
 Peers, Approvals, Tasks and Queue are tables with a header row. A column is as
 wide as its widest cell, up to a third of the terminal; the last column takes
@@ -98,7 +99,7 @@ prompts, are quoted unless they are a single word starting with a letter, so
 punctuation, a newline or a bare number in them cannot imitate the console's own
 structure. Under the `?` key table only `?`, Escape and `q` act.
 
-Arrow keys or j/k move, Enter opens a detail of labeled fields (relative times,
+Up/Down arrows or j/k move, Enter opens a detail of labeled fields (relative times,
 never JSON), Escape returns, and `?` shows the keys grouped by panel; in the
 stream, `?` prints that table and `v` prints the selected request as its push
 showed it. The footer's last line lists only the keys that act in the current

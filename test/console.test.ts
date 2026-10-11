@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderBoard, renderStatus } from "../src/cli/output.ts";
@@ -850,7 +850,7 @@ describe("console layout (#213)", () => {
     let s = state(true); s.panel = 2; s.peers = { pi: { state: "idle" } };
     s.approvals.push({ ...s.approvals[0]!, id: "second" });
     s = reduceConsole(s, "?", NOW).state;
-    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   Left/Right panel   j/k or arrows move");
+    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   Left/Right panel   j/k or Up/Down move");
     for (const key of ["d", "a", "j", "]", "\r", "1", "\t", ":"]) {
       const next = reduceConsole(s, key, NOW);
       expect([next.effects, next.state.approvalId, next.state.panel, next.state.mode, next.state.editing, next.state.help]).toEqual([[], "first", 2, "panels", false, true]);
@@ -861,10 +861,10 @@ describe("console layout (#213)", () => {
   });
   test("Left and Right move between the panel tabs with the digit's guards and resets, wrapping at both ends (#309)", () => {
     for (let panel = 1; panel <= 5; panel++) {
-      const s = state(true); s.panel = panel; s.selection = 2; s.detail = "open view";
+      const s = state(true); s.panel = panel; s.selection = 2; s.detail = "open view"; s.requestDetail = "first";
       for (const [key, want] of [["\x1b[C", (panel % 5) + 1], ["\x1b[D", ((panel + 3) % 5) + 1]] as const) {
         const next = reduceConsole(s, key, NOW);
-        expect([next.effects, next.state.panel, next.state.selection, next.state.detail]).toEqual([[], want, 0, undefined]);
+        expect([next.effects, next.state.panel, next.state.selection, next.state.detail, next.state.requestDetail]).toEqual([[], want, 0, undefined, undefined]);
       }
     }
     for (const key of ["\x1b[C", "\x1b[D"]) {
@@ -873,8 +873,13 @@ describe("console layout (#213)", () => {
       const editing = state(true); editing.editing = true; editing.input = "stop pi"; editing.history = ["q"]; editing.historyIndex = 0;
       const afterEdit = reduceConsole(editing, key, NOW).state;
       expect([afterEdit.input, afterEdit.historyIndex, afterEdit.editing, afterEdit.panel]).toEqual(["stop pi", 0, true, 1]);
+      // Under a confirmation an arrow dismisses it like any key but y, without moving a tab (as on main).
       const confirming = state(true); confirming.confirm = { type: "command", args: ["stop", "pi"] };
-      expect(reduceConsole(confirming, key, NOW).state.panel).toBe(1);
+      const afterConfirm = reduceConsole(confirming, key, NOW).state;
+      expect([afterConfirm.panel, afterConfirm.confirm ?? null]).toEqual([1, null]);
+      const permitConfirm = state(true); permitConfirm.confirm = { type: "permission", id: "first", peer: "pi", option: "allow" };
+      const afterPermit = reduceConsole(permitConfirm, key, NOW).state;
+      expect([afterPermit.panel, afterPermit.confirm ?? null]).toEqual([1, null]);
       const choosing = state(true); choosing.modeChoice = "pi";
       expect([reduceConsole(choosing, key, NOW).state.panel, reduceConsole(choosing, key, NOW).state.modeChoice]).toEqual([1, "pi"]);
       const opting = state(true); opting.optionChoice = "first";
@@ -886,7 +891,7 @@ describe("console layout (#213)", () => {
   test("the key table names Left and Right next to the digit keys; the footer hints do not change (#309)", () => {
     let s = state(true); s.peers = { pi: { state: "idle" } };
     s = reduceConsole(s, "?", NOW).state;
-    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   Left/Right panel   j/k or arrows move");
+    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   Left/Right panel   j/k or Up/Down move");
     // The footer keeps its own hints, unchanged, on a panel with rows.
     const closed = reduceConsole(s, "?", NOW).state;
     closed.panel = 5; closed.events = [{ text: "kimi: context 21%" }];
@@ -894,38 +899,58 @@ describe("console layout (#213)", () => {
     expect(footer).toBe("f peer  g kind  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
   });
   test("an Events row's header is painted by the stream's tokenizer, byte-identical with colour off (#309)", () => {
+    const reading = { source: "acp_usage_update", measuredAt: 1_756_000_000_000, tokens: 42_000, window: 200_000, used: 0.21, freshness: "fresh" as const };
+    const stateEvent = { t: "state", peer: "codex", state: "idle" } as const;
+    const envelopeEvent = { t: "envelope", env: newEnvelope("claude", "accepted", { to: ["codex"] }) } as const;
+    // The producers' own shapes: the stream's indent and markers, not hand-written lookalikes.
     const events = [
-      { text: "kimi: context 21% (fresh, acp_usage_update, measured 6:51:38 AM)", kind: "context", tone: undefined },
-      { text: "codex is idle", kind: "state", tone: "muted" },
-      { text: "9:41:02 AM claude -> codex: accepted", kind: undefined, tone: undefined },
-      { text: "* task #4 Fix #232: wrap tokens accepted by codex", kind: "notice", tone: undefined },
-      { text: "? claude asks permission: Bash ls\n    answer with: ahub permit 12345678 <allow>", kind: "permission", tone: "attention" },
+      { text: `  kimi: ${contextLine(reading, () => "6:51:38 AM")}`, kind: "context", tone: undefined },
+      { text: renderTailEvent(stateEvent as never), kind: "state", tone: eventTone(stateEvent as never) },
+      { text: renderTailEvent(envelopeEvent as never), kind: "chat", tone: eventTone(envelopeEvent as never) },
+      { text: "  * task #4 Fix #232: wrap tokens accepted by codex", kind: "notice", tone: undefined },
+      { text: permissionText({ ...state().approvals[0]!, peer: "claude" }), kind: "permission", tone: "attention" as const },
       { text: "$ ahub status", kind: "command", tone: undefined },
-    ] as const;
+    ];
     for (const event of events) {
       const s = state(true); s.panel = 5;
       s.events = [{ ...event }];
       const row = cells(s, s.events[0], false, NOW);
-      const [header, ...body] = event.text.split("\n");
+      // The selected row is marked by ">" alone: selection never changes a span.
+      expect(cells(s, s.events[0], true, NOW)).toEqual(row);
+      const flat = event.text.replace(/\t/g, " ");
+      const [header, ...body] = flat.split("\n");
       const headerSpans = body.length ? row.slice(0, -1) : row;
       // The same function paints the same header, token for token, with the event's tone and kind.
       expect(headerSpans).toEqual(streamTokens(header ?? "", event.tone, event.kind));
+      if (body.length) expect(row.at(-1)!.tone).toBeUndefined(); // body lines stay plain, as in the stream
       // Colour off is byte-identical to the one-span render; colour on changes no visible character.
-      expect(paint(row, false)).toBe(event.text);
-      expect(paint(row, true).replace(/\x1b\[[0-9;]*m/g, "")).toBe(event.text);
+      expect(paint(row, false)).toBe(flat);
+      expect(paint(row, true).replace(/\x1b\[[0-9;]*m/g, "")).toBe(flat);
       if (event.kind === "command") expect(headerSpans).toEqual([{ text: header ?? "" }]);
     }
   });
   test("colouring an Events row changes no visible character and no fitting at 40, 80 and 120 (#309)", () => {
-    const s = state(true); s.panel = 5;
-    s.events = [
-      { text: "kimi: context 21% (fresh, acp_usage_update, measured 6:51:38 AM)", kind: "context" },
-      { text: "* task #4 Fix #232: wrap tokens accepted by codex", kind: "notice" },
-      { text: "? claude asks permission: Bash ls\n    answer with: ahub permit 12345678 <allow>", kind: "permission", tone: "attention" },
+    const reading = { source: "acp_usage_update", measuredAt: 1_756_000_000_000, tokens: 42_000, window: 200_000, used: 0.21, freshness: "fresh" as const };
+    const events: { text: string; kind: string; tone?: "attention" }[] = [
+      { text: `  kimi: ${contextLine(reading, () => "6:51:38 AM")}`, kind: "context" },
+      { text: "  * task #4 Fix #232: wrap tokens accepted by codex", kind: "notice" },
+      { text: permissionText({ ...state().approvals[0]!, peer: "claude" }), kind: "permission", tone: "attention" },
     ];
-    for (const columns of [40, 80, 120]) {
-      const lines = renderConsoleLines(s, columns, 24, NOW);
-      expect(lines.map(line => paint(line, true).replace(/\x1b\[[0-9;]*m/g, ""))).toEqual(lines.map(line => paint(line, false)));
+    for (const event of events) {
+      const s = state(true); s.panel = 5;
+      s.events = [{ ...event }];
+      const flat = event.text.replace(/\t/g, " ");
+      const [header, ...body] = flat.split("\n");
+      // The reference is the one-span render: the header in the event's tone, the body plain. Tokenizing the
+      // header must change neither the text nor where the row is cut.
+      const oneSpan = [{ text: header ?? "", ...(event.tone ? { tone: event.tone as never } : {}) }, ...(body.length ? [{ text: "\n" + body.join("\n") }] : [])];
+      for (const columns of [40, 80, 120]) {
+        const tokenized = fitLine([{ text: "  " }, ...cells(s, s.events[0], false, NOW)], columns);
+        const reference = fitLine([{ text: "  " }, ...oneSpan], columns);
+        // fitLine keeps span boundaries, so the tokenized row has more spans; the text and the cut must be equal.
+        expect(paint(tokenized, false)).toBe(paint(reference, false));
+        expect(paint(tokenized, true).replace(/\x1b\[[0-9;]*m/g, "")).toBe(paint(reference, false));
+      }
     }
   });
   test("an Events row gains no tone the stream would not give it: peer names in titles, forged markers, bare numbers (#309)", () => {

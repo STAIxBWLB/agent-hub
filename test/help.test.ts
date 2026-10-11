@@ -168,7 +168,7 @@ describe("wrap breaks at word boundaries (#212, #213)", () => {
     const s = initialConsoleState(true);
     s.help = true;
     const keys = renderConsole(s, 80, 24, 0).slice(2, -4).filter(Boolean);
-    for (const item of ["Tab stream/panels", "j/k or arrows move", "a allow (then y)", "r resolve (reason, then y)", "g kind filter"]) expect(keys.some(line => line.includes(item))).toBe(true);
+    for (const item of ["Tab stream/panels", "j/k or Up/Down move", "a allow (then y)", "r resolve (reason, then y)", "g kind filter"]) expect(keys.some(line => line.includes(item))).toBe(true);
     s.help = false;
     const title = "pi bash: 한국어 승인 요청 내용을 확인합니다, then run bun test test/help.test.ts in the project ".repeat(4).trim();
     for (const value of [title, "x".repeat(150)]) {

@@ -305,7 +305,7 @@ export function permissionText(a: Pick<Approval, "id" | "peer" | "title" | "opti
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
-  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or arrows move", "Enter view", "j/k scroll a view"]],
+  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode"]],
   ["Tasks", ["a assign (then y)", "r review"]],
