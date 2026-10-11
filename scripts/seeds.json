@@ -312,6 +312,22 @@
       "replacement": "OPEN.includes(task.state)",
       "testFile": "test/roster.test.ts",
       "testName": "removal hands over in-review ownership and routes the later verdict to the new owner (#315)"
+    },
+    {
+      "id": "roster-reviewed-owner-instructions",
+      "file": "src/hub/tasks.ts",
+      "search": "      task.state === \"in_review\"\n        ? `Ownership moved while this task is already under review.",
+      "replacement": "      false\n        ? `Ownership moved while this task is already under review.",
+      "testFile": "test/tasks.test.ts",
+      "testName": "removal hands over an in-review owner's work while preserving an irreplaceable reviewer request and verdict (#315)"
+    },
+    {
+      "id": "roster-detached-pi-recovery",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;",
+      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
+      "testFile": "test/roster-pi.test.ts",
+      "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
     }
   ]
 }

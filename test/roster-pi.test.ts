@@ -125,3 +125,30 @@ test("Pi roster verification serializes roster writes and holds dispatch through
     if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
   }
 });
+
+test("controlled recovery refuses a removed personal Pi owner until the person ends it (#315)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-roster-pi-recovery-"))), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(root, "home");
+  const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub/config.json"), "{}");
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: "roster-pi-recovery", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, roster: { pi: true }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+  const client = await ControlClient.connect(stateDir, { role: "console" }), f = await rosterPiFixture(undefined, { cwd: root, stateDir }); daemon.bus.add(f.peer);
+  try {
+    const signature = processSignature(f.owner.pid), instance = (await client.request({ t: "status" })).status.instanceId;
+    expect((await client.request({ t: "settings_set", key: "roster.pi", value: false, confirm: "pi" })).ok).toBe(true);
+    expect(f.peer.state).toBe("offline"); expect(processSignature(f.owner.pid)).toBe(signature);
+    const request = { t: "recovery", operationId: "roster-pi-recovery", expectedInstanceId: instance };
+    for (const op of ["prepare", "inspect"]) {
+      const reply = await client.request({ ...request, op });
+      expect(reply).toMatchObject({ ok: true, recovery: { phase: "preparing", ready: false, blockers: ["pi is not settled"] } });
+    }
+    expect((await client.request({ ...request, op: "commit" })).ok).toBe(false);
+    expect((await client.request({ ...request, op: "abort" })).ok).toBe(true);
+    f.owner.kill(); await f.owner.exited; await f.post("/event", { type: "session_shutdown" });
+    expect(await client.request({ ...request, op: "prepare" })).toMatchObject({ ok: true, recovery: { phase: "prepared", ready: true, blockers: [] } });
+    expect((await client.request({ ...request, op: "abort" })).ok).toBe(true);
+  } finally {
+    client.close(); await f.cleanup(); await daemon.stop(); rmSync(root, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+  }
+});

@@ -1901,7 +1901,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     else if (e.t === "off_roster") {
       const task = e.env.refs?.task ? board.get(Number(e.env.refs.task)) : undefined;
-      notify(`Message${task ? ` for task ${tasks.publicTitle(task)}` : ""} retained off roster for ${sanitize(e.peers.join(", "))}; it waits until the peer returns or the person resolves its queue.`);
+      notify(sanitize(`Message${task ? ` for task ${tasks.publicTitle(task)}` : ""} retained off roster for ${e.peers.join(", ")}; it waits until the peer returns or the person resolves its queue.`));
     }
     else if (e.t === "quiet") {
       log(`QUIET ${e.env.id} from ${e.env.from}: not delivered to ${e.peers.join(", ")} (turn-free cohort)`);

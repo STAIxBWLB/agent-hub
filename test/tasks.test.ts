@@ -2926,6 +2926,10 @@ test("removal hands over an in-review owner's work while preserving an irreplace
   expect(f.board.get(task.id)!.state).toBe("in_review"); f.off.add("kimi");
   expect(await f.tasks.reassignForRoster("kimi")).toContainEqual({ id: task.id, title: "#1 in review removal", role: "owner", to: "local" });
   expect(f.board.get(task.id)).toMatchObject({ owner: "local", state: "in_review" });
+  const ownership = f.peers.local!.got.find(env => env.refs?.task === String(task.id))!;
+  expect(ownership.body).toContain("already under review");
+  expect(ownership.body).toContain(`hub_task_show {id: ${task.id}}`);
+  expect(ownership.body).not.toContain("Take it with hub_task_accept");
 
   const only = await rosterTaskFixture(["codex", "claude"]);
   const retained = await only.tasks.propose(USER, { title: "review request retained", class: "implement", owner: "codex" });

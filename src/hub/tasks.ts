@@ -946,7 +946,9 @@ export class Tasks {
       brief ?? "",
       // What the previous owner left behind. Peer-written free text: never attached to a PII task.
       handoff ? `Handoff from the previous owner:\n${handoff}` : "",
-      `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
+      task.state === "in_review"
+        ? `Ownership moved while this task is already under review. Read it with hub_task_show {id: ${task.id}} and wait for the review verdict; do not accept it or repeat completed work.`
+        : `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     // A hand-over the owner takes in a turn of its own (#109, #115): idle before, busy after and not queued, this envelope
     // was in the delivery that started its turn. Busy before, it is queued, or steered into a turn about something else
@@ -1573,7 +1575,6 @@ export class Tasks {
           if (!next.owner || next.owner === peer) continue;
           this.releaseNotice(`task ${this.publicTitle(next)} moved from ${peer} to ${next.owner} (off roster)`);
           if (next.state === "in_review" && next.reviewer && next.reviewer !== task.reviewer && next.reviewer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${next.reviewer}`, () => this.sendReview(next, next.reviewer!, `(${peer} owned this and is off roster.)`));
-
         }
         moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
       } else if (task.reviewer === peer && task.state !== "approved") {
