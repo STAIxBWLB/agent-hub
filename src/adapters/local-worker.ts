@@ -16,7 +16,7 @@ import type { Sidecar } from "../switchyard/sidecar.ts";
 import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
 
 export interface LocalOptions {
-  profile?: import("../hub/profiles.ts").ProfileName;
+  profile?: import("../hub/profiles.ts").ProfileSelection;
   cwd: string;
   omni: OmniRoute;
   /** Absent = always the fixed model on OmniRoute. */

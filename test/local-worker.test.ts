@@ -733,3 +733,8 @@ test("daemon local expiry text and N2 stop use real approval timeout without rep
   expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("kept");
   await Bun.sleep(60); expect(model.requests).toHaveLength(3); // original turn was not replayed
 });
+
+test("local worker publishes resolved custom profile classes and selected plan fields to its actual provider (#259)",async()=>{
+  const {resolveProfile}=await import("../src/hub/profiles.ts");const data=resolveProfile("research",{classes:{annotate:"bulk_edit"},plan_keys:["paths","sources"]});const {model,bus,said}=await setup(()=>({content:"profile schema ready"}),{profile:data,taskTool:async()=>"ok"});bus.publish(newEnvelope("claude","inspect your profile tools"));await until(()=>said.length===1,"local schema response");
+  const schema=model.requests[0]!.body.tools.find((tool:any)=>tool.function.name==="hub_task_propose").function.parameters.properties;expect(schema.class.enum).toContain("annotate");expect(Object.keys(schema.plan.properties)).toEqual(["paths","sources"]);
+});

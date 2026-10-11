@@ -2769,7 +2769,7 @@ export async function startDaemon(opts: DaemonOptions) {
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit },
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
-        profile: profileName(config.profile),
+        profile: resolvedProfile,
         taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);
