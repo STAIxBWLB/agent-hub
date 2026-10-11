@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
@@ -38,4 +38,10 @@ test("shadow facts enumerate document folders, honor ignored data and exclude th
   const {Facts}=await import("../src/hub/facts.ts");const dir=root();initShadow(dir);mkdirSync(join(dir,"docs"));mkdirSync(join(dir,"data"));writeFileSync(join(dir,"docs/paper.txt"),"before\n");writeFileSync(join(dir,"data/raw.csv"),"PRIVATE_RAW_DATA_MARKER\n");writeFileSync(join(dir,".agenthub/ignore"),"data/\n");
   const repo=repoOf(dir)!, facts=new Facts({root:dir,repo,tmp:join(dir,".agenthub/state/facts"),instance:"shadow",scope:()=>({paths:["docs","data/raw.csv",".agenthub/shadow.git/config"],plans:[]}),peers:()=>["claude"],nameable:()=>true});
   const before=facts.due("claude");expect(before).toBeDefined();if(before)facts.ack("claude",before.id);writeFileSync(join(dir,"docs/paper.txt"),"after\n");const after=facts.due("claude");expect(after?.text).toContain("paper.txt");expect(after?.text).toContain("+after");expect(after?.text).not.toContain("PRIVATE_RAW_DATA_MARKER");expect(after?.text).not.toContain("shadow.git/config");expect(facts.rel("data/raw.csv")).toBeUndefined();
+});
+
+test("shadow object fan-out and packed-object links refuse discovery and cached writes outside the project (#259)",()=>{
+  const dir=root(), outside=root();writeFileSync(join(dir,"paper.txt"),"paper\n");initShadow(dir);const repo=repoOf(dir)!;
+  symlinkSync(outside,join(repo.dir,"objects/aa"));expect(repoOf(dir)).toBeUndefined();expect(()=>snapshot(repo)).toThrow("invalid or linked");expect(()=>repoGitArgs(repo,["hash-object","-w","paper.txt"])).toThrow("invalid or linked");expect(readdirSync(outside)).toEqual([]);
+  rmSync(join(repo.dir,"objects/aa"));const packed=join(outside,"outside.pack");writeFileSync(packed,"OUTSIDE_PACK_MARKER");symlinkSync(packed,join(repo.dir,"objects/pack/linked.pack"));expect(repoOf(dir)).toBeUndefined();expect(()=>snapshot(repo)).toThrow("invalid or linked");expect(readFileSync(packed,"utf8")).toBe("OUTSIDE_PACK_MARKER");
 });

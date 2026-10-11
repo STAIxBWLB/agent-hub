@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
@@ -33,9 +33,30 @@ export interface Repo {
   shadow?: true;
 }
 
+/** Refuse links throughout metadata, including loose-object fan-outs and packed-object files. */
+function shadowStorageSafe(dir: string): boolean {
+  let entries = 0;
+  const visit = (path: string, depth: number): boolean => {
+    if (++entries > 20000 || depth > 32) return false;
+    const st = lstatSync(path);
+    if (st.isSymbolicLink()) return false;
+    if (st.isFile()) return st.nlink === 1;
+    if (!st.isDirectory()) return false;
+    return readdirSync(path).every(name => visit(join(path, name), depth + 1));
+  };
+  try {
+    if (lstatSync(join(dir, "commondir"), { throwIfNoEntry: false }) || lstatSync(join(dir, "objects/info/alternates"), { throwIfNoEntry: false })) return false;
+    return visit(dir, 0);
+  } catch { return false; }
+}
 /** Explicit flags keep the shadow work tree at its verified project root. */
 export function repoGitArgs(repo: string | Repo, args: string[]): string[] {
   const top = typeof repo === "string" ? repo : repo.top;
+  if (typeof repo !== "string" && repo.shadow) {
+    const parent = lstatSync(join(repo.top, ".agenthub"), { throwIfNoEntry: false });
+    const ignore = parent?.isDirectory() && !parent.isSymbolicLink() ? lstatSync(join(repo.top, ".agenthub/ignore"), { throwIfNoEntry: false }) : undefined;
+    if (!parent?.isDirectory() || parent.isSymbolicLink() || ignore && (!ignore.isFile() || ignore.isSymbolicLink() || ignore.nlink !== 1) || repo.dir !== join(repo.top, ".agenthub/shadow.git") || !shadowStorageSafe(repo.dir)) throw new Error("shadow repository metadata is invalid or linked; operation refused");
+  }
   return ["-C", top, ...(typeof repo !== "string" && repo.shadow ? ["--git-dir=" + repo.dir, "--work-tree=" + repo.top, "-c", "core.excludesFile=" + join(repo.top, ".agenthub", "ignore")] : []), ...args];
 }
 export function repoGitEnv(repo: string | Repo, env = process.env): NodeJS.ProcessEnv {
@@ -59,6 +80,7 @@ export function repoOf(root: string): Repo | undefined {
   if (existsSync(join(dir, "commondir")) || existsSync(join(dir, "objects/info/alternates"))) return undefined;
   const ignore = lstatSync(join(hub, "ignore"), { throwIfNoEntry: false });
   if (ignore && (!ignore.isFile() || ignore.isSymbolicLink() || ignore.nlink !== 1)) return undefined;
+  if (!shadowStorageSafe(dir)) return undefined;
   const repo: Repo = { top, dir: realPath(dir), prefix: "", shadow: true };
   const probe = git(repo, ["rev-parse", "--absolute-git-dir"]);
   return probe.status === 0 && realPath(probe.stdout.trim()) === repo.dir ? repo : undefined;

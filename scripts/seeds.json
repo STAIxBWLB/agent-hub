@@ -981,7 +981,7 @@
       "id": "shadow-explicit-worktree",
       "file": "src/hub/snapshots.ts",
       "search": "\"--work-tree=\" + repo.top,",
-      "replacement": "",
+      "replacement": " ",
       "testFile": "test/shadow-repo.test.ts",
       "testName": "shadow snapshots and raw undo work without creating .git or modifying the shadow HEAD/index (#259)"
     },
@@ -996,8 +996,8 @@
     {
       "id": "shadow-metadata-link",
       "file": "src/hub/snapshots.ts",
-      "search": "if (!own?.isDirectory() || own.isSymbolicLink()) return undefined;",
-      "replacement": "if (!own) return undefined;",
+      "search": "const own = lstatSync(dir, { throwIfNoEntry: false });",
+      "replacement": "const own = lstatSync(dir, { throwIfNoEntry: false }); if (own?.isSymbolicLink()) return { top, dir, prefix: \"\", shadow: true };",
       "testFile": "test/shadow-repo.test.ts",
       "testName": "linked or shared shadow metadata is refused without following a different repository (#259)"
     },
@@ -1008,6 +1008,14 @@
       "replacement": "const repositoryFacts = true;",
       "testFile": "test/shadow-daemon.test.ts",
       "testName": "non-dev projects without Git/shadow disable facts and snapshots with one notice (#259)"
+    },
+    {
+      "id": "shadow-object-descendants",
+      "file": "src/hub/snapshots.ts",
+      "search": "if (st.isSymbolicLink()) return false;",
+      "replacement": "if (st.isSymbolicLink()) return true;",
+      "testFile": "test/shadow-repo.test.ts",
+      "testName": "shadow object fan-out and packed-object links refuse discovery and cached writes outside the project (#259)"
     }
   ]
 }
