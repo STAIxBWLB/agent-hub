@@ -129,3 +129,19 @@ test("catalog role application is scoped to the named peer and leaves other hand
   expect(rows.find((row:any)=>row.key==="catalog_roles.kimi").value).toEqual([]);
   expect(loadConfig(f.dir).catalog_roles!.kimi).toEqual(["analyst"]);
 });
+
+
+test("stopped session roles cannot abbreviate guidance queued for a differently prepared restart (#295)", async () => {
+  const f=await fixture(true);
+  expect((await f.client.request({t:"settings_set",key:"catalog_roles.kimi",value:["analyst"]})).ok).toBe(true);
+  expect((await f.client.request({t:"peer_start",peer:"kimi"},15000)).ok).toBe(true);
+  expect((await f.client.request({t:"task",op:"hub_task_propose",args:{title:"Queued guidance",class:"implement",owner:"kimi"}})).ok).toBe(true);
+  expect((await f.client.request({t:"peer_stop",peer:"kimi"},15000)).ok).toBe(true);
+  expect(f.daemon.bus.stateOf("kimi")).toBe("offline");
+  expect((await f.client.request({t:"settings_set",key:"catalog_roles.kimi",value:["fact-checker"]})).ok).toBe(true);
+  expect((await f.client.request({t:"task_catalog_role",id:1,role:"analyst"})).ok).toBe(true);
+  const pending=f.daemon.bus.snapshot(false).queues.kimi ?? []; const guidance=pending.find(env=>env.body.includes("catalog role changed"));
+  expect(guidance).toBeDefined(); expect(guidance!.body).toContain("## Scope"); expect(guidance!.body).not.toContain("already in your session guidance");
+  expect((await f.client.request({t:"peer_start",peer:"kimi"},15000)).ok).toBe(true);
+  const row=(await f.client.request({t:"settings_get"})).rows.find((row:any)=>row.key==="catalog_roles.kimi"); expect(row.value).toEqual(["fact-checker"]);
+});

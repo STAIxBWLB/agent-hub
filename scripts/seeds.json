@@ -864,6 +864,14 @@
       "replacement": "roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(stored.catalog_roles) };",
       "testFile": "test/role-settings.test.ts",
       "testName": "catalog role application is scoped to the named peer and leaves other hand edits pending (#295)"
+    },
+    {
+      "id": "role-inactive-preparation",
+      "file": "src/hub/daemon.ts",
+      "search": "sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== \"offline\" ? preparedSessionRoles.get(peer) ?? [] : [],",
+      "replacement": "sessionRoles: peer => preparedSessionRoles.get(peer) ?? [],",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "stopped session roles cannot abbreviate guidance queued for a differently prepared restart (#295)"
     }
   ]
 }

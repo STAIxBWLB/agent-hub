@@ -849,7 +849,7 @@ export async function startDaemon(opts: DaemonOptions) {
     profile: profileName(config.profile),
     piiPaths: config.pii?.paths,
     catalog,
-    sessionRoles: peer => preparedSessionRoles.get(peer) ?? [],
+    sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     sdlc: { config: () => lifecycleConfig },
     board,
     bus,
