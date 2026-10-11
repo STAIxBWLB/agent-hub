@@ -191,3 +191,19 @@ test("a hub started with a retired setting says so in hub.log, and ahub doctor n
   const doctor = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "src", "cli", "main.ts"), "doctor"], { cwd: dir, env: { ...process.env, COLUMNS: "120", AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe" });
   expect(doctor.stdout.toString()).toMatch(/fail +retired setting +local\.sandbox "allow-default" was removed in 0\.12\.0/);
 }, 30_000);
+
+test("instruction protection is validated and cannot come from tracked configuration (#323)", () => {
+  const { dir, git } = repo();
+  expect(loadConfig(dir).protect_instruction_files).toBe(false);
+  write(dir, "config.json", { protect_instruction_files: true });
+  expect(loadConfig(dir).protect_instruction_files).toBe(true);
+  git("add", "-f", ".agenthub/config.json");
+  expect(loadConfig(dir).protect_instruction_files).toBe(false);
+  expect(loadConfig(dir).ignored?.join(" ")).toContain("protect_instruction_files");
+  write(dir, "config.local.json", { protect_instruction_files: true });
+  expect(loadConfig(dir).protect_instruction_files).toBe(true);
+  for (const value of ["true", 1, [], {}]) {
+    write(dir, "config.local.json", { protect_instruction_files: value });
+    expect(() => loadConfig(dir)).toThrow("protect_instruction_files must be a boolean");
+  }
+});

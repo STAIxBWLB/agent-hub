@@ -55,7 +55,7 @@ the console. Merged and generated Claude settings live in 0600 state files and
 are passed by path, keeping caller settings out of process argv.
 
 Claude ask-when-needed grants only resolving project file targets outside
-.agenthub, .git, .claude, .codex, .qwen, .kimi, .kimi-code, .pi and .mcp.json. Symlink escapes, protected aliases, traversal and
+.agenthub, .git, .claude, .codex, .qwen, .kimi, .kimi-code, .pi, .mcp.json, .agents and .claude.json. Symlink escapes, protected aliases, traversal and
 unresolved wildcard targets receive no decision. Names are compared folded (letter case, compatibility forms and
 the code points HFS+ ignores; case-insensitive APFS folds case but ignored none in the probe; so a look-alike such
 as a long s or a name with a zero-width joiner is the same name), the path is judged inside the project, and
@@ -166,3 +166,14 @@ it after approval. Explicit approval and never-ask retain their existing meaning
 (#322). ACP permissions arriving offline are cancelled before any auto-approval or
 console request; pending permissions are withdrawn on watchdog, offline or stop,
 and a late person answer cannot grant them (#311).
+
+The shared scoped-grant exclusion also covers `.agents` skills and `.claude.json`.
+The latter is conservatively protected by name; its default documented location
+is in the home directory, not a project loader. The source inventory and limits
+are in [the configuration inventory](verification/2026-10-11-agent-config-inventory.md).
+Instruction files `AGENTS.md`, `CLAUDE.md` and `QWEN.md` remain grantable by default.
+A person can set `scoped_grants.protect_instructions` to true to require approval
+for scoped writes and edits through original or resolved spellings. It applies
+live after a settings write or undo, never changes reads or never-ask, and cannot
+be set through an agent, tools or conductor surface. Claude's daemon response
+withholds the scoped mode on these writes so an older hook grants nothing too.

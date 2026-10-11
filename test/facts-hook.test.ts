@@ -100,3 +100,22 @@ test("hook purpose is forwarded only with a matching native target and valid pur
   expect(nativeHookIdentity("/fixture", "codex", env)).toEqual({});
   expect(nativeHookIdentity("/fixture", "claude", { ...env, AGENTHUB_HOOK_PURPOSE: "invalid" })).not.toHaveProperty("hookPurpose");
 });
+
+test("instruction protection removes write grants under both spellings but keeps reads and the default (#323)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-instruction-hook-"));
+  try {
+    for (const name of ["AGENTS.md", "CLAUDE.md", "QWEN.md", "agents.md", "ＡＧＥＮＴＳ.md"]) {
+      writeFileSync(join(root, name), "before");
+      for (const tool of ["Write", "Edit", "MultiEdit"]) {
+        expect(projectFileTool(tool, { file_path: name }, root)).toBe(true);
+        expect(projectFileTool(tool, { file_path: name }, root, true)).toBe(false);
+      }
+      expect(projectFileTool("Read", { file_path: name }, root, true)).toBe(true);
+    }
+    writeFileSync(join(root, "ordinary.txt"), "before");
+    mkdirSync(join(root, "nested"));
+    symlinkSync(join(root, "ordinary.txt"), join(root, "nested", "AGENTS.md"));
+    symlinkSync(join(root, "CLAUDE.md"), join(root, "alias.txt"));
+    for (const file_path of ["nested/AGENTS.md", "alias.txt"]) expect(projectFileTool("Write", { file_path }, root, true)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

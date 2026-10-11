@@ -34,7 +34,14 @@ export function permissionGrant(peer: string, mode: PermissionMode): string {
 }
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
 /** Native agent policy files are never included in scoped automatic file grants. */
-export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".pi", ".mcp.json"]);
+export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".pi", ".mcp.json", ".agents", ".claude.json"]);
+export const INSTRUCTION_FILES: ReadonlySet<string> = new Set(["agents.md", "claude.md", "qwen.md"]);
+export const isInstructionPath = (path: string): boolean => path.split(/[\\/]/).some(segment => INSTRUCTION_FILES.has(foldSegment(segment)));
+export function instructionProtection(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new Error("protect_instruction_files must be a boolean");
+  return value;
+}
 /**
  * One spelling per name, as a case-insensitive disk sees it: it opens `.mcp.j\u017Fon` (long s) as `.mcp.json`, and
  * HFS+ also ignores the default-ignorable code points (a zero-width joiner inside `.codex` is still `.codex`).
@@ -53,8 +60,8 @@ export function hardLinked(path: string): boolean {
  * inside the project, outside every agent's configuration, judged by the path within the project (a project that
  * itself lives under `.claude/worktrees/` is still a project), and not a hard link.
  */
-export function grantablePath(root: string, path: string, originalPath?: string): boolean {
+export function grantablePath(root: string, path: string, originalPath?: string, protectInstructions = false): boolean {
   const inside = relative(root, path);
   const original = originalPath === undefined ? inside : relative(root, resolve(root, originalPath));
-  return !!inside && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) && !isAgentConfigPath(inside) && !isHubWritePath(inside) && !isAgentConfigPath(original) && !isHubWritePath(original) && !hardLinked(path);
+  return !!inside && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) && !isAgentConfigPath(inside) && !isHubWritePath(inside) && !isAgentConfigPath(original) && !isHubWritePath(original) && !(protectInstructions && (isInstructionPath(inside) || isInstructionPath(original))) && !hardLinked(path);
 }

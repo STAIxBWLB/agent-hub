@@ -44,6 +44,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
   { key: `routing.classes.${name}.pi_backend`, group: "Routing", label: `${name}: Pi backend`, type: "enum", values: ["dgx", "mlx"], store: "routing", applies: "live", risk: "raises", path: ["classes", name, "pi_backend"] },
 ];
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at hub start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "hub start", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
@@ -374,7 +375,7 @@ export function settingRows(input: {
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
   return SETTINGS.map((def): SettingRow => {
     const base = { key: def.key, group: def.group, label: def.label, type: def.type, applies: def.applies, risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
-      ...(def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!) } : {}) };
+      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!) } : {}) };
     if (def.store === "runtime") {
       const mode = input.mode(def.path[0]!);
       return { ...base, values: def.values!, file: "this hub run", value: mode.value ?? null, source: "this hub run", ...(mode.note ? { note: mode.note } : {}) };
