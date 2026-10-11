@@ -2204,3 +2204,28 @@ acts on the stopped state directory.
 - Settings: `peers.pi.start_mode` and `peers.codex.start_mode` join the registry (group Start, stored in `config.local.json`, raising except to `tui`). They are the one stored setting a running hub takes up: after a settings write the hub re-reads the block, so the mode applies at that peer's next start. The dashboard gains a Start control per peer that is not attached, saying the mode and the provider (or why there is none); it offers no button when the start would be refused. An ordinary session may press it: it runs only the fixed start. The page blocks repeat starts while the request is in flight and unlocks after a confirmed answer, leaving the hub's terminal reopen guard authoritative. The manager waits 35 seconds (the terminal provider cap plus its margin); a slower headless start can end unconfirmed. After an unconfirmed manager result the page holds that project/instance/peer control for `PEER_START_RETRY_MS` (the same 30-second bound as the hub's reopen guard), or until the `starts` snapshot confirms attachment, and names the retry bound. A confirmed project-local dashboard start behaves as before; no manager or settings authority changes.
 - Control protocol stays 16: `peer_start` is a new console-role request an older hub answers as unknown, and `ui_snapshot` gains the optional `starts` list.
 - Migration: Pi's default changes from headless to its TUI. `ahub settings set peers.pi.start_mode headless` (or the same key in `config.local.json`) keeps a headless auto-started Pi; scripts add `--headless`.
+
+## Live peer roster (#315)
+
+The native catalog comes from `KNOWN_PEERS`. A boolean `roster.<peer>` setting
+controls participation through the existing settings registry, store, preview,
+write, undo and authority. Without a roster entry, the existing defaults apply;
+Pi uses pi.enabled only as that fallback. A future catalog member defaults off.
+External ids retain their existing admission rules.
+
+Only a person changes the roster. Removal is available to an ordinary dashboard
+session, while adding requires a settings session or terminal. The active
+conductor cannot be removed. Removal is previewed and confirmed; an active turn
+requires --now. Owned runtimes stop and personal native terminal sessions detach
+without closing their native process. Removed peers receive no new messages or
+assignments and cannot start or attach. Queued and uncertain work is retained,
+with off-roster rows visible while work remains. Runtime permission overrides
+are cleared; configured defaults govern return, with existing pauses preserved.
+
+The roster view shows the whole catalog; status remains lazy. Owner and reviewer
+work uses the existing reassignment. No eligible replacement means the previous
+assignment remains with a public-title notice. Membership enters the pure
+assignment function as data, so route explain states the same off-roster reason.
+A live write or undo changes only its authorized key, not other config edits.
+Tracked defaults and machine-local overrides are read normally on the next hub
+start. The CLI and dashboard use the settings API and no roster hub tool exists.

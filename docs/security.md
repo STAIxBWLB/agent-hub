@@ -143,3 +143,16 @@ The manager can start registered hubs in attended mode. Its project launches do
 not inherit state, unattended or gateway URL/key overrides from the session that
 opened the manager. Native memory is deliberately not a project-isolation boundary:
 its existing basename/worktree aliases and provider accounts can remain shared.
+
+## Peer roster authority
+
+The running peer roster changes only through console-only settings requests.
+`ahub roster` is a person's CLI command, including its read form; no hub tool
+exposes the catalog or edits membership. An ordinary dashboard can remove a peer,
+but adding requires the existing settings-session authority. Removing the
+conductor holder is refused. Local and Pi scoped tools cannot write `.agenthub`.
+Claude, Codex and Kimi still follow their own file permissions and can edit a
+config file; such an edit changes participation only at the next hub start. A
+live settings write or undo applies its own roster key and does not adopt other
+file edits. External ids outside the known native catalog keep their prior
+admission rules.

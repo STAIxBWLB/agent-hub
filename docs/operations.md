@@ -996,6 +996,47 @@ permission_mode (peer/from/to) with no tool arguments under events schema 1.
 The optional control requests preserve PROTOCOL; an older hub answers unknown
 and the CLI advises upgrading.
 
+## Change the participating peers while the hub runs
+
+`ahub roster` lists every known peer, whether it participates, its start mode,
+current state, queued messages and open tasks. `ahub roster --json` is the same
+ordered catalog view for scripts. Status and the console keep their existing lazy
+rows; an off-roster peer is shown only while it has retained messages, an uncertain
+delivery or open work, with the words `off roster`.
+
+```bash
+ahub roster
+ahub roster remove kimi --yes         # print the preview, confirm and remove
+ahub roster remove kimi --yes --now   # stop a busy owned runtime before handing work over
+ahub roster add kimi
+ahub settings set roster.kimi false --preview
+ahub settings set roster.kimi false --yes
+```
+
+These are person's commands and use the same settings preview, write and undo as
+the dashboard's Roster settings. An ordinary dashboard session may remove a peer;
+adding requires `ahub ui --settings` or a person's terminal. Removal requires the
+peer id as confirmation. Without `--now`, a busy peer is refused. A conductor
+holder cannot be removed until its role is moved.
+
+Removal stops hub-owned runtimes and detaches sessions in a person's terminal.
+It leaves queued and held deliveries, and existing manual or budget pauses,
+untouched. The queue listing names `off roster` as the membership hold. Returning
+and starting the peer makes retained queued messages available again; held
+uncertain work still needs the existing queue resolution command. Open owner and
+reviewer work is offered through the existing reassignment path. If nobody can
+take it, its assignment stays and a notice names the person's next action. Task
+text in a notice uses its public title, so a private task remains a stub.
+
+Without a roster setting, participation keeps the previous defaults. An explicit
+`roster.pi` overrides `pi.enabled`; otherwise that legacy switch continues to
+control Pi starts. External peer ids remain governed by their existing admission
+rules. A runtime permission override is cleared on removal and the configured
+default governs the next attachment. Config file edits outside the authorized
+roster setting do not change running participation: they take effect at the next
+hub start. The tracked config can provide defaults and config.local.json can
+override them.
+
 ## Settings from the dashboard and the terminal
 
 The dashboard's Settings section and `ahub settings` show and change the same
