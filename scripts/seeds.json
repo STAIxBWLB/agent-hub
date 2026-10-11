@@ -872,6 +872,14 @@
       "replacement": "sessionRoles: peer => preparedSessionRoles.get(peer) ?? [],",
       "testFile": "test/role-settings.test.ts",
       "testName": "stopped session roles cannot abbreviate guidance queued for a differently prepared restart (#295)"
+    },
+    {
+      "id": "role-status-legacy-shape",
+      "file": "src/hub/daemon.ts",
+      "search": "...permissionStatus(id, p),",
+      "replacement": "...permissionStatus(id, p), flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id),",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "role visibility preserves legacy peer status shape and uses separate metadata (#295)"
     }
   ]
 }

@@ -369,7 +369,7 @@ function renderStarts(target, starts) {
   }
 }
 function render(snapshot) {
-  const peers = snapshot.status.peers || {}, ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
+  const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id]}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
   update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {

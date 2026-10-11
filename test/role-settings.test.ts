@@ -145,3 +145,11 @@ test("stopped session roles cannot abbreviate guidance queued for a differently 
   expect((await f.client.request({t:"peer_start",peer:"kimi"},15000)).ok).toBe(true);
   const row=(await f.client.request({t:"settings_get"})).rows.find((row:any)=>row.key==="catalog_roles.kimi"); expect(row.value).toEqual(["fact-checker"]);
 });
+
+
+test("role visibility preserves legacy peer status shape and uses separate metadata (#295)", async () => {
+  const f=await fixture(); const status=(await f.client.request({t:"status"})).status;
+  expect(status.peers.codex).toEqual({state:"idle",queued:0});
+  expect(status.roleInfo.codex.flowRoles).toEqual(["implementer"]);
+  expect(status.roleInfo.codex.catalogRoles.pending).toEqual(["backend-engineer"]);
+});
