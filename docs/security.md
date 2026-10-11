@@ -182,3 +182,10 @@ Kimi's pull-only TUI owns its tool approvals and session. The person's launcher
 merges/removes only the hub MCP entry; the daemon never edits that file and
 refuses headless starts while a stale entry exists. An attached Kimi TUI blocks
 controlled recovery instead of being treated as a hub-owned headless process.
+
+Qwen Code's optional production ACP peer requires qwen-code 0.25.0 native identity
+and advertised mode ids before setting a policy or starting work. Its own tools
+have no hub sandbox; auto-edit approves file edits, yolo every tool. Configured
+never-ask still requires the person's confirmation. qwen_cmd is machine-local and
+never editable through settings. Legacy benchmark adapters remain unmanaged by
+this production table. Startup diagnostics withhold native host/payload details.

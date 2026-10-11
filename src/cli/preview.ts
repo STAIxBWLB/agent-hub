@@ -20,7 +20,7 @@ function nativeCommand(command: string[], trusted: string[]): string[] {
   return command.map((value, i) => value === trusted[i] ? value : REDACTED);
 }
 /** Read-only preview. Inputs passed to shared native builders are redacted before serialization. */
-export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: string[], cwd: string, stateDir: string, unattended: boolean) {
+export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen", raw: string[], cwd: string, stateDir: string, unattended: boolean) {
   const args = raw.filter(arg => !["--print-command", "--dry-run", "--json"].includes(arg));
   const config = loadConfig(cwd);
   const unresolved: { field: string; reason: string }[] = [];
@@ -60,6 +60,12 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     const passthrough = args.filter(arg => !["--unattended", "--safe", "--new"].includes(arg));
     launch.args = launch.args.slice(0, launch.args.length - passthrough.length).concat(passthrough.map(publicArg));
     unresolved.push({ field: "proxyUrl", reason: "assigned when the native adapter starts; preview does not start it" });
+  } else if (tool === "qwen") {
+    const mode = value("--mode") ?? "headless", model = value("--model");
+    if (mode !== "headless") throw new Error("Qwen TUI is not offered before verification");
+    for (let i = 0; i < args.length; i += 2) if (!["--model", "--mode"].includes(args[i]!) || !args[i + 1]) throw new Error("unknown Qwen option");
+    launch = buildKimiLaunch(nativeCommand(config.qwen_cmd, ["qwen", "--acp"]), model ? REDACTED : undefined);
+    unresolved.push({ field: "nativeIdentity", reason: "Qwen Code 0.25.0 identity and permission modes are checked at ACP initialization; preview starts nothing" });
   } else if (tool === "kimi") {
     const model = value("--model");
     const mode = value("--mode") ?? startModeOf(config.peers, "kimi");

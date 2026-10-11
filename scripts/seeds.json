@@ -464,6 +464,22 @@
       "replacement": "if (false && peer.id === \"kimi\" && peer.args?.mode === \"tui\") {",
       "testFile": "test/upgrade-runtime.test.ts",
       "testName": "controlled recovery planning refuses an attached Kimi TUI before effects (#316)"
+    },
+    {
+      "id": "qwen-native-identity",
+      "file": "src/adapters/acp.ts",
+      "search": "if (this.opts.qwen025 && !this.qwenAgent) throw new QwenIdentityError();",
+      "replacement": "if (false && this.opts.qwen025 && !this.qwenAgent) throw new QwenIdentityError();",
+      "testFile": "test/qwen-peer.test.ts",
+      "testName": "production Qwen refuses wrong native identity/version while legacy benchmark ACP stays unmanaged (#256)"
+    },
+    {
+      "id": "qwen-roster-opt-in",
+      "file": "src/hub/roster.ts",
+      "search": "local: true };",
+      "replacement": "local: true, qwen: true };",
+      "testFile": "test/qwen-peer.test.ts",
+      "testName": "Qwen is optional on the roster, role-guided, previewed without execution and stopped as an owned ACP (#256)"
     }
   ]
 }

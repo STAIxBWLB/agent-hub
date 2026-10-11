@@ -211,7 +211,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);
   const record = arg("--record-protocol");
   if (record) appendFileSync(record, `${JSON.stringify(msg)}\n`);
-  if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true }, ...(process.argv.includes("--no-agent-info") ? {} : { agentInfo: { name: arg("--agent-name") ?? "Kimi Code CLI", version: "2.1.1" } }) } });
+  if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true }, ...(process.argv.includes("--no-agent-info") ? {} : { agentInfo: { name: arg("--agent-name") ?? "Kimi Code CLI", version: arg("--agent-version") ?? "2.1.1" } }) } });
   else if (msg.method === "session/load") {
     modes.currentModeId = arg("--loaded-mode") ?? "default";
     const record = process.argv.indexOf("--record-load");

@@ -276,7 +276,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
       } else if (peer.id === "pi" && peer.args?.mode === "tui") {
         if (!peer.sessionId) blockers.push("pi: original session ID is unknown; manual-required; next action: reconnect the original Pi session and make a new recovery plan");
         else sessions.pi = { sessionId: peer.sessionId, ...(peer.sessionFile ? { sessionFile: peer.sessionFile } : {}), ...(peer.args.backend ? { backend: peer.args.backend } : {}), ...(peer.args.model ? { model: peer.args.model } : {}) };
-      } else if (peer.id !== "kimi" && peer.id !== "local" && peer.id !== "pi") blockers.push(`${peer.id}: no automatic recovery adapter`);
+      } else if (peer.id !== "kimi" && peer.id !== "qwen" && peer.id !== "local" && peer.id !== "pi") blockers.push(`${peer.id}: no automatic recovery adapter`);
     }
     const terminals = await inspectTerminals(project.root, sessions, {
       ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId,
@@ -453,6 +453,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       // A probe that did not answer (killed, a null exit code maps to 1) says nothing about the target: retry.
       if (!Number.isInteger(read)) throw new Error(`the staged target's control protocol could not be read (probe exit ${protocol.code}); staged package retained, runtimes unchanged; resume again once it can run`);
       if (read !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
+      if (op.plan.projects.some(p => p.source.peers.some(peer => peer.id === "qwen" && peer.state !== "offline"))) {
+        const catalog = join(target.root, "src/hub/peer-catalog.ts");
+        const peers = existsSync(catalog) ? /export const OPTIONAL_PEERS\s*=\s*\[([^\]]*)\]/.exec(readFileSync(catalog, "utf8"))?.[1] : undefined;
+        if (!peers || !/["']qwen["']/.test(peers)) throw new FinalRefusal("target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged");
+      }
       // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
       if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
         throw new FinalRefusal(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
@@ -516,7 +521,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       const live = await inspectRecovery(planned.project);
       if (live.instanceId !== progress.instanceId) throw new Error("target daemon changed before peer restore");
       if (group === "native") {
-        for (const peer of planned.source.peers.filter((p) => ["kimi", "local", "pi"].includes(p.id) && p.state !== "offline" && !(p.id === "pi" && p.args?.mode === "tui"))) {
+        for (const peer of planned.source.peers.filter((p) => ["kimi", "qwen", "local", "pi"].includes(p.id) && p.state !== "offline" && !(p.id === "pi" && p.args?.mode === "tui"))) {
           const current = live.peers.find((p) => p.id === peer.id);
           if (current && current.state !== "offline") continue;
           const args = [peer.id];

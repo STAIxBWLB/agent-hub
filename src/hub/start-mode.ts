@@ -1,4 +1,4 @@
-import { KNOWN_PEERS, isKnownPeer } from "./peer-catalog.ts";
+import { SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 
 /**
  * #269: how a peer comes up when the hub starts it: its own TUI in a terminal, or headless. A person who types
@@ -11,9 +11,9 @@ export type StartMode = typeof START_MODES[number];
 /** The peers with both forms. Kimi's TUI is pull-only; Claude has only a TUI and local only headless. */
 export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
 /** Every peer the hub can start itself. */
-export const STARTABLE_PEERS = KNOWN_PEERS;
+export const STARTABLE_PEERS = SUPPORTED_PEERS;
 export type StartablePeer = typeof STARTABLE_PEERS[number];
-export const isStartablePeer = (value: unknown): value is StartablePeer => isKnownPeer(value);
+export const isStartablePeer = (value: unknown): value is StartablePeer => isSupportedPeer(value);
 
 export type PeerStartConfig = Record<string, { start_mode?: StartMode }>;
 /** The checked per-peer start modes; only peers with both forms may be configured. */

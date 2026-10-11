@@ -1,4 +1,4 @@
-import { isKnownPeer } from "./peer-catalog.ts";
+import { isSupportedPeer } from "./peer-catalog.ts";
 import { lstatSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -6,13 +6,14 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 export const PERMISSION_MODES = ["ask", "ask-when-needed", "never-ask"] as const;
 export type PermissionMode = typeof PERMISSION_MODES[number];
 export const KIMI_MODE_IDS: Readonly<Record<PermissionMode, string>> = { ask: "default", "ask-when-needed": "yolo", "never-ask": "auto" };
+export const QWEN_MODE_IDS: Readonly<Record<PermissionMode, string>> = { ask: "default", "ask-when-needed": "auto-edit", "never-ask": "yolo" };
 export const isPermissionMode = (value: unknown): value is PermissionMode => typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value);
 export function permissionDefaults(value: unknown): Record<string, PermissionMode> {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("permission_modes must be an object with ask, ask-when-needed or never-ask values");
   const result: Record<string, PermissionMode> = {};
   for (const [peer, mode] of Object.entries(value)) {
-    if (!isKnownPeer(peer)) throw new Error(`permission_modes.${peer}: unsupported peer`);
+    if (!isSupportedPeer(peer)) throw new Error(`permission_modes.${peer}: unsupported peer`);
     if (!isPermissionMode(mode)) throw new Error(`permission_modes.${peer} must be ask, ask-when-needed or never-ask`);
     result[peer] = mode;
   }
@@ -27,6 +28,7 @@ export function permissionBoundary(peer: string): string {
 /** What a mode lets a peer do without asking, in one line a person reads before choosing it (#269). */
 export function permissionGrant(peer: string, mode: PermissionMode): string {
   if (mode === "ask") return peer === "codex" ? "the session's own approval policy applies again" : peer === "kimi" ? "Kimi asks as it does on its own" : peer === "claude" ? "Claude's own permission rules decide" : "every write, edit and shell command asks";
+  if (peer === "qwen") return mode === "never-ask" ? "Qwen yolo approves every tool; NO hub sandbox" : "Qwen auto-edit approves file edits; shell commands ask; NO hub sandbox";
   if (peer === "kimi") return mode === "never-ask" ? "Kimi's auto mode: nothing asks" : "Kimi's yolo mode: it asks only where it judges it must";
   if (peer === "codex") return mode === "never-ask" ? "approval policy never on every turn: nothing asks" : "approval policy on-request on every turn";
   if (peer === "claude") return mode === "never-ask" ? "every tool runs without asking" : "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules";
