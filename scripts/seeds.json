@@ -552,6 +552,14 @@
       "replacement": "\".kimi-code\",",
       "testFile": "test/jcode-peer.test.ts",
       "testName": "Jcode is off by default, native policy unmanaged, protected from scoped writes and previewed without side effects (#332)"
+    },
+    {
+      "id": "jcode-process-exit-fence",
+      "file": "src/adapters/jcode.ts",
+      "search": "if (next === \"offline\" && this.server) {",
+      "replacement": "if (false && next === \"offline\" && this.server) {",
+      "testFile": "test/jcode-peer.test.ts",
+      "testName": "Jcode stays non-ready across socket unlink until delayed owned-process exit is observed (#332)"
     }
   ]
 }

@@ -146,3 +146,16 @@ test("Jcode doctor probes the full configured wrapper argv with the native JSON 
   expect(row.args.slice(-3)).toEqual(["--quiet", "version", "--json"]);
   expect(row.args).toContain(record);
 });
+
+
+test("Jcode stays non-ready across socket unlink until delayed owned-process exit is observed (#332)", async () => {
+  const dir = root(), home = join(dir, "home"), record = join(dir, "record"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  const peer = new JcodePeer({ command: [...fake, "--record", record, "--exit-after-prompt", "--exit-delay-ms", "250"], cwd: dir, home }); cleanups.push(() => peer.stop());
+  await peer.start();
+  const rows = () => readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  const server = rows().find(row => row.kind === "serve");
+  await peer.deliver([newEnvelope("user", "fixture", { to: ["jcode"] })]);
+  await until(() => rows().some(row => row.kind === "term") && !existsSync(server.socket));
+  expect(peer.state).not.toBe("offline"); expect(peer.state).not.toBe("idle");
+  await until(() => peer.state === "offline"); expect(() => process.kill(server.pid, 0)).toThrow();
+});

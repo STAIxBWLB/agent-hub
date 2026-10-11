@@ -69,8 +69,12 @@ export class JcodePeer extends AcpPeer {
   }
 
   protected override setState(next: PeerState): void {
+    if (next === "offline" && this.server) {
+      // A removed socket is not process-exit proof. Retain a non-ready state until both owned groups settle.
+      if (!this.ending) { super.setState("busy"); void this.stop("Jcode ACP transport ended").catch(() => {}); }
+      return;
+    }
     super.setState(next);
-    if (next === "offline" && this.server && !this.ending) void this.stop("Jcode ACP transport ended").catch(() => {});
   }
   override async stop(reason?: string): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
@@ -79,10 +83,25 @@ export class JcodePeer extends AcpPeer {
   }
   private async end(reason?: string): Promise<void> {
     this.ending = true;
+    if (this.server && this.state !== "offline") super.setState("busy");
     let failure: unknown;
     try { await super.stop(reason); } catch (error) { failure = error; }
-    try { if (this.server) { const server = this.server; await stopOwnedProcess(server, { group: true }); if (this.server === server) this.server = undefined; } } catch (error) { failure ??= error; }
-    if (!failure && !this.server && !this.preserveRoot) rmSync(this.root, { recursive: true, force: true });
+    try {
+      if (this.server) {
+        const server = this.server;
+        const closed = server.exitCode !== null || server.signalCode !== null ? Promise.resolve() : new Promise<void>((resolve) => server.once("close", () => resolve()));
+        await stopOwnedProcess(server, { group: true });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([closed, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Jcode child exit is not confirmed; runtime retained")), 3000); })]);
+        } finally { clearTimeout(timer); }
+        if (this.server === server) this.server = undefined;
+      }
+    } catch (error) { failure ??= error; }
+    if (!failure && !this.server) {
+      if (!this.preserveRoot) rmSync(this.root, { recursive: true, force: true });
+      super.setState("offline");
+    }
     if (failure) throw failure;
   }
   override recoveryMetadata(): Record<string, unknown> {

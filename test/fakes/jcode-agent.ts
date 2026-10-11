@@ -12,7 +12,10 @@ if (args.includes("version")) {
     if (record) appendFileSync(record, JSON.stringify({ kind: "serve", pid: process.pid, socket: value("--socket"), home: process.env.JCODE_HOME }) + "\n");
     writeSync(3, "1");
   });
-  process.on("SIGTERM", () => server.close(() => process.exit(0)));
+  process.on("SIGTERM", () => {
+    if (record) appendFileSync(record, JSON.stringify({ kind: "term" }) + "\n");
+    server.close(() => setTimeout(() => process.exit(0), args.includes("--exit-delay-ms") ? Number(value("--exit-delay-ms")) : 0));
+  });
 } else {
   let session = "jcode-s1";
   const send = (message: unknown) => process.stdout.write(JSON.stringify(message) + "\n");
