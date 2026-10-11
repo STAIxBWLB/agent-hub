@@ -238,6 +238,10 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     const reconnectOnly: string[] = [];
     for (const peer of source.peers) {
       if (peer.state === "offline") continue;
+      if (peer.id === "kimi" && peer.args?.mode === "tui") {
+        blockers.push("kimi: its pull-only terminal has no automatic restore; end it in that terminal, then make a new recovery plan (its session is not resumed by the hub)");
+        continue;
+      }
       if (peer.id === "claude") {
         // #206: managed means a live `ahub claude` launcher recorded for this daemon and a session record written by
         // that launch. Anything else cannot be bound to the attached session, so its record never becomes a target.
@@ -516,7 +520,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           const current = live.peers.find((p) => p.id === peer.id);
           if (current && current.state !== "offline") continue;
           const args = [peer.id];
-          for (const key of ["mode", "backend", "model", "route"]) if (typeof peer.args?.[key] === "string") args.push(`--${key}`, peer.args[key]!);
+          if (peer.id === "kimi" && peer.args?.mode === "tui") throw new Error("Kimi's pull-only terminal cannot be restored as a headless worker; end it in that terminal and make a new recovery plan");
+          for (const key of ["mode", "backend", "model", "route"]) if (!(peer.id === "kimi" && key === "mode") && typeof peer.args?.[key] === "string") args.push(`--${key}`, peer.args[key]!);
+          if (peer.id === "kimi") {
+            // ponytail: a staged target's fixed catalog is the capability signal; replace this source check with
+            // an explicit recovery capability once targets publish one. Older targets have only headless Kimi.
+            const modeFile = join(op.targetRoot!, "src/hub/start-mode.ts");
+            const modes = existsSync(modeFile) ? /export const START_MODE_PEERS\s*=\s*\[([^\]]*)\]/.exec(readFileSync(modeFile, "utf8"))?.[1] : undefined;
+            if (modes && /["']kimi["']/.test(modes)) args.push("--mode", "headless");
+          }
           // #269: `ahub pi` without a mode now takes Pi's start mode (tui by default). This Pi ran headless (a terminal
           // one is filtered out above), so a snapshot that recorded no mode still restores it headless.
           if (peer.id === "pi" && typeof peer.args?.mode !== "string") args.push("--mode", "headless");

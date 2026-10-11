@@ -544,7 +544,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
     return [id(row.id, row.state === "offline" ? undefined : "info"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),
       ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
-      span(row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
+      span(row.pullOnly && row.id === "kimi" ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
       span(b?.windows?.length ? b.windows.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%${typeof w.resetsAt === "number" ? ` ${relative(w.resetsAt, now)}` : ""}`).join(", ") : "-"),
@@ -635,7 +635,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (p.permissionMode && p.permissionMode !== "ask") summary.push(span(` ${p.permissionMode}`, "attention"));
     if (p.needsReview) summary.push(span(` review${p.needsReview}`, "failure"));
     if (p.paused) summary.push(span(" paused", "attention"));
-    if (p.toolsOnly) summary.push(span(" tools-only: ahub claude", "attention"));
+    if (p.toolsOnly) summary.push(span(id === "kimi" ? ` pull-only, read ${typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never"}` : " tools-only: ahub claude", "attention"));
   }
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");
   if (quotas) summary.push(span(`${summary.length ? " | " : ""}${quotas}`));

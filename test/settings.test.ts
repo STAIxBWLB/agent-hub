@@ -33,7 +33,7 @@ async function hub(config: Partial<HubConfig> = {}, files: { routing?: boolean }
   const p = project();
   if (files.routing === false) rmSync(p.file("routing.toml")); // a project that runs on the shipped routing template
   const daemon = await startDaemon({ cwd: p.cwd, stateDir: p.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
-    config: { ...loadConfig(p.cwd), batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], ...config } });
+    config: { ...loadConfig(p.cwd), peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], ...config } });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(p.stateDir, { role: "console" }); cleanup.push(() => client.close());
   /** A browser session from `ahub ui` (ordinary) or `ahub ui --settings`. */

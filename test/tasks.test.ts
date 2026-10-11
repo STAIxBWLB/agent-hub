@@ -2945,3 +2945,180 @@ test("removal hands over an in-review owner's work while preserving an irreplace
   only.off.add("codex"); await only.tasks.review("claude", retained.id, "changes_requested", "fix the completion");
   expect(only.bus.queueList("codex").flatMap(row => row.originals).some(env => env.body.includes("fix the completion"))).toBe(true);
 });
+
+class PullTaskPeer extends FakePeer { readonly pullOnly = true; }
+async function pullTaskFixture(sweep = false) {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pull-tasks-")), off = new Set<string>(), notices: string[] = [];
+  const bus = new Bus({ batchMs: 0, rostered: peer => !off.has(peer) });
+  const peers = { claude: new FakePeer("claude"), codex: new FakePeer("codex"), kimi: new PullTaskPeer("kimi") };
+  for (const peer of Object.values(peers)) { bus.add(peer); await peer.start(); }
+  const routing = loadRouting(dir);
+  routing.classes.implement!.peers = ["kimi", "codex"]; routing.classes.implement!.escalate_to = ["kimi"];
+  routing.classes.review!.peers = ["kimi", "claude"];
+  const roles: Record<string, string[]> = { claude: ["planner", "reviewer", "conductor"], codex: ["implementer"], kimi: ["implementer", "reviewer"] };
+  let board = new Board(join(dir, "hub.db"));
+  const makeTasks = () => new Tasks({ board, bus, routing: () => routing, cwd: dir, project: "pull", roles, ...(sweep ? { sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, auto_reassign: true, unaccepted_min: 1, ladder_min: 1 } } : {}), notify: line => notices.push(line) });
+  let tasks = makeTasks();
+  cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { dir, off, bus, peers, routing, roles, notices, get board() { return board; }, get tasks() { return tasks; }, reopen() { board.close(); board = new Board(join(dir, "hub.db")); tasks = makeTasks(); } };
+}
+
+test("Tasks routes past pull-only peers but explicit proposer, own claim and assign targets take queued work (#316)", async () => {
+  const f = await pullTaskFixture();
+  const automatic = await f.tasks.propose(USER, { title: "automatic implementation", class: "implement" });
+  expect(automatic).toMatchObject({ owner: "codex", reviewer: "claude" });
+  expect(f.tasks.explain(automatic.id).join("\n")).toContain("owner candidate kimi: skipped, pull-only");
+  const named = await f.tasks.propose("claude", { title: "named watched work", class: "implement", owner: "kimi" });
+  expect(named).toMatchObject({ owner: "kimi", state: "proposed" }); expect(f.peers.kimi.got).toEqual([]);
+  const read = f.bus.pull("kimi")!; expect(read.filter(env => env.kind === "task" && env.refs?.task === String(named.id))).toHaveLength(1);
+  f.tasks.accept("kimi", named.id); expect(f.board.get(named.id)!.state).toBe("in_progress");
+  const claimed = await f.tasks.propose("kimi", { title: "own watched claim", class: "implement", owner: "kimi" });
+  expect(claimed).toMatchObject({ owner: "kimi", state: "in_progress" });
+  expect(f.bus.pull("kimi")!.some(env => env.kind === "task" && env.refs?.task === String(claimed.id))).toBe(false);
+  const reassigned = await f.tasks.assignTo(automatic.id, "kimi", USER, true);
+  expect(reassigned.owner).toBe("kimi"); expect(f.bus.pull("kimi")!.filter(env => env.kind === "task" && env.refs?.task === String(automatic.id))).toHaveLength(1);
+});
+
+test("persisted explicit pull-only reservations survive dependency completion and automatic candidate overrides do not name them (#316)", async () => {
+  const f = await pullTaskFixture();
+  const prerequisite = await f.tasks.propose(USER, { title: "prerequisite", class: "review", owner: "codex" });
+  const waiting = await f.tasks.propose("claude", { title: "reserved watched work", class: "implement", owner: "kimi", after: [prerequisite.id] });
+  expect(waiting).toMatchObject({ owner: null, reserved: "kimi", state: "proposed" });
+  f.reopen();
+  expect(f.board.get(waiting.id)!.reserved).toBe("kimi");
+  f.tasks.accept("codex", prerequisite.id); await f.tasks.done("codex", prerequisite.id, "ready");
+  expect(f.board.get(waiting.id)!.owner).toBe("kimi");
+  const offered = f.bus.pull("kimi")!; expect(offered.filter(env => env.kind === "task" && env.refs?.task === String(waiting.id))).toHaveLength(1);
+  f.tasks.accept("kimi", waiting.id);
+  await f.tasks.decline("kimi", waiting.id, "cannot do it");
+  expect(f.board.get(waiting.id)!.owner).toBe("codex");
+  const predecessor = await f.tasks.propose(USER, { title: "manual reservation prerequisite", class: "review", owner: "codex" });
+  const later = await f.tasks.propose(USER, { title: "manual watched reservation", class: "implement", after: [predecessor.id] });
+  expect((await f.tasks.assignTo(later.id, "kimi", USER, true)).reserved).toBe("kimi");
+  f.reopen(); f.tasks.accept("codex", predecessor.id); await f.tasks.done("codex", predecessor.id, "ready too");
+  expect(f.board.get(later.id)!.owner).toBe("kimi");
+});
+
+for (const move of ["escalate", "gone", "budget", "roster"] as const) test(`automatic ${move} singleton candidates never nominate pull-only work (#316)`, async () => {
+  const f = await pullTaskFixture();
+  const original = await f.tasks.propose(USER, { title: `automatic ${move}`, class: "implement", owner: "codex" });
+  f.tasks.accept("codex", original.id); f.routing.classes.implement!.peers = ["kimi"];
+  if (move === "escalate") await f.tasks.escalate(USER, original.id);
+  else if (move === "gone") { f.peers.codex.set("offline"); await f.tasks.releaseFromGone("codex", 30); }
+  else if (move === "budget") { f.bus.pause("codex"); await f.tasks.reassignForPause("codex", undefined); }
+  else { f.off.add("codex"); await f.tasks.reassignForRoster("codex"); }
+  expect(f.board.get(original.id)!.owner).toBe(move === "budget" ? null : "codex");
+  expect(f.bus.queueList("kimi")).toEqual([]); expect(f.peers.kimi.got).toEqual([]);
+});
+
+for (const actor of [USER, "claude"]) test(`named pull-only reviewer assigned by ${actor} keeps owner/state and reads one queued review (#316)`, async () => {
+  const f = await pullTaskFixture();
+  const task = await f.tasks.propose(USER, { title: "explicit watched review", class: "implement", owner: "codex" });
+  f.tasks.accept("codex", task.id); await f.tasks.done("codex", task.id, "completion evidence", { commit: "abc" });
+  const before = f.board.get(task.id)!;
+  const named = await f.tasks.assignTo(task.id, "kimi", actor, true, "reviewer");
+  expect(named).toMatchObject({ owner: "codex", state: "in_review", reviewer: "kimi", refs: before.refs });
+  expect(named.history.slice(0, -1)).toEqual(before.history); expect(named.history.at(-1)).toMatchObject({ event: "reviewer changed", by: actor });
+  expect(f.peers.kimi.got).toEqual([]);
+  const read = f.bus.pull("kimi")!; expect(read.filter(env => env.kind === "review" && env.refs?.task === String(task.id))).toHaveLength(1);
+  expect(read.find(env => env.kind === "review")!.body).toContain("completion evidence"); expect(f.bus.pull("kimi")).toEqual([]);
+});
+
+test("reviewer naming refuses proposer and invalid targets before any board write (#316)", async () => {
+  const f = await pullTaskFixture();
+  const task = await f.tasks.propose("kimi", { title: "proposer cannot choose reviewer", class: "implement", owner: "codex" });
+  for (const request of [
+    { actor: "kimi", peer: "kimi", role: "reviewer" },
+    { actor: USER, peer: "codex", role: "reviewer" },
+    { actor: USER, peer: "missing", role: "reviewer" },
+    { actor: USER, peer: "kimi", role: "invalid" },
+  ]) {
+    const before = f.board.get(task.id)!;
+    await expect(f.tasks.assignTo(task.id, request.peer, request.actor, true, request.role as "reviewer")).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    expect(f.board.get(task.id)).toEqual(before);
+  }
+  f.off.add("kimi");
+  await expect(f.tasks.assignTo(task.id, "kimi", USER, true, "reviewer")).rejects.toThrow("off roster");
+  f.off.delete("kimi"); f.bus.pause("kimi");
+  await expect(f.tasks.assignTo(task.id, "kimi", USER, true, "reviewer")).rejects.toThrow("paused");
+  f.bus.resume("kimi");
+  const pii = f.board.propose(USER, { title: PII, class: "implement", signals: ["pii"], refs: {} });
+  await expect(f.tasks.assignTo(pii.id, "kimi", USER, true, "reviewer")).rejects.toThrow("pii");
+  const review = await f.tasks.propose(USER, { title: "no second reviewer", class: "review", owner: "codex" });
+  await expect(f.tasks.assignTo(review.id, "kimi", USER, true, "reviewer")).rejects.toThrow("cannot name");
+  f.tasks.accept("codex", review.id); await f.tasks.done("codex", review.id);
+  await expect(f.tasks.assignTo(review.id, "kimi", USER, true, "reviewer")).rejects.toThrow("can no longer change");
+});
+
+test("a named review request publication failure retains the saved reviewer and one guarded notice (#316)", async () => {
+  const f = await pullTaskFixture();
+  const task = await f.tasks.propose(USER, { title: "saved reviewer", class: "implement", owner: "codex" });
+  f.tasks.accept("codex", task.id); await f.tasks.done("codex", task.id, "review this result");
+  const publish = f.bus.publish.bind(f.bus); let calls = 0;
+  f.bus.publish = env => { if (env.kind === "review" && env.to?.includes("kimi")) { calls++; throw new Error("review storage unavailable"); } return publish(env); };
+  try { expect((await f.tasks.assignTo(task.id, "kimi", USER, true, "reviewer")).reviewer).toBe("kimi"); }
+  finally { f.bus.publish = publish; }
+  expect(calls).toBe(1); expect(f.board.get(task.id)).toMatchObject({ owner: "codex", state: "in_review", reviewer: "kimi" });
+  expect(f.notices.filter(line => line.includes("could not send the review request to kimi"))).toHaveLength(1);
+});
+
+
+test("an automatic idle sweep never names its only pull-only replacement (#316)", async () => {
+  const f = await pullTaskFixture(true);
+  const task = await f.tasks.propose(USER, { title: "watched singleton sweep", class: "implement", owner: "codex" });
+  f.routing.classes.implement!.peers = ["kimi"];
+  const at = task.history.at(-1)!.at + 60_000;
+  for (let step = 0; step < 3; step++) await f.tasks.sweep(at + step * 60_000);
+  expect(f.board.get(task.id)!.owner).toBe("codex");
+  expect(f.board.get(task.id)!.history.filter(entry => entry.event === "idle sweep")).toHaveLength(3);
+  expect(f.notices.some(line => line.includes("Owner reassignment suggestion: no eligible peer"))).toBe(true);
+  expect(f.bus.queueList("kimi")).toEqual([]);
+});
+
+test("reviewer nomination while dependencies remain refuses before writes or requests and succeeds after approval (#316)", async () => {
+  const f = await pullTaskFixture();
+  const prerequisite = await f.tasks.propose(USER, { title: "reviewer nomination prerequisite", class: "review", owner: "codex" });
+  const waiting = await f.tasks.propose(USER, { title: "reviewer nomination waits", class: "implement", owner: "codex", after: [prerequisite.id] });
+  const before = f.board.get(waiting.id)!, queued = f.bus.queueList("kimi");
+  for (const actor of [USER, "claude"]) {
+    await expect(f.tasks.assignTo(waiting.id, "kimi", actor, true, "reviewer")).rejects.toThrow(`waits for #${prerequisite.id}`);
+    expect(f.board.get(waiting.id)).toEqual(before);
+    expect(f.bus.queueList("kimi")).toEqual(queued);
+    expect(f.peers.kimi.got).toEqual([]);
+  }
+  f.tasks.accept("codex", prerequisite.id); await f.tasks.done("codex", prerequisite.id, "prerequisite approved");
+  expect(f.board.get(prerequisite.id)!.state).toBe("approved");
+  const ready = f.board.get(waiting.id)!;
+  expect((await f.tasks.assignTo(waiting.id, "kimi", USER, true, "reviewer"))).toMatchObject({ reviewer: "kimi", owner: ready.owner, state: ready.state });
+  expect(f.bus.queueList("kimi")).toEqual(queued); // reviewer nomination alone sends no request before done
+  f.tasks.accept("codex", waiting.id); await f.tasks.done("codex", waiting.id, "now ready for review");
+  const requests = f.bus.pull("kimi")!.filter(env => env.kind === "review" && env.refs?.task === String(waiting.id));
+  expect(requests).toHaveLength(1); expect(requests[0]!.body).toContain("now ready for review");
+});
+
+test("Tasks reviewer nomination requires the actor's current unique conductor role, not its proposer or reviewer role (#316)", async () => {
+  const f = await pullTaskFixture();
+  const task = await f.tasks.propose("claude", { title: "reviewer authority", class: "implement", owner: "codex" });
+  f.roles.claude = ["planner", "reviewer"];
+  const before = f.board.get(task.id)!;
+  await expect(f.tasks.assignTo(task.id, "kimi", "claude", true, "reviewer")).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(f.board.get(task.id)).toEqual(before); expect(f.bus.queueList("kimi")).toEqual([]);
+  f.roles.claude = ["planner", "reviewer", "conductor"];
+  const named = await f.tasks.assignTo(task.id, "kimi", "claude", true, "reviewer");
+  expect(named).toMatchObject({ owner: before.owner, state: before.state, reviewer: "kimi" });
+  expect(named.history.at(-1)).toMatchObject({ by: "claude", event: "reviewer changed" });
+});
+
+test("a named reviewer change withdraws its unread request and notifies the former reviewer (#316)", async () => {
+  const f = await pullTaskFixture();
+  const task = await f.tasks.propose(USER, { title: "review reassigned", class: "implement", owner: "codex" });
+  f.tasks.accept("codex", task.id); await f.tasks.done("codex", task.id, "ready");
+  await f.tasks.assignTo(task.id, "kimi", USER, true, "reviewer");
+  expect(f.bus.snapshot(false).queues.kimi!.filter(env => env.kind === "review")).toHaveLength(1);
+  const changed = await f.tasks.assignTo(task.id, "claude", USER, true, "reviewer");
+  expect(changed).toMatchObject({ reviewer: "claude", owner: "codex", state: "in_review" });
+  const read = f.bus.pull("kimi")!;
+  expect(read.filter(env => env.kind === "review")).toEqual([]);
+  expect(read.find(env => env.refs?.task === String(task.id) && env.kind === "status")!.body).toContain("is withdrawn");
+  await expect(f.tasks.review("kimi", task.id, "approved")).rejects.toThrow("reviewer");
+});

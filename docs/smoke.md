@@ -1563,3 +1563,22 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
 - Pi native TUI: not run. Resource admission deferred the live probe with exit
   75; it was not bypassed. The scripted authenticated bridge tests separately
   verify retained owner identity, idle/busy return and queue delivery.
+
+
+## Kimi TUI pull mode (#316), not run live
+
+- Kimi Code 2.1.1 source preflight: trusted ACP workspaces read the project MCP
+  file, and the model request path ignores MCP initialize instructions. This is
+  source evidence, not a live session observation.
+- In a disposable initialized project, run `ahub kimi --print-command`, confirm
+  no file changed, then `ahub kimi`. Observe the folder-trust prompt naming the
+  server and confirm the tool list includes hub_inbox and hub_send. Unverified.
+- With another peer attached, queue chat, an explicitly owned task and a named
+  review. Ask the model to call hub_inbox, then hub_send; confirm one read and one
+  reply per item, public PII stubs only, and last-read status. Confirm managed
+  AGENTS instructions and tool descriptions are available; do not claim MCP
+  initialize instructions are model-visible. Unverified.
+- End the TUI, start `ahub kimi --mode headless`, and inspect that only the project
+  hub entry was removed before ACP starts. Confirm no second baseline hub MCP
+  process in a trusted project. Stop ACP and return to a new TUI, preserving queued
+  work and task ownership. Unverified.

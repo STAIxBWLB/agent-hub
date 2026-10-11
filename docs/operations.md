@@ -226,7 +226,7 @@ Launch that peer with `ahub claude` for channel pushes, or select `codex` in
 observes `hub_status`, moves stalled work and obtains review before reporting
 results and open decisions. It does not implement the tasks it handed out.
 `hub_peer_start` starts a peer in the start mode a person set for it (see
-"Start modes"): local, Kimi and a headless Pi or Codex start at once; for a
+"Start modes"): local and headless Kimi, Pi or Codex start at once; for a
 TUI peer the hub opens a terminal running the fixed `ahub <peer>` command,
 after validating it through the shared launcher planner, and when it cannot
 open one the call fails with that command for the person to run. The
@@ -1085,7 +1085,7 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
 | --- | --- | --- | --- |
 | Permissions | `permission.<peer>` (the mode now) | the running hub only | at once |
 | Permissions | `permission_modes.<peer>` (the mode at hub start) | `config.local.json` | next hub start |
-| Start | `peers.pi.start_mode`, `peers.codex.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
+| Start | `peers.pi.start_mode`, `peers.codex.start_mode`, `peers.kimi.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
 | Start | `pi.auto_start` | `config.local.json` | next hub start |
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled`, `coordination` | `config.local.json` | next hub start |
@@ -1139,7 +1139,7 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
 | pi | `tui` | `ahub pi --headless` (or `--mode headless`), or `peers.pi.start_mode: headless` |
 | codex | `tui` (`ahub codex`) | `peers.codex.start_mode: headless`: a hub-made start runs the app-server only |
 | claude | `tui` (`ahub claude`) | none |
-| kimi | headless (ACP) | it has no TUI the hub attaches to |
+| kimi | `tui`, pull-only (`ahub kimi`) | `ahub kimi --mode headless`, or `peers.kimi.start_mode: headless` |
 | local | headless (hub-native) | not applicable |
 
 - **You type the command:** `ahub pi` opens Pi's TUI in that terminal.
@@ -1170,6 +1170,53 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
 - Recovery restores each peer in the mode its recorded session had. After an
   unplanned stop, a Pi that ran in a terminal is reported with its command and
   is not replaced by a headless one unless headless is its start mode.
+
+### Kimi in its own TUI
+
+`ahub kimi` runs Kimi in the person's terminal by default. The launcher atomically
+merges only `mcpServers["agent-hub"]` in `.kimi-code/mcp.json`, keeping foreign
+entries and fields. It contains machine paths and the peer identity, not a token.
+`ahub init` ignores that file when it is untracked; a tracked file is still written
+with a warning. `--print-command` shows the change and command without writing.
+The configured `kimi_cmd` must be a single executable or end in exactly `acp`;
+the TUI uses the executable or drops that final word. Other wrappers are refused
+with the headless command rather than guessed.
+
+The TUI is pull-only. Its model reads `hub_inbox` at the start of work and before
+reporting, and shares results explicitly with `hub_send`. Status, the console and
+the dashboard show `pull-only`, the waiting count and the last inbox read. Messages
+and important markers do not push or interrupt it. There is no hub busy state,
+watchdog, console approval, hub permission mode, context reading, automatic quota
+pause/handoff, shared final answer or session resume. Read quota and approve tools
+in Kimi's own TUI; a person can pause the hub queue by hand. End the native terminal
+session there, not with `ahub stop kimi`.
+
+Automatic routing never picks a pull-only owner or reviewer, even as the only
+candidate. A proposer can name the owner or claim its own task; a person or the
+conductor can name an owner or reviewer with
+`ahub task assign <id> kimi --role owner|reviewer`. A waiting task reserves its
+named owner; naming its reviewer is refused until dependencies are approved.
+A named review waits in the same inbox. Queue holds and pauses refuse a pull with
+the reason; an unaccepted assignment still follows the existing release deadline.
+
+To switch to ACP, end the attached TUI and run `ahub kimi --mode headless`: the
+person's command removes only the hub's project MCP entry before starting ACP.
+A daemon-made headless start refuses a stale entry with that command and never
+edits the project file. To switch back, stop the headless peer with `ahub stop kimi`
+then run `ahub kimi --mode tui`. The peer id, queued messages and open tasks remain;
+the ACP session is not resumed in the TUI. Agents cannot switch modes.
+
+Projects with no explicit Kimi start mode also move to this default on upgrade.
+The coordinating upgrade command announces it once; to keep ACP, run
+`ahub settings set peers.kimi.start_mode headless`.
+
+Source preflight checked Kimi Code 2.1.1 at
+[f67e6398](https://github.com/MoonshotAI/kimi-code/tree/f67e6398fb3210ad8ace970e2dfd5bcc984ed61f):
+trusted ACP workspaces read the user, repository-root and project MCP files, and a
+passed session entry connects beside the project entry. Its model request path
+uses tool definitions and managed AGENTS instructions, not MCP initialize
+instructions. Folder trust, real TUI tool discovery and the model round trip are
+still unverified live; see `docs/smoke.md`.
 
 ### Migration from 0.12.22 and earlier
 
@@ -2371,6 +2418,20 @@ its delivery is held, and another start refuses until resume history is verified
 Inspect and settle the held delivery before deliberately replacing that unpersisted
 session by restarting the hub; the stop never silently chooses a fresh session.
 
+A pull-only Kimi TUI has no controlled restore or resume. While it is attached,
+upgrade/restart planning stops before effects and asks the person to end Kimi in
+that terminal and make a new plan. Headless Kimi restoration stays headless even
+though the unset launch mode now means TUI; older targets keep their legacy
+command without a mode flag. Native recovery remains unverified.
+
+Changing a reviewer on a task in review withdraws unread requests and tells the
+former reviewer its request is withdrawn. A delivered request cannot be recalled,
+but a later verdict from that former reviewer is refused by current authority.
+
+Legacy Claude pull-only sessions retain their existing automatic owner/reviewer
+selection; the watched-Kimi exclusion does not disable that review path. After
+first creating the Kimi MCP file, run `ahub init` to ignore the untracked file.
+Init leaves existing ignore bytes alone when no Kimi MCP file exists.
 ## Scoped grants for instruction files
 
 `ahub settings set scoped_grants.protect_instructions true` asks a person before

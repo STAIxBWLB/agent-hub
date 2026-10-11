@@ -39,7 +39,7 @@ const started = startDaemon({
   controlPort: 0,
   codexAppPort: 0,
   codexProxyPort: 0,
-  config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: withPi, auto_start: false, cmd: [process.execPath, join(import.meta.dir, "pi-rpc.ts")] }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts"), "--record-load", join(stateDir, "acp-load.txt")], recovery: { auto_resume_after_crash: autoResume } },
+  config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: withPi, auto_start: false, cmd: [process.execPath, join(import.meta.dir, "pi-rpc.ts")] }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts"), "--record-load", join(stateDir, "acp-load.txt")], recovery: { auto_resume_after_crash: autoResume } },
 });
 const stop = async () => {
   peer?.close();

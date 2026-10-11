@@ -244,7 +244,7 @@ test("prepare remains blocked by a pending permission, then preserves a manual p
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-permit-"));
   const daemon = await startDaemon({
     cwd: process.cwd(), projectId: "project-1", instanceId: "instance-1", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, kimi_cmd: ["bun", join(process.cwd(), "test/fakes/acp-server.ts")], memory: { ...DEFAULT_CONFIG.memory, enabled: false }, batch_ms: 0 },
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, kimi_cmd: ["bun", join(process.cwd(), "test/fakes/acp-server.ts")], memory: { ...DEFAULT_CONFIG.memory, enabled: false }, batch_ms: 0 },
     permissionTimeoutMs: 5_000,
   });
   cleanup.push(() => daemon.stop());

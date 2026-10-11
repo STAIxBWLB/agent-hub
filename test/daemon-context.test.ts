@@ -175,7 +175,7 @@ async function kimiFixture(gate = 0, staleMin = 30) {
   const stateDir = mkdtempSync(join(tmpdir(), "ahub-acp-context-")); cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
   const daemon = await startDaemon({
     cwd: stateDir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "acp-context",
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")], context: { gate, stale_min: staleMin }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 800_000 } },
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")], context: { gate, stale_min: staleMin }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 800_000 } },
   });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
