@@ -1,3 +1,4 @@
+import { KNOWN_PEERS } from "./peer-catalog.ts";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ import { OVERLAY_FILE, overlayToml, parseOverlay, parseRouting, routingText, typ
  * written by either. Writes go only to the machine-local files (`.agenthub/config.local.json`,
  * `.agenthub/routing.local.toml`), never to a tracked one.
  */
-export const SETTING_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
+export const SETTING_PEERS = KNOWN_PEERS;
 /** `null` removes the machine-local value, so the shared file's or the default applies again. */
 export type SettingValue = string | boolean | string[] | null;
 export interface SettingDef {
