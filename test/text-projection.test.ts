@@ -83,3 +83,39 @@ test("projection presentation preserves raw identity and never establishes raw w
   writeFileSync(file, "second\n"); facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: file, kind: { type: "update" }, diff: "@@ -1 +1 @@\n-first\n+second\n" }] });
   const offer = facts.due("claude"); expect(offer).toBeDefined(); expect(offer!.text).toContain("+second"); expect(offer!.text).toContain("attribution unknown");
 });
+
+test.skipIf(process.platform !== "darwin")("historic projection converts checked bytes without reading current or deleted files (#259)", () => {
+  const dir=root(), converter=join(dir,"historic.sh"), file=join(dir,"article.docx");
+  writeFileSync(converter,"#!/bin/sh\n/bin/cat \"$1\"\n",{mode:0o755}); writeFileSync(file,"current bytes");
+  const projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":[converter,"{input}"]})});
+  const before=Buffer.from("historical bytes\n"), projected=projections.projectBytes(file,before);
+  expect(projected?.text).toBe("historical bytes\n"); expect(readFileSync(file,"utf8")).toBe("current bytes");
+  expect(projected?.rawHash).not.toBe(projections.project(file)?.rawHash);
+  rmSync(file); expect(projections.projectBytes(file,before)).toEqual(projected);
+  expect(projections.projectBytes(join(dir,"never-existed.docx"),before)).toEqual(projected);
+});
+
+test("historic projection rejects outside names and oversized bytes with bounded diagnostics (#259)", async () => {
+  const dir=root(), logs:string[]=[], {MAX_PROJECTION_INPUT}=await import("../src/hub/text-projection.ts");
+  const projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":["/bin/cat","{input}"]}),log:line=>logs.push(line)});
+  expect(projections.projectBytes(join(dir,"../outside.docx"),Buffer.from("private"))).toBeUndefined();
+  expect(projections.projectBytes(join(dir,"article.docx"),Buffer.alloc(MAX_PROJECTION_INPUT+1))).toBeUndefined();
+  expect(projections.projectBytes(join(dir,"ignored.txt"),Buffer.from("private"))).toBeUndefined();
+  expect(logs).toHaveLength(1); expect(logs.join("\n")).not.toContain("private");
+});
+
+test.skipIf(process.platform !== "darwin")("historic byte cap refuses a converter that would otherwise emit a short valid result (#259)", async () => {
+  const dir=root(), converter=join(dir,"short.sh"), {MAX_PROJECTION_INPUT}=await import("../src/hub/text-projection.ts");
+  writeFileSync(converter,"#!/bin/sh\nprintf short\n",{mode:0o755});
+  const projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":[converter,"{input}"]})});
+  expect(projections.projectBytes(join(dir,"article.docx"),Buffer.from("small"))?.text).toBe("short");
+  expect(projections.projectBytes(join(dir,"article.docx"),Buffer.alloc(MAX_PROJECTION_INPUT+1))).toBeUndefined();
+});
+
+test.skipIf(process.platform !== "darwin")("historic cache distinguishes extension-dependent converters for identical raw bytes (#259)", () => {
+  const dir=root(), converter=join(dir,"extension.sh");
+  writeFileSync(converter,"#!/bin/sh\ncase \"$1\" in *.docx) printf docx;; *.hwpx) printf hwpx;; esac\n",{mode:0o755});
+  const argv=[converter,"{input}"], projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":argv,".hwpx":argv})}), raw=Buffer.from("shared raw bytes");
+  const docx=projections.projectBytes(join(dir,"document.docx"),raw), hwpx=projections.projectBytes(join(dir,"document.hwpx"),raw);
+  expect(docx?.text).toBe("docx"); expect(hwpx?.text).toBe("hwpx"); expect(docx?.rawBlob).toBe(hwpx?.rawBlob);
+});

@@ -156,6 +156,20 @@ export class Turns {
     // ponytail: rows of finished tasks stay (a few per file per task); prune by task state if hub.db ever grows.
     this.db.run("CREATE TABLE IF NOT EXISTS touches (task INTEGER NOT NULL, peer TEXT NOT NULL, path TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (task, peer, path))");
     this.db.run("CREATE INDEX IF NOT EXISTS touches_path ON touches (path)"); // the PreToolUse hook looks up one path
+    this.db.run("CREATE TABLE IF NOT EXISTS task_snapshots (task INTEGER NOT NULL, proposed_at INTEGER NOT NULL, start_tree TEXT, PRIMARY KEY (task, proposed_at))");
+  }
+  /** A proposal's original project snapshot; task ids may be reused after reset. Never repair a missing baseline later. */
+  rememberTaskStart(task: number, proposedAt: number, tree: string | undefined): void {
+    this.db.query("INSERT OR IGNORE INTO task_snapshots (task, proposed_at, start_tree) VALUES (?, ?, ?)").run(task, proposedAt, tree ?? null);
+  }
+  taskStart(task: number, proposedAt: number): string | undefined {
+    try {
+      const row = this.db.query("SELECT start_tree FROM task_snapshots WHERE task = ? AND proposed_at = ?").get(task, proposedAt) as { start_tree: string | null } | null;
+      return row?.start_tree ?? undefined;
+    } catch (error) {
+      if (/no such table/.test((error as Error).message)) return undefined;
+      throw error;
+    }
   }
   begin(id: string, peer: string, startTree: string | undefined): void {
     this.db.query("INSERT OR REPLACE INTO turns (id, peer, started, start_tree) VALUES (?, ?, ?, ?)").run(id, peer, Date.now(), startTree ?? null);

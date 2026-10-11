@@ -57,7 +57,7 @@ export class TextProjections {
   project(file: string): ProjectedText | undefined {
     const ext = extname(file).toLowerCase(), argv = this.options.config[ext];
     if (!argv) return undefined;
-    let fd: number | undefined, scratch: string | undefined;
+    let fd: number | undefined;
     try {
       const root = realPath(this.options.cwd), input = realPath(file);
       if (!input.startsWith(root + "/")) throw new Error("input outside project");
@@ -68,8 +68,30 @@ export class TextProjections {
       while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, got); if (!n) break; got += n; }
       const after = fstatSync(fd);
       if (got !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error("input changed");
+      return this.convert(ext, bytes, () => {
+        const final = fstatSync(fd!);
+        if (final.size !== before.size || final.mtimeMs !== before.mtimeMs) throw new Error("input changed during conversion");
+      });
+    } catch { this.warn(ext); return undefined; }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+  /** Historic raw bytes from a checked git blob; no read of the current or deleted document. */
+  projectBytes(file: string, bytes: Buffer): ProjectedText | undefined {
+    const ext = extname(file).toLowerCase();
+    if (!this.options.config[ext]) return undefined;
+    try {
+      const root = realPath(this.options.cwd), input = resolve(root, file);
+      if (!input.startsWith(root + "/") || !Buffer.isBuffer(bytes) || bytes.length > MAX_INPUT) throw new Error("snapshot input cap or path");
+      return this.convert(ext, Buffer.from(bytes));
+    } catch { this.warn(ext); return undefined; }
+  }
+  private convert(ext: string, bytes: Buffer, verify?: () => void): ProjectedText | undefined {
+    const argv = this.options.config[ext];
+    if (!argv) return undefined;
+    let scratch: string | undefined;
+    try {
       const rawHash = createHash("sha1").update(bytes).digest("hex"), rawBlob = createHash("sha1").update("blob " + bytes.length + "\0").update(bytes).digest("hex");
-      const inputHash = hash(bytes), configHash = commandFingerprint(this.options.cwd, argv), key = hash(inputHash + "\n" + configHash);
+      const inputHash = hash(bytes), configHash = commandFingerprint(this.options.cwd, argv), key = hash(inputHash + "\n" + configHash + "\n" + ext);
       const cacheDir = join(this.options.stateDir, "text-projections"), cache = join(cacheDir, key + ".json");
       try {
         const cached = boundedCache(cache);
@@ -89,14 +111,13 @@ export class TextProjections {
       if (result.error || result.status !== 0) throw new Error("conversion failed");
       const converted = JSON.parse(result.stdout) as { ok?: boolean; text?: string };
       if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\0")) throw new Error("conversion failed");
-      const final = fstatSync(fd);
-      if (final.size !== before.size || final.mtimeMs !== before.mtimeMs) throw new Error("input changed during conversion");
+      verify?.();
       const value = { inputHash, rawHash, rawBlob, configHash, text: converted.text };
       mkdirSync(cacheDir, { recursive: true });
       const temporary = cache + "." + crypto.randomUUID() + ".tmp";
       writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 }); renameSync(temporary, cache);
       return value;
     } catch { this.warn(ext); return undefined; }
-    finally { if (fd !== undefined) closeSync(fd); if (scratch) rmSync(scratch, { recursive: true, force: true }); }
+    finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
   }
 }
