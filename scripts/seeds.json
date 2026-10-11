@@ -424,6 +424,22 @@
       "replacement": "if (false && peer.id === \"kimi\" && peer.args?.mode === \"tui\") {",
       "testFile": "test/upgrade-runtime.test.ts",
       "testName": "controlled recovery planning refuses an attached Kimi TUI before effects (#316)"
+    },
+    {
+      "id": "kimi-launch-override-detach",
+      "file": "src/hub/daemon.ts",
+      "search": "if (sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming) clearKimiAdmission();",
+      "replacement": "if (false && sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming) clearKimiAdmission();",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "a one-launch Kimi TUI override ends at detach and failed launch cleanup (#316)"
+    },
+    {
+      "id": "kimi-terminal-mode-pin",
+      "file": "src/hub/daemon.ts",
+      "search": "...startWords(peer, mode)]",
+      "replacement": "...[peer]]",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "a hub-opened Kimi command pins the selected mode despite a later configuration edit (#316)"
     }
   ]
 }
