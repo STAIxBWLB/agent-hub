@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { inspectProject } from "../src/hub/lifecycle.ts";
 import { endPlannedPeer, inspectRecovery, makeRecoveryDriver, makeUpgradePlan, PACKAGE_ROOT, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
 
 /** The test operations preserve this package as their coordinator, which has every recovery command (#215). */
@@ -1200,4 +1201,98 @@ test("a headless agent is stopped through peer_stop, and a hub that does not kno
     expect(await end({ inspect: async () => ({ ...planned.source, peers: [{ id: "kimi", state: "offline" }] }) })).toBe("p-272/kimi: not ended (it is no longer attached to its hub)");
     expect(asked).toHaveLength(4);
   } finally { server.stop(true); rmSync(temp, { recursive: true, force: true }); }
+});
+
+/** Capture only the control caps; real transport still uses consumed hello/status barriers. */
+function inspectionTimerClock() {
+  const set = globalThis.setTimeout, clear = globalThis.clearTimeout;
+  const timers: { handle: ReturnType<typeof setTimeout>; ms: number; due: number; run: () => void; cleared: boolean; fired: boolean }[] = [];
+  let now = 0;
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    if (ms !== 3000 && ms !== 30_000) return set(callback, ms, ...args);
+    const handle = set(() => {}, 60_000);
+    timers.push({ handle, ms, due: now + ms, run: () => callback(...args), cleared: false, fired: false });
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+    const timer = timers.find(timer => timer.handle === handle); if (timer) timer.cleared = true;
+    clear(handle);
+  }) as typeof clearTimeout;
+  return { active: () => timers.filter(timer => !timer.cleared && !timer.fired), advance(ms: number) {
+    now += ms;
+    for (const timer of timers) if (!timer.cleared && !timer.fired && timer.due <= now) { timer.fired = true; timer.run(); }
+  }, restore() { for (const timer of timers) clear(timer.handle); globalThis.setTimeout = set; globalThis.clearTimeout = clear; } };
+}
+
+function heldInspectionHello(holdStatus = false) {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-inspection-hello-"))), stateDir = join(temp, "state"); mkdirSync(stateDir);
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "isolated-home"); // inspectRecovery must not read the live registry
+  const project = { id: "p-hello-cap", root: temp, stateDir, basePort: 0, instanceId: "hello-source", pid: process.pid };
+  const requests: string[] = [];
+  let helloDone!: () => void, statusDone!: () => void, releaseHello: (() => void) | undefined;
+  const hello = new Promise<void>(resolve => { helloDone = resolve; }), status = new Promise<void>(resolve => { statusDone = resolve; });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response("upgrade required", { status: 400 }); },
+    websocket: { message(socket, data) {
+      const message = JSON.parse(String(data)); requests.push(message.t);
+      if (message.t === "hello") {
+        const reply = () => socket.send(JSON.stringify({ rid: message.rid, t: "welcome", ok: true, projectId: project.id, instanceId: project.instanceId, cwd: project.root, protocol: PROTOCOL }));
+        if (requests.length === 1) { releaseHello = reply; helloDone(); } else reply();
+      } else if (message.t === "status") {
+        statusDone();
+        if (!holdStatus) socket.send(JSON.stringify({ rid: message.rid, t: "status", ok: true, status: { projectId: project.id, instanceId: project.instanceId, cwd: project.root, protocol: PROTOCOL, version: VERSION, peers: {} } }));
+      } else socket.send(JSON.stringify({ rid: message.rid, t: "recovery", ok: true, recovery: { ready: true, phase: "prepared", peers: {} } }));
+    } },
+  });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, pid: process.pid, cwd: project.root, projectId: project.id, instanceId: project.instanceId, protocol: PROTOCOL }));
+  writeFileSync(join(stateDir, "control-token"), "hello-fixture-token");
+  return { project, requests, hello, status, releaseHello: () => releaseHello!(), close: () => server.stop(true), cleanup() {
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+  } };
+}
+const inspectionContinuations = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test("real inspectRecovery accepts a hello past the ordinary 3-second cap within its 30-second cap (#303)", async () => {
+  const f = heldInspectionHello(), clock = inspectionTimerClock(); let settled = false;
+  const result = inspectRecovery(f.project).then(value => { settled = true; return value; });
+  try {
+    await f.hello; // server consumed the first authenticated hello and deliberately withheld welcome
+    clock.advance(4000); await inspectionContinuations();
+    expect(settled).toBe(false);
+    expect(clock.active().map(timer => timer.ms)).toEqual([30_000, 30_000]); // connect and its hello request
+    f.releaseHello();
+    expect(await result).toMatchObject({ state: "running", instanceId: "hello-source", recovery: { ready: true } });
+    expect(f.requests).toEqual(["hello", "status", "hello", "recovery"]);
+  } finally { f.close(); await result; clock.restore(); f.cleanup(); }
+});
+
+test("real inspectRecovery bounds a never-answered hello at 30 seconds, not the ordinary cap (#303)", async () => {
+  const f = heldInspectionHello(), clock = inspectionTimerClock(); let settled = false;
+  const result = inspectRecovery(f.project).then(value => { settled = true; return value; });
+  try {
+    await f.hello;
+    clock.advance(29_999); await inspectionContinuations();
+    expect(settled).toBe(false); expect(f.requests).toEqual(["hello"]);
+    clock.advance(1);
+    expect(await result).toMatchObject({ state: "unavailable" });
+    expect(settled).toBe(true); expect(f.requests).toEqual(["hello"]); // no second connect or status fallback
+  } finally { f.close(); await result; clock.restore(); f.cleanup(); }
+});
+
+test("ordinary inspectProject keeps 3-second connect and status-request caps by default (#303)", async () => {
+  const f = heldInspectionHello(true), clock = inspectionTimerClock(); let settled = false;
+  const result = inspectProject(f.project).then(value => { settled = true; return value; });
+  try {
+    await f.hello;
+    expect(clock.active().map(timer => timer.ms)).toEqual([3000, 3000]);
+    clock.advance(2999); await inspectionContinuations(); expect(settled).toBe(false);
+    f.releaseHello(); await f.status; // hello completed; status request remains intentionally unanswered
+    expect(clock.active().map(timer => timer.ms)).toEqual([3000]);
+    clock.advance(2999); await inspectionContinuations(); expect(settled).toBe(false);
+    clock.advance(1);
+    expect(await result).toMatchObject({ state: "unavailable" });
+    expect(f.requests).toEqual(["hello", "status"]);
+  } finally { f.close(); await result; clock.restore(); f.cleanup(); }
 });
