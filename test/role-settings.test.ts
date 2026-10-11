@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import { realPath } from "../src/hub/project.ts";
 import { Board } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { readEvents } from "../src/hub/events.ts";
@@ -22,7 +23,7 @@ class Peer extends BasePeer {
   async deliver(envs: Envelope[]) { this.got.push(...envs); }
 }
 async function fixture(managedKimi = false) {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-role-settings-")), state = join(dir, ".agenthub/state"); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-role-settings-"))), state = join(dir, ".agenthub/state"); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
   const shared = JSON.stringify({ roles: DEFAULT_CONFIG.roles, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, snapshots: { enabled: false }, catalog_roles: { codex: ["backend-engineer"] } });
   writeFileSync(join(dir, ".agenthub/config.json"), shared);
@@ -108,7 +109,7 @@ async function cli(f: Awaited<ReturnType<typeof fixture>>, args: string[], peer 
   writeFileSync(wrapper, `for (const key of ["AGENTHUB_PEER_ID","CLAUDECODE","CLAUDE_CODE_SESSION_ID","CODEX_THREAD_ID","AGENTHUB_PROJECT_DIR","AGENTHUB_STATE_DIR","AGENTHUB_INSTANCE_ID","AGENTHUB_LAUNCH_ID"]) delete process.env[key];\nprocess.env.AGENTHUB_HOME = ${JSON.stringify(join(f.dir,"home"))};\n${peer ? 'process.env.CODEX_THREAD_ID="role-shell-fixture";' : ""}\nprocess.argv=[process.execPath,${JSON.stringify(entry)},...${JSON.stringify(args)}];\nawait import(${JSON.stringify(entry)});\n`);
   const child = Bun.spawn([process.execPath, wrapper], { cwd:f.dir, stdin:"ignore",stdout:"pipe",stderr:"pipe" });
   const deadline=setTimeout(()=>child.kill(),10000);
-  try { const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]); return {code,out,err}; } finally { clearTimeout(deadline); }
+  try { const [code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]); if(code!==0) process.stderr.write(`Role CLI ${args.join(" ")}: ${err}\n`); return {code,out,err}; } finally { clearTimeout(deadline); }
 }
 test("native CLI role assign and selective clear use person settings while agent shells refuse (#295)", async () => {
   const f=await fixture();
