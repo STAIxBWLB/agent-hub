@@ -450,6 +450,7 @@ export async function startDaemon(opts: DaemonOptions) {
   try {
   const loadedConfig = opts.config ?? loadConfig(opts.cwd);
   const config = { ...loadedConfig, roster: peerRosterConfig(loadedConfig.roster), permission_modes: permissionDefaults(loadedConfig.permission_modes), roles: { ...loadedConfig.roles }, conductor: { ...DEFAULT_CONFIG.conductor, ...loadedConfig.conductor } };
+  let rosterChanging: string | undefined;
   const onRoster = (peer: string) => rosterAllows(config.roster, peer, config.pi.enabled);
   // pi.enabled historically gates starts, not retained queues or tools sockets. Only an explicit roster.pi changes those.
   const membershipAllowed = (peer: string) => peer === "pi" && config.roster.pi === undefined ? true : onRoster(peer);
@@ -638,7 +639,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const staleOff = config.experiments?.stale_notices === "deliver";
   if (staleOff) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
-  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer), journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence });
+  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   const conductorHolds = new ConductorHolds(join(opts.stateDir, "hub.db"));
@@ -1440,7 +1441,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -2026,6 +2027,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }): Promise<Record<string, unknown>> {
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (!membershipAllowed(peer)) return Promise.resolve({ ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` });
+    if (rosterChanging === peer) return Promise.resolve({ ok: false, error: `${peer} roster change is in progress` });
     if (requestedPeerStops.has(peer)) return Promise.resolve({ ok: false, error: "peer stop is in progress; wait for ahub status to show offline before starting it" });
     if (peer === "pi" && starting.has(peer)) return Promise.resolve({ ok: false, error: "Pi start is in progress; inspect status before retrying" });
     const joined = starting.get(peer);
@@ -2067,6 +2069,7 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   async function hubStart(peer: unknown, by: string): Promise<Record<string, unknown>> {
     if (stopping) return { ok: false, error: "hub is stopping" };
+    if (rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
     if (!isStartablePeer(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
@@ -2099,7 +2102,8 @@ export async function startDaemon(opts: DaemonOptions) {
     return { ok: true, mode, opened: opened.via, command };
   }
 
-  async function stopPeer(peer: unknown): Promise<Record<string, unknown>> {
+  async function stopPeer(peer: unknown, rosterRemoval = false): Promise<Record<string, unknown>> {
+    if (!rosterRemoval && rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding peer stops; finish the operation before retrying" };
     if (typeof peer !== "string" || !PEER_ID.test(peer)) return { ok: false, error: "unknown peer; run ahub status and choose a hub-owned headless peer" };
     if (peer === "claude" || peer === "codex") return { ok: false, error: "this peer belongs to a native terminal; end it in its terminal" };
@@ -2785,7 +2789,6 @@ export async function startDaemon(opts: DaemonOptions) {
     try { notify(`setting ${key}: ${settingText(from)} -> ${settingText(to)} (${undo ? "undo, " : ""}${source})`); } catch { /* the write stands */ }
   };
   const settingSource = (authority: SettingAuthority) => authority === "terminal" ? "terminal" as const : "dashboard" as const;
-  let rosterChanging: string | undefined;
   function rosterView() {
     const open = board.list().filter(task => task.state !== "approved");
     return KNOWN_PEERS.map(peer => ({ peer, on: onRoster(peer), startMode: startMode(peer), state: bus.stateOf(peer), queued: bus.queued(peer), tasks: open.filter(task => task.owner === peer || task.reviewer === peer).length }));
@@ -2834,7 +2837,7 @@ export async function startDaemon(opts: DaemonOptions) {
         else if (owner instanceof CodexPeer) owner.detachForRoster(config.permission_modes[peer] === "never-ask" ? "ask" : config.permission_modes[peer] ?? "ask");
         else if (owner instanceof PiPeer && owner.mode === "tui") await owner.detachForRoster();
         else if (owner && owner.state !== "offline") {
-          const result = await stopPeer(peer);
+          const result = await stopPeer(peer, true);
           if (result.ok !== true) throw new Error(`roster saved; ${peer} stop is unconfirmed: inspect ahub status`);
         }
         const mode = config.permission_modes[peer] ?? "ask";
@@ -2852,7 +2855,7 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch (error) {
       if (saved) writeStatus();
       return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
-    } finally { if (rosterChanging === peer) rosterChanging = undefined; }
+    } finally { if (rosterChanging === peer) { rosterChanging = undefined; bus.rosterChanged(peer); } }
   }
   /** A checked definition and value, or the refusal. Every settings write and preview starts here. */
   function settingInput(key: unknown, raw: unknown): { def: SettingDef; value: SettingValue } | { error: string } {
@@ -3056,6 +3059,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof msg.operationId !== "string" || msg.operationId.length < 1 || msg.operationId.length > 128) return recoveryError("operationId is required");
     const op = msg.operationId as string;
     if (msg.op === "prepare") {
+      if (rosterChanging) return recoveryError("roster change is in progress; wait for ahub status before preparing recovery");
       if (requestedPeerStops.size) return recoveryError("peer stop is in progress; wait for ahub status before preparing recovery");
       if (recoveryCommitted) return recoveryError("recovery commit is already in progress");
       if (recoveryPhase === "released" && recoveryOperationId !== op) {
@@ -3300,12 +3304,14 @@ export async function startDaemon(opts: DaemonOptions) {
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
     switch (msg.t) {
       case "permission_default": {
+        if (typeof msg.peer === "string" && rosterChanging === msg.peer) return void reply({ ok: false, error: `${msg.peer} roster change is in progress` });
         if (c.role !== "console") return void reply({ ok: false, error: "permission default confirmation is a human console action" });
         if (typeof msg.peer === "string" && requestedPeerStops.has(msg.peer)) return void reply({ ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" });
         void permissionChange(msg.peer, () => confirmPermissionDefault(msg.peer, msg.confirmed)).then(reply).catch(() => reply({ ok: false, error: "permission default confirmation failed; inspect status" }));
         return;
       }
       case "permission": {
+        if (typeof msg.peer === "string" && rosterChanging === msg.peer) return void reply({ ok: false, error: `${msg.peer} roster change is in progress` });
         if (c.role !== "console") return void reply({ ok: false, error: "permission modes are human console commands" });
         if (typeof msg.peer === "string" && requestedPeerStops.has(msg.peer)) return void reply({ ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" });
         if (msg.peer === undefined) return void reply({ ok: true, peers: Object.fromEntries([...bus.peers].filter(([, p]) => p.state !== "offline").map(([id]) => [id, permissionDisplay(id, bus.peers.get(id))])) });
