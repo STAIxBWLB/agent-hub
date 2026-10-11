@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, isAbsolute, join, resolve } from "node:path";
 
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { sbplString } from "../local/deny.ts";
 import { spawnSync } from "node:child_process";
 import { realPath } from "./project.ts";
 import { profile, sandboxAvailable } from "../local/sandbox.ts";
@@ -78,17 +79,16 @@ export class TextProjections {
         }
       } catch { /* missing/invalid cache is not evidence */ }
       if (!sandboxAvailable()) throw new Error("sandbox unavailable");
-      const inputs = join(this.options.stateDir, "projection-inputs"); mkdirSync(inputs, { recursive: true });
-      scratch = mkdtempSync(join(inputs, "owned-")); const snapshot = join(scratch, "input" + ext);
+      scratch = realPath(mkdtempSync(join(tmpdir(), "ahub-projection-input-"))); const snapshot = join(scratch, "input" + ext);
       writeFileSync(snapshot, bytes, { mode: 0o400 });
       const result = spawnSync(process.execPath, [join(import.meta.dir, "projection-exec.ts")], {
         cwd: this.options.cwd, timeout: 8000, maxBuffer: MAX_TEXT * 2, encoding: "utf8",
-        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox, argv: argv.map(arg => arg === "{input}" ? snapshot : arg) }),
+        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + "\n(allow file-read* (literal " + sbplString(snapshot) + "))", argv: argv.map(arg => arg === "{input}" ? snapshot : arg) }),
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: "en_US.UTF-8", TERM: "dumb" },
       });
       if (result.error || result.status !== 0) throw new Error("conversion failed");
       const converted = JSON.parse(result.stdout) as { ok?: boolean; text?: string };
-      if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\\0")) throw new Error("conversion failed");
+      if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\0")) throw new Error("conversion failed");
       const final = fstatSync(fd);
       if (final.size !== before.size || final.mtimeMs !== before.mtimeMs) throw new Error("input changed during conversion");
       const value = { inputHash, rawHash, rawBlob, configHash, text: converted.text };

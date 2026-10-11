@@ -17,7 +17,7 @@ test.skipIf(process.platform !== "darwin")("projection uses immutable input, bou
   writeFileSync(input, "first");
   writeFileSync(converter, "#!/bin/sh\n/bin/cat \"$1\"\n", { mode: 0o755 });
   const logs: string[] = [], config = projectionConfig({ ".docx": [converter, "{input}"] });
-  const projections = new TextProjections({ cwd: dir, stateDir: join(dir, ".state"), config, log: line => logs.push(line) });
+  const projections = new TextProjections({ cwd: dir, stateDir: join(dir, ".agenthub/state"), config, log: line => logs.push(line) });
   const first = projections.project(input); expect(first).toBeDefined(); expect(first!.text).toBe("first");
   expect(projections.project(input)).toEqual(first); writeFileSync(input, "second");
   const second = projections.project(input); expect(second).toBeDefined(); expect(second!.text).toBe("second"); expect(second!.inputHash).not.toBe(first!.inputHash);
@@ -30,7 +30,7 @@ test.skipIf(process.platform !== "darwin")("projection uses immutable input, bou
 test.skipIf(process.platform !== "darwin")("converter changes invalidate cache and failure logs are bounded without stderr text (#259)", () => {
   const dir = root(), file = join(dir, "article.docx"), converter = join(dir, "convert.sh"); writeFileSync(file, "input");
   writeFileSync(converter, "#!/bin/sh\nprintf first\n", { mode: 0o755 });
-  const logs: string[] = [], projections = new TextProjections({ cwd: dir, stateDir: join(dir, ".state"), config: projectionConfig({ ".docx": [converter, "{input}"] }), log: line => logs.push(line) });
+  const logs: string[] = [], projections = new TextProjections({ cwd: dir, stateDir: join(dir, ".agenthub/state"), config: projectionConfig({ ".docx": [converter, "{input}"] }), log: line => logs.push(line) });
   const first = projections.project(file); expect(first).toBeDefined(); expect(first!.text).toBe("first");
   writeFileSync(converter, "#!/bin/sh\nprintf second\n", { mode: 0o755 }); const second = projections.project(file);
   expect(second).toBeDefined(); expect(second!.text).toBe("second"); expect(second!.configHash).not.toBe(first!.configHash);
@@ -54,7 +54,7 @@ test("private facts never invoke configured projection callbacks (#259)", async 
 });
 test.skipIf(process.platform !== "darwin")("projected facts show text changes but never grant Codex effect attribution (#259)", async () => {
   const dir = root(), file = join(dir, "article.docx"), converter = join(dir, "convert.sh"); writeFileSync(file, "first\n"); writeFileSync(converter, "#!/bin/sh\nprintf '# projection\\n'\n/bin/cat \"$1\"\n", { mode: 0o755 });
-  const projections = new TextProjections({ cwd: dir, stateDir: join(dir, ".state"), config: projectionConfig({ ".docx": [converter, "{input}"] }) }), { Facts } = await import("../src/hub/facts.ts");
+  const projections = new TextProjections({ cwd: dir, stateDir: join(dir, ".agenthub/state"), config: projectionConfig({ ".docx": [converter, "{input}"] }) }), { Facts } = await import("../src/hub/facts.ts");
   const facts = new Facts({ root: dir, tmp: join(dir, ".facts"), instance: "fixture", scope: () => ({ paths: ["article.docx"], plans: [] }), peers: () => ["claude", "codex"], nameable: () => true, projection: input => projections.project(input) });
   for (const peer of ["claude", "codex"]) { const first = facts.due(peer); if (first) facts.ack(peer, first.id); }
   writeFileSync(file, "second\n"); facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: file, kind: { type: "update" }, diff: "@@ -1 +1 @@\n-first\n+second\n" }] });
@@ -63,12 +63,12 @@ test.skipIf(process.platform !== "darwin")("projected facts show text changes bu
 test.skipIf(process.platform !== "darwin")("converter output limit and process timeout fall back without changing the input (#259)", () => {
   const dir = root(), file = join(dir, "article.docx"), large = join(dir, "large.sh"); writeFileSync(file, "unchanged");
   writeFileSync(large, "#!/bin/sh\n/usr/bin/yes overflow\n", { mode: 0o755 });
-  const logs: string[] = [], projected = new TextProjections({ cwd: dir, stateDir: join(dir, ".state"), config: projectionConfig({ ".docx": [large, "{input}"] }), log: line => logs.push(line) });
+  const logs: string[] = [], projected = new TextProjections({ cwd: dir, stateDir: join(dir, ".agenthub/state"), config: projectionConfig({ ".docx": [large, "{input}"] }), log: line => logs.push(line) });
   expect(projected.project(file)).toBeUndefined(); expect(readFileSync(file, "utf8")).toBe("unchanged"); expect(logs).toHaveLength(1);
 });
 test.skipIf(process.platform !== "darwin")("projection deadline stops forked converter descendants and retains input (#259)", () => {
   const dir = root(), file = join(dir, "article.docx"), converter = join(dir, "sleep.sh"); writeFileSync(file, "unchanged"); writeFileSync(converter, "#!/bin/sh\n/bin/sleep 30 &\nwait\n", { mode: 0o755 });
-  const projected = new TextProjections({ cwd: dir, stateDir: join(dir, ".state"), config: projectionConfig({ ".docx": [converter, "{input}"] }) });
+  const projected = new TextProjections({ cwd: dir, stateDir: join(dir, ".agenthub/state"), config: projectionConfig({ ".docx": [converter, "{input}"] }) });
   const started = performance.now(); expect(projected.project(file)).toBeUndefined(); expect(performance.now() - started).toBeLessThan(10000); expect(readFileSync(file, "utf8")).toBe("unchanged");
 });
 test("projection presentation preserves raw identity and never establishes raw write attribution (#259)", async () => {
