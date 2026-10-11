@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ActivityRing, updateActivity, type Activity } from "../src/hub/activity.ts";
@@ -75,8 +75,7 @@ test("watch is console only and its client sends watch/status only, including ol
 test("daemon watch replays/streams only to console; transient markers avoid log, UI, tools and memory (#286)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-watch-")); cleanups.push(() => rmSync(dir, { force: true, recursive: true }));
   const mem = startFakeMemWorker(); cleanups.push(() => mem.stop());
-  mkdirSync(join(dir, "state"));
-  const daemon = await startDaemon({ log: line => appendFileSync(join(dir, "state", "hub.log"), line + "\n"), cwd: dir, stateDir: join(dir, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ cwd: dir, stateDir: join(dir, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, peers: { kimi: { start_mode: "headless" } }, kimi_cmd: fake,
       roster: { qwen: true }, qwen_cmd: [...fake, "--qwen"], snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, approvals: { timeout_s: 60, notify: false } } });
@@ -99,7 +98,10 @@ test("daemon watch replays/streams only to console; transient markers avoid log,
     expect((await tail.request({ t: "watch", peer })).ok).toBe(true); expect(replay.some(r => r.item.kind === "thought")).toBe(true);
   }
   expect(JSON.stringify(rows)).toContain("WATCH_ONLY_MARKER");
-  for (const file of ["events.jsonl", "hub.log"]) if (existsSync(join(dir, "state", file))) expect(readFileSync(join(dir, "state", file), "utf8")).not.toContain("WATCH_ONLY_MARKER");
+  for (const file of ["events.jsonl", "hub.log"]) {
+    expect(existsSync(join(dir, "state", file))).toBe(true);
+    expect(readFileSync(join(dir, "state", file), "utf8")).not.toContain("WATCH_ONLY_MARKER");
+  }
   expect(JSON.stringify(await client.request({ t: "ui_snapshot" }))).not.toContain("WATCH_ONLY_MARKER");
   expect(JSON.stringify(await tools.request({ t: "task", op: "hub_task_list", args: {} }))).not.toContain("WATCH_ONLY_MARKER");
   expect(JSON.stringify(mem.calls)).not.toContain("WATCH_ONLY_MARKER");
