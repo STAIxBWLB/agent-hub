@@ -480,6 +480,22 @@
       "replacement": "return line;",
       "testFile": "test/console.test.ts",
       "testName": "tabbed Events headers and bodies stay within panel and stream widths (#319)"
+    },
+    {
+      "id": "sdlc-head-binding",
+      "file": "src/hub/sdlc.ts",
+      "search": "if (receipt?.reviewedHead !== evidence.head) blockers.push(\"current head has not been reviewed\");",
+      "replacement": "if (false && receipt?.reviewedHead !== evidence.head) blockers.push(\"current head has not been reviewed\");",
+      "testFile": "test/sdlc.test.ts",
+      "testName": "only exact-head successful required checks and a complete clean review are ready (#257)"
+    },
+    {
+      "id": "sdlc-approval-gate",
+      "file": "src/hub/tasks.ts",
+      "search": "if (config.mode === \"enforce\" && blockers.length) throw new PreEffectToolRefusal",
+      "replacement": "if (false && config.mode === \"enforce\" && blockers.length) throw new PreEffectToolRefusal",
+      "testFile": "test/sdlc.test.ts",
+      "testName": "enforce refuses stale review and failed CI before approval, then persists the exact reviewed head (#257)"
     }
   ]
 }

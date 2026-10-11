@@ -2448,3 +2448,7 @@ in the running hub. A dashboard settings session may change it; an ordinary
 session may turn protection on but cannot weaken it. No agent surface changes it.
 Like other machine-local security defaults, loading it requires git to establish
 that the file is untracked; a dropped value is reported by the settings result.
+
+## SDLC artifact receipts and gates
+
+The initial #257 lifecycle is off without .agenthub/sdlc.toml. Advise shows blockers; enforce checks head-bound review and approval transitions. See [the SDLC contract](sdlc.md) for the fixed stage order, required check names, claimed local receipts, console-only readbacks and pending custom/release/live parts. Owners/reviewers record bounded identities through hub_sdlc_record; these grant no additional authority.

@@ -1582,3 +1582,7 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
   hub entry was removed before ACP starts. Confirm no second baseline hub MCP
   process in a trusted project. Stop ACP and return to a new TUI, preserving queued
   work and task ownership. Unverified.
+
+## Initial SDLC gates (#257)
+
+Unverified: a live repository cycle through merge/release under advise. Fake-gh and task fixture checks are source/unit evidence only. Custom lifecycle gates and full release-readiness presentation remain pending; no live cycle or automatic merge is claimed.
