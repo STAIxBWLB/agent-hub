@@ -12,6 +12,7 @@ import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { KNOWN_PEERS } from "./peer-catalog.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
+import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, type SdlcConfig, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -21,6 +22,7 @@ export interface TasksDeps {
   routing: () => Routing;
   cwd: string;
   project: string;
+  sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   memory?: MemoryClient;
   /** a line for the human: console tail and hub.log */
@@ -317,7 +319,7 @@ export class Tasks {
   /** A task as a cloud peer may see it. */
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
     const { title, detail, history, ...rest } = task;
-    if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, title: "[pii]", detail: "[pii]" };
+    if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: task.sdlc.stage } } : {}), title: "[pii]", detail: "[pii]" };
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
@@ -327,7 +329,7 @@ export class Tasks {
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
-    return { ...rest, title, detail, history: publicHistory };
+    return { ...rest, ...(task.sdlc && (this.d.sdlc?.config().mode ?? "off") !== "off" ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -1058,6 +1060,34 @@ export class Tasks {
     if (by !== USER && task[role] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
   }
 
+  /** Artifact links and claimed local gates stay on the board; no outside text is accepted. */
+  recordLifecycle(by: PeerId, id: unknown, input: unknown): Task {
+    const task = this.need(id, false, true);
+    if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
+    const next = sdlcReceipt(input, task.sdlc);
+    if (next.reviewedHead !== task.sdlc?.reviewedHead) this.mine(task, by, "reviewer", true);
+    return this.d.board.update(task.id, by, "lifecycle", { sdlc: next });
+  }
+
+  async lifecycleStatus(id: unknown, refresh = true): Promise<SdlcStatus> {
+    const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    const evidence = task.sdlc && !this.isPii(task) && refresh && config.mode !== "off" ? await readSdlcPr(task.sdlc, this.d.sdlc?.gh) : undefined;
+    return sdlcStatus(config, task.sdlc, evidence);
+  }
+
+  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<void> {
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    if (config.mode === "off") return;
+    const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
+    const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, this.d.sdlc?.gh) : undefined;
+    const current = this.need(task.id, false, true);
+    if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
+    const status = sdlcStatus(config, receipt, evidence);
+    const blockers = transition === "review" ? status.blockers.filter(blocker => ["issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)) : status.blockers;
+    if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
+    if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);
+  }
+
   private need(id: unknown, open = false, preEffect = false): Task {
     // Callers are models (#70): an id is a whole number or a digit string, never an array that Number() would accept.
     const n = typeof id === "number" ? id : typeof id === "string" && /^\s*\d+\s*$/.test(id) ? Number(id) : NaN;
@@ -1175,6 +1205,7 @@ export class Tasks {
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("summary", summary, valid());
     let task = valid();
+    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "review"); task = valid(); }
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
     const silentMember = !!cohort?.silent && this.turnFree() && !!task.owner && !this.isPii(task);
@@ -1332,8 +1363,14 @@ export class Tasks {
   }
 
   private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false): Promise<Task> {
-    const reviewer = task.reviewer;
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined });
+    let reviewer = task.reviewer;
+    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") {
+      await this.lifecycleGate(task, reviewer ? "review" : "approval");
+      task = this.need(task.id, false, true);
+      this.mine(task, by, "owner", true);
+      reviewer = task.reviewer;
+    }
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: reviewer ? "review" : "merge" } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -1416,7 +1453,7 @@ export class Tasks {
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
-  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown): Promise<Task> {
+  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown): Promise<Task> {
     const valid = (): Task => {
       const t = this.need(id, false, true);
       this.mine(t, by, "reviewer", true);
@@ -1428,11 +1465,17 @@ export class Tasks {
     if (items.length) note = `${note ?? ""}\nUnmet: ${items.join("; ")}`.trim();
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("review note", note, valid());
-    const task = valid();
+    let task = valid();
+    let reviewedHead: string | undefined;
+    if (head !== undefined) {
+      const checked = sdlcReceipt({ reviewedHead: head }, task.sdlc);
+      reviewedHead = checked.reviewedHead;
+    }
+    if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead); task = valid(); }
     const pii = this.isPii(task);
     const flag = { withheld: withheld || undefined };
     if (verdict === "approved") {
-      const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0 }, note, flag);
+      const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: "merge" } } : {}) }, note, flag);
       if (next.owner) {
         this.d.board.recordOutcome(next.owner, next.class, true);
         this.d.board.recordReview({ implementer: next.owner, reviewer: by, class: next.class, kind: "approved", task: next.id });

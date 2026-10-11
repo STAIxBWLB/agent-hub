@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import type { PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
+import type { SdlcReceipt } from "./sdlc.ts";
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
 export type TaskClass = (typeof CLASSES)[number];
@@ -50,6 +51,8 @@ export interface Task {
   refs: TaskRefs;
   /** Absent only on tasks built outside the board (tests); the board always returns one, `{}` when none was given. */
   plan?: TaskPlan;
+  /** Artifact identities and bounded evidence, owned by Tasks (#257). */
+  sdlc?: SdlcReceipt;
   /** Tasks that must be approved before this one is offered (issue #34); fixed when it is proposed. */
   deps?: number[];
   /** Who routing offers the task first once nothing is left to wait for (issue #207); null when nobody was named. */
@@ -71,7 +74,7 @@ const MOVES: Record<TaskState, TaskState[]> = {
   approved: [],
 };
 
-const JSON_COLS = ["refs", "plan", "deps", "signals", "history"] as const;
+const JSON_COLS = ["refs", "plan", "deps", "signals", "history", "sdlc"] as const;
 
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
@@ -105,6 +108,7 @@ export class Board {
     }
     // And from before issue #207: existing rows reserve nobody.
     if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
+    if (!have.has("sdlc")) this.db.run("ALTER TABLE tasks ADD COLUMN sdlc TEXT");
   }
 
   propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[] }): Task {
@@ -136,7 +140,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
@@ -145,8 +149,8 @@ export class Board {
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
     const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
     this.db
-      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, updated = ? WHERE id = ?")
-      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), Date.now(), id);
+      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, updated = ? WHERE id = ?")
+      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, Date.now(), id);
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;
@@ -189,6 +193,9 @@ export interface ReviewOutcome {
 
 function parse(row: Record<string, unknown>): Task {
   const out = { ...row } as Record<string, unknown>;
-  for (const col of JSON_COLS) out[col] = JSON.parse(String(row[col]));
+  for (const col of JSON_COLS) {
+    if (col === "sdlc" && row[col] == null) delete out[col];
+    else out[col] = JSON.parse(String(row[col]));
+  }
   return out as unknown as Task;
 }

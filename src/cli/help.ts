@@ -17,6 +17,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ["Daemon and runtime", [
     ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],
     ["ahub console [--panels] [--color=auto|always|never]", "enter the human console, leaving the daemon running on exit"],
+    ["ahub sdlc status [task] | explain <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts"],
     ["ahub status --all [--json] [--color=auto|always|never]", "show every registered project"],
     ["ahub logs [-f]", "the last 100 lines of hub.log; -f shows the last 10 and follows it"],
