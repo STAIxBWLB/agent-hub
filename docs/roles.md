@@ -35,3 +35,10 @@ Example shared or machine-local config:
 
 - Eight dev/research candidates were inspected at agency-agents f99f6aa910a442b0197b768ce0ea7751e35e2060, using their mission/rule sections as reference. Guidance is rewritten for the hub's scope and evidence contracts; persona, code samples, shell commands and autonomy claims are excluded.
 - Each adapted role names its upstream path/commit. Research lead, analyst and fact checker are original definitions. `templates/roles/NOTICE.md` contains the upstream MIT notice; the plugin's copy is generated and freshness-checked because marketplace installation copies only the plugin directory.
+
+# Task roles (#295)
+
+- `hub_task_propose` accepts an optional `role` catalog id. Tasks refuses unknown ids or class mismatches before storing a row, with the allowed ids for the task base class. Research/writing aliases use their existing base class. Role ids never change routing, flow roles or permission policy.
+- The board persists the id across restart and ownership changes. Assignment notices include bounded sanitized guidance; review requests include the role's Review duties. If this daemon prepared that native session's matching contract, the owner notice names the id without repeating its body. Externally started plugin sessions have no such receipt and retain the task guidance.
+- PII stubs, task events and research records expose only the role id/identity, never the private task text or role body. A removed definition leaves an id-only unavailable notice.
+- Person task/session role edits, dashboard/console assignment surfaces, session roles in research records and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.

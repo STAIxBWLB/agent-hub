@@ -521,12 +521,15 @@ export async function startDaemon(opts: DaemonOptions) {
   const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && ["local", "pi"].includes(peer)
     ? contract + "\nManaged bash/git are filesystem read-only while data.readonly is active. Read data and return stdout; use managed write/edit only for unprotected outputs."
     : contract;
+  const preparedSessionRoles = new Map<string, string[]>();
   function sessionRoleContract(peer: string): string {
     try {
       const selected = selectedRoles(peer, config.roles, roleAssignments, catalog);
+      preparedSessionRoles.set(peer, selected.map(role => role.id));
       if (selected.length) event({ type: "role", peer, actor: "config", stage: "prepared", roles: selected.map(roleIdentity) });
       return dataRoleContract(peer, roleContract(peer, config.roles, selected, config.profile));
     } catch (error) {
+      preparedSessionRoles.delete(peer);
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
       return dataRoleContract(peer, roleContract(peer, config.roles, [], config.profile));
     }
@@ -830,6 +833,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const tasks: Tasks = new Tasks({
     profile: profileName(config.profile),
     piiPaths: config.pii?.paths,
+    catalog,
+    sessionRoles: peer => preparedSessionRoles.get(peer) ?? [],
     sdlc: { config: () => lifecycleConfig },
     board,
     bus,
@@ -1062,7 +1067,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
-    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
+    if (h.event === "proposed" && t.role && catalog.roles.has(t.role)) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: [roleIdentity(catalog.roles.get(t.role)!)] });
+    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
     supervision.taskChanged(t, h);
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
@@ -1391,7 +1397,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const t = await tasks.propose(by, a);
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // as for an accept
-        return overlap ? `${line(t)}\n${overlap}` : line(t);
+        return [line(t), overlap, tasks.claimRoleGuidance(t, by)].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
         const t = tasks.accept(by, a.id, a.plan);
@@ -2873,7 +2879,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: board.list().map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {

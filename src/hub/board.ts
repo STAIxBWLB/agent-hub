@@ -49,6 +49,8 @@ export interface Task {
   class: TaskClass;
   profile?: import("./profiles.ts").ProfileName;
   profileClass?: string;
+  /** Catalog guidance id only, never an authority role (#295). */
+  role?: string;
   owner: PeerId | null;
   reviewer: PeerId | null;
   state: TaskState;
@@ -113,15 +115,16 @@ export class Board {
     // And from before issue #207: existing rows reserve nobody.
     if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
     if (!have.has("sdlc")) this.db.run("ALTER TABLE tasks ADD COLUMN sdlc TEXT");
+    if (!have.has("task_role")) this.db.run("ALTER TABLE tasks ADD COLUMN task_role TEXT");
     if (!have.has("project_profile")) this.db.run("ALTER TABLE tasks ADD COLUMN project_profile TEXT");
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[] }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[] }): Task {
     const now = Date.now();
     const history: HistoryEntry[] = [{ at: now, by, event: "proposed" }];
     const { lastInsertRowid } = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && t.profile !== "dev" ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && t.profile !== "dev" ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null);
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;
@@ -204,5 +207,7 @@ function parse(row: Record<string, unknown>): Task {
   }
   if (out.project_profile != null) Object.assign(out, JSON.parse(String(out.project_profile)));
   delete out.project_profile;
+  if (out.task_role != null) out.role = out.task_role;
+  delete out.task_role;
   return out as unknown as Task;
 }

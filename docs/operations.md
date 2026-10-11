@@ -2517,3 +2517,7 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 - Configure text_projection only in an untracked machine-local file, with a separate {input} argv argument. Facts uses bounded read-only/no-network conversion and a content/config cache; failure keeps the prior file view and logs a bounded notice.
 - Raw change identity and projected presentation stay separate; private paths never enter conversion. Schema, limits and current surface scope: [text projections](text-projection.md).
+
+# Task catalog guidance (#295)
+
+- A proposal may name `role` from `ahub role list`. The allowed class list is checked in Tasks, and assignment/review notices carry bounded guidance. The role grants no authority and changes no routing decision. Scope and pending person-assignment surfaces: [roles](roles.md).
