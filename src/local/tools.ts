@@ -27,7 +27,7 @@ export interface ToolContext {
   /** Turn cancellation signal, including the execution-budget wall cap. */
   signal?: AbortSignal;
   /** Only true permits an effect; expiry and abort remain distinct from a person's denial. */
-  permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver) => Promise<ToolApproval>;
+  permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver, originalPath?: string) => Promise<ToolApproval>;
   /** Trusted process status, independent of what its stdout says. */
   onProcessExit?: (code: number | null) => void;
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
@@ -142,7 +142,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
         const content = String(a.content ?? "");
-        const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`, "write", ctx.signal, file), "error: the user did not approve this write");
+        const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "error: the user did not approve this write");
         if (refused) return refused;
         if (ctx.signal?.aborted) return "error: turn cancelled before write";
         file = guardPath(ctx, String(a.path), "write");
@@ -157,7 +157,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         let text = readFileSync(file, "utf8");
         let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1) return `error: \`old\` must match exactly once, it matched ${count} times`;
-        const refused = approvalError(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file), "error: the user did not approve this edit");
+        const refused = approvalError(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file, undefined, String(a.path)), "error: the user did not approve this edit");
         if (refused) return refused;
         if (ctx.signal?.aborted) return "error: turn cancelled before edit";
         // Approval can outlive another peer's edit or a path change. Apply only the approved fragment to current bytes.

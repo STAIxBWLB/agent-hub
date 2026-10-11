@@ -915,7 +915,7 @@ denylist (Pi and local), or native vendor boundaries (Claude and Codex).
 | --- | --- | --- | --- |
 | Kimi Code CLI | ACP yolo | ACP auto | ACP default |
 | Codex | on-request for every outgoing turn/start | never for every outgoing turn/start | Restore the known native policy once, then stop overriding |
-| Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json | Hook allow for every tool | No hook decision |
+| Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.kimi-code/.pi/.mcp.json | Hook allow for every tool | No hook decision |
 | Pi and local | Grant write/edit outside native agent configuration paths; read never asks; shell/git writes ask | Grant each tool once within the existing sandbox/guard | Normal approval handling |
 
 Kimi's map applies only to the actual Kimi Code CLI identity, not another ACP
@@ -2208,7 +2208,12 @@ include the stamped ancestors (CI checks out full history).
 During release preparation, source review precedes restamping. Review each stale
 page against its covered source, correct drift, and use the full SHA of the
 reviewed source commit as `verifiedAgainst`. Record any deferred page and its
-specific unverified claims in the release verification report before tagging.
+specific unverified claims in the release verification report before tagging. Deferred
+pages must still be source-reviewed and current; a deferral is not a stale-stamp waiver.
+The tag gate runs `node scripts/check-docs.mjs --require-fresh` with full history
+before publishing. Stale or nonancestor stamps refuse publication, with the
+release merge-commit instruction; an identical tree and green CI cannot waive this.
+
 Do not advance a stamp solely to clear a notice. Source stamps can name an
 ancestor: the manifest-only follow-up commit need not hash or stamp itself.
 

@@ -4,6 +4,14 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Refuse release publication on stale or nonancestor document stamps; require the release merge commit even when the tree matches green CI (#318).
+- Cancel offline ACP permission requests and withdraw pending approvals on watchdog, offline transition and stop (#311).
+- Check original and resolved write/edit paths before scoped Pi/local grants, including symlinked agent configuration directories (#322).
+- Measure console fitting after tab normalization and header sanitization, preventing Events body rows from overflowing (#319).
+- Make the pending-approval watchdog regression use controlled renewals instead of a real-time response margin (#310).
+
+- Exclude Kimi Code project configuration under .kimi-code from scoped automatic write/edit grants, alongside the legacy .kimi policy directory (#316).
+
 - A person can change the live peer roster through settings, the dashboard or ahub roster: removed peers stop receiving new work while their queued messages, uncertain deliveries and pauses remain available, and all open owner/reviewer roles are offered to another eligible peer; explicit off-roster messages are retained with a public notice and removal reports both moves and work that stays (#315).
 
 ## 0.12.23

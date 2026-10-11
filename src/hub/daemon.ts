@@ -1960,8 +1960,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const permissionAnswerEpochs = new Map<string, number>();
   const permissionAnswerEpoch = (peer: string) => permissionAnswerEpochs.get(peer) ?? 0;
   type PermissionResult = { outcome: "answered" | "expired" | "cancelled"; optionId?: string };
-  async function onPermission(req: PermissionRequest): Promise<string | undefined> {
-    const result = await requestPermission(req);
+  async function onPermission(req: PermissionRequest, signal?: AbortSignal): Promise<string | undefined> {
+    const result = await requestPermission(req, signal);
     return result.outcome === "answered" ? result.optionId : undefined;
   }
   async function requestPermission(req: PermissionRequest, signal?: AbortSignal, observe?: ApprovalObserver): Promise<PermissionResult> {
@@ -2377,10 +2377,10 @@ export async function startDaemon(opts: DaemonOptions) {
       let piReply: Envelope | undefined;
       // Tools the person allowed "always" for this Pi start; a new start gets a new set (#209).
       const piAlways = new Set<string>();
-      const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string, valid: () => boolean = () => true, observe?: ApprovalObserver): Promise<ToolApproval> => {
+      const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string, valid: () => boolean = () => true, observe?: ApprovalObserver, originalPath?: string): Promise<ToolApproval> => {
         if (stopping || signal?.aborted || !valid() || !pi.acceptingTools || bus.peers.get("pi") !== pi) return "aborted";
         const selected = permissionMode("pi");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path))) {
+        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path, originalPath))) {
           observe?.({ source: "automatic", answerEpoch: permissionAnswerEpoch("pi") });
           return true;
         }
@@ -2424,8 +2424,8 @@ export async function startDaemon(opts: DaemonOptions) {
             const nativeTurn = pi.observationTurn;
             const output = TASK_TOOLS.some((t) => t.name === name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp("pi", name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
               ...(humanBash ? { onProcessExit: (code: number | null) => { exitCode = code; } } : {}),
-              permit: async (title, tool, toolSignal, path) => {
-                const picked = humanBash ? (toolSignal?.aborted || context?.isCurrent() !== true ? "aborted" : true) : await piPermit(title, tool ?? name, toolSignal, path, context?.isCurrent, context?.onApproval);
+              permit: async (title, tool, toolSignal, path, _observe, originalPath) => {
+                const picked = humanBash ? (toolSignal?.aborted || context?.isCurrent() !== true ? "aborted" : true) : await piPermit(title, tool ?? name, toolSignal, path, context?.isCurrent, context?.onApproval, originalPath);
                 return picked; // never turn a nonempty expiry/abort string into authorization
               },
             });
@@ -2546,10 +2546,10 @@ export async function startDaemon(opts: DaemonOptions) {
       const capture = config.memory.enabled
         ? new Capture(memory, { project: chain.at(-1)!, cwd: opts.cwd, skip: skipTools(), deny: config.local.deny })
         : undefined;
-      const permit = async (title: string, tool?: string, signal?: AbortSignal, path?: string, observe?: ApprovalObserver): Promise<ToolApproval> => {
+      const permit = async (title: string, tool?: string, signal?: AbortSignal, path?: string, observe?: ApprovalObserver, originalPath?: string): Promise<ToolApproval> => {
         if (stopping || signal?.aborted || bus.peers.get("local") !== local) return "aborted";
         const selected = permissionMode("local");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path))) {
+        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path, originalPath))) {
           observe?.({ source: "automatic", answerEpoch: permissionAnswerEpoch("local") });
           return true;
         }

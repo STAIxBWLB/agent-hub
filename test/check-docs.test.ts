@@ -35,6 +35,30 @@ function alter(root: string, modify: (manifest: any) => void) {
 }
 
 describe("documentation source verification gate", () => {
+  test("release requires fresh stamps and preserves release-branch ancestry", () => fixture((root, _stamp, git) => {
+    const base = git("rev-parse", "HEAD");
+    git("checkout", "-qb", "release-fixture");
+    writeFileSync(join(root, "src/covered.ts"), "release source\n");
+    git("add", "."); git("commit", "-qm", "Release source");
+    const reviewed = git("rev-parse", "HEAD");
+    const strict = () => spawnSync("node", [checker, root, "--require-fresh"], { encoding: "utf8" });
+    expect(strict().status).toBe(1);
+    expect(strict().stderr).toContain("release requires fresh documentation stamps");
+    alter(root, m => { for (const entry of Object.values(m.documents) as any[]) entry.verifiedAgainst = reviewed; });
+    git("add", "."); git("commit", "-qm", "Review release source");
+    const release = git("rev-parse", "HEAD");
+    git("checkout", "-qb", "merge-fixture", base);
+    git("merge", "--no-ff", "-m", "Merge release", release);
+    const tree = git("rev-parse", "HEAD^{tree}");
+    expect(strict().status).toBe(0);
+    git("checkout", "-qb", "squash-fixture", base);
+    git("merge", "--squash", release); git("commit", "-qm", "Squash release");
+    expect(git("rev-parse", "HEAD^{tree}")).toBe(tree);
+    const rejected = strict();
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("verified commit is not an ancestor of HEAD");
+    expect(rejected.stderr).toContain("merge the release PR with a merge commit");
+  }));
   test("ancestor stamps and unrelated commits stay fresh; source drift is sorted and counted once per commit", () => fixture((root, _stamp, git) => {
     writeFileSync(join(root, "src/unrelated.ts"), "unrelated\n"); git("add", "."); git("commit", "-qm", "Unrelated edit");
     expect(check(root).stdout).toBe("docs: OK (0 stale documents)\n");

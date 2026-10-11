@@ -384,6 +384,54 @@
       "replacement": "        // seeded: retain stale empty-resume proof",
       "testFile": "test/pi.test.ts",
       "testName": "Pi personal activity invalidates cached ID-only empty resume (detached) (#315)"
+    },
+    {
+      "id": "kimi-code-scoped-grant",
+      "file": "src/hub/permission-mode.ts",
+      "search": "\".qwen\", \".kimi\", \".kimi-code\", \".pi\"",
+      "replacement": "\".qwen\", \".kimi\", \".pi\"",
+      "testFile": "test/permission-modes.test.ts",
+      "testName": "Kimi Code project policy is outside scoped grants under literal and folded spellings (#316)"
+    },
+    {
+      "id": "offline-acp-permission",
+      "file": "src/adapters/acp.ts",
+      "search": "this.cancelWait || this.state === \"offline\"",
+      "replacement": "this.cancelWait",
+      "testFile": "test/acp.test.ts",
+      "testName": "offline ACP permission requests never reach approvers (journal, #311)"
+    },
+    {
+      "id": "pending-acp-permission-abort",
+      "file": "src/adapters/acp.ts",
+      "search": "for (const wait of this.permissionWaits) wait.abort();",
+      "replacement": "for (const wait of this.permissionWaits) void wait;",
+      "testFile": "test/acp.test.ts",
+      "testName": "watchdog withdraws a pending ACP approval and fences a late person answer (#311)"
+    },
+    {
+      "id": "approval-watchdog-renewal",
+      "file": "src/adapters/acp.ts",
+      "search": "() => this.state === \"busy\" && turn === this.turn && this.touch()",
+      "replacement": "() => {}",
+      "testFile": "test/acp.test.ts",
+      "testName": "a pending approval keeps the turn alive past the watchdog"
+    },
+    {
+      "id": "original-config-path-grant",
+      "file": "src/hub/permission-mode.ts",
+      "search": "&& !isAgentConfigPath(original) && !isHubWritePath(original)",
+      "replacement": "&& !isHubWritePath(original)",
+      "testFile": "test/permission-modes.test.ts",
+      "testName": "pi scoped edit grants exclude every canonical native config segment"
+    },
+    {
+      "id": "events-tab-measurement",
+      "file": "src/cli/console-state.ts",
+      "search": "return text.includes(\"\\t\") ? terminalText(line) : line;",
+      "replacement": "return line;",
+      "testFile": "test/console.test.ts",
+      "testName": "tabbed Events headers and bodies stay within panel and stream widths (#319)"
     }
   ]
 }

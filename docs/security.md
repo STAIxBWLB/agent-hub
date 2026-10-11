@@ -55,7 +55,7 @@ the console. Merged and generated Claude settings live in 0600 state files and
 are passed by path, keeping caller settings out of process argv.
 
 Claude ask-when-needed grants only resolving project file targets outside
-.agenthub, .git, .claude, .codex, .qwen, .kimi, .pi and .mcp.json. Symlink escapes, protected aliases, traversal and
+.agenthub, .git, .claude, .codex, .qwen, .kimi, .kimi-code, .pi and .mcp.json. Symlink escapes, protected aliases, traversal and
 unresolved wildcard targets receive no decision. Names are compared folded (letter case, compatibility forms and
 the code points HFS+ ignores; case-insensitive APFS folds case but ignored none in the probe; so a look-alike such
 as a long s or a name with a zero-width joiner is the same name), the path is judged inside the project, and
@@ -157,3 +157,12 @@ config file; such an edit changes participation only at the next hub start. A
 live settings write or undo applies its own roster key and does not adopt other
 file edits. External ids outside the known native catalog keep their prior
 admission rules.
+
+Scoped Pi and local-worker write/edit grants check both the original project-relative
+path and its resolved target for protected agent configuration names. A protected
+directory symlinked to an ordinary project directory still asks a person; an alias
+into a protected directory also asks. Effects use the guarded real path and recheck
+it after approval. Explicit approval and never-ask retain their existing meaning
+(#322). ACP permissions arriving offline are cancelled before any auto-approval or
+console request; pending permissions are withdrawn on watchdog, offline or stop,
+and a late person answer cannot grant them (#311).
