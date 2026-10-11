@@ -3,7 +3,10 @@ import { writeSync, appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 const args = process.argv.slice(2), value = (key: string) => args[args.indexOf(key) + 1];
 const record = args.includes("--record") ? value("--record") : undefined;
-if (args.includes("serve")) {
+if (args.includes("version")) {
+  if (record) appendFileSync(record, JSON.stringify({ kind: "version", args }) + "\n");
+  console.log(JSON.stringify({ semver: "0.94.0" }));
+} else if (args.includes("serve")) {
   const server = createServer(socket => socket.end());
   server.listen(value("--socket"), () => {
     if (record) appendFileSync(record, JSON.stringify({ kind: "serve", pid: process.pid, socket: value("--socket"), home: process.env.JCODE_HOME }) + "\n");

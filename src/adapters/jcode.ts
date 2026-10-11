@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -17,6 +17,18 @@ export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: s
   return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
     ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"])];
 }
+/** The wrapper contract preserves every configured prefix argument before the native probe. */
+export function verifiedJcodeCommand(command: string[], cwd: string): boolean {
+  const [bin, ...prefix] = command;
+  if (!bin) return false;
+  try {
+    const result = spawnSync(bin, [...prefix, "--quiet", "version", "--json"], { cwd, env: peerChildEnv("jcode"), encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 });
+    if (result.status !== 0) return false;
+    const version = JSON.parse(result.stdout);
+    return version.semver === "0.94.0";
+  } catch { return false; }
+}
+
 /** Both processes are ours. The user's global daemon and its sockets are never stopped. */
 export class JcodePeer extends AcpPeer {
   private readonly root: string;

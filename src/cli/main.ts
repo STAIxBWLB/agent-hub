@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { verifiedJcodeCommand } from "../adapters/jcode.ts";
 import { configureJcodeMcp } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
@@ -1570,8 +1571,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
       for (const line of config.retired ?? []) row(false, "retired setting", line);
       if (config.roster.jcode === true) {
-        const v = version(config.jcode_cmd[0]!);
-        row(v?.startsWith("jcode v0.94.0") === true, "jcode", "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged");
+        row(verifiedJcodeCommand(config.jcode_cmd, cwd), "jcode", "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged");
       }
       if (config.roster.qwen === true) {
         const v = version(config.qwen_cmd[0]!);

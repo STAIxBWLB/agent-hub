@@ -6,7 +6,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JcodePeer, jcodeCommand } from "../src/adapters/jcode.ts";
+import { JcodePeer, jcodeCommand, verifiedJcodeCommand } from "../src/adapters/jcode.ts";
 import { configureJcodeMcp, jcodeMcpReady, JCODE_MCP_FILE, JCODE_MCP_NAME } from "../src/cli/jcode-mcp.ts";
 import { launcherPreview } from "../src/cli/preview.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
@@ -136,4 +136,13 @@ test("an occupied foreign socket is neither adopted nor unlinked by Jcode startu
   cleanups.push(async () => { await new Promise<void>(resolve => foreign.close(() => resolve())); rmSync(dirname(socket), { recursive: true, force: true }); });
   await expect(peer.start()).rejects.toThrow("occupied"); await peer.stop(); expect(existsSync(socket)).toBe(true);
   await new Promise<void>((resolve, reject) => { const client = createConnection(socket); client.once("connect", () => { client.end(); resolve(); }); client.once("error", reject); });
+});
+
+
+test("Jcode doctor probes the full configured wrapper argv with the native JSON version command (#332)", () => {
+  const dir = root(), record = join(dir, "version");
+  expect(verifiedJcodeCommand([...fake, "--record", record], dir)).toBe(true);
+  const row = JSON.parse(readFileSync(record, "utf8").trim());
+  expect(row.args.slice(-3)).toEqual(["--quiet", "version", "--json"]);
+  expect(row.args).toContain(record);
 });
