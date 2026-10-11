@@ -26,3 +26,8 @@ test("project profile overrides merge shared/local maps and init publishes only 
     init(dir);expect(readFileSync(join(dir,"AGENTS.md"),"utf8")).toContain("Custom project block");expect(init(dir)).toEqual([]);expect(config.checks).toEqual(expect.any(Object));
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test("init uses the active local profile and validates each override layer before instruction writes (#259)",async()=>{
+  const {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync}=await import("node:fs"),{tmpdir}=await import("node:os"),{join}=await import("node:path"),{realPath}=await import("../src/hub/project.ts"),{init}=await import("../src/cli/init.ts");const dir=realPath(mkdtempSync(join(tmpdir(),"ahub-override-init-")));
+  try{mkdirSync(join(dir,".agenthub"));writeFileSync(join(dir,".agenthub/config.json"),JSON.stringify({profile:"research"}));writeFileSync(join(dir,".agenthub/config.local.json"),JSON.stringify({profile:"writing",profile_overrides:{agents:"Local writing guide"}}));init(dir,"writing");expect(readFileSync(join(dir,"AGENTS.md"),"utf8")).toContain("Local writing guide");const before=readFileSync(join(dir,"AGENTS.md"),"utf8");expect(()=>init(dir,"research")).toThrow("differs");expect(readFileSync(join(dir,"AGENTS.md"),"utf8")).toBe(before);}finally{rmSync(dir,{recursive:true,force:true});}
+});

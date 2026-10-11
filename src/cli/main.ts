@@ -649,6 +649,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const changed = init(cwd, requestedProfile, args.includes("--shadow"));
     registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
+    const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
+    if (examples.length) console.log(terminalText("Example checks (advisory):\n" + examples.map(example => "- " + example).join("\n")));
   },
 
   // Internal: the detached daemon process started by ahub up or the manager.

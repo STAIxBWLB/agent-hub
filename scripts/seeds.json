@@ -1016,6 +1016,38 @@
       "replacement": "if (st.isSymbolicLink()) return true;",
       "testFile": "test/shadow-repo.test.ts",
       "testName": "shadow object fan-out and packed-object links refuse discovery and cached writes outside the project (#259)"
+    },
+    {
+      "id": "override-base-meaning",
+      "file": "src/hub/profiles.ts",
+      "search": "CLASSES.includes(name as TaskClass) && name !== base",
+      "replacement": "false",
+      "testFile": "test/profile-overrides.test.ts",
+      "testName": "profile override data refuses new flow meanings unknown fields invalid plans and oversized guidance (#259)"
+    },
+    {
+      "id": "override-data-isolation",
+      "file": "src/hub/profiles.ts",
+      "search": "classes: { ...original.classes },",
+      "replacement": "classes: original.classes,",
+      "testFile": "test/profile-overrides.test.ts",
+      "testName": "profile override resolution is isolated bounded data and retains shipped defaults (#259)"
+    },
+    {
+      "id": "override-task-classification",
+      "file": "src/hub/tasks.ts",
+      "search": "profileClass(given, this.d.profileData ?? profile)",
+      "replacement": "profileClass(given, profile)",
+      "testFile": "test/profile-overrides-runtime.test.ts",
+      "testName": "project custom aliases reach real CLI Tasks routing and selected plan fields without executing examples (#259)"
+    },
+    {
+      "id": "override-native-guidance",
+      "file": "src/hub/daemon.ts",
+      "search": "roleContract(peer, config.roles, selected, resolvedProfile)",
+      "replacement": "roleContract(peer, config.roles, selected, config.profile)",
+      "testFile": "test/profile-overrides-runtime.test.ts",
+      "testName": "managed native preamble receives resolved guidance and catalog defaults once from project overrides (#259)"
     }
   ]
 }

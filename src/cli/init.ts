@@ -49,13 +49,18 @@ function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedW
   }
   const configPath = join(cwd, ".agenthub", "config.json");
   const existingProfile = existsSync(configPath) ? profileName(JSON.parse(readFileSync(configPath, "utf8")).profile) : undefined;
-  if (requested !== undefined && existingProfile !== undefined && requested !== existingProfile) throw new Error("init profile differs from existing config; edit the project profile explicitly before refreshing instructions");
-  let overrides: unknown;
+  let overrides: unknown, activeProfile = existingProfile;
   for (const name of ["config.json", "config.local.json"]) {
     const path = join(cwd, ".agenthub", name);
-    if (existsSync(path)) overrides = mergeProfileOverrides(overrides, JSON.parse(readFileSync(path, "utf8")).profile_overrides);
+    if (existsSync(path)) {
+      const layer = JSON.parse(readFileSync(path, "utf8"));
+      if (layer.profile !== undefined) activeProfile = profileName(layer.profile);
+      resolveProfile(activeProfile, layer.profile_overrides);
+      overrides = mergeProfileOverrides(overrides, layer.profile_overrides);
+    }
   }
-  const profile = resolveProfile(requested ?? existingProfile, overrides);
+  if (requested !== undefined && activeProfile !== undefined && requested !== activeProfile) throw new Error("init profile differs from existing config; edit the project profile explicitly before refreshing instructions");
+  const profile = resolveProfile(requested ?? activeProfile, overrides);
   const changed: PlannedWrite[] = [];
   if (shadow && !repository?.shadow) changed.push({ action: "create", path: join(cwd, ".agenthub/shadow.git"), reason: "create opt-in shadow Git metadata without .git", shadow: true });
   const write = (path: string, next: string, reason: string, managedBlock?: InitChange["managedBlock"]) => {

@@ -48,6 +48,7 @@ function sessionProfile(): ProjectProfile {
       try { data = JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
       if (data.profile !== undefined) raw = data.profile;
+      resolveProfile(raw, data.profile_overrides);
       overrides = mergeProfileOverrides(overrides, data.profile_overrides);
     }
     return resolveProfile(raw, overrides);

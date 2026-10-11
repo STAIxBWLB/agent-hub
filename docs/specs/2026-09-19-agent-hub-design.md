@@ -2406,3 +2406,11 @@ the queue.
 - Snapshots and restore leave HEAD/index unchanged. Metadata links at any depth, shared alternate object stores and invalid directories are refused. Each shadow Git call revalidates the metadata walk (20000 entries and 32 levels maximum), even for a previously discovered handle. Missing evidence and later/concurrent raw edits retain existing conservative refusals.
 - Non-dev profiles without a repository disable these features with one notice. Dev named-file facts retain the existing #108 behavior and tests; Git directory facts and snapshots/undo remain unavailable without a repository. This reconciles the profile proposal with its explicit unchanged-dev contract.
 - Native research/account/measurement and custom profile/glob work remain follow-ups, not claims of this source delivery.
+
+# Per-project profile data amendment, 2026-10-12 (#259)
+
+- Pure `profile_overrides` resolution supplies per-project class maps, supported plan-key selection, flow-role guidance, catalog defaults, managed AGENTS content and advisory example checks. Shipped defaults are not mutated. Map fields merge across shared/local layers; lists/text replace.
+- Base flow meanings, routing, budgets and permission checks stay unchanged; aliases persist beside their bases even for custom dev data. Unknown fields/base meanings, duplicate/unknown plan fields and oversized guidance fail before task effects.
+- Schemas, CLI classification, Tasks, daemon/native contracts, plugin instructions, check-name allowlists and init use the same resolved data. No-override dev contracts/schemas/instructions remain byte-identical. Old accept schemas support existing task fields.
+- Flow authority remains the separately validated `roles` map; executable checks remain trusted `checks`. Example checks are display data and do not execute. Managed instruction content keeps surrounding text and quotes forged headers.
+- Override maps are bounded to 32 class entries and existing base classes; plan selections use existing fields. Role text is 2000 characters, agents 16000, examples 16 strings of 2000 characters. Native ingestion/retention/measurement remains unverified; configuration changes apply after daemon/MCP restart.

@@ -2536,3 +2536,8 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 - `ahub init --profile research|writing|general --shadow [--dry-run --json]` supplies hub-owned snapshot/facts/undo storage for a non-git folder. It creates no `.git` entry and never switches an existing Git project.
 - Maintain `.agenthub/ignore` for large/raw data. Snapshot and facts operations leave the shadow index/HEAD alone; raw undo refusal rules remain authoritative. Shadow metadata stays protected from managed worker writes. See [profiles](profiles.md).
+
+# Per-project profile data
+
+- Use `profile_overrides` for class aliases, supported plan selection, role guidance, catalog defaults, managed AGENTS content and advisory example checks. Shared/local maps merge by key; selections/text replace. See [profiles](profiles.md).
+- Refresh instructions with init and restart the daemon/MCP clients to apply their resolved contracts. Existing flow-role and executable-check authority remains in `roles`/trusted `checks`. Native model/account evidence remains unverified.
