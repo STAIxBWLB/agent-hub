@@ -428,8 +428,8 @@
     {
       "id": "events-tab-measurement",
       "file": "src/cli/console-state.ts",
-      "search": "terminalText(terminalText(value).replace(/[\\n\\t]/g, \" \"))",
-      "replacement": "terminalText(value).replace(/[\\n\\t]/g, \" \")",
+      "search": "return text.includes(\"\\t\") ? terminalText(line) : line;",
+      "replacement": "return line;",
       "testFile": "test/console.test.ts",
       "testName": "tabbed Events headers and bodies stay within panel and stream widths (#319)"
     }
