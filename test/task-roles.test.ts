@@ -76,7 +76,7 @@ test("task role stubs and records retain id without leaking private text; role t
 test("daemon task role proposal records only identity and exposes guidance on a self-claim (#295)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-task-role-daemon-")); cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
-  writeFileSync(join(dir, ".agenthub/routing.toml"), readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8"));
+  writeFileSync(join(dir, ".agenthub/routing.toml"), readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"'));
   const { DEFAULT_CONFIG, startDaemon } = await import("../src/hub/daemon.ts"), { ControlClient } = await import("../src/hub/control-client.ts"), { readEvents } = await import("../src/hub/events.ts");
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: {
     ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
