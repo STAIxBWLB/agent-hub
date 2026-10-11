@@ -45,4 +45,4 @@ Example shared or machine-local config:
 
 - Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.
 
-- Task research records retain the first observed assigned role identity (the proposal when available). Reloaded definition hashes on later task events do not replace it. A missing original hash remains unknown for live aggregation and backfill.
+- Task research records retain the original proposal role identity when that event is available. Reloaded definition hashes on later task events do not replace it. A missing proposal or original hash remains unknown for live aggregation and backfill.

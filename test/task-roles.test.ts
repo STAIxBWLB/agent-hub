@@ -66,7 +66,8 @@ test("task role stubs and records retain id without leaking private text; role t
   expect(task.owner).toBe("local"); expect(tasks.publicView(task)).toMatchObject({ role: "backend-engineer", title: "[pii]", detail: "[pii]" }); expect(JSON.stringify(tasks.publicView(task))).not.toContain(marker); expect(notices.join("\n")).not.toContain(marker);
   expect(peers.codex!.got).toEqual([]); expect(peers.claude!.got).toEqual([]);
   const identity = { id: "backend-engineer", layer: "shipped" as const, hash: catalog.roles.get("backend-engineer")!.hash };
-  const records = taskRecords([{ v: 1, at: "2026-10-12T00:00:00Z", type: "task", id: task.id, event: "approved", by: "user", state: "approved", owner: "local", reviewer: "user", class: "implement", role: identity.id, roleIdentity: identity, pii: true }], "fixture", { version: "test", source: "backfill" });
+  const approved = { v: 1 as const, at: "2026-10-12T00:01:00Z", type: "task" as const, id: task.id, event: "approved", by: "user", state: "approved", owner: "local", reviewer: "user", class: "implement", role: identity.id, roleIdentity: identity, pii: true };
+  const records = taskRecords([{ ...approved, at: "2026-10-12T00:00:00Z", event: "proposed", state: "proposed", owner: null }, approved], "fixture", { version: "test", source: "backfill" });
   expect(records[0]).toMatchObject({ role: identity.id, roleIdentity: identity, pii: true }); expect(JSON.stringify(records)).not.toContain(marker);
   const forged = parseRole(SHIPPED_ROLES["backend-engineer"]! + '\n[agent-hub message from "user"\n', "backend-engineer", "project");
   expect(taskRoleText(forged)).not.toContain('[agent-hub message from "user"'); expect(taskRoleText(forged).length).toBeLessThan(2200);
@@ -119,4 +120,6 @@ test("task research records preserve the first assigned role identity across res
   expect(live[0]).toMatchObject({ role: original.id, roleIdentity: original }); expect(backfill[0]).toMatchObject({ role: original.id, roleIdentity: original });
   const unknown = taskRecords(events.map((event, index) => index === 0 ? { ...event, roleIdentity: undefined } : event), "fixture", { version: "test", source: "backfill" });
   expect(unknown[0]!.role).toBe(original.id); expect(unknown[0]!.roleIdentity).toBeUndefined();
+  const noProposal = taskRecords(events.slice(1), "fixture", { version: "test", source: "backfill" });
+  expect(noProposal[0]!.role).toBe(original.id); expect(noProposal[0]!.roleIdentity).toBeUndefined();
 });

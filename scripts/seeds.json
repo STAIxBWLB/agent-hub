@@ -828,8 +828,8 @@
     {
       "id": "task-role-original-identity",
       "file": "src/hub/research.ts",
-      "search": "if (e.role && a.role === undefined)",
-      "replacement": "if (e.role)",
+      "search": "if (e.role && a.role === undefined) { a.role = e.role; if (e.event === \"proposed\" && e.roleIdentity) a.roleIdentity = e.roleIdentity; }",
+      "replacement": "if (e.role) { a.role = e.role; if (e.roleIdentity) a.roleIdentity = e.roleIdentity; }",
       "testFile": "test/task-roles.test.ts",
       "testName": "task research records preserve the first assigned role identity across restarts (#295)"
     }
