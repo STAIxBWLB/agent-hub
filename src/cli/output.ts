@@ -1,6 +1,7 @@
-import { cells, TABLES, table, fitLine, wrap, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
+import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel } from "./status-lines.ts";
+import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
@@ -12,7 +13,8 @@ export function outputWidth(env: { isTTY: boolean; columns?: number; COLUMNS?: s
   if (env.isTTY) return Math.max(80, Number.isFinite(env.columns) ? env.columns! : 80);
   return env.COLUMNS && /^[1-9][0-9]*$/.test(env.COLUMNS) && Number.isSafeInteger(Number(env.COLUMNS)) ? Number(env.COLUMNS) : undefined;
 }
-const span = (text: unknown, tone?: Tone): Span => ({ text: String(text ?? ""), ...(tone ? { tone } : {}) });
+interface OutputCell extends Span { atomic?: boolean; items?: string[]; pathItems?: boolean; prefix?: string }
+const span = (text: unknown, tone?: Tone, atomic = false): OutputCell => ({ text: String(text ?? ""), ...(tone ? { tone } : {}), ...(atomic ? { atomic: true } : {}) });
 const flat = (value: unknown) => terminalText(value).replace(/[\n\t]/g, " ");
 const width = (value: string) => Bun.stringWidth(value);
 const peerTone = (id: string): Tone | undefined => id === "claude" ? "peerClaude" : id === "codex" ? "peerCodex" : undefined;
@@ -20,30 +22,92 @@ const shortId = (id: unknown, columns?: number, full = false) => full || columns
 function lines(text: string, columns?: number, tone?: Tone, indent = ""): Span[][] {
   return (columns === undefined ? [flat(indent + text)] : wrap(flat(indent + text), columns)).map(text => [span(text, tone)]);
 }
-/** Wrap complete cells before handing canonical headers and explicit widths to the shared console table. */
-function rows(head: string[], data: Span[][], columns?: number, details?: Span[][][]): Span[][] {
+/** Prefer path separators while retaining every character; only oversized individual segments use ordinary wrapping, with a cell reserved so the segment's trailing slash rides its last piece. */
+function pathChunks(text: string, columns: number): string[] {
+  const chunks: string[] = []; let line = "";
+  for (const part of text.match(/[^/]+\/?|\//g) ?? []) {
+    if (line && width(line + part) > columns) { chunks.push(line); line = ""; }
+    if (width(part) > columns) {
+      const slash = part.endsWith("/");
+      const split = wrap(slash ? part.slice(0, -1) : part, slash ? columns - 1 : columns, 0);
+      chunks.push(...split.slice(0, -1)); line = split.at(-1)! + (slash ? "/" : "");
+    } else line += part;
+  }
+  if (line || !chunks.length) chunks.push(line);
+  return chunks.flatMap(chunk => wrap(chunk, columns, 0));
+}
+/** Keep logical list items together before breaking oversized paths or words. A separator trails the item it follows: when an item and its separator do not fit, the item moves to the next line whole (or breaks after a slash, reserving a cell for the separator); the separator never gives, never leads a line, never holds one alone. */
+function itemChunks(cell: OutputCell, columns: number): string[] {
+  if (!cell.items?.length) return wrap(cell.text, columns, 0);
+  const chunks: string[] = []; let line = cell.prefix ?? "";
+  for (const [index, item] of cell.items!.entries()) {
+    const last = index === cell.items!.length - 1;
+    const unit = item + (last ? "" : ",");
+    const glue = line && (index || cell.prefix) ? " " : "";
+    if (width(line + glue + unit) <= columns) { line += glue + unit; continue; }
+    if (line) chunks.push(line);
+    const room = last ? columns : columns - 1;
+    const split = width(item) <= room ? [item] : cell.pathItems ? pathChunks(item, room) : wrap(item, room, 0);
+    // The comma must sit right after the item's own end: a split item's last piece keeps at least its last three
+    // characters (a slashless name breaks mid-word, and a one or two character tail would strand them).
+    if (!last && split.length > 1 && split.at(-1)!.length < 3 && !item.includes("/") && split.join("") === item) {
+      const tail = split.splice(-2).join("");
+      split.push(tail.slice(0, Math.max(1, tail.length - 3)), tail.slice(-3));
+    }
+    if (!last) split[split.length - 1] += ",";
+    chunks.push(...split.slice(0, -1)); line = split.at(-1)!;
+  }
+  if (line || !chunks.length) chunks.push(line);
+  return chunks.flatMap(chunk => wrap(chunk, columns, 0));
+}
+/** Wrap complete cells before handing canonical headers and explicit widths to the shared console table. A column that is "-" on every row is dropped at the top level; a band keeps it, so a narrow render carries the same cells as the unbounded one (#284 round 4). */
+function rows(head: string[], data: OutputCell[][], columns?: number, details?: Span[][][], keepDash = false): Span[][] {
   if (!data.length) return [];
-  const keep = head.map((_, i) => i).filter(i => !data.every(row => flat(row[i]?.text) === "-"));
-  head = keep.map(i => head[i]!); data = data.map(row => fitLine(keep.map(i => ({ ...row[i]!, text: flat(row[i]?.text) })), Infinity));
+  const keep = head.map((_, i) => i).filter(i => keepDash || !data.every(row => flat(row[i]?.text) === "-"));
+  head = keep.map(i => head[i]!); data = data.map(row => fitLine(keep.map(i => ({ ...row[i]!, text: flat(row[i]?.text), ...(row[i]?.items ? { items: row[i]!.items!.map(flat), prefix: row[i]!.prefix === undefined ? undefined : flat(row[i]!.prefix) } : {}) })), Infinity));
   const natural = head.map((h, i) => Math.max(width(h), ...data.map(row => width(row[i]!.text))));
   const interleave = (rendered: Span[][], lengths: number[], headerHeight = 1) => {
     if (!details) return rendered;
     let at = headerHeight;
     return [...rendered.slice(0, headerHeight), ...lengths.flatMap((length, i) => { const group = rendered.slice(at, at + length); at += length; return [...group, ...(details[i] ?? [])]; })];
   };
+  const renderAtWidths = (widths: number[]) => {
+    const lengths: number[] = [];
+    const physical = data.flatMap(row => {
+      const chunks = row.map((cell, i) => cell.items ? itemChunks(cell, widths[i]!) : head[i] === "ROOT" ? pathChunks(cell.text, widths[i]!) : wrap(cell.text, widths[i]!, 0));
+      const length = Math.max(...chunks.map(c => c.length)); lengths.push(length);
+      return Array.from({ length }, (_, n) => row.map((cell, i) => ({ ...cell, text: chunks[i]![n] ?? "" })));
+    });
+    return interleave(table(head, physical, columns ?? Infinity, widths), lengths);
+  };
   if (columns === undefined) return interleave(table(head, data, Infinity, natural), data.map(() => 1));
   if (head.length === 1) {
     const size = Math.min(columns, natural[0]!);
-    const lengths = data.map(row => wrap(row[0]!.text, size, 0).length);
-    const physical = data.flatMap(row => wrap(row[0]!.text, size, 0).map(text => [{ ...row[0]!, text }]));
+    const chunk = (cell: OutputCell) => cell.items ? itemChunks(cell, size) : head[0] === "ROOT" ? pathChunks(cell.text, size) : wrap(cell.text, size, 0);
+    const lengths = data.map(row => chunk(row[0]!).length);
+    const physical = data.flatMap(row => chunk(row[0]!).map(text => [{ ...row[0]!, text }]));
     return interleave(table(head, physical, columns, [size]), lengths, wrap(head[0]!, size, 0).length);
   }
   const flexible = head.includes("TITLE") ? head.indexOf("TITLE") : head.length - 1;
-  const protectedColumns = new Set(head.map((h, i) => ["ID", "OWNER", "REVIEWER", "AGE", "STAGE", "Q", "!", "REVIEW", "REV", "PEER", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
+  // TASKS is not protected: its items stay whole at any width (itemChunks breaks between them), so it wraps
+  // before ROOT floors (#284 round 3).
+  const protectedColumns = new Set(head.map((h, i) => ["ID", "PROJECT", "TURN", "TASK", "OWNER", "REVIEWER", "AGE", "STAGE", "Q", "!", "REVIEW", "REV", "PEER", "PEERS", "PIDS", "TURNS", "BUSY", "TOKENS", "COUNT", "FIELD", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
   const words = head.map((_, i) => Math.max(...data.flatMap(row => row[i]!.text.split(/\s+/).map(width))));
-  const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0));
+  const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0,
+    Math.max(0, ...data.filter(row => row[i]!.atomic).map(row => width(row[i]!.text))),
+    h === "TASKS" ? Math.max(0, ...data.flatMap(row => row[i]!.items?.map((item, j, all) => width(item) + (j < all.length - 1 ? 1 : 0)) ?? [])) : 0));
   // Reserve readable flexible text before a multi-word state consumes the space; atomic words still win.
-  if (["TITLE", "CONTEXT"].includes(head[flexible]!)) minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, 12));
+  // A ROOT column keeps a quarter of a wide table: an item list (TASKS) wraps between its items instead (#284 round 3).
+  const pathFloor = head[flexible] === "ROOT" && columns !== undefined && columns > 80 ? Math.floor(columns / 4) : 12;
+  if (["TITLE", "CONTEXT", "ROOT", "FILES"].includes(head[flexible]!)) minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, pathFloor));
+  // A FILES column has no floor of its own: a floor is paid by the time and state cells before the shorter-only
+  // comparison below looks at anything, so it would wrap them without the listing getting shorter (#284 round 5).
+  // Label/value pairs never become unrelated lists. Narrow values wrap beside their own label.
+  if (head[0] === "FIELD" && head[1] === "VALUE" && natural[0]! + minimum[1]! + 2 > columns) {
+    if (columns < 12) return [...lines("FIELD  VALUE", columns), ...data.flatMap(row => lines(`${row[0]!.text}: ${row[1]!.text}`, columns, row[1]!.tone))];
+    const label = Math.min(natural[0]!, columns - 2 - width(head[1]!));
+    return renderAtWidths([label, columns - 2 - label]);
+  }
   // Narrow tables become linked bands before an id, peer, age, counter or state word would split.
   if (minimum.reduce((sum, n) => sum + n, 0) + 2 * (head.length - 1) > columns) {
     const bands: number[][] = []; let band = [0];
@@ -58,7 +122,13 @@ function rows(head: string[], data: Span[][], columns?: number, details?: Span[]
       band.push(i);
     }
     bands.push(band);
-    return bands.flatMap((indices, i) => [...(i ? [[]] : []), ...rows(indices.map(index => head[index]!), data.map(row => indices.map(index => row[index]!)), columns, i === bands.length - 1 ? details : undefined)]);
+    return bands.flatMap((indices, i) => {
+      const part = indices.includes(0)
+        ? rows(indices.map(index => head[index]!), data.map(row => indices.map(index => row[index]!)), columns, i === bands.length - 1 ? details : undefined, true)
+        : data.flatMap((row, n) => [...rows([head[0]!], [[row[0]!]], columns, undefined, true),
+          ...rows(indices.map(index => head[index]!), [indices.map(index => row[index]!)], columns, i === bands.length - 1 && details ? [details[n]!] : undefined, true)]);
+      return [...(i ? [[]] : []), ...part];
+    });
   }
   const available = columns - 2 * (head.length - 1);
   const widths = natural.map((n, i) => i === flexible ? Math.max(minimum[i]!, Math.min(n, 12)) : Math.max(minimum[i]!, Math.min(n, Math.max(24, Math.floor(columns / 3)))));
@@ -72,13 +142,23 @@ function rows(head: string[], data: Span[][], columns?: number, details?: Span[]
     widths[choices[0]!.i]!--;
   }
   widths[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, available - widths.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0)));
-  const lengths: number[] = [];
-  const physical = data.flatMap(row => {
-    const chunks = row.map((cell, i) => wrap(cell.text, widths[i]!, 0));
-    const length = Math.max(...chunks.map(c => c.length)); lengths.push(length);
-    return Array.from({ length }, (_, n) => row.map((cell, i) => ({ ...cell, text: chunks[i]![n] ?? "" })));
-  });
-  return interleave(table(head, physical, columns, widths), lengths);
+  // A flexible FILES column grows toward natural while protected columns give down to their longest word, but only
+  // when that makes the listing shorter: both layouts are rendered and the taller one is dropped (#284 round 4).
+  if (head[flexible] === "FILES") {
+    const grown = [...widths];
+    while (grown[flexible]! < natural[flexible]!) {
+      const donors = grown.map((n, i) => ({ i, room: i === flexible ? 0 : n - Math.max(minimum[i]!, protectedColumns.has(i) ? words[i]! : 0) })).filter(d => d.room > 0);
+      if (!donors.length) break;
+      donors.sort((a, b) => b.room - a.room);
+      grown[donors[0]!.i]!--; grown[flexible]!++;
+    }
+    if (grown[flexible]! > widths[flexible]!) {
+      const grownRender = renderAtWidths(grown);
+      const plainRender = renderAtWidths(widths);
+      return grownRender.length < plainRender.length ? grownRender : plainRender;
+    }
+  }
+  return renderAtWidths(widths);
 }
 function detail(label: string, text: unknown, columns?: number, tone?: Tone): Span[][] {
   return lines(`${label}  ${flat(text)}`, columns, tone, "  ");
@@ -170,5 +250,109 @@ export function renderDoctor(checks: DoctorCheck[], columns?: number, _now = Dat
   }
   const count = (level: DoctorCheck["level"]) => checks.filter(c => c.level === level).length;
   out.push([], ...lines(`${count("fail")} failure${count("fail") === 1 ? "" : "s"}, ${count("warn")} warning${count("warn") === 1 ? "" : "s"}, ${count("ok")} ok, ${count("unknown")} unknown`, columns));
+  return out;
+}
+
+export function renderProjects(projects: any[], columns?: number, _now = Date.now()): Span[][] {
+  if (!projects.length) return lines("No registered projects. Run ahub init in a project directory.", columns);
+  return rows(["PROJECT", "STATE", "PEERS", "TASKS", "ROOT"], projects.map(project => {
+    const tasks = Object.entries(project.status?.tasks ?? {}).map(([state, n]) => `${n} ${state}`).join(", ");
+    return [span(project.id, "info"), span(project.state ?? "unknown", stateTone(project.state ?? "")),
+      span(project.status ? Object.keys(project.status.peers ?? {}).length : "unknown", "number"), { ...span(tasks || "-"), items: Object.entries(project.status?.tasks ?? {}).map(([state, n]) => `${n} ${state}`) }, span(project.root)];
+  }), columns, projects.map(project => project.error ? detail("error", project.error, columns, "failure") : []));
+}
+export function renderQueue(deliveries: any[], columns?: number, now = Date.now()): Span[][] {
+  if (!deliveries.length) return lines("no retained deliveries", columns);
+  const s = initialConsoleState(); s.panel = 4;
+  const data = deliveries.map(delivery => {
+    const row = cells(s, { ...delivery, id: String(delivery.id) }, false, now);
+    row[1] = span(row[1]!.text, peerTone(delivery.peer)); return row;
+  });
+  return rows([...TABLES[4]!], data, columns, deliveries.map(delivery => delivery.important ? detail("priority", "important", columns, "attention") : []));
+}
+const moment = (value: unknown, now: number) => {
+  const at = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(at) ? relative(at, now) : "unknown";
+};
+export function renderTurns(turns: any[], columns?: number, now = Date.now()): Span[][] {
+  if (!turns.length) return lines("no turns recorded (they need a git work tree and snapshots.enabled)", columns);
+  return rows(["TURN", "PEER", "STARTED", "STATE", "FILES"], turns.map(turn => {
+    const state = !turn.ended ? "running" : !turn.end_tree ? "no end snapshot" : "completed";
+    const files = turn.changed ?? [];
+    return [span(turn.id, "info"), span(turn.peer ?? "unknown", peerTone(turn.peer)), span(moment(turn.started, now), "muted"),
+      span(state, state === "running" ? "attention" : state === "no end snapshot" ? "failure" : "success"), { ...span(`${plural(files.length, "file")}${files.length ? `: ${files.join(", ")}` : ""}`), ...(files.length ? { items: files, pathItems: true, prefix: `${plural(files.length, "file")}:` } : {}) }];
+  }), columns);
+}
+export function renderOrphans(orphans: { project: any; pids: number[] }[], columns?: number, _now = Date.now(), killing = false): Span[][] {
+  if (!orphans.length) return lines("no orphaned hub registrations", columns);
+  return [...lines("orphaned hub registrations (the project root is gone):", columns, "strong"),
+    ...rows(["PROJECT", "STATE", "PIDS", "ROOT"], orphans.map(({ project, pids }) => [span(project.id, "info"), span(pids.length ? "live" : "no live process", pids.length ? "attention" : "muted"), span(pids.length ? pids.join(", ") : "-", "number"), span(project.root)]), columns),
+    ...(killing ? [] : [[], ...lines("kill live orphans with ahub doctor --orphans --kill", columns)]),
+    ...orphans.flatMap(({ project }) => detail("forget", `ahub projects remove ${project.id}`, columns))];
+}
+const TIME_FIELD = /^(?:at|ts|started|ended|created|updated|expires)$|(?:At|Until)$/;
+const ID_FIELD = /^(?:id|trace|previousId|sessionId|threadId|operationId|turnId|envelopeIds)$/;
+/** Labelled scalar leaves preserve the daemon's public view without a raw document or inferred privacy changes. */
+function fields(value: unknown, columns: number | undefined, now: number, prefix = ""): Span[][] {
+  const leaves: OutputCell[][] = [];
+  const visit = (current: unknown, label: string, key: string) => {
+    if (Array.isArray(current)) {
+      if (!current.length) leaves.push([span(label), span("none", "muted")]);
+      else current.forEach((item, index) => visit(item, `${label}${label ? " " : ""}${index + 1}`, key));
+      return;
+    }
+    if (current && typeof current === "object") {
+      const entries = Object.entries(current);
+      if (!entries.length) leaves.push([span(label), span("none", "muted")]);
+      else for (const [child, item] of entries) visit(item, `${label}${label ? " " : ""}${child}`, child);
+      return;
+    }
+    let text: string;
+    if (current === null || current === undefined) text = "unknown";
+    else if (TIME_FIELD.test(key)) text = moment(current, now);
+    else if (/(?:^| )elapsed_ms(?: |$)/.test(label) && typeof current === "number") text = duration(current);
+    else text = flat(current);
+    leaves.push([span(label || "value"), span(text, ID_FIELD.test(key) ? "info" : key === "state" ? stateTone(text) : typeof current === "number" ? "number" : TIME_FIELD.test(key) ? "muted" : undefined, ID_FIELD.test(key))]);
+  };
+  visit(value, prefix, prefix);
+  return rows(["FIELD", "VALUE"], leaves, columns);
+}
+export function renderQueueShow(delivery: any, columns?: number, now = Date.now()): Span[][] {
+  const out = [...lines("Delivery", columns, "strong"), ...fields(delivery, columns, now)];
+  if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action completed|retry|discard --reason <text>`, columns, "failure"));
+  return out;
+}
+export function renderModelsStatus(status: unknown, columns?: number, now = Date.now()): Span[][] {
+  return [...lines("Models", columns, "strong"), ...fields(status, columns, now)];
+}
+export function renderExecutionBudgetStatus(budgets: unknown, columns?: number, now = Date.now()): Span[][] {
+  return [...lines("Execution budget", columns, "strong"), ...(Array.isArray(budgets) && !budgets.length ? lines("No execution budgets configured.", columns) : budgets === undefined ? lines("No matching execution budget.", columns) : fields(budgets, columns, now))];
+}
+/** Retain the report's coverage and attribution sentences; add sections and aligned counters for scanning. */
+export function renderReport(report: Report | TaskReport, columns?: number, now = Date.now(), byTask = false): Span[][] {
+  const out = lines(`period: ${report.from ? moment(report.from, now) : "-"} .. ${report.to ? moment(report.to, now) : "-"}`, columns, "muted");
+  const formatted = byTask ? formatTaskReport(report as TaskReport) : formatReport(report as Report);
+  if (!byTask) {
+    const r = report as Report;
+    out.push([], ...lines("Counters", columns, "strong"), ...rows(["METRIC", "COUNT"], [
+      [span("messages"), span(r.messages.total, "number")], [span("overflow"), span(r.messages.overflow, "number")],
+      [span("undeliverable"), span(r.messages.undeliverable, "number")], [span("messages per task"), span(r.messages.perTask, "number")],
+      [span("overlap warnings"), span(r.overlaps.warnings, "number")], [span("task pairs"), span(r.overlaps.pairs, "number")],
+      [span("edit conflicts"), span(r.conflicts, "number")], [span("quota readings"), span(r.quota.readings, "number")], [span("hard limits"), span(r.quota.hard, "number")],
+    ], columns));
+  }
+  let previous = "";
+  const section = (line: string) => byTask
+    ? line.startsWith("task #") ? "Tasks" : line.startsWith("class ") ? "Classes" : line.startsWith("unattributed:") ? "Unattributed" : line.startsWith("before attribution:") ? "Before attribution" : previous
+    : line.startsWith("peer ") ? "Peers" : line.startsWith("usage ") ? "Usage" : line.startsWith("supervision ") ? "Supervision" : line.startsWith("conductor ") ? "Conductor" : line.startsWith("messages:") ? "Messages" : line.startsWith("overlap warnings:") ? "Coordination" : line.startsWith("task events:") ? "Tasks" : line.startsWith("quota readings:") ? "Quota" : line.startsWith("route ") ? "Routes" : "Report";
+  for (const sentence of formatted.slice(1)) {
+    const name = section(sentence);
+    if (name !== previous) {
+      out.push([], ...lines(name, columns, "strong")); previous = name;
+      if (name === "Peers" && !byTask) out.push(...rows(["PEER", "TURNS", "BUSY", "TOKENS"], Object.entries((report as Report).peers).map(([peer, p]) => [span(peer, peerTone(peer)), span(p.turns ?? "unknown", "number"), span(`${p.busyMinutes}m`, "muted"), span(p.tokens || "unknown", "number")]), columns));
+      if (name === "Tasks" && byTask) out.push(...rows(["TASK", "CLASS", "OUTCOME", "TURNS", "WALL"], Object.entries((report as TaskReport).tasks).map(([id, task]) => [span(`#${id}${task.pii ? " [pii]" : ""}`, "taskRef"), span(task.class ?? "unknown"), span(task.outcome ?? "unknown", stateTone(task.outcome ?? "")), span(task.turns, "number"), span(task.wallMs === null ? "unknown" : duration(task.wallMs), "muted")]), columns));
+    }
+    out.push(...lines(sentence, columns, undefined, "  "));
+  }
   return out;
 }
