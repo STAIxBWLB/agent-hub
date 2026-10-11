@@ -54,8 +54,28 @@ Date: 2026-10-11. Baseline: `06fb87afbdb315d2b6d7e6455c5084b1998cb724`. Source: 
 - Preserve other sessions' worktrees and dirty files. This implementation uses `.worktrees/issues-109-sequential`.
 - Source code review and measured/runtime evidence remain distinct. Unrun native legs stay unverified.
 
-## Implementation receipts
+## Intake implementation receipts
 
 - #318: local fixture history proves a release merge commit passes and an equal-tree squash fails with the named instruction; 5 documentation tests passed.
 - #310/#311/#319/#322: focused regressions passed (8 pass, 0 fail, 10940 assertions). Journal and journal-less offline ACP, pending approval withdrawal across console/dashboard, restart, 500 ms / 2 s native delays, all protected symlink names for Pi/local, explicit approval, never-ask and ordinary symlinks covered.
-- Full repository gate and seeded guards: pending. Native account/runtime legs: unverified.
+- At intake, full repository gate and seeded guards were pending. The later merge receipts below supersede that checkpoint; native account/runtime legs remain unverified.
+
+## Delivered receipts, 2026-10-11
+
+The owner subsequently authorized merging verified PRs and added Jcode peer support to the scope. These slices passed exact-head Linux/macOS `scripts/check.sh` and seeded guards, had review comments/threads handled, and were merged.
+
+| PR | Scope | Merge commit |
+| --- | --- | --- |
+| #325 | #310/#311/#318/#319/#322 safety and correctness | c292591 |
+| #326 | #323 protected config and instruction-file policy | 3809f9c |
+| #328 | #316 pull-only Kimi TUI | 0ff40c4 |
+| #329 | #109 approved 120-pair preregistration | d01aec5 |
+| #330 | #252 source analysis and bounded GSD proposal | d97991a |
+| #331 | #256 optional Qwen ACP | f745f0b |
+| #333 | #257 initial head-bound SDLC gates | adccf91 |
+| #334 | #332 optional owned Jcode ACP/MCP | e414611 |
+
+- Duplicate PR #327 was closed in favour of #328. Other sessions' worktrees and unmerged recovery history were preserved.
+- Parent #324 remains open. #109 measurement, #252 integration/measurement, #256 native proof, #257 custom stages/release/workflow, and #332 native MCP/PII/restoration proof remain partial. A merged slice does not complete its parent's unrun criteria.
+- Next slice: #286 Part 1 in PR #335, person-only headless ACP watch. Final checks/review are pending at this documentation checkpoint. Native T0 remains explicitly unverified.
+- Continue with #257 bounded gsd-lite/checklist guidance, then #259 profiles and #295 catalog. Later sequence and owner-only decisions remain as listed above.

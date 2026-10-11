@@ -961,17 +961,20 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     const input = process.stdin;
     const raw = !!input.isRaw;
-    const done = () => { if (input.isTTY) input.setRawMode(raw); input.pause(); hub.close(); };
+    let leave = () => {};
+    const closed = new Promise<void>(resolve => { leave = resolve; });
+    const key = (chunk: Buffer) => { if (chunk.includes(3) || chunk.toString().includes("q")) leave(); };
+    hub.onClose = leave;
+    process.on("SIGINT", leave);
     try {
       await attachWatch(hub, peer, line => console.log(line), { columns: () => process.stdout.columns || 80, color, noThoughts: args.includes("--no-thoughts") });
-      await new Promise<void>(resolve => {
-        const leave = () => { input.off("data", key); process.off("SIGINT", leave); resolve(); };
-        const key = (chunk: Buffer) => { if (chunk.includes(3) || chunk.toString().includes("q")) leave(); };
-        hub.onClose = leave;
-        process.on("SIGINT", leave);
-        if (input.isTTY) { input.setRawMode(true); input.on("data", key); input.resume(); }
-      });
-    } finally { done(); }
+      if (input.isTTY) { input.setRawMode(true); input.on("data", key); input.resume(); }
+      await closed;
+    } finally {
+      input.off("data", key); process.off("SIGINT", leave);
+      if (input.isTTY) input.setRawMode(raw);
+      input.pause(); hub.close();
+    }
   },
   tail: async () => {
     const hub = await connect();

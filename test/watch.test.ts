@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ActivityRing, updateActivity, type Activity } from "../src/hub/activity.ts";
@@ -74,7 +74,8 @@ test("watch is console only and its client sends watch/status only, including ol
 test("daemon watch replays/streams only to console; transient markers avoid log, UI, tools and memory (#286)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-watch-")); cleanups.push(() => rmSync(dir, { force: true, recursive: true }));
   const mem = startFakeMemWorker(); cleanups.push(() => mem.stop());
-  const daemon = await startDaemon({ cwd: dir, stateDir: join(dir, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  mkdirSync(join(dir, "state"));
+  const daemon = await startDaemon({ log: line => appendFileSync(join(dir, "state", "hub.log"), line + "\n"), cwd: dir, stateDir: join(dir, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, peers: { kimi: { start_mode: "headless" } }, kimi_cmd: fake,
       roster: { qwen: true }, qwen_cmd: [...fake, "--qwen"], snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, approvals: { timeout_s: 60, notify: false } } });
@@ -88,6 +89,8 @@ test("daemon watch replays/streams only to console; transient markers avoid log,
     expect((await client.request({ t: "start", peer, args: { mode: "headless" } })).ok).toBe(true);
     expect((await client.request({ t: "watch", peer })).ok).toBe(true);
     await client.request({ t: "send", to: [peer], body: "work" }); await until(() => rows.some(r => r.peer === peer && r.item.kind === "ask"));
+    expect(JSON.stringify(await client.request({ t: "ui_snapshot" }))).not.toContain("WATCH_ONLY_MARKER");
+    expect(JSON.stringify(mem.calls)).not.toContain("WATCH_ONLY_MARKER");
     const tail = await ControlClient.connect(join(dir, "state"), { role: "console" }); cleanups.push(() => tail.close());
     let approval: any; tail.onPush = m => { if (m.t === "permission") approval = m; }; tail.send({ t: "tail" }); await until(() => !!approval);
     await tail.request({ t: "permit", id: approval.id, option: "no" }); await until(() => rows.some(r => r.peer === peer && r.item.kind === "turn_end"));
@@ -99,4 +102,21 @@ test("daemon watch replays/streams only to console; transient markers avoid log,
   expect(JSON.stringify(await client.request({ t: "ui_snapshot" }))).not.toContain("WATCH_ONLY_MARKER");
   expect(JSON.stringify(await tools.request({ t: "task", op: "hub_task_list", args: {} }))).not.toContain("WATCH_ONLY_MARKER");
   expect(JSON.stringify(mem.calls)).not.toContain("WATCH_ONLY_MARKER");
+});
+
+test("stopping ACP watch flushes one end and fences late updates; unreadable privacy withholds activity (#286)", async () => {
+  const rows: Activity[] = []; let release = () => {};
+  const permission = new Promise<void>(resolve => { release = resolve; });
+  const peer = new AcpPeer("kimi", { cmd: fake, cwd: process.cwd(), onActivity: item => rows.push(item), onPermission: async (_req, signal) => {
+    release(); await new Promise(resolve => signal!.addEventListener("abort", resolve, { once: true })); return "no";
+  } });
+  cleanups.push(() => peer.stop()); await peer.start();
+  await peer.deliver([newEnvelope("user", "work")]); await permission;
+  await peer.stop("requested stop");
+  expect(rows.at(-1)!.kind).toBe("turn_end"); expect(rows.at(-1)!.text).toContain("stopped");
+  expect(rows.filter(r => r.kind === "turn_end")).toHaveLength(1); expect(rows.some(r => r.kind === "message")).toBe(false);
+  const withheld: Activity[] = [];
+  const unknown = new AcpPeer("kimi", { cmd: fake, cwd: process.cwd(), isPrivateTurn: () => { throw new Error("unreadable"); }, onActivity: item => withheld.push(item), onPermission: async () => "no" });
+  cleanups.push(() => unknown.stop()); await unknown.start(); await unknown.deliver([newEnvelope("user", "work")]); await until(() => unknown.state === "idle");
+  expect(withheld).toHaveLength(1); expect(withheld[0]!.kind).toBe("private");
 });
