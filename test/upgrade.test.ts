@@ -1156,9 +1156,10 @@ test("an operation whose coordinator cannot restart a target is not offered resu
 
 
 test("SQLite contention is a named retryable outcome, not an arbitrary error text (#303)", () => {
-  for (const error of [{ code: "SQLITE_BUSY" }, { code: "SQLITE_BUSY_RECOVERY" }, { errno: 517 }, { code: "SQLITE_LOCKED_SHAREDCACHE" }]) expect(isDatabaseBusy(error)).toBe(true);
-  for (const error of [undefined, { code: "SQLITE_ERROR" }, { errno: 19 }, new Error("database is locked")]) expect(isDatabaseBusy(error)).toBe(false);
+  for (const error of [{ code: "SQLITE_BUSY" }, { code: "SQLITE_BUSY_RECOVERY" }, Object.assign(new Error("native SQLite contention"), { name: "SQLiteError", errno: 517 }), { code: "SQLITE_LOCKED_SHAREDCACHE" }]) expect(isDatabaseBusy(error)).toBe(true);
+  for (const error of [undefined, { code: "SQLITE_ERROR" }, { errno: 19 }, { code: "EIO", errno: 5 }, { code: "ENXIO", errno: 6 }, { code: "SQLITE_BUSYX" }, { code: "SQLITE_IOERR", errno: 5 }, new Error("database is locked")]) expect(isDatabaseBusy(error)).toBe(false);
   expect(isDatabaseBusy(new RecoveryDatabaseBusy())).toBe(true);
+  expect(isDatabaseBusy(Object.assign(new Error("native SQLite lock"), { name: "SQLiteError", errno: 6 }))).toBe(true);
 });
 
 for (const site of ["commit", "pre-commit inspection"] as const) test(`restart records and clears retryable database contention at ${site} (#303)`, async () => {
@@ -1174,10 +1175,105 @@ for (const site of ["commit", "pre-commit inspection"] as const) test(`restart r
   };
   const result = await runRecovery(f.operation.id, f.driver, f.home);
   expect(result.phase).toBe("blocked"); expect(result.step).toBe("commit:alpha");
-  expect(result.failure).toEqual({ code: "database_busy", retryable: true });
+  expect(result.failure).toEqual({ code: "database_busy", retryable: true, site: expect.arrayContaining([expect.stringContaining("upgrade.test.ts")]) });
   expect(result.error).toContain("database_busy"); expect(result.error).not.toContain("database is locked");
   expect(result.projects[0]!.commitSent).toBe(site === "commit" ? true : undefined);
-  expect(publicOperation(result).failure).toEqual({ code: "database_busy", retryable: true });
+  expect(publicOperation(result).failure).toEqual(result.failure);
   const resumed = await runRecovery(f.operation.id, f.driver, f.home);
   expect(resumed.phase).toBe("completed"); expect(resumed.failure).toBeUndefined(); expect(resumed.error).toBeUndefined();
+});
+
+
+function nativeBusyAtFixture() {
+  return Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY", errno: 5 });
+}
+async function busyPreparedFixture() {
+  const f = fixture("restart", ["alpha"]);
+  f.driver.closeTerminals = async () => { throw nativeBusyAtFixture(); };
+  const blocked = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(blocked.failure?.code).toBe("database_busy");
+  expect(blocked.failure?.site?.some(frame => frame.includes("nativeBusyAtFixture"))).toBe(true);
+  return f;
+}
+
+test("abort clears the busy failure and error from a cancelled receipt (#303)", async () => {
+  const f = await busyPreparedFixture();
+  await abortRecovery(f.operation.id, f.driver, f.home);
+  const cancelled = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  expect(cancelled.phase).toBe("cancelled"); expect(cancelled.error).toBeUndefined(); expect(cancelled.failure).toBeUndefined();
+  expect(publicOperation(cancelled).failure).toBeUndefined();
+});
+
+test("a busy stop-and-archive is named, retains its throw site and clears stale failure on resume refusal and disposal (#303)", async () => {
+  const f = await busyPreparedFixture(), abort = f.driver.abort;
+  f.driver.abort = async () => { throw nativeBusyAtFixture(); };
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "test disposition", f.driver, f.home)).rejects.toBeInstanceOf(RecoveryDatabaseBusy);
+  const partial = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  expect(partial.error).toContain("stop-and-archive stopped partway");
+  expect(partial.error).toContain("database_busy"); expect(partial.error).not.toContain("database is locked");
+  expect(partial.error).not.toContain("resume this recovery operation");
+  expect(partial.failure?.site?.some(frame => frame.includes("nativeBusyAtFixture"))).toBe(true);
+  const refused = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(refused.phase).toBe("blocked"); expect(refused.disposition).toBeDefined(); expect(refused.failure).toBeUndefined();
+  // A successful disposition must also clear a busy annotation without needing resume first.
+  partial.failure = { code: "database_busy", retryable: true }; writeOperation(partial.id, partial, f.home);
+  f.driver.abort = abort;
+  const cancelled = await disposeRecovery(f.operation.id, { stop: true }, "finish disposition", f.driver, f.home);
+  expect(cancelled.phase).toBe("cancelled"); expect(cancelled.error).toBeUndefined(); expect(cancelled.failure).toBeUndefined();
+  expect(publicOperation(cancelled).failure).toBeUndefined();
+});
+
+test("a successful fresh-session choice clears an earlier busy annotation (#303)", async () => {
+  const f = failedRestore();
+  f.operation.failure = { code: "database_busy", retryable: true };
+  writeOperation(f.operation.id, f.operation, f.home);
+  const chosen = await disposeRecovery(f.operation.id, { fresh: "codex" }, "test fresh session", f.driver, f.home);
+  expect(chosen.failure).toBeUndefined(); expect(chosen.projects[0]!.fresh?.codex).toBeDefined();
+});
+
+for (const repeated of [false, true]) test(`post-commit busy inspection keeps the existing shutdown bound (${repeated ? "exhausted" : "then stopped"}, #303)`, async () => {
+  const f = fixture("restart", ["alpha"]), inspect = f.driver.inspect;
+  let reports = 0;
+  f.driver.inspect = async (...args) => {
+    const receipt = readOperation<RecoveryOperation>(f.operation.id, f.home);
+    if (receipt.projects[0]!.phase === "prepared" && receipt.projects[0]!.commitSent && (repeated || reports === 0)) {
+      reports++; throw nativeBusyAtFixture();
+    }
+    return inspect(...args);
+  };
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  if (repeated) {
+    expect(result.phase).toBe("blocked"); expect(result.error).toContain("old shutdown is not verified");
+    expect(result.failure).toBeUndefined(); expect(f.driver.now()).toBe(30_000); expect(reports).toBeGreaterThan(1);
+    expect(f.calls).not.toContain("start:alpha");
+  } else {
+    expect(result.phase).toBe("completed"); expect(reports).toBe(1); expect(f.driver.now()).toBe(100);
+    expect(f.calls.filter(call => call === "commit:alpha")).toHaveLength(1);
+  }
+});
+
+test("a busy post-stop disposition inspection is named instead of leaking SQLite text (#303)", async () => {
+  const f = failedRestore(), inspect = f.driver.inspect;
+  let refused = false;
+  f.driver.inspect = async (project) => {
+    if (!refused && project.id === "alpha" && f.states.get("alpha")?.state === "stopped") {
+      refused = true; throw nativeBusyAtFixture();
+    }
+    return inspect(project);
+  };
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "stop target", f.driver, f.home)).rejects.toBeInstanceOf(RecoveryDatabaseBusy);
+  const partial = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  expect(partial.error).toContain("database_busy"); expect(partial.error).not.toContain("database is locked");
+  expect(partial.failure?.site?.some(frame => frame.includes("nativeBusyAtFixture"))).toBe(true);
+  expect((await disposeRecovery(f.operation.id, { stop: true }, "finish target", f.driver, f.home)).failure).toBeUndefined();
+});
+
+test("an ordinary disposition failure supersedes an earlier busy annotation (#303)", async () => {
+  const f = await busyPreparedFixture();
+  f.driver.abort = async () => { throw nativeBusyAtFixture(); };
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "busy act", f.driver, f.home)).rejects.toBeInstanceOf(RecoveryDatabaseBusy);
+  f.driver.abort = async () => { throw new Error("ordinary disposition refusal"); };
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "ordinary act", f.driver, f.home)).rejects.toThrow("ordinary disposition refusal");
+  const partial = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  expect(partial.error).toContain("ordinary disposition refusal"); expect(partial.failure).toBeUndefined();
 });

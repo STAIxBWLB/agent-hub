@@ -1,4 +1,4 @@
-import { isDatabaseBusy, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
+import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -84,13 +84,15 @@ export function restoredTerminalArgv(entrypoint: string, projectRoot: string, bi
     ...(binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])];
 }
 
+const RECOVERY_CONTROL_TIMEOUT_MS = 30_000;
+
 async function rpc(project: Project, message: Record<string, unknown>, protocol = PROTOCOL): Promise<any> {
-  const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root, projectId: project.id }, 30_000, protocol);
+  const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root, projectId: project.id }, RECOVERY_CONTROL_TIMEOUT_MS, protocol);
   try {
-    const reply = await client.request(message, 30_000);
+    const reply = await client.request(message, RECOVERY_CONTROL_TIMEOUT_MS);
     if (reply.ok === false) {
       // An older hub has only its exact SQLite message; preserve compatibility without trusting arbitrary text.
-      if (reply.code === "database_busy" || reply.error === "database is locked") throw new RecoveryDatabaseBusy();
+      if (isDatabaseBusyReply(reply)) throw new RecoveryDatabaseBusy();
       throw new Error(reply.error ?? "recovery control request failed");
     }
     return reply;
@@ -153,7 +155,8 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
   // pid from planning time (after a reboot another process may hold it). A registry that cannot be read throws: the
   // caller reads that as not inspected, never as stopped.
   const claim = registeredProjects().find((p) => p.id === project.id);
-  const base = await inspectProject({ ...project, instanceId: claim?.instanceId ?? null, pid: claim?.pid ?? null, pidSignature: claim?.pidSignature ?? null });
+  const base = await inspectProject({ ...project, instanceId: claim?.instanceId ?? null, pid: claim?.pid ?? null, pidSignature: claim?.pidSignature ?? null }, RECOVERY_CONTROL_TIMEOUT_MS);
+  if (base.failure?.code === "database_busy") throw new RecoveryDatabaseBusy();
   const control = readControl(project.stateDir);
   const sourceProtocol = control?.protocol;
   const legacySupported = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]);
@@ -166,7 +169,11 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
     ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}), ...(snapshot ? { snapshot } : {}),
   };
   let status = base.status;
-  if (!status && legacySupported) {
+  if (!status && control && sourceProtocol === PROTOCOL) return {
+    state: "unavailable", peers: [], blockers: ["runtime changed during recovery inspection"],
+    ...(control.instanceId ? { instanceId: control.instanceId } : {}), protocol: control.protocol,
+  };
+  if (!status && legacySupported && sourceProtocol !== PROTOCOL) {
     try {
       const readback = await rpc(project, { t: "status" }, sourceProtocol);
       status = readback.status;

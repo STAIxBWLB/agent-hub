@@ -1,4 +1,4 @@
-import { isDatabaseBusy, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
+import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -83,7 +83,7 @@ export interface RecoveryOperation {
   pluginInstalled?: boolean;
   globalInstalled?: boolean;
   error?: string;
-  failure?: { code: "database_busy"; retryable: true };
+  failure?: { code: "database_busy"; retryable: true; site?: string[] };
   /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
   audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string> };
@@ -436,6 +436,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     if (op.disposition) {
       // The stop-and-archive in progress keeps its own cause; resume never runs an operation being abandoned.
       op.error ??= `a stop-and-archive of this operation is partway; ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
+      delete op.failure;
       op.phase = "blocked"; save();
       return op;
     }
@@ -497,7 +498,13 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
           await driver.commit(project, id, planned.source.instanceId!);
           const deadline = driver.now() + 30_000;
           do {
-            live = await driver.inspect(project);
+            try { live = await driver.inspect(project); }
+            catch (error) {
+              if (!isDatabaseBusy(error)) throw error;
+              // A committed source may still be stopping. Contention is an
+              // unconfirmed read here, not a refusal; keep the existing bound.
+              live = { state: "unavailable", peers: [], blockers: ["database_busy"] };
+            }
             if (live.state === "stopped") break;
             if (live.instanceId && live.instanceId !== planned.source.instanceId) throw new Error(`${project.id}: another daemon started during shutdown`);
             await driver.sleep(100);
@@ -559,8 +566,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     releaseRecoveryLock(id, home); op.phase = "completed"; step("completed");
   } catch (error) {
     // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
-    if (isDatabaseBusy(error)) { error = new RecoveryDatabaseBusy(); op.failure = { code: "database_busy", retryable: true }; }
-    else delete op.failure;
+    if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
     if (error instanceof FinalRefusal) op.final = true;
     const next = nextActionsText(op, await liveProjects(op, driver.inspect));
     op.phase = "blocked"; op.error = `${error instanceof Error ? error.message : "recovery failed"}; ${next}`; save();
@@ -610,6 +616,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       const state = live[planned.project.id];
       if (state?.recovery?.operationId === id && state.recovery.phase !== "released") await driver.abort(planned.project, id, planned.source.instanceId!);
     }
+    delete op.error; delete op.failure;
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
   } finally { releaseRunner(); }
@@ -663,6 +670,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
       }
       (op.audit ??= []).push({ at, action: "fresh-session", reason, peer, projects: failed.map((p) => p.id) });
+      delete op.failure;
       op.updatedAt = at; writeOperation(id, op, home);
       return op;
     }
@@ -692,6 +700,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     abandoned(op); // #227: in the same write as the disposition
     (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
     // Recorded before the first act: a crash inside a stop leaves a disposition that resume refuses to override.
+    delete op.failure;
     op.updatedAt = driver.now(); writeOperation(id, op, home);
     try {
       for (const { planned, live, act } of acts) {
@@ -704,12 +713,13 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         op.updatedAt = driver.now(); writeOperation(id, op, home);
       }
     } catch (error) {
+      if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
       op.phase = "blocked"; op.updatedAt = driver.now();
       op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"} (a committed source stops by itself); ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
       writeOperation(id, op, home);
       throw error;
     }
-    delete op.error;
+    delete op.error; delete op.failure;
     op.phase = "cancelled"; op.step = "disposed: stop-and-archive (abandoned, not completed)"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
     return op;

@@ -1,3 +1,4 @@
+import { isDatabaseBusyReply, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -12,13 +13,14 @@ import { assertLifecycleAvailable, recoveryLock } from "./recovery-store.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 export type ProjectInspection = {
+  failure?: { code: "database_busy" };
   state: "running" | "stopped" | "stopping" | "unavailable" | "incompatible" | "missing" | "starting";
   status?: any;
   error?: string;
 };
 
 /** A port or PID alone is never evidence that the selected project's hub is alive. */
-export async function inspectProject(project: Project): Promise<ProjectInspection> {
+export async function inspectProject(project: Project, timeoutMs = 3000): Promise<ProjectInspection> {
   if (!existsSync(project.root)) return { state: "missing", error: "project directory is missing" };
   const control = readControl(project.stateDir);
   if (control) {
@@ -34,7 +36,8 @@ export async function inspectProject(project: Project): Promise<ProjectInspectio
       // Older manifests omit identity. Authenticate first, then require the full current contract.
       client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root,
         ...(control.projectId ? { projectId: project.id } : {}), ...(control.instanceId ? { instanceId: control.instanceId } : {}) });
-      const response = await client.request({ t: "status" }, 3000);
+      const response = await client.request({ t: "status" }, timeoutMs);
+      if (isDatabaseBusyReply(response)) return { state: "unavailable", error: new RecoveryDatabaseBusy().message, failure: { code: "database_busy" } };
       if (!response.status || response.status.projectId !== project.id || !response.status.instanceId || response.status.cwd !== project.root) {
         return { state: "unavailable", error: "authenticated hub identity does not match registration" };
       }

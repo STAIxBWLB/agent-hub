@@ -1671,23 +1671,27 @@ next actions").
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
 - If a restart stops with `database_busy`, the receipt stays `blocked` and
-  carries `failure: { code: "database_busy", retryable: true }`. Another
-  connection did not release its SQLite lock within the database's bounded
-  wait. Let that connection settle, then inspect `ahub recovery status <id>`
-  and use its offered `ahub recovery resume <id>`; resume rechecks the source
-  and reconciles a commit that may already have been requested. Do not delete
-  database files or start a second operation to bypass the lock. Registry
-  and authenticated status reads before the commit request can give the same outcome. This names the
-  contention, not its historical holder: the earlier CI receipt kept neither
-  a throw site nor a hub log. A failed installed-layout CI restart now retains
-  bounded, redacted fixture logs and file-mode metadata as a per-OS artifact.
-  Hub database connections wait up to 3 s on a foreign writer, including
-  Board, Budget, ConductorHolds, ExecutionBudget and Turns, which previously
-  threw immediately. Bun's SQLite calls are synchronous, so this can block
-  the daemon's one thread. Recovery and default control requests wait 30 s;
-  the 1 s silenced probe is shorter, and 3 s console/lifecycle probes have no
-  margin. Their timeout remains an unconfirmed read, never proof the hub
-  stopped. The busy wait is not multiplied by a retry loop.
+  carries `failure: { code: "database_busy", retryable: true, site: [...] }`.
+  Let the other connection settle, inspect `ahub recovery status <id>` and
+  use its offered `ahub recovery resume <id>`. Resume rechecks the source and
+  reconciles a commit that may already have been requested. A busy read while
+  that committed source is stopping stays inside the existing shutdown wait.
+  A stop-and-archive that meets contention instead says to retry that
+  disposition; resume remains refused while abandonment is partway. Successful
+  abort, fresh-session choice and disposal clear the earlier failure annotation.
+  Do not delete database files or start a second operation to bypass the lock.
+  A failed installed-layout CI restart retains bounded, redacted fixture logs,
+  receipt fields (including `commitSent` and failure frames) and file-mode
+  metadata as a per-OS artifact.
+
+  The historical CI receipt (38061057253, attempt 1) kept no throw site or
+  hub log. At its main, status/inspect RPC failures were swallowed and the
+  synchronous catch sent a fixed sentence, so its raw SQLite text could only
+  have come from the commit rejection or the runner's own `registry.db` read.
+  "Resume | wait until the hub settles", without stop-and-archive, means its
+  next inspection saw neither running nor stopped/missing. Which of the two
+  paths, which statement and which holder remain unknown. The controlled
+  rollback-copy reproduction is separate evidence, not that historical cause.
 - When a target hub dies after it started (a crash or a reboot), `resume`
   starts it again from the operation's snapshot while the project's state
   directory still holds it: it records the restart (status shows `restarts`),

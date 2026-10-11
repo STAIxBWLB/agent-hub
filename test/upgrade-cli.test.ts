@@ -1,51 +1,124 @@
 import { expect, test } from "bun:test";
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { acquireRecoveryLock, claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
 const RESTART_LOG_BYTES = 64 * 1024;
+const RESTART_OPERATION = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
-/** Failure diagnostics only: bounded selected logs and file metadata, never SQLite contents or control files. */
+function diagnosticParents(file: string, anchor: string): void {
+  const base = resolve(anchor), parts = relative(base, dirname(resolve(file))).split(/[\\/]/).filter(Boolean);
+  if (parts.includes("..")) throw new Error("outside fixture diagnostics");
+  let current = base;
+  // The caller owns the fixture anchor. Check it and every directory underneath;
+  // system aliases above it (macOS /var -> /private/var) are not fixture entries.
+  for (const part of ["", ...parts]) {
+    current = join(current, part);
+    const stat = lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("symlinked diagnostic parent");
+  }
+}
+
+function readDiagnosticFile(file: string, anchor: string, tail: boolean): { text: string; copiedBytes: number; truncated: boolean } {
+  diagnosticParents(file, anchor);
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error("not a regular diagnostic file");
+    if (!tail && stat.size > RESTART_LOG_BYTES) throw new Error("diagnostic JSON exceeds bound");
+    const length = Math.min(stat.size, RESTART_LOG_BYTES), offset = stat.size - length, data = Buffer.alloc(length);
+    const bytes = readSync(fd, data, 0, length, offset);
+    let start = 0;
+    if (offset > 0) {
+      const previous = Buffer.alloc(1); readSync(fd, previous, 0, 1, offset - 1);
+      if (previous[0] !== 10) { const newline = data.indexOf(10); start = newline < 0 ? bytes : newline + 1; }
+    }
+    return { text: data.subarray(start, bytes).toString("utf8"), copiedBytes: bytes, truncated: offset > 0 };
+  } finally { closeSync(fd); }
+}
+
+function redactRestartDiagnostic(value: string, root: string, home: string): string {
+  const roots = [[root, "<fixture-project>"], [home, "<fixture-home>"], [join(import.meta.dir, ".."), "<checkout>"], [homedir(), "<host-home>"], [tmpdir(), "<temp>"]]
+    .sort((a, b) => b[0]!.length - a[0]!.length);
+  let text = value;
+  for (const [path, label] of roots) text = text.replaceAll(path!, label!);
+  text = text.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, url => {
+    if (/^file:/i.test(url)) return "<absolute-path>";
+    return url.replace(/(:\/\/)[^/]*@/, "$1")
+      .replace(/([?&])([^=&]+)=([^&#]*)/g, (whole, prefix, key: string) => {
+        let decoded = key; try { decoded = decodeURIComponent(key); } catch { /* retain the literal name for classification */ }
+        return /token|secret|password|api[_-]?key|credential|authorization/i.test(decoded) ? `${prefix}${key}=redacted` : whole;
+      });
+  });
+  text = text.replace(/(["']?[\w.-]+["']?\s*[:=]\s*)("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:Bearer\s+)?[^\s,;}\r\n]+)/gi, (whole, prefix: string) =>
+    /token|secret|password|api[_-]?key|authorization|cookie/i.test(prefix) ? `${prefix}<redacted>` : whole);
+  text = text.replace(/\b(?:set-)?cookie\s*[:=][^\r\n]*/gi, "cookie=<redacted>");
+  text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{10,})\b/g, "<redacted-key>");
+  text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "<email>");
+  return text.replace(/(^|[\s("'=:])\/(?!\/)[^\r\n"'<>)]*/gm, "$1<absolute-path>")
+    .replace(/\b[A-Z]:[\\/][^\r\n"'<>)]*/gi, "<absolute-path>")
+    .replace(/(?:~[\\/]|\\\\)[^\r\n"'<>)]*/g, "<absolute-path>");
+}
+
+function writeBoundedDiagnostic(file: string, text: string): void {
+  const data = Buffer.from(text), offset = Math.max(0, data.length - RESTART_LOG_BYTES);
+  const newline = offset ? data.indexOf(10, offset) : -1;
+  const start = offset ? newline < 0 ? data.length : newline + 1 : 0;
+  writeFileSync(file, data.subarray(start), { mode: 0o600 });
+}
+
+/** Failure diagnostics only: bounded selected logs/receipt fields and modes, never DB or control contents. */
 function retainRestartDiagnostics(root: string, home: string, operation: string | undefined, destination = process.env.AHUB_RESTART_DIAGNOSTICS_DIR): string | undefined {
   if (!destination) return undefined;
   mkdirSync(destination, { recursive: true, mode: 0o700 });
   const output = mkdtempSync(join(destination, "installed-layout-restart-"));
-  const roots = [[root, "<fixture-project>"], [home, "<fixture-home>"], [join(import.meta.dir, ".."), "<checkout>"], [homedir(), "<host-home>"], [tmpdir(), "<temp>"]]
-    .sort((a, b) => b[0]!.length - a[0]!.length);
-  const redact = (value: string) => {
-    let text = value;
-    for (const [path, label] of roots) text = text.replaceAll(path!, label!);
-    return text.replace(/(^|[\s("'=])\/[^\s"'<>)]*/gm, "$1<absolute-path>")
-      .replace(/\b(token|authorization|password|secret|api[_-]?key)\s*[:=]\s*(?:Bearer\s+)?[^\s,;]+/gi, "$1=<redacted>");
-  };
+  const redact = (text: string) => redactRestartDiagnostic(text, root, home);
   const logs: Record<string, { copiedBytes?: number; truncated?: boolean; available: boolean }> = {};
-  for (const [name, file] of [["hub.log", join(root, ".agenthub", "state", "hub.log")], ["manager.log", join(home, "manager", "manager.log")]]) {
-    let fd: number | undefined;
+  for (const [name, file, anchor] of [["hub.log", join(root, ".agenthub", "state", "hub.log"), root], ["manager.log", join(home, "manager", "manager.log"), home]]) {
     try {
-      fd = openSync(file!, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const stat = fstatSync(fd);
-      if (!stat.isFile()) throw new Error("not a regular log");
-      const length = Math.min(stat.size, RESTART_LOG_BYTES), data = Buffer.alloc(length);
-      const bytes = readSync(fd, data, 0, length, stat.size - length);
-      const redacted = Buffer.from(redact(data.subarray(0, bytes).toString("utf8")));
-      writeFileSync(join(output, name!), redacted.subarray(Math.max(0, redacted.length - RESTART_LOG_BYTES)), { mode: 0o600 });
-      logs[name!] = { available: true, copiedBytes: bytes, truncated: stat.size > bytes };
+      const log = readDiagnosticFile(file!, anchor!, true);
+      writeBoundedDiagnostic(join(output, name!), redact(log.text));
+      logs[name!] = { available: true, copiedBytes: log.copiedBytes, truncated: log.truncated };
     } catch { logs[name!] = { available: false }; }
-    finally { if (fd !== undefined) closeSync(fd); }
   }
   const databases: Record<string, { mode: string; bytes: number; regular: boolean } | { exists: false }> = {};
-  const selected = [["hub.db", join(root, ".agenthub", "state", "hub.db")], ["registry.db", join(home, "registry.db")]];
-  if (operation && /^[a-f0-9-]{36}$/.test(operation)) selected.push(["runner.db", join(home, "recovery", `${operation}.json.runner.db`)]);
-  for (const [name, file] of selected) for (const suffix of ["", "-wal", "-shm"]) {
+  const selected = [["hub.db", join(root, ".agenthub", "state", "hub.db"), root], ["registry.db", join(home, "registry.db"), home]];
+  const validOperation = operation !== undefined && RESTART_OPERATION.test(operation);
+  if (validOperation) selected.push(["runner.db", join(home, "recovery", `${operation}.json.runner.db`), home]);
+  for (const [name, file, anchor] of selected) for (const suffix of ["", "-wal", "-shm"]) {
     try {
+      diagnosticParents(file! + suffix, anchor!);
       const stat = lstatSync(file! + suffix);
       databases[name! + suffix] = { mode: (stat.mode & 0o777).toString(8).padStart(3, "0"), bytes: stat.size, regular: stat.isFile() };
     } catch { databases[name! + suffix] = { exists: false }; }
   }
+  if (validOperation) {
+    try {
+      const receipt = JSON.parse(readDiagnosticFile(join(home, "recovery", `${operation}.json`), home, false).text);
+      const string = (value: unknown, length = 4096) => typeof value === "string" ? redact(value).slice(0, length) : undefined;
+      const failure = receipt.failure && typeof receipt.failure === "object" ? {
+        code: string(receipt.failure.code, 64), retryable: typeof receipt.failure.retryable === "boolean" ? receipt.failure.retryable : undefined,
+        site: Array.isArray(receipt.failure.site) ? receipt.failure.site.slice(0, 8).map((frame: unknown) => string(frame, 1024)) : string(receipt.failure.site),
+      } : undefined;
+      const subset = { phase: string(receipt.phase, 64), step: string(receipt.step, 256), error: string(receipt.error), failure,
+        projects: Array.isArray(receipt.projects) ? receipt.projects.slice(0, 20).map((project: any) => ({ id: string(project.id, 128), phase: string(project.phase, 64), ...(typeof project.commitSent === "boolean" ? { commitSent: project.commitSent } : {}) })) : [] };
+      writeBoundedDiagnostic(join(output, "receipt.json"), JSON.stringify(subset, null, 2) + "\n");
+    } catch { /* missing/oversized/malformed/untrusted receipt: preserve the other selected diagnostics */ }
+  }
   writeFileSync(join(output, "files.json"), JSON.stringify({ logs, databases }, null, 2) + "\n", { mode: 0o600 });
   return output;
+}
+
+async function withRestartDiagnostics<T>(body: () => Promise<T>, context: () => { root: string; home: string; operation: string | undefined }, destination = process.env.AHUB_RESTART_DIAGNOSTICS_DIR): Promise<T> {
+  try { return await body(); }
+  catch (error) {
+    const { root, home, operation } = context();
+    try { retainRestartDiagnostics(root, home, operation, destination); }
+    catch { console.warn("restart diagnostics could not be retained"); }
+    throw error;
+  }
 }
 
 test("installed-layout detached restart completes in an isolated project and preserves its task board", async () => {
@@ -81,6 +154,7 @@ test("installed-layout detached restart completes in an isolated project and pre
     return !alive(pid);
   };
   try {
+    await withRestartDiagnostics(async () => {
     expect((await cli(["init"])).code).toBe(0);
     writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, omniroute: { urls: [] } }));
     expect((await cli(["up"])).code).toBe(0);
@@ -134,12 +208,7 @@ await import(${JSON.stringify(main)});
     expect((await status()).recovery).toBeUndefined();
     expect((await cli(["board"])).out).toContain("Keep this task through restart");
     expect(pids.size).toBeGreaterThan(0); // the harness recorded at least one daemon generation
-  } catch (error) {
-    // Snapshot before kill/removal changes the evidence. Capture failure never hides
-    // the original assertion, and passing fixtures write no artifact.
-    try { retainRestartDiagnostics(root, home, operation); }
-    catch { console.warn("restart diagnostics could not be retained"); }
-    throw error;
+    }, () => ({ root, home, operation }));
   } finally {
     try { await cli(["kill"], operation ? { AGENTHUB_RECOVERY_OPERATION: operation } : {}); } catch { /* best effort; the pid sweep below is the guarantee */ }
     // The recovery flow also runs a detached dashboard manager out of the staged source.
@@ -397,4 +466,106 @@ test("restart failure diagnostics retain only bounded logs and database modes, w
     for (const file of readdirSync(result)) expect(readFileSync(join(result, file), "utf8")).not.toMatch(/dont-upload-(db|wal|registry|runner|control)/);
     expect(retainRestartDiagnostics("unused", "unused", undefined, "")).toBeUndefined();
   } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+function restartDiagnosticsFixture() {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-diagnostics-review-"));
+  const root = join(temp, "project"), home = join(temp, "home"), output = join(temp, "artifacts");
+  const state = join(root, ".agenthub", "state"), operation = "12345678-1234-1234-1234-123456789abc";
+  mkdirSync(state, { recursive: true }); mkdirSync(join(home, "manager"), { recursive: true }); mkdirSync(join(home, "recovery"));
+  return { temp, root, home, state, operation, output, capture: (op = operation) => retainRestartDiagnostics(root, home, op, output)!, cleanup: () => rmSync(temp, { recursive: true, force: true }) };
+}
+
+test("restart diagnostics redact named/quoted credentials, URLs and paths with spaces (#303)", () => {
+  const f = restartDiagnosticsFixture();
+  try {
+    const lines = [
+      "ANTHROPIC_API_KEY=secret-value-one", "GITHUB_TOKEN=secret-value-two", "access_token=secret-value-three", "client_secret=secret-value-four",
+      '{"token":"secret-value-five","NAME_API_KEY":"secret-value-six"}',
+      JSON.stringify({ NAME_TOKEN: 'secret-value-thirteen " escape-secret', cookie: "secret-value-fourteen" }),
+      `https://example.invalid/api?${encodeURIComponent("테스트_TOKEN")}=secret-value-fifteen`,
+      "Authorization: Bearer secret-value-seven", "Cookie: session=secret-value-eight; other=secret-value-nine",
+      "https://private-user:secret-value-ten@example.invalid/api?access_token=secret-value-eleven&client_secret=secret-value-twelve",
+      "cwd:/Users/private person/Secret Folder/database.db", "file:///Users/private-person/secret.db", "~/Secret Folder/secret.db",
+      String.raw`C:\Users\private-person\Secret Folder\secret.db`, String.raw`\\private-server\Secret Folder\secret.db`,
+      "private-person@example.invalid", "sk-secretvaluewithenoughcharacters", "ghp_secretvaluewithenoughcharacters",
+      "SQLiteError: database is locked", ` at ${join(import.meta.dir, "..")}/src/hub/daemon.ts:3001:18`,
+    ];
+    writeFileSync(join(f.state, "hub.log"), lines.join("\n"));
+    const capture = f.capture(), log = readFileSync(join(capture, "hub.log"), "utf8");
+    expect(log).not.toMatch(/secret-value|private-person|private person|private-user|private-server|Secret Folder|secretvaluewithenoughcharacters|escape-secret/);
+    expect(log).toContain("<redacted>"); expect(log).toContain("<redacted-key>"); expect(log).toContain("<email>"); expect(log).toContain("<absolute-path>");
+    expect(log).toContain("SQLiteError: database is locked"); expect(log).toContain("<checkout>/src/hub/daemon.ts:3001:18");
+  } finally { f.cleanup(); }
+});
+
+test("restart diagnostics discard partial first lines and cap redaction expansion (#303)", () => {
+  const f = restartDiagnosticsFixture();
+  try {
+    const partial = "s/boundary-person/dir/file.db", tail = partial + "x".repeat(RESTART_LOG_BYTES - partial.length - 1) + "\n";
+    writeFileSync(join(f.state, "hub.log"), "private-prefix/Users/" + tail);
+    expect(readFileSync(join(f.capture(), "hub.log"), "utf8")).toBe("");
+    writeFileSync(join(f.state, "hub.log"), "token=x\n".repeat(RESTART_LOG_BYTES / 8));
+    const capture = f.capture(), log = readFileSync(join(capture, "hub.log"), "utf8");
+    expect(Buffer.byteLength(log)).toBeLessThanOrEqual(RESTART_LOG_BYTES);
+    expect(log).toContain("token=<redacted>"); expect(log).not.toContain("token=x");
+  } finally { f.cleanup(); }
+});
+
+test("restart diagnostics refuse symlinked leaves and parent directories and nonregular files (#303)", () => {
+  const f = restartDiagnosticsFixture(), outside = join(f.temp, "outside");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "hub.log"), "outside log must never be copied"); writeFileSync(join(outside, "manager.log"), "outside manager must never be copied");
+  try {
+    symlinkSync(join(outside, "hub.log"), join(f.state, "hub.log"));
+    let captured = f.capture();
+    expect(existsSync(join(captured, "hub.log"))).toBe(false); // removing O_NOFOLLOW must fail this assertion
+    expect(JSON.parse(readFileSync(join(captured, "files.json"), "utf8")).logs["hub.log"].available).toBe(false);
+    unlinkSync(join(f.state, "hub.log")); rmSync(f.state, { recursive: true }); symlinkSync(outside, f.state, "dir");
+    rmSync(join(f.home, "manager"), { recursive: true }); symlinkSync(outside, join(f.home, "manager"), "dir");
+    captured = f.capture();
+    expect(existsSync(join(captured, "hub.log"))).toBe(false); expect(existsSync(join(captured, "manager.log"))).toBe(false);
+    expect(() => readDiagnosticFile("/dev/null", "/dev", true)).toThrow("not a regular diagnostic file"); // removing fstat regular-file check must fail
+    writeFileSync(join(outside, `${f.operation}.json`), JSON.stringify({ phase: "outside receipt" }));
+    rmSync(join(f.home, "recovery"), { recursive: true }); symlinkSync(outside, join(f.home, "recovery"), "dir");
+    expect(existsSync(join(f.capture(), "receipt.json"))).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+test("restart diagnostics retain only redacted receipt outcome fields and validate the operation id (#303)", () => {
+  const f = restartDiagnosticsFixture();
+  try {
+    const receipt = { phase: "blocked", step: "commit:project-one", error: `registry read failed at ${f.home}/registry.db; GITHUB_TOKEN=secret-value-receipt`,
+      failure: { code: "database_busy", retryable: true, site: [` at ${join(import.meta.dir, "..")}/src/cli/upgrade.ts:562:1`, " at /Users/private-person/registry.db:1:2"], private: "do-not-copy" },
+      projects: [{ id: "project-one", phase: "prepared", commitSent: false, terminals: { token: "do-not-copy" } }, { id: "project-two", phase: "prepared", commitSent: true }],
+      plan: { sourceRoot: "/private/checkout", secret: "do-not-copy" }, summary: "do-not-copy", token: "do-not-copy" };
+    writeFileSync(join(f.home, "recovery", `${f.operation}.json`), JSON.stringify(receipt));
+    const captured = f.capture(), text = readFileSync(join(captured, "receipt.json"), "utf8"), parsed = JSON.parse(text);
+    expect(parsed).toMatchObject({ phase: "blocked", step: "commit:project-one", failure: { code: "database_busy", retryable: true }, projects: [{ id: "project-one", phase: "prepared", commitSent: false }, { id: "project-two", phase: "prepared", commitSent: true }] });
+    expect(parsed.failure.site).toEqual([" at <checkout>/src/cli/upgrade.ts:562:1", " at <absolute-path>"]);
+    expect(text).not.toMatch(/secret-value|private-person|do-not-copy|sourceRoot|terminals|summary/);
+    expect(text).not.toContain(f.home); expect(parsed.error).toContain("GITHUB_TOKEN=<redacted>");
+    const invalid = "not-an-operation";
+    writeFileSync(join(f.home, "recovery", `${invalid}.json`), JSON.stringify(receipt));
+    writeFileSync(join(f.home, "recovery", `${invalid}.json.runner.db`), "untrusted runner");
+    const rejected = f.capture(invalid);
+    expect(existsSync(join(rejected, "receipt.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(rejected, "files.json"), "utf8")).databases["runner.db"]).toBeUndefined();
+  } finally { f.cleanup(); }
+});
+
+test("the installed-layout full-body catch retains diagnostics before cleanup and preserves the original failure (#303)", async () => {
+  const f = restartDiagnosticsFixture(), original = new Error("injected fixture assertion");
+  const context = () => ({ root: f.root, home: f.home, operation: f.operation });
+  try {
+    expect(await withRestartDiagnostics(async () => 42, context, f.output)).toBe(42);
+    expect(existsSync(f.output)).toBe(false); // passing full bodies never write an artifact
+    writeFileSync(join(f.state, "hub.log"), "diagnostic present before cleanup\n");
+    await expect(withRestartDiagnostics(async () => { throw original; }, context, f.output).finally(() => {
+      rmSync(f.root, { recursive: true, force: true }); rmSync(f.home, { recursive: true, force: true });
+    })).rejects.toBe(original);
+    expect(readdirSync(f.output)).toHaveLength(1);
+    const capture = join(f.output, readdirSync(f.output)[0]!);
+    expect(readFileSync(join(capture, "hub.log"), "utf8")).toBe("diagnostic present before cleanup\n");
+  } finally { f.cleanup(); }
 });

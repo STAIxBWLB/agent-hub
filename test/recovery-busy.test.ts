@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
+import { inspectRecovery, makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
 import { RecoveryDatabaseBusy } from "../src/hub/recovery-error.ts";
 import { PROTOCOL, ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
@@ -38,7 +38,6 @@ async function fixture() {
   const copy = new Database(copyPath);
   copy.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
   copy.run("PRAGMA journal_mode = DELETE");
-  handle.db = copy;
 
   const holderPath = join(temp, "holder.ts");
   writeFileSync(holderPath, `import { Database } from "bun:sqlite";
@@ -67,7 +66,7 @@ process.on("message", (message) => {
   const useCopyOnce = (atBoundary?: () => void) => {
     journal.snapshot = function () {
       atBoundary?.();
-      try { return originalSnapshot.call(this); }
+      try { handle.db = copy; return originalSnapshot.call(this); }
       finally {
         // Only this diagnostic read uses the copied connection, including on a
         // busy refusal; later timer callbacks and shutdown use the real handle.
@@ -81,7 +80,7 @@ process.on("message", (message) => {
     // Include an offline peer so status performs its normal journal summary read.
     source.bus.knownPeers = () => ["busy-offline-peer"];
     source.bus.queueSummary = function (peer) {
-      try { return queueSummary.call(this, peer); }
+      try { handle.db = copy; return queueSummary.call(this, peer); }
       finally {
         handle.db = original;
         this.knownPeers = knownPeers;
@@ -107,11 +106,16 @@ process.on("message", (message) => {
 test("foreign contention in a pre-commit status read settles its rid with the named outcome (#303)", async () => {
   const f = await fixture();
   try {
+    const extraReplies: any[] = []; f.client.onPush = message => { extraReplies.push(message); };
     f.useStatusCopyOnce();
     const reply = await f.client.request({ t: "status" });
     expect(reply).toMatchObject({ ok: false, code: "database_busy", retryable: true });
-    expect(reply.error).toContain("resume this recovery operation");
+    expect(reply.error).toContain("retrying the request");
     expect(JSON.stringify(reply)).not.toContain("database is locked");
+    await f.client.request({ t: "busy-reply-barrier" });
+    expect(extraReplies.filter(message => message.rid === reply.rid)).toEqual([]);
+    const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+    expect(log).toContain("control status database contention"); expect(log).toContain("queueSummary");
     await f.release();
     expect((await f.client.request({ t: "status" })).status.tasks.proposed).toBe(1);
   } finally { await f.cleanup(); }
@@ -148,7 +152,7 @@ test("a recovery commit names exhausted foreign database contention and can be r
     f.useCopyOnce();
     const result = await f.rpc("commit");
     expect(result).toMatchObject({ t: "recovery", ok: false, code: "database_busy", retryable: true });
-    expect(result.error).toContain("resume this recovery operation");
+    expect(result.error).toContain("retrying the request");
     expect(JSON.stringify(result)).not.toMatch(/database is locked|database table is locked/);
     expect(readRestartSnapshot(f.stateDir, { projectRoot: f.options.cwd, projectId: f.projectId })).toBeUndefined();
     const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
@@ -163,16 +167,14 @@ test("a recovery commit names exhausted foreign database contention and can be r
   } finally { await f.cleanup(); }
 }, 15_000);
 
-test("a foreign lock released at the snapshot boundary lets recovery commit complete (#303)", async () => {
+test("a foreign lock released through a consumed barrier lets recovery commit complete (#303)", async () => {
   const f = await fixture();
   try {
     let boundary = false;
-    f.useCopyOnce(() => {
-      boundary = true;
-      f.signalRelease();
-    });
-    // IPC is consumed by another process while the daemon's synchronous SELECT
-    // may wait. This boundary proves release within the bound, not time spent blocked.
+    f.useCopyOnce(() => { boundary = true; });
+    // The holder's exit proves rollback was consumed before this read. No reply
+    // must race the synchronous database wait's scheduler margin.
+    await f.release();
     expect((await f.rpc("commit")).committed).toBe(true);
     expect(boundary).toBe(true);
     await f.release();
@@ -181,7 +183,7 @@ test("a foreign lock released at the snapshot boundary lets recovery commit comp
 }, 15_000);
 
 
-for (const form of ["legacy", "named"] as const) test(`a current coordinator settles the ${form} hub busy reply without hanging (#303)`, async () => {
+for (const form of ["legacy", "legacy-table", "named"] as const) test(`a current coordinator settles the ${form} hub busy reply without hanging (#303)`, async () => {
   const root = mkdtempSync(join(tmpdir(), "agenthub-busy-wire-")), stateDir = join(root, "state");
   mkdirSync(stateDir);
   const requests: string[] = [];
@@ -193,7 +195,7 @@ for (const form of ["legacy", "named"] as const) test(`a current coordinator set
       requests.push(request.t);
       const reply = request.t === "hello"
         ? { t: "welcome", ok: true, projectId: project.id, instanceId: project.instanceId, cwd: root }
-        : { t: "recovery", ok: false, error: form === "legacy" ? "database is locked" : new RecoveryDatabaseBusy().message,
+        : { t: "recovery", ok: false, error: form === "legacy" ? "database is locked" : form === "legacy-table" ? "database table is locked" : new RecoveryDatabaseBusy().message,
           ...(form === "named" ? { code: "database_busy", retryable: true } : {}) };
       socket.send(JSON.stringify({ ...reply, rid: request.rid }));
     } },
@@ -204,4 +206,38 @@ for (const form of ["legacy", "named"] as const) test(`a current coordinator set
     await expect(makeRecoveryDriver().commit(project, "wire-operation", "wire-source")).rejects.toBeInstanceOf(RecoveryDatabaseBusy);
     expect(requests).toEqual(["hello", "recovery"]);
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+});
+
+
+for (const site of ["current status", "legacy status", "recovery inspect"] as const) test(`real inspectRecovery uses its first busy ${site} reply once (#303)`, async () => {
+  const root = mkdtempSync(join(tmpdir(), "agenthub-inspect-busy-")), stateDir = join(root, "state"); mkdirSync(stateDir);
+  const previous = process.env.AGENTHUB_HOME; process.env.AGENTHUB_HOME = join(root, "home");
+  const project = { id: "inspect-busy", root, stateDir, basePort: 0, instanceId: "inspect-source", pid: process.pid };
+  const requests: string[] = [], protocol = site === "legacy status" ? 9 : PROTOCOL;
+  const observedTimeouts: number[] = [], request = ControlClient.prototype.request;
+  ControlClient.prototype.request = function (message, timeoutMs) {
+    if (message.t === "status") observedTimeouts.push(timeoutMs ?? 30_000);
+    return request.call(this, message, timeoutMs);
+  };
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response("upgrade required", { status: 400 }); },
+    websocket: { message(socket, data) {
+      const request = JSON.parse(String(data)); requests.push(request.t);
+      const reply = request.t === "hello" ? { t: "welcome", ok: true, projectId: project.id, instanceId: project.instanceId, cwd: root }
+        : request.t === "status" && site === "recovery inspect" ? { t: "status", status: { projectId: project.id, instanceId: project.instanceId, cwd: root, protocol, version: "fixture", peers: {} } }
+        : { t: request.t, ok: false, code: "database_busy", retryable: true, error: new RecoveryDatabaseBusy().message };
+      socket.send(JSON.stringify({ ...reply, rid: request.rid }));
+    } },
+  });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol, projectId: project.id, instanceId: project.instanceId, cwd: root, pid: process.pid }));
+  writeFileSync(join(stateDir, "control-token"), "inspect-fixture-token");
+  try {
+    await expect(inspectRecovery(project)).rejects.toBeInstanceOf(RecoveryDatabaseBusy);
+    expect(requests).toEqual(site === "recovery inspect" ? ["hello", "status", "hello", "recovery"] : ["hello", "status"]);
+    expect(observedTimeouts).toEqual([30_000]);
+  } finally {
+    ControlClient.prototype.request = request;
+    server.stop(true); rmSync(root, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+  }
 });
