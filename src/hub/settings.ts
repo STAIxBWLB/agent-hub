@@ -1,4 +1,4 @@
-import { KNOWN_PEERS } from "./peer-catalog.ts";
+import { SUPPORTED_PEERS } from "./peer-catalog.ts";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ import { OVERLAY_FILE, overlayToml, parseOverlay, parseRouting, routingText, typ
  * written by either. Writes go only to the machine-local files (`.agenthub/config.local.json`,
  * `.agenthub/routing.local.toml`), never to a tracked one.
  */
-export const SETTING_PEERS = KNOWN_PEERS;
+export const SETTING_PEERS = SUPPORTED_PEERS;
 /** `null` removes the machine-local value, so the shared file's or the default applies again. */
 export type SettingValue = string | boolean | string[] | null;
 export interface SettingDef {
@@ -62,7 +62,7 @@ export const SETTINGS: readonly SettingDef[] = [
  * Never editable from settings, whatever the session: these choose what the hub executes or where secrets and task
  * text go. A key equal to an entry, or below it, is refused by name.
  */
-export const NEVER_EDITABLE = ["kimi_cmd", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal"] as const;
+export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal"] as const;
 
 /** The definition of a key, or why there is none. */
 export function settingDef(key: unknown): SettingDef | string {

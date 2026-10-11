@@ -1582,3 +1582,15 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
   hub entry was removed before ACP starts. Confirm no second baseline hub MCP
   process in a trusted project. Stop ACP and return to a new TUI, preserving queued
   work and task ownership. Unverified.
+
+## Qwen Code 0.25.0 production peer (#256)
+
+Unverified: real provider handshake, a native model/tool turn, context occupancy,
+owned stop/recovery and the first authoritative quota refusal. Fake ACP tests are
+separate evidence. CLI --version returned 0.25.0 locally but installed package and
+ACP source returned 0.24.1; this drift is not a native readiness claim. Select
+roster.qwen and a verified qwen_cmd before the live leg. Confirm mode ids and
+visible boundaries, inbox/tool approval, stop and exact-head results, then record
+the native version and observed outcome here. No hub-driven Qwen TUI is offered.
+
+Qwen recovery source/fake proof: saved ids pass through the driver and CLI to ACP session/load, and the crash loader restores the recorded id/model. Actual native/provider recovery remains unverified.

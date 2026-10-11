@@ -1,7 +1,7 @@
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
-import { KNOWN_PEERS, isKnownPeer } from "./peer-catalog.ts";
+import { KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
-import { buildKimiLaunch } from "../cli/launch.ts";
+import { buildKimiLaunch, buildQwenLaunch } from "../cli/launch.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -17,7 +17,7 @@ import { eventLog, readEvents, tokenDeltas } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
-import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
+import { AcpPeer, QwenIdentityError, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
 import { PiPeer } from "../adapters/pi.ts";
 import { startModelRelay, type ModelRelay } from "../models/relay.ts";
@@ -82,6 +82,7 @@ import { projectFileTool } from "../cli/facts-hook.ts";
 export interface HubConfig {
   watchdog_ms: number;
   kimi_cmd: string[];
+  qwen_cmd: string[];
   permission_modes: Record<string, PermissionMode>;
   protect_instruction_files: boolean;
   /** Loader-owned provenance of requested defaults, before machine-local filtering. */
@@ -143,6 +144,7 @@ export interface HubConfig {
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
   kimi_cmd: ["kimi", "acp"],
+  qwen_cmd: ["qwen", "--acp"],
   permission_modes: {},
   protect_instruction_files: false,
   codex_bin: "codex",
@@ -181,7 +183,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const RESERVED_IDS = new Set<string>([USER, ...KNOWN_PEERS.filter(peer => peer !== "claude"), HUB, DIGEST]);
+const RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => peer !== "claude"), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
@@ -226,6 +228,7 @@ export function loadConfig(cwd: string): HubConfig {
       throw error;
     }
     peerRosterConfig(file.roster);
+    if (file.qwen_cmd !== undefined && (!Array.isArray(file.qwen_cmd) || !file.qwen_cmd.length || file.qwen_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("qwen_cmd must be a nonempty executable argv");
     instructionProtection(file.protect_instruction_files);
     permissionDefaults(file.permission_modes); // malformed declarations fail even when trust would drop them
     peerStartConfig(file.peers);
@@ -1058,7 +1061,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer === "claude" || peer === "codex") void requestCheckpoint(peer, "context").catch(() => {});
     return true;
   });
-  const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };
+  const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi", qwen: "qwen" };
   const budgetFeedSeen = new Map<string, string>();
   const feedBudgetPauses = () => {
     for (const hold of budget.persistedPauseDigestRows()) {
@@ -2094,7 +2097,7 @@ export async function startDaemon(opts: DaemonOptions) {
   async function hubStart(peer: unknown, by: string): Promise<Record<string, unknown>> {
     if (stopping) return { ok: false, error: "hub is stopping" };
     if (rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
-    if (!isStartablePeer(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
+    if (!isStartablePeer(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, qwen (when on roster), pi (when enabled) and local" };
     if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
@@ -2188,6 +2191,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
+    if (peer === "qwen" && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
     if (peer === "kimi") {
       if (args.mode !== undefined && !["headless", "tui"].includes(args.mode)) return { ok: false, error: "invalid Kimi mode" };
       const owner = bus.peers.get(peer);
@@ -2251,6 +2255,35 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer !== "local") {
       if (existing instanceof PiPeer) await stopPiForReplacement(existing);
       else await existing?.stop();
+    }
+    if (peer === "qwen") {
+      if (args.mode === "tui") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
+      const launch = buildQwenLaunch(config.qwen_cmd, args.model);
+      const qwen = new AcpPeer("qwen", {
+        cmd: [launch.cmd, ...launch.args], qwen025: true, permissionMode: permissionMode("qwen"),
+        ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
+        cwd: opts.cwd, watchdogMs: config.watchdog_ms, onPermission,
+        autoApprove: title => !stopping && HUB_TOOL_TITLES.has(title),
+        log: () => log("Qwen runtime diagnostic: details withheld"),
+        onUsageDiagnostic: (observation, sessionId) => {
+          if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
+          const current = contextSession("qwen"); if (!current) return;
+          contexts.report("qwen", observation.contextUsed !== undefined && observation.contextCapacity !== undefined
+            ? acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now())
+            : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null }, current);
+        },
+        onTurnFailure: () => { supervisionTurns.delete("qwen"); },
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen")).map(([name, value]) => ({ name, value })) }],
+        preamble: roleContract("qwen", config.roles),
+      });
+      recoveryTaskPreface("qwen"); await ensurePreface("qwen");
+      try { await qwen.start(); await reconcileNativeStart(peer, qwen); }
+      catch (error) {
+        await qwen.stop().catch(() => log("Qwen stop after failed startup was not confirmed"));
+        if (error instanceof QwenIdentityError) throw error;
+        throw new Error("Qwen could not reach its provider or complete its startup handshake; verify the provider connection and Qwen Code 0.25.0 (details withheld)");
+      }
+      return { ok: true };
     }
     if (peer === "kimi") {
       const launch = buildKimiLaunch(config.kimi_cmd, args.model);
@@ -2833,7 +2866,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const settingSource = (authority: SettingAuthority) => authority === "terminal" ? "terminal" as const : "dashboard" as const;
   function rosterView() {
     const open = board.list().filter(task => task.state !== "approved");
-    return KNOWN_PEERS.map(peer => ({ peer, on: onRoster(peer), startMode: startMode(peer), state: bus.stateOf(peer), queued: bus.queued(peer), tasks: open.filter(task => task.owner === peer || task.reviewer === peer).length }));
+    return [...KNOWN_PEERS, ...OPTIONAL_PEERS.filter(peer => config.roster?.[peer] !== undefined)].map(peer => ({ peer, on: onRoster(peer), startMode: startMode(peer), state: bus.stateOf(peer), queued: bus.queued(peer), tasks: open.filter(task => task.owner === peer || task.reviewer === peer).length }));
   }
   function rosterCandidate(def: SettingDef, value: SettingValue, undo = false): PeerRoster {
     const peer = def.path[1]! as keyof PeerRoster;
@@ -3216,7 +3249,7 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch { return undefined; }
   }
   async function changePermission(peer: unknown, mode: unknown, confirmed: unknown): Promise<Record<string, unknown>> {
-    if (!isKnownPeer(peer)) return { ok: false, error: "unknown permission peer" };
+    if (!isSupportedPeer(peer)) return { ok: false, error: "unknown permission peer" };
     if (peer === "kimi" && (bus.peers.get(peer) instanceof WsPeer || (!bus.peers.has(peer) && startMode(peer) === "tui"))) return { ok: false, error: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode" };
     if (requestedPeerStops.has(peer)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
     const owner = bus.peers.get(peer);

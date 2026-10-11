@@ -15463,15 +15463,18 @@ var VERSION = package_default.version;
 
 // src/hub/peer-catalog.ts
 var KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"];
+var OPTIONAL_PEERS = ["qwen"];
+var SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS];
 var PEER_ROLES = {
   claude: ["planner", "reviewer"],
   codex: ["implementer"],
   kimi: ["implementer", "verifier"],
   local: ["implementer", "verifier"],
-  pi: ["implementer", "verifier"]
+  pi: ["implementer", "verifier"],
+  qwen: ["implementer", "verifier"]
 };
-function defaultPeerRoles() {
-  return Object.fromEntries(Object.entries(PEER_ROLES).map(([peer, roles]) => [peer, [...roles]]));
+function defaultPeerRoles(includeOptional = false) {
+  return Object.fromEntries(Object.entries(PEER_ROLES).filter(([peer]) => includeOptional || !OPTIONAL_PEERS.includes(peer)).map(([peer, roles]) => [peer, [...roles]]));
 }
 
 // src/hub/envelope.ts
@@ -15533,7 +15536,7 @@ var CONDUCTOR_TOOLS = [
   tool("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor and the task's current owner and reviewer may use this tool.", { id }, ["id"]),
   tool("hub_task_assign", "Name an owner (default role) or reviewer. Only the conductor may name a reviewer through this tool. A proposer may redirect an unaccepted proposed task's owner; a task that still waits reserves that owner. Pull-only peers receive work when named or when they claim it. With an explicit capabilities list, the conductor needs assign capability for either role, the proposer only to give ownership to another peer.", { id, peer: str, role: { type: "string", enum: ["owner", "reviewer"] } }, ["id", "peer"]),
   tool("hub_task_escalate", "Escalate a task through the normal task flow, as the conductor. Requires assign capability when explicitly listed.", { id }, ["id"]),
-  tool("hub_peer_start", "Start local, kimi, pi, claude or codex in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (claude, and pi and codex by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.", { peer: { type: "string", enum: ["local", "kimi", "pi", ...KNOWN_PEERS.filter((peer) => !["local", "kimi", "pi"].includes(peer))] } }, ["peer"]),
+  tool("hub_peer_start", "Start local, kimi, qwen, pi, claude or codex in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (claude, and pi and codex by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.", { peer: { type: "string", enum: ["local", "kimi", "pi", ...SUPPORTED_PEERS.filter((peer) => !["local", "kimi", "pi"].includes(peer))] } }, ["peer"]),
   tool("hub_peer_hold", "Hold a peer's deliveries as the conductor. This hold is separate from the person's hold and budget pauses.", { peer: str }, ["peer"]),
   tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str }, ["peer"])
 ];
@@ -15545,7 +15548,7 @@ var ROLE_TEXT = {
   verifier: "verifier: run the checks a task names and report what passed and what did not in hub_task_done.",
   reviewer: "reviewer: when asked to review, read the change itself, then hub_review with approved or changes_requested and a note that says what to fix."
 };
-var DEFAULT_ROLES = defaultPeerRoles();
+var DEFAULT_ROLES = defaultPeerRoles(true);
 function roleContract(peer, roles = DEFAULT_ROLES) {
   const mine = (roles[peer] ?? []).map((r) => ROLE_TEXT[r]).filter(Boolean);
   if (!mine.length)
