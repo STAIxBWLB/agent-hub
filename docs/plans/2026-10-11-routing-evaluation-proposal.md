@@ -1,12 +1,12 @@
 # Routing-time evaluation proposal for #109
 
-Status: proposal, not a collected study. The owner chooses the data source and sample size before the preregistration is frozen. Solo implementation in #324 runs no ahub-coordinated research arm.
+Status: design preregistered on 2026-10-11 with owner approval: controlled matched task pairs, 120 pairs (60 development and 60 held-out). No study has been collected. Execution manifests, profiles and source/check hashes must be sealed before collection. Solo implementation in #324 runs no ahub-coordinated research arm.
 
-## Decision to freeze before collection
+## Approved design and remaining execution freeze
 
-- Controlled option: 120 preregistered matched work-unit pairs, 60 development and 60 held-out, with automatic routing in the prediction arm and both solo controls. Unit-family membership, task/check hashes, native versions, model/hook/coordination profiles and the chronological split are sealed before any scored attempt. Warmup attempts establish the minimum five past observations per peer; they are identified separately and never enter held-out scores.
-- Observational option: 120 routing-time opportunities from ordinary project use, first 60 development and next 60 held-out. This measures observable stage-proxy prediction errors and abstention coverage. It does not identify the split-versus-best-solo counterfactual and cannot justify automatic rerouting by itself.
-- 120 is a proposed sample budget, not a power result. Fewer than 30 valid known held-out opportunities, an invalid profile or inadequate comparability makes the result inconclusive. No retries or additional samples are selected by scores. A larger sample requires a dated amendment before collection resumes.
+- Selected design: 120 preregistered matched work-unit pairs, 60 development and 60 held-out, with automatic routing in the prediction arm and both solo controls. Unit-family membership, task/check hashes, native versions, model/hook/coordination profiles and the chronological split are sealed before any scored attempt. Warmup attempts establish the minimum five past observations per peer; they are identified separately and never enter held-out scores.
+- Ordinary-work observations may be reported separately as diagnostics. They do not replace the selected controlled design or supply its counterfactual.
+- 120 is the approved sample budget, not a power result. Fewer than 30 valid known held-out opportunities, an invalid profile or inadequate comparability makes the result inconclusive. No retries or additional samples are selected by scores. A larger sample requires a dated amendment before collection resumes.
 
 ## Input and outcome boundary
 

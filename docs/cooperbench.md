@@ -127,6 +127,10 @@ Manifest v3 run directories (headless Pi/Qwen, `protocol: native-pq-v3` in every
 
 Contributions are a heuristic for possible loss, never a certificate: per agent and file, the identifiers and changed fragments its applied writes introduced (only a Claude tool call with a successful result, or a completed Codex patch, counts; a Write replaces the agent's earlier contribution and is not credited with what other agents wrote; a delete removes it; when a file is moved, every agent's contributions to it are checked at its new path) that the final tree lacks, a fragment counting as present anywhere in the file. A same-name overwrite shows as a lost fragment. Shell commands run during the task are not attributed and are counted under `coverage`, with a missing transcript or an unreadable file. Correctness comes from the official grader, for every arm.
 
+## Routing-time prediction preregistration (#109, 2026-10-11)
+
+The owner approved 120 controlled matched task pairs, 60 development and 60 held-out, comparing split execution of the same work units against both solo controls. The input/outcome, exclusion, unknown-value and enablement contract is [the routing evaluation preregistration](plans/2026-10-11-routing-evaluation-proposal.md). This freezes the design and sample budget, not the execution manifests: task-family/split membership, source/check hashes, native versions, profiles and warmup history must be sealed before the first scored attempt. No collection is authorized in the solo implementation session; automatic routing remains off. AC5, T3 and T4 remain open until their measured evidence and implementation gates pass.
+
 ## Preregistration (v2)
 
 Fixed before outcomes are collected (issue #110):
