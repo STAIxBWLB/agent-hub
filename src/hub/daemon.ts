@@ -2927,7 +2927,15 @@ export async function startDaemon(opts: DaemonOptions) {
     return storedConfigCache.config;
   };
   /** Stored start modes and the scoped instruction policy follow a settings write or undo. */
-  const applyStartModes = () => { const stored = storedConfig(); if (stored) { config.peers = stored.peers; config.protect_instruction_files = stored.protect_instruction_files; config.catalog_roles = stored.catalog_roles; roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(stored.catalog_roles) }; } };
+  const applyStartModes = () => { const stored = storedConfig(); if (stored) { config.peers = stored.peers; config.protect_instruction_files = stored.protect_instruction_files; } };
+  /** Apply only the named peer; unrelated hand edits retain their prior publication scope. */
+  const applyRoleSelection = (peer: string) => {
+    const stored = storedConfig(); if (!stored) return;
+    config.catalog_roles = { ...config.catalog_roles };
+    const ids = catalogAssignments(stored.catalog_roles)[peer];
+    if (ids === undefined) delete config.catalog_roles[peer]; else config.catalog_roles[peer] = ids;
+    roleAssignments[peer] = ids ?? projectProfile(config.profile).catalog_roles[peer] ?? [];
+  };
   const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
   const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
     settingScalar(def.path[0] === "stay_switch" ? routing.stay_switch : (routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
@@ -3010,8 +3018,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roster changes" };
       rosterChanging = peer;
-      if (undo) undoSetting(opts.cwd, opts.stateDir, (scratch) => def.type === "roles" ? validateRoleSetting(scratch, def.path[1]!) : loadConfig(scratch), routingCheck);
-      storedConfigCache = undefined;
+      if (undo) undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);
       else writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch));
       // Apply exactly the authorized key. Other file edits stay pending until the next hub start.
       config.roster = next;
@@ -3089,7 +3096,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => def.type === "roles" ? validateRoleSetting(scratch, def.path[1]!) : loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
       storedConfigCache = undefined;
       const to = settingScalar(valueAt(storedConfig(), def.path));
-      applyStartModes();
+      if (def.type === "roles") applyRoleSelection(def.path[1]!); else applyStartModes();
       recordSetting(def.key, from, to, source);
       if (def.type === "roles") event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) });
       // Config trust (#17) can drop a machine-local field at load: the write happened, and the person is told it will not count.
@@ -3114,8 +3121,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} again (never-ask, or inherit where the shared file holds it) with the confirmation instead; nothing was undone` };
     try {
       const from = read();
-      undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);
-      applyStartModes();
+      undoSetting(opts.cwd, opts.stateDir, (scratch) => def.type === "roles" ? validateRoleSetting(scratch, def.path[1]!) : loadConfig(scratch), routingCheck);
+      storedConfigCache = undefined;
+      if (def.type === "roles") applyRoleSelection(def.path[1]!); else applyStartModes();
       recordSetting(def.key, from, read(), settingSource(authority), true);
       if (def.type === "roles") event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) });
       return { ok: true, text: `${def.key}: put back to ${settingText(read())}` };

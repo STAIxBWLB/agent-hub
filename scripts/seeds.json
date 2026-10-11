@@ -832,6 +832,38 @@
       "replacement": "if (e.role) { a.role = e.role; if (e.roleIdentity) a.roleIdentity = e.roleIdentity; }",
       "testFile": "test/task-roles.test.ts",
       "testName": "task research records preserve the first assigned role identity across restarts (#295)"
+    },
+    {
+      "id": "role-setting-two-cap",
+      "file": "src/hub/settings.ts",
+      "search": "!Array.isArray(raw) || raw.length > 2 || new Set(raw).size",
+      "replacement": "!Array.isArray(raw) || new Set(raw).size",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "catalog settings validate two compatible ids and preserve shared config through write and undo (#295)"
+    },
+    {
+      "id": "task-role-person-only",
+      "file": "src/hub/tasks.ts",
+      "search": "if (by !== USER) throw new PreEffectToolRefusal(\"only the person may change an existing task catalog role\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"only the person may change an existing task catalog role\");",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "person task role changes keep ownership and private stubs while delivering bounded guidance (#295)"
+    },
+    {
+      "id": "task-role-console-wire",
+      "file": "src/hub/daemon.ts",
+      "search": "if (c.role !== \"console\") return void reply({ ok: false, error: \"task roles are a person command\" });",
+      "replacement": "if (false) return void reply({ ok: false, error: \"task roles are a person command\" });",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "agent shells and tools clients cannot mutate session or existing task roles (#295)"
+    },
+    {
+      "id": "role-peer-scoped-apply",
+      "file": "src/hub/daemon.ts",
+      "search": "roleAssignments[peer] = ids ?? projectProfile(config.profile).catalog_roles[peer] ?? [];",
+      "replacement": "roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(stored.catalog_roles) };",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "catalog role application is scoped to the named peer and leaves other hand edits pending (#295)"
     }
   ]
 }
