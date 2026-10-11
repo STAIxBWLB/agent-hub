@@ -1,13 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
 import { sanitize } from "./envelope.ts";
 import { foldSegment } from "./permission-mode.ts";
 import { isDenied } from "../local/deny.ts";
 import { MAX_PROJECTION_INPUT, type TextProjections } from "./text-projection.ts";
-import type { Repo } from "./snapshots.ts";
+import { repoGitArgs, repoGitEnv, type Repo } from "./snapshots.ts";
 
 export const PROJECTED_DIFF_BYTES = 12000;
 const MAX_FILES = 8, DIFF_MS = 8000;
@@ -20,7 +19,7 @@ export function projectionPath(repo: Repo, path: string, deny: string[] = []): b
 /** null is an absent file; undefined is unavailable evidence or a non-regular object. */
 export function snapshotBytes(repo: Repo, tree: string, path: string, deadline = performance.now() + DIFF_MS): Buffer | null | undefined {
   if (!treeId(tree) || !projectionPath(repo, path) || performance.now() >= deadline) return undefined;
-  const run = (args: string[], encoding: "utf8" | "latin1" = "utf8", maxBuffer = 8192) => hubGitSync(["-C", repo.top, ...args], { encoding, maxBuffer, timeout: Math.ceil(Math.max(1, Math.min(DIFF_MS, deadline - performance.now()))), env: childEnv(process.env) });
+  const run = (args: string[], encoding: "utf8" | "latin1" = "utf8", maxBuffer = 8192) => hubGitSync(repoGitArgs(repo, args), { encoding, maxBuffer, timeout: Math.ceil(Math.max(1, Math.min(DIFF_MS, deadline - performance.now()))), env: repoGitEnv(repo) });
   const entry = run(["ls-tree", "-z", tree, "--", `:(literal)${path}`]);
   if (entry.status !== 0) return undefined;
   if (!entry.stdout) return null;
@@ -40,7 +39,7 @@ function hunks(repo: Repo, before: string, after: string, deadline: number): str
   const scratch = mkdtempSync(join(tmpdir(), "ahub-projected-diff-"));
   try {
     const a = join(scratch, "before"), b = join(scratch, "after"); writeFileSync(a, before, { mode: 0o600 }); writeFileSync(b, after, { mode: 0o600 });
-    const diff = hubGitSync(["-C", repo.top, "diff", "--no-index", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=2", "--", a, b], { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: Math.ceil(Math.max(1, Math.min(DIFF_MS, deadline - performance.now()))), env: childEnv(process.env) });
+    const diff = hubGitSync(repoGitArgs(repo, ["diff", "--no-index", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=2", "--", a, b]), { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: Math.ceil(Math.max(1, Math.min(DIFF_MS, deadline - performance.now()))), env: repoGitEnv(repo) });
     if (diff.status !== 0 && diff.status !== 1) return undefined;
     const start = diff.stdout.indexOf("@@");
     if (start < 0) return diff.status === 0 ? "(projected text unchanged)" : undefined;

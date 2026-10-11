@@ -1269,7 +1269,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (privateSnapshotWindow()) return "(projected review unavailable: private snapshot window)";
     const created = task.history.find(entry => entry.event === "proposed")?.at;
     const from = created === undefined ? undefined : turnLog.taskStart(task.id, created);
-    if (!from || !hasTree(repo.top, from)) return "(projected review unavailable: original task snapshot is unknown)";
+    if (!from || !hasTree(repo, from)) return "(projected review unavailable: original task snapshot is unknown)";
     const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!)].map(path => relative(opts.cwd, resolve(opts.cwd, path)));
     if (!scopes.length) return "(projected review unavailable: task paths were not declared)";
     const to = snap(`task #${task.id} review`).tree;

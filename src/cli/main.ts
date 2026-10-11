@@ -1460,7 +1460,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const { start_tree: startTree, end_tree: endTree } = turn;
     if (!startTree || !endTree) fail(`turn ${id} has no ${startTree ? "end" : "start"} snapshot: the hub stopped during it, or a snapshot failed (see hub.log)`);
     const repo = repoOf(cwd) ?? fail(`${cwd} is not in a git work tree`);
-    if (!hasTree(repo.top, startTree) || !hasTree(repo.top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
+    if (!hasTree(repo, startTree) || !hasTree(repo, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
     // Another peer's turn that overlapped this one in time has its changes in this turn's diff as well.
     const undoConfig = projectConfig();
     const keep = Math.max(1, Number(undoConfig.snapshots.keep) || 20);

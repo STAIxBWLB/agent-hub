@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
 import type { Touch } from "./conflicts.ts";
 import { hubGitSync } from "./git.ts";
+import { realPath } from "./project.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 /**
@@ -15,10 +16,10 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
  * ponytail: the trees are unreferenced, so `git gc` may prune them after gc.pruneExpire (two weeks by default); undo
  * of an older turn says so. Refs under refs/agenthub/ would keep them, at the cost of showing up in the user's repo.
  */
-const git = (top: string, args: string[], env: Record<string, string> = {}) =>
-  hubGitSync(["-C", top, ...args], {
+const git = (top: string | Repo, args: string[], env: Record<string, string> = {}) =>
+  hubGitSync(repoGitArgs(top, args), {
     encoding: "utf8",
-    env: { ...childEnv(process.env), ...env },
+    env: { ...repoGitEnv(top), ...env },
     // These run inside the bus's state change: a hung git (a huge new directory, a stuck filter) must not freeze the hub.
     timeout: SNAPSHOT_TIMEOUT_MS,
   });
@@ -29,14 +30,51 @@ export interface Repo {
   top: string;
   dir: string;
   prefix: string;
+  shadow?: true;
+}
+
+/** Explicit flags keep the shadow work tree at its verified project root. */
+export function repoGitArgs(repo: string | Repo, args: string[]): string[] {
+  const top = typeof repo === "string" ? repo : repo.top;
+  return ["-C", top, ...(typeof repo !== "string" && repo.shadow ? ["--git-dir=" + repo.dir, "--work-tree=" + repo.top, "-c", "core.excludesFile=" + join(repo.top, ".agenthub", "ignore")] : []), ...args];
+}
+export function repoGitEnv(repo: string | Repo, env = process.env): NodeJS.ProcessEnv {
+  return { ...childEnv(env), ...(typeof repo !== "string" && repo.shadow ? { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_ATTR_NOSYSTEM: "1" } : {}) };
 }
 
 /** The repository holding `root`, or undefined when it is not inside a work tree. */
 export function repoOf(root: string): Repo | undefined {
   const r = git(root, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--show-prefix"]);
-  if (r.status !== 0) return undefined;
-  const [top, dir, prefix = ""] = r.stdout.replace(/\n$/, "").split("\n");
-  return top && dir ? { top, dir, prefix } : undefined;
+  if (r.status === 0) {
+    const [top, dir, prefix = ""] = r.stdout.replace(/\n$/, "").split("\n");
+    if (top && dir) return { top, dir, prefix };
+  }
+  const top = realPath(root), hub = join(top, ".agenthub"), dir = join(hub, "shadow.git");
+  const parent = lstatSync(hub, { throwIfNoEntry: false });
+  if (!parent?.isDirectory() || parent.isSymbolicLink()) return undefined;
+  const own = lstatSync(dir, { throwIfNoEntry: false });
+  if (!own?.isDirectory() || own.isSymbolicLink()) return undefined;
+  for (const name of ["objects", "refs", "hooks", "info"]) { const st = lstatSync(join(dir, name), { throwIfNoEntry: false }); if (!st?.isDirectory() || st.isSymbolicLink()) return undefined; }
+  for (const file of ["config", "HEAD"]) { const st = lstatSync(join(dir, file), { throwIfNoEntry: false }); if (!st?.isFile() || st.isSymbolicLink() || st.nlink !== 1) return undefined; }
+  if (existsSync(join(dir, "commondir")) || existsSync(join(dir, "objects/info/alternates"))) return undefined;
+  const ignore = lstatSync(join(hub, "ignore"), { throwIfNoEntry: false });
+  if (ignore && (!ignore.isFile() || ignore.isSymbolicLink() || ignore.nlink !== 1)) return undefined;
+  const repo: Repo = { top, dir: realPath(dir), prefix: "", shadow: true };
+  const probe = git(repo, ["rev-parse", "--absolute-git-dir"]);
+  return probe.status === 0 && realPath(probe.stdout.trim()) === repo.dir ? repo : undefined;
+}
+/** Opt-in creation only; a real repository is never replaced or modified. */
+export function initShadow(root: string): boolean {
+  const top = realPath(root), hub = join(top, ".agenthub"), dir = join(hub, "shadow.git"), existing = repoOf(top);
+  if (existing) { if (!existing.shadow) throw new Error("project already has a Git work tree; shadow mode is for non-git folders"); return false; }
+  const parent = lstatSync(hub, { throwIfNoEntry: false });
+  if (parent && (!parent.isDirectory() || parent.isSymbolicLink())) throw new Error(".agenthub must be a project directory, not a link");
+  if (lstatSync(dir, { throwIfNoEntry: false })) throw new Error("existing shadow metadata is invalid; nothing was replaced");
+  mkdirSync(hub, { recursive: true });
+  const result = hubGitSync(["init", "--bare", "--quiet", dir], { cwd: top, encoding: "utf8", timeout: SNAPSHOT_TIMEOUT_MS, env: { ...childEnv(process.env), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } });
+  if (result.status !== 0) throw new Error("could not initialize shadow repository");
+  writeFileSync(join(dir, "info/exclude"), ".agenthub/shadow.git/\n.agenthub/state/\n.agenthub/archive/\n.agenthub/config.local.json\n.agenthub/routing.local.toml\n", { mode: 0o600 });
+  return true;
 }
 
 /**
@@ -62,12 +100,12 @@ export function snapshot(repo: Repo): string | undefined {
       utimesSync(env.GIT_INDEX_FILE, atime, mtime);
     }
     // `ahub reset --all` archives hub.db (task text, PII included) under .agenthub/archive: never copy it either.
-    if (git(repo.top, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**", ":(exclude,glob)**/.agenthub/archive/**"], env).status !== 0) return undefined;
+    if (git(repo, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**", ":(exclude,glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(exclude,glob)**/.agenthub/shadow.git/**"] : [])], env).status !== 0) return undefined;
     // The copy starts from the user's index: hub state somebody tracked or staged is still in it, and the exclude above
     // only keeps `add` from touching it. Take it out explicitly; -f because staged state the hub has rewritten since
     // matches neither HEAD nor the file, which `rm --cached` otherwise refuses. Only the copy changes.
-    if (git(repo.top, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**", ":(glob)**/.agenthub/archive/**"], env).status !== 0) return undefined;
-    const r = git(repo.top, ["write-tree"], env);
+    if (git(repo, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**", ":(glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(glob)**/.agenthub/shadow.git/**"] : [])], env).status !== 0) return undefined;
+    const r = git(repo, ["write-tree"], env);
     return r.status === 0 ? r.stdout.trim() : undefined;
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -76,14 +114,14 @@ export function snapshot(repo: Repo): string | undefined {
 
 /** Project paths (relative to the top level) that differ between two trees. */
 export function changedPaths(repo: Repo, from: string, to: string): string[] {
-  const r = git(repo.top, ["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to, "--", scope(repo)]);
+  const r = git(repo, ["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to, "--", scope(repo)]);
   return r.status === 0 ? r.stdout.split("\0").filter(Boolean) : [];
 }
 
-const inTree = (top: string, tree: string, path: string) => git(top, ["rev-parse", "--verify", "--quiet", `${tree}:${path}`]).status === 0;
+const inTree = (top: string | Repo, tree: string, path: string) => git(top, ["rev-parse", "--verify", "--quiet", `${tree}:${path}`]).status === 0;
 
 /** Whether a snapshot's tree is still in the object store (`git gc` prunes unreferenced ones eventually). */
-export const hasTree = (top: string, tree: string): boolean => git(top, ["cat-file", "-e", `${tree}^{tree}`]).status === 0;
+export const hasTree = (top: string | Repo, tree: string): boolean => git(top, ["cat-file", "-e", `${tree}^{tree}`]).status === 0;
 
 export interface UndoPlan {
   restore: string[];
@@ -122,10 +160,10 @@ export function planUndo(repo: Repo, turn: { start_tree: string; end_tree: strin
 export function restore(repo: Repo, startTree: string, paths: string[]): void {
   // Removals first: after a case-only rename on a case-insensitive disk, `Foo.ts` and `foo.ts` are one file, and
   // removing the created spelling after restoring the old one would delete it.
-  const back = paths.filter((p) => inTree(repo.top, startTree, p));
+  const back = paths.filter((p) => inTree(repo, startTree, p));
   for (const path of paths.filter((p) => !back.includes(p))) rmSync(join(repo.top, path), { force: true });
   for (const path of back) {
-    if (git(repo.top, ["restore", `--source=${startTree}`, "--worktree", "--", literal(path)]).status !== 0) throw new Error(`could not restore ${path}`);
+    if (git(repo, ["restore", `--source=${startTree}`, "--worktree", "--", literal(path)]).status !== 0) throw new Error(`could not restore ${path}`);
   }
 }
 
