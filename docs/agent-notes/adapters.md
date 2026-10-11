@@ -39,3 +39,5 @@ Scope: the Codex, ACP and Pi adapters and the Pi extension (turn `generation` an
 - Refuse ACP permissions while offline or waiting for watchdog cancellation before consulting automatic or human approvers. Abort pending permission signals on watchdog, offline transition and stop; the daemon withdraws their registered console approvals before any late person answer. Restart creates new requests without reviving withdrawn ones (#311).
 
 - Apply QWEN_MODE_IDS only to a production qwen025 adapter with verified qwen-code 0.25.0 native identity and advertised ids; legacy benchmark ACP stays unmanaged. Await the native acknowledgement before bus admission, preserve existing approval fences, and never map auto or plan. No Qwen quota classification exists until a pinned native refusal is observed.
+
+- ACP `onActivity` is a closed, transient person-only projection. Never publish it through the bus, log/event writers, UI, tools or memory. Emit only for an active turn; latch private envelopes and associated PII work, including unreadable privacy state, and discard pending chunks on turn teardown. Native terminal references do not authorize filesystem/terminal RPC reads.

@@ -1,3 +1,4 @@
+import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc } from "./sdlc.ts";
@@ -368,6 +369,7 @@ interface Client {
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
   tail?: () => void;
+  watch?: () => void;
 }
 type Sock = ServerWebSocket<Client>;
 
@@ -559,6 +561,7 @@ export async function startDaemon(opts: DaemonOptions) {
       close(sock) {
         consoles.delete(sock);
         sock.data.tail?.();
+        sock.data.watch?.();
         const peer = sock.data.peer ? bus.peers.get(sock.data.peer) : undefined;
         if (peer instanceof WsPeer) {
           peer.detach(sock);
@@ -1036,6 +1039,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
   };
+  const activityRings = { kimi: new ActivityRing(), qwen: new ActivityRing() };
   const contextPii = (peer: PeerId) => board.list().some(t => t.state !== "approved" && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
   const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {
     // One outstanding request per peer. A quota transition may proceed without a summary rather than steal a context waiter.
@@ -2288,6 +2292,8 @@ export async function startDaemon(opts: DaemonOptions) {
       if (args.mode === "tui") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
       const launch = buildQwenLaunch(config.qwen_cmd, args.model);
       const qwen = new AcpPeer("qwen", {
+        onActivity: item => activityRings.qwen.append(item),
+        isPrivateTurn: () => !!turns.get("qwen")?.private || contextPii("qwen"),
         cmd: [launch.cmd, ...launch.args], qwen025: true, permissionMode: permissionMode("qwen"),
         ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
         cwd: opts.cwd, watchdogMs: config.watchdog_ms, onPermission,
@@ -2317,6 +2323,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const launch = buildKimiLaunch(config.kimi_cmd, args.model);
       const cmd = [launch.cmd, ...launch.args];
       const kimi = new AcpPeer("kimi", {
+        onActivity: item => activityRings.kimi.append(item),
+        isPrivateTurn: () => !!turns.get("kimi")?.private || contextPii("kimi"),
         cmd,
         permissionMode: permissionMode("kimi"),
         ...(args.model ? { launchModel: args.model } : {}),
@@ -3693,6 +3701,20 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!c.peer) return void reply({ t: "silenced", ok: false, error: "silenced is for a peer" });
         const owners = Array.isArray(msg.owners) ? msg.owners.filter((o: unknown): o is string => typeof o === "string").slice(0, 20) : [];
         return void reply({ t: "silenced", ok: true, owners: owners.filter((o: string) => !!tasks.silenced(c.peer!, o)) });
+      }
+      case "watch": {
+        if (c.role !== "console") return void reply({ ok: false, error: "watch is a person-only console command" });
+        if (msg.peer !== "kimi" && msg.peer !== "qwen") return void reply({ ok: false, error: "watch supports headless kimi and qwen only" });
+        const peer = msg.peer as "kimi" | "qwen";
+        if (peer === "kimi" && (kimiSessionMode ?? startMode("kimi")) === "tui") return void reply({ ok: false, error: "Kimi is in pull-only TUI mode; use its native terminal or start headless" });
+        if (!membershipAllowed(peer)) return void reply({ ok: false, error: `${peer} is off roster` });
+        c.watch?.();
+        c.watch = activityRings[peer].subscribe(item => {
+          // Bound slow observers instead of accumulating command output on the socket.
+          if (sock.getBufferedAmount() > 256 * 1024) { sock.close(1013, "watch observer is too slow"); return; }
+          sock.send(JSON.stringify({ t: "activity", peer, item }));
+        });
+        return void reply({ ok: true, t: "watch", peer });
       }
       case "tail":
         if (c.role !== "console" || c.tail) return;

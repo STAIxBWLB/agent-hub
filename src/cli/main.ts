@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
 import { configureJcodeMcp } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
@@ -951,6 +952,30 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { hub.close(); }
   },
 
+  watch: async () => {
+    const peer = args[0];
+    if (peer !== "kimi" && peer !== "qwen") fail("usage: ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]");
+    if (args.slice(1).some(arg => arg !== "--no-thoughts" && !/^--color=(auto|always|never)$/.test(arg))) fail("unsupported watch option");
+    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice(8), { isTTY: !!process.stdout.isTTY, ...process.env });
+    if (color instanceof Error) fail(color.message);
+    const hub = await connect();
+    const input = process.stdin;
+    const raw = !!input.isRaw;
+    let leave = () => {};
+    const closed = new Promise<void>(resolve => { leave = resolve; });
+    const key = (chunk: Buffer) => { if (chunk.includes(3) || chunk.toString().includes("q")) leave(); };
+    hub.onClose = leave;
+    process.on("SIGINT", leave);
+    try {
+      await attachWatch(hub, peer, line => console.log(line), { columns: () => process.stdout.columns || 80, color, noThoughts: args.includes("--no-thoughts") });
+      if (input.isTTY) { input.setRawMode(true); input.on("data", key); input.resume(); }
+      await closed;
+    } finally {
+      input.off("data", key); process.off("SIGINT", leave);
+      if (input.isTTY) input.setRawMode(raw);
+      input.pause(); hub.close();
+    }
+  },
   tail: async () => {
     const hub = await connect();
     hub.onPush = (msg) => {

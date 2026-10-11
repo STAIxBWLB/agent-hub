@@ -2329,3 +2329,9 @@ the queue.
 - ACP session MCP arrays are ignored natively, so the person launcher manages only agent-hub-jcode, shared:false, in project .jcode/mcp.json. Later override layers, foreign names and links refuse. Daemon starts verify read-only. .jcode is outside scoped grants.
 - Native policy is unmanaged and has no hub sandbox. Hub permission mappings refuse; native quota/consumption are not inferred. Every task mutation stays in Tasks and PII remains at existing redaction/routing boundaries.
 - Native 0.94.0 load lacks identity proof. Controlled recovery refuses before effects, crash recovery is manual and a load without an exact echoed id refuses before a prompt or restored claim. Real provider/tool/teardown evidence and comparative measurement remain unverified.
+
+# ACP watch amendment, 2026-10-11 (#286)
+
+- Headless Kimi/Qwen expose `watch` to console-role clients: bounded memory replay followed by activity pushes, no protocol bump, no peer input or approvals from the view. The CLI displays safe wrapped text; private/PII turns display a stub.
+- Activity contains delivery ids/senders, message/thought chunks, bounded tool summaries, plans, permission request/outcome ids and turn end. It never enters persistent events/logs, UI, tools or cloud memory. Existing final answers still travel through the answer bus.
+- Kimi TUI defaults remain pull-only. Qwen TUI and native visualizer support remain gated by unverified T0 checks. See [verification](../verification/2026-10-11-acp-watch-t0.md).
