@@ -24,6 +24,7 @@ export interface PrEvidence {
   checks: { name: string; state: "passed" | "failed" | "pending" | "unknown" }[];
   review: "approved" | "changes_requested" | "unknown";
   unresolved: number | null;
+  pendingReviews: number | null;
   paths: string[];
   mergeCommit?: string;
 }
@@ -90,6 +91,7 @@ export function parsePrEvidence(value: unknown): PrEvidence {
   const paths = p.files.map((f: Record<string, unknown>) => { if (typeof f.path !== "string" || !f.path || f.path.length > 1000) throw new Error("PR readback: invalid file identity"); return f.path; });
   return { head: p.headRefOid, state: p.state, checks, paths,
     review: p.reviewDecision === "APPROVED" ? "approved" : p.reviewDecision === "CHANGES_REQUESTED" ? "changes_requested" : "unknown",
+    pendingReviews: Array.isArray(p.reviewRequests) && p.reviewRequests.length <= 100 && p.reviewRequests.every((r: unknown) => !!r && typeof r === "object") ? p.reviewRequests.length : null,
     unresolved: Number.isSafeInteger(p.unresolvedThreads) && p.unresolvedThreads >= 0 ? p.unresolvedThreads : null,
     ...(sha(p.mergeCommit?.oid) ? { mergeCommit: p.mergeCommit.oid } : {}) };
 }
@@ -110,6 +112,7 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
       if (!matches.length || matches.some(c => c.state !== "passed")) blockers.push(`required check ${name}: not successful on current head`);
     }
     if (evidence.review !== "approved") blockers.push("GitHub review approval missing or changes requested");
+    if (evidence.pendingReviews !== 0) blockers.push("review requests pending or unknown");
     if (evidence.unresolved !== 0) blockers.push("review threads unresolved or unknown");
   }
   return { mode: config.mode, stage, blockers, ready: blockers.length === 0,
@@ -142,7 +145,7 @@ export const sdlcGh: SdlcGh = args => new Promise((resolve) => {
 export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh): Promise<PrEvidence | undefined> {
   if (!repo(receipt.repo) || !id(receipt.pr)) return undefined;
   try {
-    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,files,mergeCommit"]);
+    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,mergeCommit"]);
     if (view.code !== 0) return undefined;
     const [owner, name] = receipt.repo.split("/");
     const threads = await run(["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}}}", "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${receipt.pr}`]);

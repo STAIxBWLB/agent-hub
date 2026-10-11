@@ -12,7 +12,7 @@ import { parsePrEvidence, readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, touch
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 const config = (mode: SdlcMode) => sdlcConfig({ mode, required_checks: ["gate"] });
-const raw = (head = A, conclusion = "SUCCESS") => ({ headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", statusCheckRollup: [{ name: "gate", conclusion }], files: [{ path: "src/file.ts" }], unresolvedThreads: 0 });
+const raw = (head = A, conclusion = "SUCCESS") => ({ headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion }], files: [{ path: "src/file.ts" }], unresolvedThreads: 0 });
 
 test("SDLC defaults off and rejects unknown keys, stages, duplicate checks and unsafe artifact identities (#257)", () => {
   expect(sdlcConfig(undefined).mode).toBe("off");
@@ -94,4 +94,12 @@ test("lifecycle evidence cannot be recorded by an unrelated peer or leaked from 
 
 test("merge conflict projection uses exact paths and does not choose a landing action (#257)", () => {
   expect(touchingPrs([{ pr: 1, paths: ["src/a.ts"] }, { pr: 2, paths: ["src/a.ts", "src/b.ts"] }, { pr: 3, paths: ["src/a.tsx"] }])).toEqual([{ before: 1, after: 2, paths: ["src/a.ts"] }]);
+});
+
+
+test("pending or unavailable GitHub review requests never satisfy the review gate (#257)", async () => {
+  const receipt = sdlcReceipt({ repo: "owner/repo", pr: 1, issue: 2, reviewedHead: A, localHead: A, localResult: "passed" });
+  for (const reviewRequests of [undefined, null, [{ login: "reviewer" }]]) {
+    expect(sdlcStatus(config("enforce"), receipt, parsePrEvidence({ ...raw(), reviewRequests })).blockers).toContain("review requests pending or unknown");
+  }
 });
