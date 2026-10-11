@@ -180,8 +180,8 @@
     {
       "id": "roster-u-roster-group",
       "file": "src/ui/index.html",
-      "search": "const SETTING_GROUPS = ['Roster', 'Roles', 'Permissions', 'Start', 'Routing', 'Switches']",
-      "replacement": "const SETTING_GROUPS = ['Roles', 'Permissions', 'Start', 'Routing', 'Switches']",
+      "search": "const SETTING_GROUPS = ['Roster', 'Permissions', 'Roles', 'Start', 'Routing', 'Switches']",
+      "replacement": "const SETTING_GROUPS = ['Permissions', 'Roles', 'Start', 'Routing', 'Switches']",
       "testFile": "test/settings.test.ts",
       "testName": "AC7: the Settings section renders every row from the registry with its source, apply time and pending restart, and every control has a label"
     },
