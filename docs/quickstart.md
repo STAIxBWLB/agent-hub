@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.22
+bun add -g github:STAIxBWLB/agent-hub#v0.12.23
 ahub setup
 ```
 
@@ -86,7 +86,11 @@ Use the page to pause/resume a peer, send a console message, propose/assign task
 and allow/deny agent permission requests. Local-worker and Pi requests show no tool
 contents: inspect them with `ahub tail`, then use `ahub permit <id> <option>` to
 allow. They can be denied on the page. PII task details remain available only via
-`ahub task show <id>` in the terminal.
+`ahub task show <id>` in the terminal. The page also starts a peer in its start
+mode (a TUI opens in a terminal when the hub has a terminal provider) and shows
+the settings; raising one needs `ahub ui --settings` or `ahub settings` in a
+terminal. See the operations guide, "Settings from the dashboard and the
+terminal" and "Start modes".
 
 `ahub ui --no-open` prints a one-time link instead of launching a browser. Open it
 within 60 seconds. A session expires after one hour; run `ahub ui` again. Restarting
@@ -108,8 +112,9 @@ commands use the nearest project inside that Git working-tree boundary.
 
 Open `ahub ui --all` from any directory to manage all registered hubs. Use Start
 to launch an initialized project, Use to view a running project, and Stop to stop
-the selected hub. Stop confirmation names its root. Terminal agent launch is
-still `ahub --project <path> claude` or `ahub --project <path> codex`.
+the selected hub. Stop confirmation names its root. Without a terminal provider,
+agent launch is still `ahub --project <path> claude` or `ahub --project <path> codex`
+in a terminal.
 
 The manager is independent: `ahub ui --all --stop` closes its browser sessions
 without stopping project hubs. One-time links and session expiry work the same

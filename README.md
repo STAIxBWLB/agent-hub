@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.12.22, control protocol 16. Durable delivery records distinguish queued
+Status: 0.12.23, control protocol 16. Durable delivery records distinguish queued
 work from uncertain execution. The [smoke checklist](docs/smoke.md) records
 verified paths and remaining prerequisites.
 
@@ -28,7 +28,7 @@ cd <your project> && ahub init && ahub up
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.22 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.12.23 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -153,7 +153,12 @@ browser cannot be opened.
 Open the link within 60 seconds; the browser session lasts one hour.
 
 The dashboard can send console messages, propose and assign tasks, pause or resume
-peers, and answer approvals. Budget pauses still require the terminal override.
+peers, answer approvals, start a peer in its start mode and show the settings.
+An ordinary session changes the safe switches and lowers a mode to `ask`; the
+rest needs `ahub ui --settings` or `ahub settings` in a terminal. See
+[Settings](docs/operations.md#settings-from-the-dashboard-and-the-terminal) and
+[Start modes](docs/operations.md#start-modes-tui-by-default-headless-as-opt-in).
+Budget pauses still require the terminal override.
 Private envelopes and PII tasks stay redacted. Local-worker and Pi tool details and
 allow decisions stay in `ahub tail` / `ahub permit`; the page can deny them.
 No dashboard port is opened until requested. See [the session security model](docs/security.md#local-dashboard-sessions-issue-6).
@@ -178,7 +183,8 @@ ahub ui --all
 
 The unified dashboard lists registered roots and opens their boards, streams,
 messages, approvals and budgets. It can start hubs and stop a selected hub after
-confirmation. Launch Claude/Codex TUIs from a terminal. The manager stays available
+confirmation. Its Start control opens a peer's TUI only through a terminal provider
+(`terminal.open` or Orca); without one, launch Claude/Codex TUIs from a terminal. The manager stays available
 when a project stops; `ahub ui --all --stop` stops only the manager. Existing
 `ahub ui` still opens the current project's dashboard.
 

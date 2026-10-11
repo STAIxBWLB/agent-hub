@@ -1,6 +1,6 @@
 # Native adapters and spawned agents
 
-Scope: the Codex, ACP and Pi adapters and the Pi extension (turn `generation` and `activity` events), peer turn state, approvals, and the agent processes the hub spawns and stops. Read before editing `src/adapters/`, `src/pi/`, `src/hub/peers.ts`, `src/hub/permission-mode.ts`, `src/hub/tool-refusal.ts`, `src/hub/child-process.ts`, `src/hub/lifecycle.ts` (shutdown deadline), `src/memory/capture.ts` (session end) or the process-tree stop in `scripts/benchmarks/teardown.ts`, or before adding a native peer.
+Scope: the Codex, ACP and Pi adapters and the Pi extension (turn `generation` and `activity` events), peer turn state, approvals, and the agent processes the hub spawns and stops. Read before editing `src/adapters/`, `src/pi/`, `src/hub/peers.ts`, `src/hub/permission-mode.ts`, `src/hub/tool-refusal.ts`, `src/hub/child-process.ts`, `src/hub/lifecycle.ts` (shutdown deadline), `src/hub/start-mode.ts`, `src/hub/terminal-open.ts`, `src/memory/capture.ts` (session end) or the process-tree stop in `scripts/benchmarks/teardown.ts`, or before adding a native peer.
 
 - Codex: the adapter never sends its own `initialize`. It is a proxy; hub requests use negative ids and their responses must not reach the TUI.
 - A durable Codex steer stays pending while its native turn runs. Its RPC may answer after `turn/completed`: bound unanswered replies from that turn's end, requeue a definitive late refusal, and hold a late acceptance as uncertain without attaching it to a later turn's audience (#296).
