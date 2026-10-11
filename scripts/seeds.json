@@ -680,6 +680,30 @@
       "replacement": "missing: []",
       "testFile": "test/profiles.test.ts",
       "testName": "profile fact_check runs deterministic citation evidence and cannot pass on an unresolved source (#259)"
+    },
+    {
+      "id": "profile-cli-dry-flags",
+      "file": "src/cli/main.ts",
+      "search": "takeFlags(args.filter(arg => arg !== \"--dry-run\" && arg !== \"--json\"), [\"--profile\"], [])",
+      "replacement": "takeFlags(args, [\"--profile\"], [])",
+      "testFile": "test/profiles.test.ts",
+      "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
+    },
+    {
+      "id": "profile-cli-positional-alias",
+      "file": "src/cli/main.ts",
+      "search": "Object.hasOwn(projectProfile(projectConfig().profile).classes, flags.rest[0] ?? \"\")",
+      "replacement": "false",
+      "testFile": "test/profiles.test.ts",
+      "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
+    },
+    {
+      "id": "profile-accept-union",
+      "file": "src/hub/hub-tools.ts",
+      "search": "plan: acceptPlan",
+      "replacement": "plan",
+      "testFile": "test/profiles.test.ts",
+      "testName": "accept schemas retain both document and dev plan fields across profile changes (#259)"
     }
   ]
 }

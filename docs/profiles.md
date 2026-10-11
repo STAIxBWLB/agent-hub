@@ -1,6 +1,6 @@
 # Project profiles (#259)
 
-- `dev` remains the default. Its config/AGENTS template, flow contract, task-tool schema and legacy task representation retain their existing bytes/shape.
+- `dev` remains the default. Its config/AGENTS template, flow contract, proposal-tool schema and legacy task representation retain their existing bytes/shape.
 - `ahub init --profile research|writing|general` creates missing defaults and that profile's managed AGENTS block. Repeated init reads the existing shared profile. An explicit conflicting profile refuses before any file write; init never overwrites existing project policy. Change profile deliberately in config, then refresh instructions.
 - Profiles are shipped data at `templates/profiles/<name>.json`: class aliases, plan keys, flow-role guidance, optional catalog ids and AGENTS text. Config role/capability/permission settings still own authority. Profile-data overrides and converters are later slices.
 
@@ -33,3 +33,5 @@
 - Peer guidance and profile-specific task schemas use existing MCP/native/local paths. Research defaults use the #295 dev/research catalog, with bases already held. Writing/general do not add catalog groups before measurement.
 - Board/public projections, route explain, terminal/dashboard cards and #247 events/records carry the profile alias and base. Native model ingestion and context retention remain unverified.
 - Document text projections, shadow git for non-git folders, pii.paths/data.readonly policy, custom profile overrides and deeper lifecycle integration remain open in #259. Existing file policy still applies; profile guidance does not itself enforce read-only data.
+
+- Accept schemas expose all supported plan fields because an open task keeps its stored profile across a project profile change. Tasks still normalizes by that stored profile; no new plan field changes authority.

@@ -13,11 +13,12 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting, assign } from "../src/hub/routing.ts";
 import { citationKeys } from "../src/hub/citations.ts";
+import { realPath } from "../src/hub/project.ts";
 import { taskRecords } from "../src/hub/research.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const f of cleanup.splice(0).reverse()) await f(); });
 const until = async (f: () => boolean) => { for (let i = 0; i < 300 && !f(); i++) await Bun.sleep(5); expect(f()).toBe(true); };
-const root = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-profile-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
+const root = () => { const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-profile-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 class Peer extends BasePeer {
   async start() { this.setState("idle"); } async stop() {} async deliver() {}
 }
@@ -84,4 +85,34 @@ test("new document plan fields retain existing PII routing and public redaction 
   const task = await tasks.propose("user", { title: "Private claims", class: "fact_check", owner: "local", plan: { claims: [marker], sources: [marker] } });
   expect(tasks.isPii(task)).toBe(true); expect(task.owner).toBe("local");
   expect(JSON.stringify(tasks.publicView(board.get(task.id)!))).not.toContain(marker);
+});
+async function profileCli(dir: string, args: string[]) {
+  const cli = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(dir, `cli-${crypto.randomUUID()}.ts`);
+  writeFileSync(wrapper, `for (const name of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete process.env[name];\nprocess.env.AGENTHUB_HOME = ${JSON.stringify(join(dir, "home"))};\nprocess.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}];\nawait import(${JSON.stringify(cli)});\n`);
+  const proc = Bun.spawn([process.execPath, wrapper], { cwd: dir, stdin: "ignore", stdout: "pipe", stderr: "pipe" }), timer = setTimeout(() => proc.kill("SIGKILL"), 8000);
+  try { const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]); return { code, stdout, stderr }; }
+  finally { clearTimeout(timer); }
+}
+test("profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)", async () => {
+  const dir = root();
+  for (const args of [["init", "--dry-run"], ["init", "--dry-run", "--json"], ["init", "--profile", "research", "--dry-run"], ["init", "--profile", "research", "--dry-run", "--json"]]) {
+    const preview = await profileCli(dir, args); expect(preview.code, preview.stderr).toBe(0); expect(preview.stdout).toContain("config.json");
+  }
+  expect(planInit(dir)).toHaveLength(4); init(dir, "research");
+  const { DEFAULT_CONFIG, startDaemon } = await import("../src/hub/daemon.ts");
+  const daemon = await startDaemon({ cwd: dir, stateDir: join(dir, ".agenthub/state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, profile: "research", memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } }); cleanup.push(() => daemon.stop());
+  const result = await profileCli(dir, ["task", "propose", "survey", "API landscape", "--owner", "user"]);
+  expect(result.code, result.stderr).toBe(0); expect(result.stderr).toContain('"survey" was taken as the class');
+  const persisted = new Board(join(dir, ".agenthub/state/hub.db")); cleanup.push(() => persisted.close());
+  expect(persisted.list()[0]).toMatchObject({ title: "API landscape", class: "summarize", profileClass: "survey" });
+});
+test("accept schemas retain both document and dev plan fields across profile changes (#259)", async () => {
+  for (const profile of PROFILE_NAMES) {
+    const schema = profileTaskTools(profile).find(t => t.name === "hub_task_accept")!.inputSchema.properties.plan as { properties: Record<string, unknown> };
+    expect(Object.keys(schema.properties).sort()).toEqual(["paths", "symbols", "signatures", "insertion_points", "sections", "sources", "claims"].sort());
+  }
+  const { tasks, board } = await rig("research");
+  const legacy = board.propose("codex", { title: "Legacy dev task", class: "implement", plan: { paths: ["a.ts"] } }); board.update(legacy.id, "codex", "assigned", { state: "in_progress", owner: "codex" });
+  tasks.accept("codex", legacy.id, { symbols: ["LegacySymbol"], sections: ["ignored"] }); expect(board.get(legacy.id)!.plan).toEqual({ symbols: ["LegacySymbol"] });
 });
