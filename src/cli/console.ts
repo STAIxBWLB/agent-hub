@@ -136,7 +136,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!active) return;
       const [status, budget, tasks, queue, ready] = replies;
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
-      if (status.status?.peers) state.peers = status.status.peers;
+      if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
       if (budget.budget) state.budget = budget.budget;
       if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {

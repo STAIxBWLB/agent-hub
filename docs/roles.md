@@ -28,8 +28,8 @@ Example shared or machine-local config:
 # Commands and current scope
 
 - `ahub role list [--group <group>]` lists metadata, layers and hashes. `ahub role show <id>` displays the selected definition. Both use terminal sanitization. `ahub doctor` reports invalid definitions or assignments.
-- Catalog assignment/clear through person-only settings, pending session marks and board cards remain later slices. Task proposal roles and review-duty notices are supported as described below. No CLI or hub tool writes a role definition.
-- The delivered slices cover the library, bounded config/session publication, read-only diagnostics and task role guidance. Native model ingestion, compaction retention and one live role/task cycle are unverified; no study was run in the solo implementation. The parent #295 remains open for person assignment, full session records, surfaces and measurement criteria.
+- Person catalog assignment/clear, settings controls and pending session marks are supported. Board cards remain a later #263 slice. Task proposal roles and review-duty notices are supported as described below. No CLI or hub tool writes a role definition.
+- The delivered slices cover the library, bounded config/session publication, read-only diagnostics and task role guidance. Native model ingestion, compaction retention and one live role/task cycle are unverified; no study was run in the solo implementation. The parent #295 remains open for full session records, remaining surfaces and measurement criteria.
 
 # Attribution
 
@@ -41,8 +41,15 @@ Example shared or machine-local config:
 - `hub_task_propose` accepts an optional `role` catalog id. Tasks refuses unknown ids or class mismatches before storing a row, with the allowed ids for the task base class. Research/writing aliases use their existing base class. Role ids never change routing, flow roles or permission policy.
 - The board persists the id across restart and ownership changes. Assignment notices include bounded sanitized guidance; review requests include the role's Review duties. If this daemon prepared that native session's matching contract, the owner notice names the id without repeating its body. Externally started plugin sessions have no such receipt and retain the task guidance.
 - PII stubs, task events and research records expose only the role id/identity, never the private task text or role body. A removed definition leaves an id-only unavailable notice.
-- Person task/session role edits, dashboard/console assignment surfaces, session roles in research records and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.
+- Session roles in research records, board cards and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.
 
 - Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.
 
 - Task research records retain the original proposal role identity when that event is available. Reloaded definition hashes on later task events do not replace it. A missing proposal or original hash remains unknown for live aggregation and backfill.
+
+# Person assignment controls
+
+- `ahub role assign <peer> <id>` adds one id to that peer's configured selection, up to two. `ahub role clear <peer> [<id>]` clears one id or all. `ahub settings set catalog_roles.<peer> inherit` restores shared/profile selection. Explicit empty lists disable catalog guidance.
+- The Roles settings group uses the same registry, machine-local write and undo path. Known ids must match a flow base the peer holds; no role definition or flow authority is editable there. Shared config is never changed. Guidance changes apply at the next peer start.
+- Status, console peer detail and dashboard distinguish configured guidance from a prepared active session, with pending marks. An external MCP/TUI session without a preparation receipt remains unconfirmed; configuration is not model-consumption proof. Definition file changes still require a daemon/MCP restart.
+- `ahub task role <id> <role|none>` changes guidance through Tasks for open tasks only. It keeps ownership, class and permissions and notifies current holders with bounded guidance. Approved roles remain historical. Existing task role identity in research records is not overwritten by later changes.

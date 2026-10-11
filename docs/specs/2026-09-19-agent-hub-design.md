@@ -2379,3 +2379,9 @@ the queue.
 - This slice does not add person role mutation commands/settings or infer that an externally started Claude/plugin session consumed its roles. Those assignment surfaces and native ingestion/measurement remain follow-ups.
 
 - Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.
+
+# Person role control amendment, 2026-10-12 (#295)
+
+- Catalog-role settings are person-only registry entries, stored only in config.local.json and applied at the next peer start. At most two compatible ids per supported peer; explicit empty disables and inherit restores shared/profile defaults. Flow authority, routing and permission policies remain independent.
+- Existing task roles change only through Tasks for a console person, before approval. The saved change keeps ownership/class and sends bounded sanitized guidance to current holders. It never rewrites the original proposal identity in research evidence.
+- Status/UI role preparation and pending fields are advisory transport/configuration metadata, not proof of model consumption. External plugin/TUI sessions without a receipt remain unconfirmed. Session research attribution and #263 board-card work remain follow-ups.
