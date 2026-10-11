@@ -1,3 +1,4 @@
+import { projectedDiff } from "./projected-diff.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, type ProfileName } from "./profiles.ts";
@@ -14,7 +15,7 @@ import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation
 import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
@@ -77,7 +78,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
+import { changedPaths, hasTree, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
 import { isStartablePeer, peerStartConfig, PEER_START_RETRY_MS, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
@@ -856,6 +857,7 @@ export async function startDaemon(opts: DaemonOptions) {
     piiPaths: config.pii?.paths,
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
+    projectedReview: task => reviewProjection(task),
     sdlc: { config: () => lifecycleConfig },
     board,
     bus,
@@ -1091,6 +1093,13 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "proposed" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
+    if (h.event === "proposed" && projections.enabled && turnLog) {
+      const created = t.history.find(entry => entry.event === "proposed")?.at;
+      if (created !== undefined) {
+        const tree = privateSnapshotWindow() ? undefined : snap(`task #${t.id} proposal`).tree;
+        try { turnLog.rememberTaskStart(t.id, created, tree); } catch { log(`task #${t.id} projection baseline unavailable`); }
+      }
+    }
     supervision.taskChanged(t, h);
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
     const turn = t.owner ? turns.get(t.owner) : undefined;
@@ -1251,6 +1260,23 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return { tree, ms: Math.round(performance.now() - t0) };
   };
+  function privateSnapshotWindow(): boolean {
+    return [...turns.values()].some(turn => turn.private) || board.list().some(task => task.state !== "approved" && tasks.isPii(task));
+  }
+  function reviewProjection(task: Task): string | undefined {
+    if (!projections.enabled || tasks.isPii(task)) return undefined;
+    if (!repo || !turnLog) return "(projected review unavailable: snapshots are disabled or unavailable)";
+    if (privateSnapshotWindow()) return "(projected review unavailable: private snapshot window)";
+    const created = task.history.find(entry => entry.event === "proposed")?.at;
+    const from = created === undefined ? undefined : turnLog.taskStart(task.id, created);
+    if (!from || !hasTree(repo.top, from)) return "(projected review unavailable: original task snapshot is unknown)";
+    const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!)].map(path => relative(opts.cwd, resolve(opts.cwd, path)));
+    if (!scopes.length) return "(projected review unavailable: task paths were not declared)";
+    const to = snap(`task #${task.id} review`).tree;
+    if (!to) return "(projected review unavailable: current snapshot is unknown)";
+    const paths = changedPaths(repo, from, to).filter(path => { const local = path.slice(repo.prefix.length); return scopes.some(scope => !scope || local === scope || local.startsWith(scope + "/")); });
+    return projectedDiff({ repo, from, to, paths, projections, deny: config.local.deny, nameable: tasks.nameable, privatePath: path => matchesPolicy(opts.cwd, join(repo.top, path), config.pii?.paths ?? []) });
+  }
   const delta = tokenDeltas();
   /** Tokens a peer used, as increments: Kimi reports a session total (turned into increments below), Codex increments. */
   const addTokens = (peer: PeerId, n: number): number => {

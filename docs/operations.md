@@ -2526,3 +2526,8 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 - Use `ahub role assign <peer> <id>` or `ahub role clear <peer> [<id>]`, or the dashboard Roles settings group. The selection is bounded to two compatible catalog ids, writes only machine-local settings and applies at the next peer start. Inherit and explicit no roles are distinct.
 - Change an open task's guidance with `ahub task role <id> <role|none>`. Agent shells and peer/tools control clients cannot use these mutation commands. Details and unconfirmed native consumption: [roles](roles.md).
+
+# Document projection review and undo
+
+- Machine-local text_projection also supplies bounded review and reverse undo previews from stored raw snapshots. Task-proposal baselines survive restart and reviewer changes; missing/private/pruned evidence is unavailable. See [text projections](text-projection.md) for caps and converter requirements.
+- Undo remains a raw-file operation: projected text cannot bypass later-edit, concurrency or unknown-turn refusals. Native model/account ingestion remains unverified.

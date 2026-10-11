@@ -119,3 +119,25 @@ test.skipIf(process.platform !== "darwin")("historic cache distinguishes extensi
   const docx=projections.projectBytes(join(dir,"document.docx"),raw), hwpx=projections.projectBytes(join(dir,"document.hwpx"),raw);
   expect(docx?.text).toBe("docx"); expect(hwpx?.text).toBe("hwpx"); expect(docx?.rawBlob).toBe(hwpx?.rawBlob);
 });
+
+test.skipIf(process.platform!=="darwin")("historic projection deadline rejects cached values and stops slow conversion within the shared budget (#259)",()=>{
+  const dir=root(), converter=join(dir,"slow.sh"), file=join(dir,"paper.docx");writeFileSync(converter,"#!/bin/sh\n/bin/cat \"$1\"\n",{mode:0o755});
+  const projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":[converter,"{input}"]})}), bytes=Buffer.from("historic");
+  expect(projections.projectBytes(file,bytes)?.text).toBe("historic");expect(projections.projectBytes(file,bytes,0)).toBeUndefined();
+  writeFileSync(converter,"#!/bin/sh\n/bin/sleep 30 &\nwait\n",{mode:0o755});const started=performance.now();expect(projections.projectBytes(file,bytes,started+300)).toBeUndefined();expect(performance.now()-started).toBeLessThan(2000);
+});
+
+test.skipIf(process.platform!=="darwin")("projection helper termination stops its owned converter and forked descendants (#259)",async()=>{
+  const dir=root(), converter=join(dir,"fork.sh"), {profile}=await import("../src/local/sandbox.ts");writeFileSync(converter,"#!/bin/sh\n/bin/sleep 30 &\nwait\n",{mode:0o755});
+  const helper=Bun.spawn([process.execPath,join(import.meta.dir,"../src/hub/projection-exec.ts")],{cwd:dir,stdin:"pipe",stdout:"pipe",stderr:"pipe"});
+  helper.stdin.write(JSON.stringify({cwd:dir,sandbox:profile(dir,false,undefined,undefined,["."]),argv:[converter]}));helper.stdin.end();
+  const rows=()=>{const p=Bun.spawnSync(["/bin/ps","-axo","pid=,ppid=,stat="],{stdout:"pipe",stderr:"pipe"});return p.stdout.toString().trim().split("\n").map(line=>{const [pid,parent,state]=line.trim().split(/\s+/);return {pid:Number(pid),parent:Number(parent),state:state??""};});};
+  const descendants=()=>{const all=rows(), found=new Set<number>([helper.pid]);for(let i=0;i<4;i++)for(const row of all)if(found.has(row.parent))found.add(row.pid);found.delete(helper.pid);return [...found];};
+  let owned:number[]=[];
+  try {
+    for(let i=0;i<200 && owned.length<2;i++){owned=descendants();if(owned.length<2)await Bun.sleep(10);}expect(owned.length).toBeGreaterThanOrEqual(2);
+    helper.kill("SIGTERM");await helper.exited;
+    const running=()=>rows().filter(row=>owned.includes(row.pid)&&!row.state.startsWith("Z")).map(row=>row.pid);
+    for(let i=0;i<200 && running().length;i++)await Bun.sleep(10);expect(running()).toEqual([]);
+  }finally{if(helper.exitCode===null)helper.kill("SIGTERM");await helper.exited;await new Response(helper.stdout).text();await new Response(helper.stderr).text();}
+});

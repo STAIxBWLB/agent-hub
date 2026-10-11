@@ -912,6 +912,70 @@
       "replacement": "preparedSessionRoleIdentities.delete(peer);",
       "testFile": "test/role-settings.test.ts",
       "testName": "native fallback preamble records explicit empty preparation for unavailable catalog roles (#295)"
+    },
+    {
+      "id": "projection-task-baseline-first",
+      "file": "src/hub/snapshots.ts",
+      "search": "INSERT OR IGNORE INTO task_snapshots",
+      "replacement": "INSERT OR REPLACE INTO task_snapshots",
+      "testFile": "test/snapshots.test.ts",
+      "testName": "task proposal snapshots persist the original baseline and distinguish reused ids from missing evidence (#259)"
+    },
+    {
+      "id": "projection-private-window",
+      "file": "src/hub/daemon.ts",
+      "search": "const tree = privateSnapshotWindow() ? undefined : snap(`task #${t.id} proposal`).tree;",
+      "replacement": "const tree = snap(`task #${t.id} proposal`).tree;",
+      "testFile": "test/projection-surfaces.test.ts",
+      "testName": "a declared private task and its window leave proposal baselines unknown and withhold public review projections (#259)"
+    },
+    {
+      "id": "projection-private-before-conversion",
+      "file": "src/hub/projected-diff.ts",
+      "search": "if (options.privatePath?.(path))",
+      "replacement": "if (false)",
+      "testFile": "test/projected-diff.test.ts",
+      "testName": "projected diffs withhold declared private paths before conversion and private patterns before publication (#259)"
+    },
+    {
+      "id": "projection-output-byte-cap",
+      "file": "src/hub/projected-diff.ts",
+      "search": "if (bytes + Buffer.byteLength(safe) + 1 > PROJECTED_DIFF_BYTES)",
+      "replacement": "if (false)",
+      "testFile": "test/projected-diff.test.ts",
+      "testName": "large projected text diffs are explicitly omitted within the total presentation byte cap (#259)"
+    },
+    {
+      "id": "projection-file-count",
+      "file": "src/hub/projected-diff.ts",
+      "search": "files++ >= MAX_FILES",
+      "replacement": "false",
+      "testFile": "test/projected-diff.test.ts",
+      "testName": "projection output and file counts are capped, and filename headers are quoted (#259)"
+    },
+    {
+      "id": "projection-header-quote",
+      "file": "src/hub/projected-diff.ts",
+      "search": "const safe = sanitize(text);",
+      "replacement": "const safe = text;",
+      "testFile": "test/projected-diff.test.ts",
+      "testName": "projection output and file counts are capped, and filename headers are quoted (#259)"
+    },
+    {
+      "id": "projection-regular-blob",
+      "file": "src/hub/projected-diff.ts",
+      "search": "(100644|100755) blob",
+      "replacement": "(100644|100755|120000) blob",
+      "testFile": "test/projected-diff.test.ts",
+      "testName": "snapshot projection reads exact historic binary bytes and refuses symlinks, metadata, scope escapes and unknown trees (#259)"
+    },
+    {
+      "id": "projection-review-wire",
+      "file": "src/hub/tasks.ts",
+      "search": "this.d.projectedReview?.(task)",
+      "replacement": "undefined",
+      "testFile": "test/projection-surfaces.test.ts",
+      "testName": "task review projection callbacks are quoted and remain outside task history (#259)"
     }
   ]
 }

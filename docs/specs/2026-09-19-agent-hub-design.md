@@ -2390,3 +2390,11 @@ the queue.
 
 - Turn start freezes the native preamble role identities; attributed completion events carry that snapshot to the shared live/backfill research builder. Records contain peer/turn/id/layer/hash only, never role or task text. Pending configuration edits cannot rewrite an open turn.
 - Empty preparation is distinct from an unknown external session or an older event without metadata. The additional fields preserve the existing event/research schemas and CSV summary. Preparation is not evidence of native model consumption; #263 cards and role effectiveness measurement remain pending.
+
+# Rich-document review and undo amendment, 2026-10-12 (#259)
+
+- Machine-local bounded converters may project regular historical git blobs for review notices and reverse undo previews. Raw snapshots remain the attribution and restore identities; converted text is presentation only.
+- A task's exact proposal baseline is persisted by id/proposal time outside task history. Replacements and restart reuse it, never a guessed current or later baseline. Private windows do not capture it; missing/pruned/disabled evidence is explicitly unavailable.
+- Review remains within declared task refs/plan/section files. Denylisted and declared private paths are not converted, private-data patterns are withheld and inserted headers are sanitized. No projected document body is added to task history or memory.
+- Previews share an 8-second monotonic deadline, at most 8 files and 12000 UTF-8 presentation bytes. Individual converters remain limited to 5 seconds, no network or writes, with owned-group cleanup on timeout or termination. Format participates in the content/command cache key; changing converter identity invalidates a pair.
+- Raw undo planning, overlap/later-edit refusal and the final pre-restore readback stay authoritative. Linux conversion and native/account/measurement legs remain unavailable or unverified as documented; shadow repositories and override/glob work follow separately.

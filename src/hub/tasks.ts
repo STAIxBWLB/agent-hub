@@ -7,7 +7,7 @@ import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
-import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
+import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
 import { assign, detectSignals, LOCAL, peerEntry, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
@@ -31,6 +31,8 @@ export interface TasksDeps {
   catalog?: RoleCatalog;
   /** Role ids whose contract was prepared for the current native session. */
   sessionRoles?: (peer: PeerId) => string[];
+  /** Optional bounded snapshot presentation; never stored in task history or memory. */
+  projectedReview?: (task: Task) => string | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   memory?: MemoryClient;
@@ -1523,7 +1525,10 @@ export class Tasks {
     ].join("\n");
     const summary = last?.note ? this.screen(task, last.note, "summary", reviewer, last.withheld) : "(no summary)";
     const guidance = this.roleGuidance(task, reviewer, true);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    let projection = "";
+    try { const text = this.d.projectedReview?.(task); if (text) projection = this.screen(task, sanitize(text), "document projection", reviewer); }
+    catch { projection = "(document projection unavailable)"; }
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
