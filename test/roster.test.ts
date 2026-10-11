@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -266,3 +268,28 @@ test("daemon roster removal detaches Codex without killing its app-server and ga
     expect(returnedRows.find(row => row.id === 4).result.thread.id).toBe("th1"); expect(() => process.kill(pid, 0)).not.toThrow();
   } finally { for (const socket of sockets) socket.close(); await hub.close(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
 });
+
+
+test("the same Claude channel client retries removal and reconnects by itself after return (#315)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-roster-channel-"))), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(root, "home"); mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), "{}");
+  const hub = await legacyHub(root, false), client = new Client({ name: "roster-channel-fixture", version: "0" }, { capabilities: {} });
+  const pushed: any[] = []; client.fallbackNotificationHandler = async notification => { pushed.push(notification); };
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "peer" }, stderr: "pipe" });
+  let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += String(chunk); });
+  const observed = async (condition: () => boolean) => { const deadline = Date.now() + 10_000; while (!condition() && Date.now() < deadline) await Bun.sleep(10); expect(condition()).toBe(true); };
+  try {
+    await client.connect(transport); await observed(() => diagnostics.includes('connected to hub as "claude"'));
+    expect((await client.listTools()).tools.some(tool => tool.name.includes("roster"))).toBe(false);
+    expect(await hub.client.request({ t: "settings_set", key: "roster.claude", value: false, confirm: "claude" })).toMatchObject({ ok: true });
+    await observed(() => diagnostics.includes("standing by: claude is off roster"));
+    const refused = await client.callTool({ name: "hub_send", arguments: { text: "must not publish while removed" } });
+    expect(JSON.stringify(refused)).toContain("off roster");
+    expect(await hub.client.request({ t: "settings_set", key: "roster.claude", value: true })).toMatchObject({ ok: true });
+    await observed(() => diagnostics.split('connected to hub as "claude"').length - 1 === 2);
+    const message = newEnvelope(USER, "one message after automatic return", { to: ["claude"] }); hub.daemon.bus.publish(message);
+    await observed(() => pushed.some(notification => notification.params?.meta?.message_id === message.id));
+    expect(pushed.filter(notification => notification.params?.meta?.message_id === message.id)).toHaveLength(1);
+    expect((await hub.client.request({ t: "status" })).status.peers.claude).toMatchObject({ state: "idle", queued: 0 });
+  } finally { await client.close(); await hub.close(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
+}, 20_000); // Covers MCP startup and the channel's existing reconnect backoff; every wait asserts its observed milestone.
