@@ -2287,7 +2287,7 @@ the queue.
   conductor only, preserves task state and uses the existing guarded review request;
   dependencies must be approved first. No roster/PII/pause/capability guard is bypassed.
 - Kimi Code 2.1.1 source preflight confirms trusted ACP workspace MCP file discovery
-  and a separately connected same-name session overlay. The engine does not carry
+  and session-passed MCP entries shadow same-name workspace entries. The workspace baseline may still connect its entry. The engine does not carry
   MCP initialize instructions into its model request: tool descriptions and the
   managed AGENTS block carry the pull rules. Live trust/discovery and model tool
   use remain unverified in smoke.md.
