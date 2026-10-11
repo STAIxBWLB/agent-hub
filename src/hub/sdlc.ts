@@ -122,11 +122,11 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
     if (evidence.unresolved !== 0) blockers.push("review threads unresolved or unknown");
   }
   if (config.workflow === "gsd-lite") {
-    blockers.push(...(phase?.blockers ?? ["phase board evidence unknown"]));
+    blockers.unshift(...(phase?.blockers ?? ["phase board evidence unknown"]));
     if (!evidence || receipt?.phase?.head !== evidence.head) blockers.push("phase checklist head missing or stale");
   }
   return { ...(config.workflow ? { workflow: config.workflow, ...(phase ? { phase } : {}) } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
-    actor: stage === "review" || stage === "verify" ? "reviewer" : stage === "merge" || stage === "release" ? "person" : "owner/planner",
+    actor: phase?.blockers.length ? "reviewer/person" : stage === "review" || stage === "verify" ? "reviewer" : stage === "merge" || stage === "release" ? "person" : "owner/planner",
     next: blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
 }
 

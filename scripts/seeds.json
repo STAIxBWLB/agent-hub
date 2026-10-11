@@ -616,6 +616,14 @@
       "replacement": "this.flushActivity();",
       "testFile": "test/watch.test.ts",
       "testName": "ACP cancellation discards coalesced chunks at a consumed update barrier (#286)"
+    },
+    {
+      "id": "workflow-first-receipt-guidance",
+      "file": "src/hub/tasks.ts",
+      "search": "((this.d.sdlc?.config().mode ?? \"off\") !== \"off\" || this.d.sdlc?.config().workflow === \"gsd-lite\") ?",
+      "replacement": "task.sdlc && ((this.d.sdlc?.config().mode ?? \"off\") !== \"off\" || this.d.sdlc?.config().workflow === \"gsd-lite\") ?",
+      "testFile": "test/workflow.test.ts",
+      "testName": "new gsd-lite tasks expose checklist guidance before the first receipt and preserve none defaults (#257)"
     }
   ]
 }
