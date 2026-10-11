@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildLaunch, claudeObservationHooks, recordClaudeLaunch, recordClaudeNative, readClaudeNative, type ClaudeLaunchRecord } from "../src/cli/launch.ts";
+import { realPath } from "../src/hub/project.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
@@ -268,7 +269,7 @@ for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude eve
   };
   await call("write", { path: "ordinary.txt", content: "after" }); expect(pending).toHaveLength(0);
   const targets = [...AGENT_CONFIG_SEGMENTS].flatMap(segment => [segment, segment.toUpperCase()]).map(segment => segment.toLowerCase() === ".mcp.json" ? `nested/${segment}` : `nested/${segment}/policy.json`);
-  mkdirSync(join(rig.cwd, "nested/.claude"), { recursive: true }); symlinkSync(join(rig.cwd, "nested/.claude"), join(rig.cwd, "policy-alias")); targets.push("policy-alias/policy.json");
+  mkdirSync(join(rig.cwd, "nested/.claude"), { recursive: true }); symlinkSync(join(rig.cwd, "nested/.claude"), join(rig.cwd, "policy-alias")); targets.push("policy-alias/policy.json"); targets.push("nested/.kimi-code/mcp.json", "nested/.KIMI-CODE/mcp.json");
   for (const target of targets) for (const name of ["write", "edit"]) {
     const file = join(rig.cwd, target); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "before");
     const before = pending.length;
@@ -534,4 +535,25 @@ test("local mode grants write/edit only in ask-when-needed and keeps its sandbox
   rig.daemon.bus.publish(newEnvelope("user", "WRITE", { to: ["local"], priority: "important" })); await until(() => pending.length === 2);
   await rig.client.request({ t: "permit", id: pending[1].id }); await until(() => answers.length === 4);
   expect(answers[3]).toContain("did not approve");
+});
+
+
+test("Kimi Code project policy is outside scoped grants under literal and folded spellings (#316)", () => {
+  const base = mkdtempSync(join(tmpdir(), "ahub-kimi-code-grant-"));
+  cleanup.push(() => rmSync(base, { recursive: true, force: true }));
+  mkdirSync(join(base, "project")); const root = realPath(join(base, "project"));
+  for (const segment of [".kimi-code", ".KIMI-CODE", ".Kimi-code"]) {
+    const path = join(root, "nested", segment, "mcp.json");
+    mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "before");
+    expect(isAgentConfigPath(`nested/${segment}/mcp.json`)).toBe(true);
+    expect(grantablePath(root, path)).toBe(false);
+  }
+  const canonical = join(root, ".kimi-code"); mkdirSync(canonical);
+  writeFileSync(join(canonical, "mcp.json"), "before");
+  symlinkSync(canonical, join(root, "policy-alias"));
+  expect(grantablePath(root, realPath(join(root, "policy-alias", "mcp.json")))).toBe(false);
+  linkSync(join(canonical, "mcp.json"), join(root, "notes.json"));
+  expect(grantablePath(root, join(root, "notes.json"))).toBe(false);
+  expect(grantablePath(root, join(root, "ordinary.json"))).toBe(true);
+  expect(isAgentConfigPath("src/kimi-code/mcp.json")).toBe(false);
 });

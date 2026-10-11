@@ -915,7 +915,7 @@ denylist (Pi and local), or native vendor boundaries (Claude and Codex).
 | --- | --- | --- | --- |
 | Kimi Code CLI | ACP yolo | ACP auto | ACP default |
 | Codex | on-request for every outgoing turn/start | never for every outgoing turn/start | Restore the known native policy once, then stop overriding |
-| Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json | Hook allow for every tool | No hook decision |
+| Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.kimi-code/.pi/.mcp.json | Hook allow for every tool | No hook decision |
 | Pi and local | Grant write/edit outside native agent configuration paths; read never asks; shell/git writes ask | Grant each tool once within the existing sandbox/guard | Normal approval handling |
 
 Kimi's map applies only to the actual Kimi Code CLI identity, not another ACP

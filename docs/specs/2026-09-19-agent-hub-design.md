@@ -851,7 +851,7 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   the refusal to change a bypassed session.
 - Claude ask-when-needed allows only Read/Edit/Write/MultiEdit/NotebookEdit/LS
   and bounded Glob/Grep targets resolved with realPath beneath project root,
-  outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json. Missing/nonresolving or escaping targets,
+  outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.kimi-code/.pi/.mcp.json. Missing/nonresolving or escaping targets,
   protected case aliases, symlinks and uncertain wildcard/filter targets yield
   no decision. Never-ask answers allow; ask and transport errors decide nothing.
   Merged/generated settings are 0600 state files passed by path, never inline
@@ -872,7 +872,7 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   observation purposes retain native turn bookkeeping. Hook identity/purpose
   are launch/session bound; unverified hook status reads unverified.
 - Pi/local read never asks. Ask-when-needed grants write/edit inside the project, outside the shared native
-  configuration segments (.claude/.codex/.qwen/.kimi/.pi/.mcp.json, compared folded and by the path within the
+  configuration segments (.claude/.codex/.qwen/.kimi/.kimi-code/.pi/.mcp.json, compared folded and by the path within the
   project) and never through a hard link; bash and mutating
   git retain console approval. Never-ask grants once, retaining sandbox and
   path guards; no mode gives allow-always. ACP tools have no hub sandbox and

@@ -57,7 +57,7 @@ test("ask-when-needed file grants stay within canonical project paths and exclud
     // Another name for a protected file, and a look-alike a case-insensitive disk opens as the real name.
     linkSync(join(dir, ".claude", "config"), join(dir, "notes.ts"));
     for (const file of ["notes.ts", ".mcp.j\u017Fon", ".\u212Aimi/config"]) expect(projectFileTool("Edit", { file_path: file }, dir)).toBe(false);
-    for (const directory of [".codex", ".qwen", ".kimi", ".pi"]) {
+    for (const directory of [".codex", ".qwen", ".kimi", ".kimi-code", ".pi"]) {
       mkdirSync(join(dir, directory)); writeFileSync(join(dir, directory, "settings.json"), "fixture");
       symlinkSync(join(dir, directory), join(dir, `alias-${directory.slice(1)}`));
       for (const path of [`${directory}/settings.json`, `alias-${directory.slice(1)}/settings.json`]) {
@@ -70,7 +70,7 @@ test("ask-when-needed file grants stay within canonical project paths and exclud
       expect(projectFileTool("Edit", { file_path: path }, dir)).toBe(false);
       expect(projectFileTool("Glob", { pattern: path }, dir)).toBe(false);
     }
-    for (const name of [".CODEX", ".QWEN", ".KIMI", ".PI"]) {
+    for (const name of [".CODEX", ".QWEN", ".KIMI", ".KIMI-CODE", ".PI"]) {
       mkdirSync(join(dir, name), { recursive: true }); writeFileSync(join(dir, name, "config"), "fixture");
       expect(projectFileTool("Read", { file_path: `${name}/config` }, dir)).toBe(false);
     }
