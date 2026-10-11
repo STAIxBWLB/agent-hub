@@ -129,7 +129,7 @@ Contributions are a heuristic for possible loss, never a certificate: per agent 
 
 ## Routing-time prediction preregistration (#109, 2026-10-11)
 
-The owner approved 120 controlled matched task pairs, 60 development and 60 held-out, comparing split execution of the same work units against both solo controls. The input/outcome, exclusion, unknown-value and enablement contract is [the routing evaluation preregistration](plans/2026-10-11-routing-evaluation-proposal.md). This freezes the design and sample budget, not the execution manifests: task-family/split membership, source/check hashes, native versions, profiles and warmup history must be sealed before the first scored attempt. No collection is authorized in the solo implementation session; automatic routing remains off. AC5, T3 and T4 remain open until their measured evidence and implementation gates pass.
+The owner approved 120 controlled matched task pairs, 60 development and 60 held-out, comparing split execution of the same work units against both solo controls. The input/outcome, exclusion, unknown-value and reporting contract is [the routing evaluation preregistration](plans/2026-10-11-routing-evaluation-proposal.md). This freezes the design and sample budget, not the execution manifests: task-family/split membership, source/check hashes, native versions, profiles and warmup history must be sealed before the first scored attempt. No collection is authorized in the solo implementation session; automatic routing remains off. AC5, T3 and T4 remain open until their measured evidence and implementation gates pass.
 
 ## Preregistration (v2)
 

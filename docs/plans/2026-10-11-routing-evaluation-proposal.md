@@ -4,7 +4,7 @@ Status: design preregistered on 2026-10-11 with owner approval: controlled match
 
 ## Approved design and remaining execution freeze
 
-- Selected design: 120 preregistered matched work-unit pairs, 60 development and 60 held-out, with automatic routing in the prediction arm and both solo controls. Unit-family membership, task/check hashes, native versions, model/hook/coordination profiles and the chronological split are sealed before any scored attempt. Warmup attempts establish the minimum five past observations per peer; they are identified separately and never enter held-out scores.
+- Selected design: 120 preregistered matched work-unit pairs, 60 development and 60 held-out, with a fixed split arm recording predictions in shadow mode and both solo controls. Unit-family membership, task/check hashes, native versions, model/hook/coordination profiles and the chronological split are sealed before any scored attempt. Warmup attempts establish the minimum five past observations per peer; they are identified separately and never enter held-out scores.
 - Ordinary-work observations may be reported separately as diagnostics. They do not replace the selected controlled design or supply its counterfactual.
 - 120 is the approved sample budget, not a power result. Fewer than 30 valid known held-out opportunities, an invalid profile or inadequate comparability makes the result inconclusive. No retries or additional samples are selected by scores. A larger sample requires a dated amendment before collection resumes.
 
@@ -23,7 +23,7 @@ Outcome joins happen only after terminal settlement. In the controlled design, p
 - Report all attempted opportunities and exclusions; known/unknown/inconclusive counts; failure/censoring rates; absolute and relative stage-time errors; bias; predicted/observed gain sign confusion; and seeded, family-cluster bootstrap intervals with the seed and family count.
 - Predeclare unknown handling. Unknown/inconclusive predictions have no numeric error and are never counted as correct. Failed/time-limited outcomes have their own table rather than an invented zero duration.
 - The observational result cannot supply a causal team-versus-solo gain. The controlled result separately checks quality and resources against both solo controls; prediction accuracy alone cannot enable routing.
-- Automatic rerouting remains off. This proposal does not tick AC5, complete T3, implement T4 or treat the historical equal-half calculation as a bound. Enablement requires measured current-version held-out evidence and a separate explicit opt-in.
+- Automatic rerouting remains off. This proposal does not tick AC5, complete T3, implement T4 or treat the historical equal-half calculation as a bound. This study is non-enabling regardless of its result: it reports prediction errors and paired quality/resource outcomes. Any future enablement study must preregister numerical acceptance thresholds before collecting new held-out data and obtain a separate explicit opt-in.
 
 ## Reproducibility record
 
