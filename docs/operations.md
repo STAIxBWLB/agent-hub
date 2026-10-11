@@ -2507,3 +2507,8 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 - Initialize new projects with `ahub init --profile research|writing|general`; default dev retains its existing templates and contracts. Profile aliases map to the existing base flow and are displayed beside it.
 - Non-dev plans declare paths, section anchors, source ids and claims. Configure completion checks explicitly in machine-local config; selecting a profile never starts a check or study. Schema, examples and pending converter/policy slices: [profiles](profiles.md).
+
+# Private and read-only data paths (#259)
+
+- Optional pii.paths forces matching declared refs/plans/section files to the on-prem flow before triage and memory, including when ordinary pattern routing is off. Optional data.readonly protects managed local/Pi writes and makes managed commands filesystem read-only.
+- Both lists are empty by default and apply at daemon start. Reads/stdout remain available; command-created files/caches are blocked in read-only mode. Exact path rules, alias handling and evidence: [data policy](data-policy.md).

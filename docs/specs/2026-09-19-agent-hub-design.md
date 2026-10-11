@@ -2356,3 +2356,9 @@ the queue.
 - Explicit machine-local alias check commands precede base check commands; profile selection installs no automatic command. Profile/base/alias metadata is shown in board/route/UI and #247 records without task text. Document projections, shadow repositories, path policy and custom data overrides remain subsequent slices. See docs/profiles.md.
 
 - Accept schemas expose all supported plan fields because an open task keeps its stored profile across a project profile change. Tasks still normalizes by that stored profile; no new plan field changes authority.
+
+# Data path policy amendment, 2026-10-11 (#259)
+
+- Optional bounded project-relative pii.paths and data.readonly lists preserve defaults when absent. Declared private paths receive a hard local-only signal before triage/board/notice/memory; a new private plan cannot enter an ordinary task without re-proposal.
+- Managed local/Pi write/edit check lexical/real paths before and after approval and refuse hardlinked targets under an active read-only policy. Managed command profiles/runner remove broad filesystem write grants, including owned temporary writes, when data.readonly is active. Reads/stdout and /dev/null remain available; unprotected outputs use managed write/edit. The stricter command boundary closes the reproduced hardlink-alias bypass of path-only denies.
+- These controls do not contain the owner or other native same-user processes. Config policies apply at daemon start; no permission mode overrides managed data policy. Native-account/research legs remain unverified. See docs/data-policy.md.

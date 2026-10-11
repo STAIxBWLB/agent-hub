@@ -2,6 +2,7 @@ import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "nod
 import { dirname, join, relative, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { isHubWritePath } from "../hub/permission-mode.ts";
+import { matchesPolicy } from "../hub/path-policy.ts";
 import { isDenied } from "./deny.ts";
 import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
 
@@ -17,6 +18,7 @@ const approvalError = (picked: ToolApproval, denied: string): string | undefined
   : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied;
 
 export interface ToolContext {
+  readOnly?: string[];
   cwd: string;
   /** Extra denylist entries from config: substrings of the project-relative path. */
   deny: string[];
@@ -44,7 +46,7 @@ const lexists = (p: string) => {
 };
 
 /** Absolute path inside cwd after resolving symlinks, or an Error. `write` also refuses .git and .agenthub. */
-export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny">, path: string, mode: "read" | "write"): string {
+export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny" | "readOnly">, path: string, mode: "read" | "write"): string {
   const root = realPath(ctx.cwd);
   const abs = resolve(root, path);
   // Resolve symlinks on the deepest part that exists: a link pointing outside must not pass as an inside path.
@@ -64,6 +66,8 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny">, path: string, 
   // Not secret, but writing .git or .agenthub changes what runs outside the worker's control. Names are compared
   // folded: a new `.GIT/config` is `.git/config` to a case-insensitive disk, and git then runs what it names.
   if (mode === "write" && isHubWritePath(rel)) throw new Error(`${path} is not writable by the local worker`);
+  if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error("target is protected by data.readonly");
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error("hardlinked write target cannot be verified with data.readonly");
   return real;
 }
 
@@ -176,7 +180,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (command.length > 4000) return "error: command longer than 4000 characters; put it in a script file with write, then run that";
         const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal), "error: the user did not approve this command");
         if (refused) return refused;
-        const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+        const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         return `${res.output}\n(exit ${res.code})`;
       }
@@ -191,7 +195,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
           if (refused) return refused;
         }
         // Sandboxed like bash: flags such as --output or an editor cannot write outside the project or reach the network.
-        const res = await sandboxedExec(["git", "--no-pager", ...args], { cwd: ctx.cwd, profile: ctx.sandboxProfile, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+        const res = await sandboxedExec(["git", "--no-pager", ...args], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         return `${res.output}\n(exit ${res.code})`;
       }

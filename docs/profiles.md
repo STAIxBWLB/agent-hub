@@ -35,3 +35,5 @@
 - Document text projections, shadow git for non-git folders, pii.paths/data.readonly policy, custom profile overrides and deeper lifecycle integration remain open in #259. Existing file policy still applies; profile guidance does not itself enforce read-only data.
 
 - Accept schemas expose all supported plan fields because an open task keeps its stored profile across a project profile change. Tasks still normalizes by that stored profile; no new plan field changes authority.
+
+- Private and read-only data path policy is now a separate source slice: [data policy](data-policy.md). It applies to declared task paths and managed local/Pi tools. Converter/shadow/custom/live follow-ups remain open.
