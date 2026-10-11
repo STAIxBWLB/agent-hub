@@ -558,9 +558,10 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
       span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(meter, stage?.changes ? "failure" : stateTone(row.state))];
   }
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
-  const [header, ...body] = String(row.text).split("\n");
-  // The header goes through the stream's own tokenizer with the event's tone and kind, so an event reads the same
-  // in both places (#309); body lines stay plain, as in the stream. Colour off concatenates to the same bytes.
+  const [header, ...body] = String(row.text).replace(/\t/g, " ").split("\n");
+  // The header goes through the stream's own tokenizer with the event's tone and kind, on the same tab-flattened
+  // text the stream tokenizes, so an event reads the same in both places (#309); body lines stay plain, as in the
+  // stream. Colour off concatenates to the same bytes.
   return [...streamTokens(header ?? "", row.tone, row.kind), ...(body.length ? [span("\n" + body.join("\n"))] : [])];
 }
 /**

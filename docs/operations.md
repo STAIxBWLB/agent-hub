@@ -60,7 +60,9 @@ its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
 without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
 Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
-ends), never while a command is being edited or a choice is open. In the Events
+ends), never while a command is being edited or a choice is open. A pasted
+chunk can only edit the command line, but a read that holds nothing but arrow
+sequences is that many key presses, so a held key repeats its tab move. In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; body lines and command output stay plain, and with colour off the
 panel is byte-identical to before.
@@ -2131,7 +2133,11 @@ emits it after the turn settles (read from the source, not yet observed live
 through the hub; docs/smoke.md), so the peer may already be idle.
 Pi and other unsupported surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
-usage is never used as context occupancy.
+usage is never used as context occupancy. In the tail (`ahub tail` and the
+console's stream) a reading prints once and repeats only when the line changes
+apart from its time: the printed percentage, the freshness, the source, or known
+against unknown. Status, the Peers panel and the dashboard always read the
+latest reading with its time.
 
 Context-triggered checkpoints are disabled by default. To enable them, add
 this to `.agenthub/config.json` and restart the daemon deliberately:

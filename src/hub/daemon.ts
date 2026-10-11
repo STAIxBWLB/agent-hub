@@ -1163,7 +1163,9 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const peer of bus.knownPeers()) {
         contexts.retry(peer, contextSession(peer));
         const reading = contexts.view(peer, contextSession(peer), bus.peers.has(peer) && ["idle", "busy", "paused"].includes(bus.stateOf(peer)));
-        const stamp = JSON.stringify(reading);
+        // An unchanged reading is not repeated (#309): the stamp is what the printed line says apart from its
+        // time — the percentage as printed (or unknown), the freshness and the source — never measuredAt or tokens.
+        const stamp = `${reading.used === null ? "unknown" : Math.round(reading.used * 100)}|${reading.freshness}|${reading.source}`;
         if (contextTailSeen.get(peer) !== stamp) {
           contextTailSeen.set(peer, stamp);
           for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "context", peer, reading }));

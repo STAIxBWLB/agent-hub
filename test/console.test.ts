@@ -812,6 +812,31 @@ describe("console layout (#213)", () => {
     expect(spawned).toBe(0);
     f.input("q"); await running;
   });
+  test("a read of only arrow sequences is that many key presses, not a paste (#309)", async () => {
+    const f = fixture(); let spawned = 0;
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false, runCommand: () => { spawned++; return () => {}; } });
+    await Promise.resolve(); await Promise.resolve();
+    const lastFrame = () => f.output.join("").split("\x1b[r\x1b[1;1H").at(-1)!;
+    // Key repeat or a slow link: two Rights in one read move two tabs; the command line stays closed.
+    f.input("\x1b[C\x1b[C");
+    expect(lastFrame()).toContain("[3 Tasks]");
+    expect(lastFrame()).toContain("? keys");
+    // Under a pending confirmation the presses are key presses too: the first is answered as any key is, the
+    // second moves a tab. A paste would have dropped the confirmation and opened the command line instead.
+    f.input("\x1b[D\x1b[D"); // back to Peers (two Lefts, also one read)
+    for (const ch of ":task assign 9 kimi") f.input(ch); f.input("\r");
+    expect(lastFrame()).toContain("y/N");
+    f.input("\x1b[C\x1b[C");
+    expect(lastFrame()).toContain("[2 Approvals]");
+    expect(lastFrame()).toContain("? keys");
+    expect(lastFrame()).not.toContain("y/N");
+    expect(spawned).toBe(0);
+    // A read that mixes arrows with text is still a paste, with every guard a paste has now.
+    f.input("\x1b[Cstatus");
+    expect(lastFrame()).toContain(": status");
+    expect(lastFrame()).toContain("[2 Approvals]"); // the tab did not move for the arrow inside a paste
+    f.input("\x1b"); f.input("q"); await running;
+  });
   test("errors and refusals take the failure tone; informing notices take attention", () => {
     const tone = (s: any) => renderConsoleLines(s, 80, 24, NOW).at(-2)!.at(-1)!;
     let s = state(); s.editing = true; s.input = "kill";
@@ -920,13 +945,19 @@ describe("console layout (#213)", () => {
       { text: "codex\x1b[31m: 21%\x1b]52;c;secret\x07 #232", check: (row) => {
         expect(paint(row as never, true)).not.toContain("secret");
       } },
+      // A tab is flattened before tokenizing, as the stream does: the row gets exactly the tones the stream's
+      // flattened text gets ("codex" in the peer slot, the trailing state word in the event's tone), no others.
+      { text: "codex\tis idle", kind: "state", tone: "muted", check: (row) => {
+        expect(row.find(sp => sp.text === "codex")?.tone).toBe("peerCodex");
+        expect(row.find(sp => sp.text === "idle")?.tone).toBe("muted");
+      } },
     ];
     for (const { text, kind, tone, check } of cases) {
       const s = state(true); s.panel = 5;
       s.events = [{ text, kind, tone }];
       const row = cells(s, s.events[0], false, NOW);
-      // One tokenizer: the panel row is exactly what the stream would paint for the same header.
-      expect(row).toEqual(streamTokens(terminalText(text), tone, kind));
+      // One tokenizer, on the same text the stream tokenizes (tabs flattened first).
+      expect(row).toEqual(streamTokens(terminalText(text).replace(/\t/g, " "), tone, kind));
       check(row);
     }
   });

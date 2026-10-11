@@ -166,11 +166,11 @@ test.each(["owner", "reviewer"] as const)("context request and clean completion 
 }, 20_000);
 
 /** A daemon with the fake Kimi ACP agent: the occupancy legs of #285 phase 1. */
-async function kimiFixture(gate = 0) {
+async function kimiFixture(gate = 0, staleMin = 30) {
   const stateDir = mkdtempSync(join(tmpdir(), "ahub-acp-context-")); cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
   const daemon = await startDaemon({
     cwd: stateDir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "acp-context",
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")], context: { gate, stale_min: 30 }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 800_000 } },
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")], context: { gate, stale_min: staleMin }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 800_000 } },
   });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
@@ -249,3 +249,37 @@ test("a usage_update naming a session the adapter did not load is dropped before
   expect(shown.status.peers.kimi.context?.freshness ?? "unknown").toBe("unknown");
   expect(shown.status.peers.kimi.context?.used ?? null).toBeNull();
 }, 20_000);
+
+
+test("an unchanged context reading is not repeated in the tail: the stamp is what the line says apart from its time (#309)", async () => {
+  const f = await fixture(0.8);
+  const contextPushes = (peer: string) => f.pushes.filter((p) => p.t === "context" && p.peer === peer);
+  // Each attached peer's current reading arrives once; a second peer is counted on its own throughout.
+  await until(() => contextPushes("claude").length === 1 && contextPushes("other").length === 1);
+  expect(contextPushes("claude")[0]!.reading).toMatchObject({ used: null, freshness: "unknown", source: null });
+  // The first report prints (unknown to fresh; the source appears): one push.
+  f.reading(45);
+  await until(() => contextPushes("claude").length === 2);
+  expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: 0.45, freshness: "fresh", source: "claude_statusline" });
+  // The same printed percentage with a new measurement time and a different token count does not repeat.
+  f.reading(45, { current_usage: { input_tokens: 90_500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+  await Bun.sleep(2300); // the file leg runs on the daemon's own 1 s tick; two ticks is the negative's bound
+  expect(contextPushes("claude")).toHaveLength(2);
+  // A printed percentage that differs prints once more.
+  f.reading(90);
+  await until(() => contextPushes("claude").length === 3);
+  expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: 0.9, freshness: "fresh" });
+  // To unknown: a session change invalidates the current reading (known to unknown), one push.
+  f.session("native-2");
+  await until(() => contextPushes("claude").length === 4);
+  expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: null, freshness: "unknown", source: "claude_statusline" });
+  // Freshness again: the new session's first reading was measured two minutes ago, so it is stale (stale_min is 1
+  // here; report()'s ordering guard rejects an older reading only for the same session). One push, then quiet.
+  // (A fresh reading becoming stale by aging is the same stamp change; the wall clock is not patched here.)
+  f.reading(90, { sessionId: "native-2", at: Date.now() - 120_000 });
+  await until(() => contextPushes("claude").length === 5);
+  expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: null, freshness: "stale", source: "claude_statusline" });
+  await Bun.sleep(2300); // two more ticks: the stale reading does not repeat periodically either
+  expect(contextPushes("claude")).toHaveLength(5);
+  expect(contextPushes("other")).toHaveLength(1);
+}, 25_000);
