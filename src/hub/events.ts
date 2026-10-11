@@ -3,6 +3,8 @@ import type { TaskAttribution } from "./attribution.ts";
 import type { SwitchTrace } from "../models/route/stage.ts";
 import type { ScreenRecord } from "./inference.ts";
 
+export interface RoleIdentity { id: string; layer: "shipped" | "project"; hash: string }
+
 /** Bumped whenever a field changes meaning or goes away; new fields and new types do not bump it. */
 export const EVENTS_SCHEMA = 1;
 
@@ -32,7 +34,7 @@ export type HubEvent =
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "native_thread"; peer: string; thread: string; fresh: boolean }
-  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number } & Partial<TaskAttribution>)
+  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null } & Partial<TaskAttribution>)
   | { type: "native_turn_end"; peer: string; id?: string }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
   | { type: "agent_cli"; peer: string; command: string; refused: boolean }

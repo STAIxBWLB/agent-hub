@@ -2385,3 +2385,8 @@ the queue.
 - Catalog-role settings are person-only registry entries, stored only in config.local.json and applied at the next peer start. At most two compatible ids per supported peer; explicit empty disables and inherit restores shared/profile defaults. Flow authority, routing and permission policies remain independent.
 - Existing task roles change only through Tasks for a console person, before approval. The saved change keeps ownership/class and sends bounded sanitized guidance to current holders. It never rewrites the original proposal identity in research evidence.
 - Status/UI role preparation and pending fields are advisory transport/configuration metadata, not proof of model consumption. External plugin/TUI sessions without a receipt remain unconfirmed. Session research attribution and #263 board-card work remain follow-ups.
+
+# Session role research amendment, 2026-10-12 (#295)
+
+- Turn start freezes the native preamble role identities; attributed completion events carry that snapshot to the shared live/backfill research builder. Records contain peer/turn/id/layer/hash only, never role or task text. Pending configuration edits cannot rewrite an open turn.
+- Empty preparation is distinct from an unknown external session or an older event without metadata. The additional fields preserve the existing event/research schemas and CSV summary. Preparation is not evidence of native model consumption; #263 cards and role effectiveness measurement remain pending.

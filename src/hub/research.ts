@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { StampedEvent } from "./events.ts";
+import type { RoleIdentity, StampedEvent } from "./events.ts";
 import { hubHome } from "./project.ts";
 
 /**
@@ -20,6 +20,8 @@ export interface TaskRecord {
   schema: typeof RESEARCH_SCHEMA; kind: "task"; project: string; task: number;
   profile?: string; profileClass?: string;
   role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string };
+  /** Native preamble preparations frozen at each attributed turn's start, never proof of model consumption. */
+  sessionRoles?: { peer: string; turn: string; roles: RoleIdentity[] | null }[];
   class: string | null; pii: boolean; outcome: "approved";
   /** The proposal time also tells a task from an earlier one with the same id after `ahub reset --all`. */
   createdAt: string | null; startedAt: string | null; approvedAt: string;
@@ -106,7 +108,10 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     const a = acc(task);
     if ("pii" in e && e.pii === true) a.pii = true;
     if (e.type === "tokens") { a.tokens.total += e.n; bump(a.tokens.byPeer, e.peer, e.n); bump(a.tokens.byAttribution, e.attribution ?? "unknown", e.n); }
-    else if (e.type === "turn_end") { a.turns++; a.activeMs += e.ms; a.filesChanged += e.files ?? 0; }
+    else if (e.type === "turn_end") {
+      a.turns++; a.activeMs += e.ms; a.filesChanged += e.files ?? 0;
+      if (e.preparedRoles !== undefined) (a.sessionRoles ??= []).push({ peer: e.peer, turn: e.turn, roles: e.preparedRoles?.map(role => ({ id: role.id, layer: role.layer, hash: role.hash })) ?? null });
+    }
     else if (e.type === "usage") {
       const key = `${e.peer}\0${e.source}\0${e.id}`;
       if (seenUsage.has(key)) continue;
