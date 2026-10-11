@@ -1,3 +1,4 @@
+import { projectProfile, PROFILE_CLASS_NAMES, type ProfileName } from "./profiles.ts";
 import { catalogSection, type CatalogRole } from "./roles.ts";
 import { SUPPORTED_PEERS, defaultPeerRoles } from "./peer-catalog.ts";
 // The hub's task tools, defined once: the MCP server (Claude plugin, Kimi, Codex) and the local worker both read this.
@@ -24,6 +25,9 @@ const plan = {
   additionalProperties: false,
 } as const;
 
+// Accept may target a task from an older project profile; Tasks normalizes by the stored task profile.
+const acceptPlan = { ...plan, properties: { ...plan.properties, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } } as const;
+
 export interface HubTool {
   name: string;
   description: string;
@@ -38,7 +42,7 @@ const tool = (name: string, description: string, properties: Record<string, unkn
 
 export const TASK_TOOLS: HubTool[] = [
   tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it. With after, the owner is reserved: offered the task first once it is ready" }, after: { type: "array", items: { type: "integer" }, description: "ids of tasks that must be approved first; until then this one waits, offered to nobody, and cannot be claimed" }, urgent: { type: "boolean", description: "hand it over even when its owner is paused for quota only briefly" } }, ["title"]),
-  tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it.", { id, plan }, ["id"]),
+  tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it.", { id, plan: acceptPlan }, ["id"]),
   tool("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer.", { id, reason: str }, ["id"]),
   tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs }, ["id", "summary"]),
   tool("hub_sdlc_record", "Record artifact ids or claimed local checks on your task. This grants no authority or external-check evidence. Only its owner/reviewer or the person may record; only its reviewer/person may name a reviewed head or phase checklist. Phase evidence refs are content hashes, not external verification.", { id, receipt: { type: "object", properties: { stage: { type: "string", enum: ["spec", "plan", "implement", "review", "verify", "merge", "release"] }, repo: str, issue: id, pr: id, localHead: str, localResult: { type: "string", enum: ["passed", "failed", "unknown"] }, reviewedHead: str, phase: { type: "object", properties: { id: str, head: str, tasks: { type: "array", maxItems: 64, items: { type: "object", properties: { id, after: { type: "array", maxItems: 16, items: id } }, required: ["id", "after"], additionalProperties: false } }, criteria: { type: "array", maxItems: 32, items: { type: "object", properties: { id: str, required: { type: "boolean" }, result: { type: "string", enum: ["verified", "failed", "unverified"] }, refs: { type: "array", maxItems: 8, items: str } }, required: ["id", "required", "result", "refs"], additionalProperties: false } } }, required: ["id", "tasks", "criteria"], additionalProperties: false } }, additionalProperties: false } }, ["id", "receipt"]),
@@ -73,8 +77,21 @@ export const ROLE_TEXT: Record<string, string> = {
 
 export const DEFAULT_ROLES: Record<string, string[]> = defaultPeerRoles(true);
 
-export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = []): string {
-  const mine = (roles[peer] ?? []).map((r) => ROLE_TEXT[r]).filter(Boolean);
+export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = [], profile: ProfileName = "dev"): string {
+  const data = projectProfile(profile);
+  const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
   if (!mine.length) return "";
-  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...(catalog.length ? [catalogSection(catalog)] : []), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
+  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...(profile !== "dev" ? [`Project profile ${profile}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : []), ...(catalog.length ? [catalogSection(catalog)] : []), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
+}
+
+/** Profile schemas are data over the existing tools; dev retains the exact existing definitions. */
+export function profileTaskTools(profile: ProfileName = "dev"): HubTool[] {
+  if (profile === "dev") return TASK_TOOLS;
+  const data = projectProfile(profile);
+  return TASK_TOOLS.map(tool => {
+    const properties = { ...tool.inputSchema.properties };
+    if (tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
+    if (properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: { paths: plan.properties.paths, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
+    return { ...tool, ...(tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${profile}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}), inputSchema: { ...tool.inputSchema, properties } };
+  });
 }

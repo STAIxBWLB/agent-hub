@@ -648,6 +648,62 @@
       "replacement": "roles.map(role => role.body)",
       "testFile": "test/roles.test.ts",
       "testName": "default role contracts preserve d83cb8dd bytes and catalog rendering has two capped sanitized bodies (#295)"
+    },
+    {
+      "id": "profile-base-class",
+      "file": "src/hub/profiles.ts",
+      "search": "return base as TaskClass;",
+      "replacement": "return raw as TaskClass;",
+      "testFile": "test/profiles.test.ts",
+      "testName": "profile aliases route and budget on a persisted base while unknown/prototype classes refuse atomically (#259)"
+    },
+    {
+      "id": "profile-document-plan",
+      "file": "src/hub/tasks.ts",
+      "search": "projectProfile(profile).plan_keys as (keyof TaskPlan)[]",
+      "replacement": "projectProfile(\"dev\").plan_keys as (keyof TaskPlan)[]",
+      "testFile": "test/profiles.test.ts",
+      "testName": "document plans overlap only on declared shared anchors/sources and preserve all keys (#259)"
+    },
+    {
+      "id": "profile-new-fields-pii-screen",
+      "file": "src/hub/tasks.ts",
+      "search": "ALL_PLAN_KEYS.filter((k) => plan[k]?.length)",
+      "replacement": "ALL_PLAN_KEYS.filter((k) => [\"paths\", \"symbols\", \"signatures\", \"insertion_points\"].includes(k) && plan[k]?.length)",
+      "testFile": "test/profiles.test.ts",
+      "testName": "new document plan fields retain existing PII routing and public redaction (#259)"
+    },
+    {
+      "id": "profile-citation-missing",
+      "file": "src/hub/citations.ts",
+      "search": "missing: cited.filter(key => !known.has(key))",
+      "replacement": "missing: []",
+      "testFile": "test/profiles.test.ts",
+      "testName": "profile fact_check runs deterministic citation evidence and cannot pass on an unresolved source (#259)"
+    },
+    {
+      "id": "profile-cli-dry-flags",
+      "file": "src/cli/main.ts",
+      "search": "takeFlags(args.filter(arg => arg !== \"--dry-run\" && arg !== \"--json\"), [\"--profile\"], [])",
+      "replacement": "takeFlags(args, [\"--profile\"], [])",
+      "testFile": "test/profiles.test.ts",
+      "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
+    },
+    {
+      "id": "profile-cli-positional-alias",
+      "file": "src/cli/main.ts",
+      "search": "Object.hasOwn(projectProfile(projectConfig().profile).classes, flags.rest[0] ?? \"\")",
+      "replacement": "false",
+      "testFile": "test/profiles.test.ts",
+      "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
+    },
+    {
+      "id": "profile-accept-union",
+      "file": "src/hub/hub-tools.ts",
+      "search": "plan: acceptPlan",
+      "replacement": "plan",
+      "testFile": "test/profiles.test.ts",
+      "testName": "accept schemas retain both document and dev plan fields across profile changes (#259)"
     }
   ]
 }

@@ -1,3 +1,4 @@
+import { profileName, projectProfile, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
@@ -47,7 +48,7 @@ import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
@@ -102,6 +103,7 @@ export interface HubConfig {
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number };
   roster: PeerRoster;
   roles: Record<string, string[]>;
+  profile?: ProfileName;
   catalog_roles?: Record<string, string[]>;
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
   budget: BudgetConfig;
@@ -241,6 +243,7 @@ export function loadConfig(cwd: string): HubConfig {
     }
     peerRosterConfig(file.roster);
     catalogAssignments(file.catalog_roles);
+    profileName(file.profile);
     if (file.jcode_cmd !== undefined && (!Array.isArray(file.jcode_cmd) || !file.jcode_cmd.length || file.jcode_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("jcode_cmd must be a nonempty executable argv");
     if (file.jcode_home !== undefined && (typeof file.jcode_home !== "string" || !isAbsolute(file.jcode_home))) throw new Error("jcode_home must be an absolute path");
     for (const key of ["jcode_home", "jcode_provider_profile"]) if (file[key] !== undefined && typeof file[key] !== "string") throw new Error(`${key} must be a string`);
@@ -497,7 +500,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
   const catalog = loadRoleCatalog(opts.cwd);
   for (const error of catalog.errors) log(`catalog role ${error.id}: ${error.reason}`);
-  const roleAssignments = catalogAssignments(config.catalog_roles);
+  const roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(config.catalog_roles) };
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
     if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
   });
@@ -505,10 +508,10 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       const selected = selectedRoles(peer, config.roles, roleAssignments, catalog);
       if (selected.length) event({ type: "role", peer, actor: "config", stage: "prepared", roles: selected.map(roleIdentity) });
-      return roleContract(peer, config.roles, selected);
+      return roleContract(peer, config.roles, selected, config.profile);
     } catch (error) {
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
-      return roleContract(peer, config.roles);
+      return roleContract(peer, config.roles, [], config.profile);
     }
   }
   /**
@@ -795,7 +798,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const executionBudget = new ExecutionBudget(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => executionBudget.close());
   // Completion checks (issue #7): only from a config file git does not track, one at a time, killed on stop.
-  const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => (CLASSES as readonly string[]).includes(k) && typeof v === "string" && v.trim())) as Record<string, string>;
+  const allowedChecks = new Set([...CLASSES, ...Object.keys(projectProfile(config.profile).classes)]);
+  const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => allowedChecks.has(k) && typeof v === "string" && v.trim())) as Record<string, string>;
   const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && !(k in checkCommands));
   if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
   // Commands and the other machine-local fields came only from a file git vouched for (loadConfig, issue #17).
@@ -807,6 +811,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let checksClosed = false; // set on stop: a check still queued then must not start and outlive the hub
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
   const tasks: Tasks = new Tasks({
+    profile: profileName(config.profile),
     sdlc: { config: () => lifecycleConfig },
     board,
     bus,
@@ -817,7 +822,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
     notify,
     recordOverlap: (task, owner, others) => event({ type: "overlap", task, owner, others }),
-    ...(checksAllowed ? { check: (cls: string) => checkCommands[cls], runCheck: async (command: string) => (checksClosed ? interrupted : runCheck(command, opts.cwd, checkTimeoutS * 1000, runningChecks)) } : {}),
+    ...(checksAllowed ? { check: (cls: string, task?: import("./board.ts").Task) => checkCommands[task?.profileClass ?? cls] ?? checkCommands[cls], runCheck: async (command: string) => (checksClosed ? interrupted : runCheck(command, opts.cwd, checkTimeoutS * 1000, runningChecks)) } : {}),
     // What a peer learned reaches the peers working now, on their next delivery, instead of at their next session (#68).
     // Fail-open: the note is already saved, so a bus that cannot persist costs the sharing, not the tool call.
     share: (by, line) => {
@@ -1038,7 +1043,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
-    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
+    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
     supervision.taskChanged(t, h);
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
@@ -2514,7 +2519,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, "pi", unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...TASK_TOOLS, ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(profileName(config.profile)), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
@@ -2680,6 +2685,7 @@ export async function startDaemon(opts: DaemonOptions) {
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
+        profile: profileName(config.profile),
         taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);
@@ -2848,7 +2854,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: board.list().map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {

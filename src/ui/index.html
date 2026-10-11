@@ -399,7 +399,7 @@ function render(snapshot) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
       head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), badge(task.state.replaceAll('_', ' '), taskBadge[task.state] || ''));
       const stage = progressStages.get(task.id);
-      row.append(head, renderTaskStage(stage), el('p', task.class + ' / ' + (task.owner || 'unassigned') + (task.reviewer ? ' / review: ' + task.reviewer : ''), 'meta'));
+      row.append(head, renderTaskStage(stage), el('p', (task.profileClass ? task.profileClass + ' (base ' + task.class + ')' : task.class) + ' / ' + (task.owner || 'unassigned') + (task.reviewer ? ' / review: ' + task.reviewer : ''), 'meta'));
       if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + (task.lifecycle.workflow ? ' (' + task.lifecycle.workflow + ')' : '') + ' / ' + task.lifecycle.stage + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
       if (task.detail) row.append(el('p', task.detail, 'body'));
       if (task.state !== 'approved' && ids.length) {

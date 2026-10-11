@@ -558,7 +558,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
     const stage = stages?.get(row.id);
     const meter = stage ? "[" + "#".repeat(stage.stage - (stage.changes ? 1 : 0)) + (stage.changes ? "!" : "") + "-".repeat(4 - stage.stage) + "]" : "[----]";
     return [id(`#${row.id}`, "info"), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
-      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(row.lifecycle ? `${meter} ${row.lifecycle.workflow ? row.lifecycle.workflow + " " : ""}SDLC ${row.lifecycle.stage}: ${row.lifecycle.next}` : meter, stage?.changes ? "failure" : stateTone(row.state))];
+      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.profileClass ? `${row.profileClass} (base ${row.class})` : row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(row.lifecycle ? `${meter} ${row.lifecycle.workflow ? row.lifecycle.workflow + " " : ""}SDLC ${row.lifecycle.stage}: ${row.lifecycle.next}` : meter, stage?.changes ? "failure" : stateTone(row.state))];
   }
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
   const [header, ...body] = String(row.text).split("\n");

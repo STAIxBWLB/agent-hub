@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { profileName, projectProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
@@ -633,12 +634,15 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: () => {
+    const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json"), ["--profile"], []);
+    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general] [--dry-run --json]");
+    const requestedProfile = flags.one["--profile"] === undefined ? undefined : profileName(flags.one["--profile"]);
     if (args.includes("--dry-run")) {
-      const plan = planInit(cwd);
+      const plan = planInit(cwd, requestedProfile);
       return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
     }
     assertLifecycleAvailable();
-    const changed = init(cwd);
+    const changed = init(cwd, requestedProfile);
     registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
   },
@@ -1093,7 +1097,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
     const urgent = rest.includes("--urgent");
     const flags = takeFlags(rest.filter((a) => a !== "--urgent"), ["--owner", "--detail", "--class"], ["--path", "--after"]);
-    const positional = !flags.one["--class"] && (CLASSES as readonly string[]).includes(flags.rest[0] ?? "") && flags.rest.length > 1;
+    const positional = !flags.one["--class"] && ((CLASSES as readonly string[]).includes(flags.rest[0] ?? "") || Object.hasOwn(projectProfile(projectConfig().profile).classes, flags.rest[0] ?? "")) && flags.rest.length > 1;
     const cls = flags.one["--class"] ?? (positional ? flags.rest[0] : undefined);
     const title = (positional ? flags.rest.slice(1) : flags.rest).join(" ");
     if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);
