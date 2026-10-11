@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { syncPermissionDefaults, permissionBoundary, initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderBoard, renderStatus } from "../src/cli/output.ts";
@@ -812,6 +812,31 @@ describe("console layout (#213)", () => {
     expect(spawned).toBe(0);
     f.input("q"); await running;
   });
+  test("a read of only arrow sequences is that many key presses, not a paste (#309)", async () => {
+    const f = fixture(); let spawned = 0;
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false, runCommand: () => { spawned++; return () => {}; } });
+    await Promise.resolve(); await Promise.resolve();
+    const lastFrame = () => f.output.join("").split("\x1b[r\x1b[1;1H").at(-1)!;
+    // Key repeat or a slow link: two Rights in one read move two tabs; the command line stays closed.
+    f.input("\x1b[C\x1b[C");
+    expect(lastFrame()).toContain("[3 Tasks]");
+    expect(lastFrame()).toContain("? keys");
+    // Under a pending confirmation the presses are key presses too: the first is answered as any key is, the
+    // second moves a tab. A paste would have dropped the confirmation and opened the command line instead.
+    f.input("\x1b[D\x1b[D"); // back to Peers (two Lefts, also one read)
+    for (const ch of ":task assign 9 kimi") f.input(ch); f.input("\r");
+    expect(lastFrame()).toContain("y/N");
+    f.input("\x1b[C\x1b[C");
+    expect(lastFrame()).toContain("[2 Approvals]");
+    expect(lastFrame()).toContain("? keys");
+    expect(lastFrame()).not.toContain("y/N");
+    expect(spawned).toBe(0);
+    // A read that mixes arrows with text is still a paste, with every guard a paste has now.
+    f.input("\x1b[Cstatus");
+    expect(lastFrame()).toContain(": status");
+    expect(lastFrame()).toContain("[2 Approvals]"); // the tab did not move for the arrow inside a paste
+    f.input("\x1b"); f.input("q"); await running;
+  });
   test("errors and refusals take the failure tone; informing notices take attention", () => {
     const tone = (s: any) => renderConsoleLines(s, 80, 24, NOW).at(-2)!.at(-1)!;
     let s = state(); s.editing = true; s.input = "kill";
@@ -825,7 +850,7 @@ describe("console layout (#213)", () => {
     let s = state(true); s.panel = 2; s.peers = { pi: { state: "idle" } };
     s.approvals.push({ ...s.approvals[0]!, id: "second" });
     s = reduceConsole(s, "?", NOW).state;
-    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   j/k or arrows move");
+    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   Left/Right panel   j/k or Up/Down move");
     for (const key of ["d", "a", "j", "]", "\r", "1", "\t", ":"]) {
       const next = reduceConsole(s, key, NOW);
       expect([next.effects, next.state.approvalId, next.state.panel, next.state.mode, next.state.editing, next.state.help]).toEqual([[], "first", 2, "panels", false, true]);
@@ -833,6 +858,133 @@ describe("console layout (#213)", () => {
     expect(reduceConsole(s, "\x1b", NOW).state.help).toBe(false);
     expect(reduceConsole(s, "?", NOW).state.help).toBe(false);
     expect(reduceConsole(s, "q", NOW).effects).toEqual([{ type: "exit" }]);
+  });
+  test("Left and Right move between the panel tabs with the digit's guards and resets, wrapping at both ends (#309)", () => {
+    for (let panel = 1; panel <= 5; panel++) {
+      const s = state(true); s.panel = panel; s.selection = 2; s.detail = "open view"; s.requestDetail = "first";
+      for (const [key, want] of [["\x1b[C", (panel % 5) + 1], ["\x1b[D", ((panel + 3) % 5) + 1]] as const) {
+        const next = reduceConsole(s, key, NOW);
+        expect([next.effects, next.state.panel, next.state.selection, next.state.detail, next.state.requestDetail]).toEqual([[], want, 0, undefined, undefined]);
+      }
+    }
+    for (const key of ["\x1b[C", "\x1b[D"]) {
+      const stream = state(false);
+      expect([reduceConsole(stream, key, NOW).state.mode, reduceConsole(stream, key, NOW).state.panel]).toEqual(["stream", 1]);
+      const editing = state(true); editing.editing = true; editing.input = "stop pi"; editing.history = ["q"]; editing.historyIndex = 0;
+      const afterEdit = reduceConsole(editing, key, NOW).state;
+      expect([afterEdit.input, afterEdit.historyIndex, afterEdit.editing, afterEdit.panel]).toEqual(["stop pi", 0, true, 1]);
+      // Under a confirmation an arrow dismisses it like any key but y, without moving a tab (as on main).
+      const confirming = state(true); confirming.confirm = { type: "command", args: ["stop", "pi"] };
+      const afterConfirm = reduceConsole(confirming, key, NOW).state;
+      expect([afterConfirm.panel, afterConfirm.confirm ?? null]).toEqual([1, null]);
+      const permitConfirm = state(true); permitConfirm.confirm = { type: "permission", id: "first", peer: "pi", option: "allow" };
+      const afterPermit = reduceConsole(permitConfirm, key, NOW).state;
+      expect([afterPermit.panel, afterPermit.confirm ?? null]).toEqual([1, null]);
+      const choosing = state(true); choosing.modeChoice = "pi";
+      expect([reduceConsole(choosing, key, NOW).state.panel, reduceConsole(choosing, key, NOW).state.modeChoice]).toEqual([1, "pi"]);
+      const opting = state(true); opting.optionChoice = "first";
+      expect([reduceConsole(opting, key, NOW).state.panel, reduceConsole(opting, key, NOW).state.optionChoice]).toEqual([1, "first"]);
+      const table = reduceConsole(state(true), "?", NOW).state;
+      expect([reduceConsole(table, key, NOW).state.panel, reduceConsole(table, key, NOW).state.help]).toEqual([1, true]);
+    }
+  });
+  test("the key table names Left and Right next to the digit keys; the footer hints do not change (#309)", () => {
+    let s = state(true); s.peers = { pi: { state: "idle" } };
+    s = reduceConsole(s, "?", NOW).state;
+    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   Left/Right panel   j/k or Up/Down move");
+    // The footer keeps its own hints, unchanged, on a panel with rows.
+    const closed = reduceConsole(s, "?", NOW).state;
+    closed.panel = 5; closed.events = [{ text: "kimi: context 21%" }];
+    const footer = renderConsole(closed, 80, 24, NOW).at(-1)!;
+    expect(footer).toBe("f peer  g kind  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
+  });
+  test("an Events row's header is painted by the stream's tokenizer, byte-identical with colour off (#309)", () => {
+    const reading = { source: "acp_usage_update", measuredAt: 1_756_000_000_000, tokens: 42_000, window: 200_000, used: 0.21, freshness: "fresh" as const };
+    const stateEvent = { t: "state", peer: "codex", state: "idle" } as const;
+    const envelopeEvent = { t: "envelope", env: newEnvelope("claude", "accepted", { to: ["codex"] }) } as const;
+    // The producers' own shapes: the stream's indent and markers, not hand-written lookalikes.
+    const events = [
+      { text: `  kimi: ${contextLine(reading, () => "6:51:38 AM")}`, kind: "context", tone: undefined },
+      { text: renderTailEvent(stateEvent as never), kind: "state", tone: eventTone(stateEvent as never) },
+      { text: renderTailEvent(envelopeEvent as never), kind: "chat", tone: eventTone(envelopeEvent as never) },
+      { text: "  * task #4 Fix #232: wrap tokens accepted by codex", kind: "notice", tone: undefined },
+      { text: permissionText({ ...state().approvals[0]!, peer: "claude" }), kind: "permission", tone: "attention" as const },
+      { text: "$ ahub status", kind: "command", tone: undefined },
+    ];
+    for (const event of events) {
+      const s = state(true); s.panel = 5;
+      s.events = [{ ...event }];
+      const row = cells(s, s.events[0], false, NOW);
+      // The selected row is marked by ">" alone: selection never changes a span.
+      expect(cells(s, s.events[0], true, NOW)).toEqual(row);
+      const flat = event.text.replace(/\t/g, " ");
+      const [header, ...body] = flat.split("\n");
+      const headerSpans = body.length ? row.slice(0, -1) : row;
+      // The same function paints the same header, token for token, with the event's tone and kind.
+      expect(headerSpans).toEqual(streamTokens(header ?? "", event.tone, event.kind));
+      if (body.length) expect(row.at(-1)!.tone).toBeUndefined(); // body lines stay plain, as in the stream
+      // Colour off is byte-identical to the one-span render; colour on changes no visible character.
+      expect(paint(row, false)).toBe(flat);
+      expect(paint(row, true).replace(/\x1b\[[0-9;]*m/g, "")).toBe(flat);
+      if (event.kind === "command") expect(headerSpans).toEqual([{ text: header ?? "" }]);
+    }
+  });
+  test("colouring an Events row changes no visible character and no fitting at 40, 80 and 120 (#309)", () => {
+    const reading = { source: "acp_usage_update", measuredAt: 1_756_000_000_000, tokens: 42_000, window: 200_000, used: 0.21, freshness: "fresh" as const };
+    const events: { text: string; kind: string; tone?: "attention" }[] = [
+      { text: `  kimi: ${contextLine(reading, () => "6:51:38 AM")}`, kind: "context" },
+      { text: "  * task #4 Fix #232: wrap tokens accepted by codex", kind: "notice" },
+      { text: permissionText({ ...state().approvals[0]!, peer: "claude" }), kind: "permission", tone: "attention" },
+    ];
+    for (const event of events) {
+      const s = state(true); s.panel = 5;
+      s.events = [{ ...event }];
+      const flat = event.text.replace(/\t/g, " ");
+      const [header, ...body] = flat.split("\n");
+      // The reference is the one-span render: the header in the event's tone, the body plain. Tokenizing the
+      // header must change neither the text nor where the row is cut.
+      const oneSpan = [{ text: header ?? "", ...(event.tone ? { tone: event.tone as never } : {}) }, ...(body.length ? [{ text: "\n" + body.join("\n") }] : [])];
+      for (const columns of [40, 80, 120]) {
+        const tokenized = fitLine([{ text: "  " }, ...cells(s, s.events[0], false, NOW)], columns);
+        const reference = fitLine([{ text: "  " }, ...oneSpan], columns);
+        // fitLine keeps span boundaries, so the tokenized row has more spans; the text and the cut must be equal.
+        expect(paint(tokenized, false)).toBe(paint(reference, false));
+        expect(paint(tokenized, true).replace(/\x1b\[[0-9;]*m/g, "")).toBe(paint(reference, false));
+      }
+    }
+  });
+  test("an Events row gains no tone the stream would not give it: peer names in titles, forged markers, bare numbers (#309)", () => {
+    // Peer names inside a title are not speakers; a forged marker or state word outside its slot stays plain;
+    // a permission id is not a measured value; the escape attack is sanitized like the stream's own test.
+    const cases: { text: string; kind?: string; tone?: "muted"; check: (row: { text: string; tone?: string }[]) => void }[] = [
+      { text: "* task #4 fix the claude and codex adapters accepted by kimi", check: (row) => {
+        expect(row.some(sp => sp.tone === "peerClaude" || sp.tone === "peerCodex")).toBe(false);
+      } },
+      { text: "kimi is idle ! truly", kind: "state", tone: "muted", check: (row) => {
+        expect(row.find(sp => sp.text === "!")?.tone).toBeUndefined();
+        expect(row.find(sp => sp.text === "idle")?.tone).toBeUndefined();
+      } },
+      { text: "permission 12345678 from pi was cancelled", check: (row) => {
+        expect(row.find(sp => sp.text === "12345678")?.tone).toBeUndefined();
+      } },
+      { text: "codex\x1b[31m: 21%\x1b]52;c;secret\x07 #232", check: (row) => {
+        expect(paint(row as never, true)).not.toContain("secret");
+      } },
+      // A tab is flattened before tokenizing, as the stream does: the row gets exactly the tones the stream's
+      // flattened text gets ("codex" in the peer slot, the trailing state word in the event's tone), no others.
+      { text: "codex\tis idle", kind: "state", tone: "muted", check: (row) => {
+        expect(row.find(sp => sp.text === "codex")?.tone).toBe("peerCodex");
+        expect(row.find(sp => sp.text === "idle")?.tone).toBe("muted");
+      } },
+    ];
+    for (const { text, kind, tone, check } of cases) {
+      const s = state(true); s.panel = 5;
+      s.events = [{ text, kind, tone }];
+      const row = cells(s, s.events[0], false, NOW);
+      // One tokenizer, on the same text the stream tokenizes (tabs flattened first).
+      expect(row).toEqual(streamTokens(terminalText(text).replace(/\t/g, " "), tone, kind));
+      check(row);
+    }
   });
   test("the key table and a viewed request print to the stream but stay out of Events", async () => {
     const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
@@ -1217,4 +1369,67 @@ describe("whole-board task progress (#246)", () => {
       }
     });
   }
+});
+
+
+test("Events flatten tabs only in the header and preserve main's body marker rendering (#309)", () => {
+  const s = state(true); s.panel = 5;
+  const header = "  codex\tis idle", body = "--- from\tuser";
+  s.events = [{ text: header + "\n" + body, kind: "state", tone: "muted" }];
+  const row = cells(s, s.events[0], false, NOW);
+  expect(row.at(-1)).toEqual({ text: "\n" + body });
+  expect(row.slice(0, -1)).toEqual(streamTokens(header.replace(/\t/g, " "), "muted", "state"));
+  for (const columns of [40, 80, 120]) {
+    const legacy = fitLine([{ text: "  " }, { text: header }, { text: "\n" + body }], columns);
+    const rendered = fitLine([{ text: "  " }, ...row], columns);
+    expect(paint(rendered, false)).toBe(paint(legacy, false));
+    expect(paint(rendered, true).replace(/\x1b\[[0-9;]*m/g, "")).toBe(paint(legacy, false));
+  }
+});
+
+const frameOf = (f: ReturnType<typeof fixture>) => f.output.join("").split("\x1b[r\x1b[1;1H").at(-1)!;
+async function consoleFrameContains(f: ReturnType<typeof fixture>, text: string) {
+  for (let n = 0; n < 100 && !frameOf(f).includes(text); n++) await new Promise<void>(resolve => setImmediate(resolve));
+  expect(frameOf(f)).toContain(text);
+}
+
+test("Up and Down in one read move rows rather than opening pasted command text (#309)", async () => {
+  const f = fixture();
+  f.client.request = async () => ({ ok: true, status: { peers: {} }, budget: {}, text: JSON.stringify([1, 2, 3].map(id => ({ id, title: `task ${id}`, state: "proposed", class: "implement", created: Date.now() }))), deliveries: [] });
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false });
+  try {
+    f.input("3"); await consoleFrameContains(f, "task 3");
+    f.input("j"); f.input("j"); expect(frameOf(f)).toContain("> #3");
+    f.input("\x1b[A\x1b[A"); expect(frameOf(f)).toContain("> #1"); expect(frameOf(f)).toContain("? keys");
+    f.input("\x1b[B\x1b[B"); expect(frameOf(f)).toContain("> #3"); expect(frameOf(f)).toContain("? keys");
+    expect(f.sent).toEqual([{ t: "tail" }]);
+  } finally { f.signal(); await running; }
+});
+
+test("all-arrow reads preserve the modal key table (#309)", async () => {
+  const f = fixture();
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false });
+  try {
+    f.input("?");
+    for (const sequence of ["\x1b[A\x1b[A", "\x1b[B\x1b[B", "\x1b[C\x1b[D", "\x1b[A\x1b[B\x1b[C\x1b[D"]) {
+      f.input(sequence); expect(frameOf(f)).toContain("Left/Right panel"); expect(frameOf(f)).toContain("[1 Peers]");
+    }
+    expect(f.sent).toEqual([{ t: "tail" }]);
+  } finally { f.signal(); await running; }
+});
+
+test("all-arrow reads retain a never-ask default confirmation until an explicit answer (#309)", async () => {
+  const f = fixture();
+  f.client.request = async (msg: any) => {
+    f.requests.push(msg);
+    return { ok: true, status: { peers: {}, permissionDefaults: [{ peer: "kimi", mode: "never-ask", source: "config.json" }] }, budget: {}, text: "[]", deliveries: [] };
+  };
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false });
+  try {
+    await consoleFrameContains(f, "enable never-ask default");
+    for (const sequence of ["\x1b[A\x1b[A", "\x1b[B\x1b[B", "\x1b[C\x1b[D", "\x1b[A\x1b[B\x1b[C\x1b[D"]) {
+      f.input(sequence); expect(frameOf(f)).toContain("enable never-ask default"); expect(frameOf(f)).toContain("[1 Peers]");
+    }
+    expect(f.requests.filter(request => request.t === "permission_default")).toEqual([]); expect(f.sent).toEqual([{ t: "tail" }]);
+  } finally { f.signal(); await running; }
 });

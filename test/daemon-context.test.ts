@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { ContextWindows } from "../src/hub/context-window.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
@@ -28,7 +29,11 @@ async function fixture(gate = 0.8, reviewOther = false) {
   await until(() => daemon.bus.stateOf("claude") === "idle");
   const session = (id = "native-1", launchId = "launch-1") => writeFileSync(join(cwd, "claude-session.json"), JSON.stringify({ instanceId: "context-instance", sessionId: id, launchId }));
   session();
-  const reading = (used = 90, fields: Record<string, unknown> = {}) => writeFileSync(join(cwd, "claude-context.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1", at: Date.now(), context: { context_window_size: 200_000, used_percentage: used, current_usage: { input_tokens: used * 2000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }, ...fields }));
+  const reading = (used = 90, fields: Record<string, unknown> = {}) => {
+    const { context, ...metadata } = fields;
+    const extra = context !== null && typeof context === "object" ? context : {};
+    writeFileSync(join(cwd, "claude-context.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1", at: Date.now(), context: { context_window_size: 200_000, used_percentage: used, current_usage: { input_tokens: used * 2000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, ...extra }, ...metadata }));
+  };
   const tasks = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "implement parser", owner: "claude", class: "implement" } }); expect(tasks.ok).toBe(true);
   return { cwd, daemon, console_, claude, mem, pushes, otherPushes, reading, session };
 }
@@ -166,11 +171,11 @@ test.each(["owner", "reviewer"] as const)("context request and clean completion 
 }, 20_000);
 
 /** A daemon with the fake Kimi ACP agent: the occupancy legs of #285 phase 1. */
-async function kimiFixture(gate = 0) {
+async function kimiFixture(gate = 0, staleMin = 30) {
   const stateDir = mkdtempSync(join(tmpdir(), "ahub-acp-context-")); cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
   const daemon = await startDaemon({
     cwd: stateDir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "acp-context",
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")], context: { gate, stale_min: 30 }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 800_000 } },
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")], context: { gate, stale_min: staleMin }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 800_000 } },
   });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
@@ -248,4 +253,127 @@ test("a usage_update naming a session the adapter did not load is dropped before
   const shown = await console_.request({ t: "status" });
   expect(shown.status.peers.kimi.context?.freshness ?? "unknown").toBe("unknown");
   expect(shown.status.peers.kimi.context?.used ?? null).toBeNull();
+}, 20_000);
+
+
+/** Drive the real one-second daemon callbacks and context clock, not arbitrary wall delays. */
+function contextTickClock() {
+  const interval = globalThis.setInterval, clear = globalThis.clearInterval, dateNow = Date.now;
+  let now = dateNow();
+  const ticks: { handle: ReturnType<typeof setInterval>; callback: () => void }[] = [];
+  Date.now = () => now;
+  globalThis.setInterval = ((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    if (ms !== 1000) return interval(callback, ms, ...args);
+    const handle = interval(() => {}, ms); ticks.push({ handle, callback: () => callback(...args) }); return handle;
+  }) as typeof setInterval;
+  return { advance(ms: number) { now += ms; }, async flush(client: ControlClient) {
+    expect(ticks.length).toBeGreaterThan(0);
+    // The first real tick ingests a changed file; the second observes its new reading.
+    for (let n = 0; n < 2; n++) for (const tick of ticks) tick.callback();
+    return client.request({ t: "status" }); // server pushes precede this reply on the same consumed WS
+  }, restore() { for (const tick of ticks) clear(tick.handle); globalThis.setInterval = interval; Date.now = dateNow; } };
+}
+
+test("an unchanged context reading is not repeated in the tail: the stamp is what the line says apart from its time (#309)", async () => {
+  const clock = contextTickClock();
+  try {
+    const f = await fixture(0.8);
+    await clock.flush(f.console_);
+    const contextPushes = (peer: string) => f.pushes.filter((p) => p.t === "context" && p.peer === peer);
+    // Each attached peer's current reading arrives once; a second peer is counted on its own throughout.
+    await until(() => contextPushes("claude").length === 1 && contextPushes("other").length === 1);
+    expect(contextPushes("claude")[0]!.reading).toMatchObject({ used: null, freshness: "unknown", source: null });
+    // The first report prints (unknown to fresh; the source appears): one push.
+    clock.advance(1); f.reading(45); await clock.flush(f.console_);
+    await until(() => contextPushes("claude").length === 2);
+    expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: 0.45, freshness: "fresh", source: "claude_statusline" });
+    // The same printed percentage with a new measurement time and a different token count does not repeat.
+    clock.advance(1); f.reading(45, { context: { current_usage: { input_tokens: 90_500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+    const latest = await clock.flush(f.console_); // consumed status after the file was ingested and its new epoch viewed
+    expect(latest.status.peers.claude.context.tokens).toBe(90_500);
+    expect(contextPushes("claude")).toHaveLength(2);
+    // A printed percentage that differs prints once more.
+    clock.advance(1); f.reading(90); await clock.flush(f.console_);
+    await until(() => contextPushes("claude").length === 3);
+    expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: 0.9, freshness: "fresh" });
+    // To unknown: a session change invalidates the current reading (known to unknown), one push.
+    f.session("native-2"); await clock.flush(f.console_);
+    await until(() => contextPushes("claude").length === 4);
+    expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: null, freshness: "unknown", source: "claude_statusline" });
+    // Freshness again: the new session's first reading was measured two minutes ago, so it is stale (stale_min is 1
+    // here; report()'s ordering guard rejects an older reading only for the same session). One push, then quiet.
+    // Actual fresh-to-stale aging without another report is pinned separately with the ACP fixture below.
+    f.reading(90, { sessionId: "native-2", at: Date.now() - 120_000 }); await clock.flush(f.console_);
+    await until(() => contextPushes("claude").length === 5);
+    expect(contextPushes("claude").at(-1)!.reading).toMatchObject({ used: null, freshness: "stale", source: "claude_statusline" });
+    await clock.flush(f.console_); // another consumed tick: the stale reading does not repeat periodically either
+    expect(contextPushes("claude")).toHaveLength(5);
+    expect(contextPushes("other")).toHaveLength(1);
+  } finally { clock.restore(); }
+}, 25_000);
+
+test("real ACP token and fraction changes stamp the printed round, then age to stale without a report and reach a late tailer once (#309)", async () => {
+  const clock = contextTickClock();
+  try {
+    const f = await kimiFixture(0, 0.01); // six tenths of a second, advanced on the controlled context clock
+    expect((await f.console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+    await until(() => f.daemon.bus.stateOf("kimi") === "idle");
+    await clock.flush(f.console_);
+    const pushed = () => f.pushes.filter(push => push.t === "context" && push.peer === "kimi");
+    expect(pushed()).toHaveLength(1);
+    let turns = 0;
+    const report = async (prompt: string) => {
+      clock.advance(1);
+      f.daemon.bus.publish(newEnvelope(USER, prompt, { to: ["kimi"] }));
+      turns++;
+      await until(() => readEvents(join(f.stateDir, "events.jsonl")).filter(event => event.type === "turn_end" && event.peer === "kimi").length === turns);
+      await f.flushLate(); // native consumer processed the held usage_update before its mode acknowledgement
+      return clock.flush(f.console_);
+    };
+    const first = await report("OCCUPANCY: first report");
+    expect(first.status.peers.kimi.context).toMatchObject({ used: 0.45, tokens: 90_000, freshness: "fresh" });
+    expect(pushed()).toHaveLength(2);
+    const near = await report("OCCUPANCY_NEAR: distinct count, same printed percentage");
+    expect(near.status.peers.kimi.context).toMatchObject({ used: 0.4545, tokens: 90_900, freshness: "fresh" });
+    expect(pushed()).toHaveLength(2);
+    const roundUp = await report("OCCUPANCY_ROUND_UP: prints 46 percent");
+    expect(roundUp.status.peers.kimi.context).toMatchObject({ used: 0.456, tokens: 91_200, freshness: "fresh" });
+    expect(pushed()).toHaveLength(3); expect(pushed().at(-1).reading.used).toBe(0.456);
+    const measuredAt = roundUp.status.peers.kimi.context.measuredAt;
+    clock.advance(601); // age the stored reading, with no additional prompt/file/usage update
+    const stale = await clock.flush(f.console_);
+    expect(stale.status.peers.kimi.context).toMatchObject({ used: null, tokens: null, measuredAt, freshness: "stale" });
+    expect(pushed()).toHaveLength(4); expect(pushed().at(-1).reading.freshness).toBe("stale");
+    await clock.flush(f.console_); expect(pushed()).toHaveLength(4);
+    expect(readEvents(join(f.stateDir, "events.jsonl")).filter(event => event.type === "turn_end" && event.peer === "kimi")).toHaveLength(3);
+    const later = await ControlClient.connect(f.stateDir, { role: "console" }); cleanup.push(() => later.close());
+    const latePushes: any[] = []; later.onPush = push => latePushes.push(push); later.send({ t: "tail" });
+    await later.request({ t: "status" }); // consume the tail's current-state push on this connection
+    expect(latePushes.filter(push => push.t === "context" && push.peer === "kimi")).toMatchObject([{ reading: { used: null, measuredAt, freshness: "stale", source: "acp_usage_update" } }]);
+    later.send({ t: "tail" }); await later.request({ t: "status" });
+    expect(latePushes.filter(push => push.t === "context" && push.peer === "kimi")).toHaveLength(1);
+    await clock.flush(f.console_); expect(pushed()).toHaveLength(4); // starting a second tail never repeats to the first
+  } finally { clock.restore(); }
+}, 20_000);
+
+test("a fabricated source-only ContextWindows view change isolates the daemon stamp contract (#309)", async () => {
+  // One real peer cannot switch native context sources today. This deliberately fabricated
+  // view double changes only source; it does not claim a reachable native source-switch leg.
+  const clock = contextTickClock(), view = ContextWindows.prototype.view;
+  try {
+    const f = await fixture(0);
+    await clock.flush(f.console_);
+    clock.advance(1); f.reading(45);
+    const before = (await clock.flush(f.console_)).status.peers.claude.context;
+    const pushed = () => f.pushes.filter(push => push.t === "context" && push.peer === "claude");
+    expect(pushed()).toHaveLength(2);
+    ContextWindows.prototype.view = function (peer, session, attached) {
+      const reading = view.call(this, peer, session, attached);
+      return peer === "claude" && reading.freshness === "fresh" ? { ...reading, source: "codex_token_usage" } : reading;
+    };
+    const after = (await clock.flush(f.console_)).status.peers.claude.context;
+    expect(after).toEqual({ ...before, source: "codex_token_usage" });
+    expect(pushed()).toHaveLength(3); expect(pushed().at(-1).reading).toEqual(after);
+    await clock.flush(f.console_); expect(pushed()).toHaveLength(3);
+  } finally { ContextWindows.prototype.view = view; clock.restore(); }
 }, 20_000);

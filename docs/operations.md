@@ -63,6 +63,15 @@ a three-line footer, separated by ASCII `-` rules; the stream has one rule above
 its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
 without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
+Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
+ends), never while a command is being edited or a choice is open; under a
+confirmation an arrow dismisses it like any key but y, without moving a tab. A pasted
+chunk can only edit the command line, but a read that holds nothing but arrow
+sequences is that many key presses, so a held key repeats its tab move. In the Events
+tab a row's header line is tokenized and coloured exactly as the same event in
+the stream; only the header is tab-flattened before tokenizing. Body lines retain
+the previous rendering and stay plain, as does command output; colour never changes
+what the panel's text says.
 
 Peers, Approvals, Tasks and Queue are tables with a header row. A column is as
 wide as its widest cell, up to a third of the terminal; the last column takes
@@ -95,7 +104,7 @@ prompts, are quoted unless they are a single word starting with a letter, so
 punctuation, a newline or a bare number in them cannot imitate the console's own
 structure. Under the `?` key table only `?`, Escape and `q` act.
 
-Arrow keys or j/k move, Enter opens a detail of labeled fields (relative times,
+Up/Down arrows or j/k move, Enter opens a detail of labeled fields (relative times,
 never JSON), Escape returns, and `?` shows the keys grouped by panel; in the
 stream, `?` prints that table and `v` prints the selected request as its push
 showed it. The footer's last line lists only the keys that act in the current
@@ -2152,7 +2161,11 @@ emits it after the turn settles (read from the source, not yet observed live
 through the hub; docs/smoke.md), so the peer may already be idle.
 Pi and other unsupported surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
-usage is never used as context occupancy.
+usage is never used as context occupancy. In the tail (`ahub tail` and the
+console's stream) a reading prints once and repeats only when the line changes
+apart from its time: the printed percentage, the freshness, the source, or known
+against unknown. Status, the Peers panel and the dashboard always read the
+latest reading with its time.
 
 Context-triggered checkpoints are disabled by default. To enable them, add
 this to `.agenthub/config.json` and restart the daemon deliberately:
