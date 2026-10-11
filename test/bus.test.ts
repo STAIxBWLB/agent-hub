@@ -816,3 +816,183 @@ test("hushed() leaves out fyi and hop-limited envelopes: those are never deliver
   expect(bus.hushed({ ...newEnvelope("codex", "deep", {}), hop: 99 })).toEqual([]);
   expect(bus.hushed(newEnvelope("codex", "hi", { to: ["claude"] }))).toEqual([{ peer: "claude", reason: "cohort" }]);
 });
+
+const rosterTurnSettled = () => new Promise<void>(resolve => setImmediate(resolve)); // consume in-memory adapter promise continuations
+
+test("roster defaults preserve every existing peer and runtime audiences exclude only off-roster targets (#315)", async () => {
+  const legacy = new Bus({ batchMs: 0 });
+  expect(legacy.isRostered("kimi")).toBe(true); expect(legacy.isRostered("external-peer")).toBe(true);
+  expect(legacy.offRosterRecipients(newEnvelope(USER, "default", { to: ["kimi"] }))).toEqual([]);
+  legacy.closeJournal();
+  const off = new Set(["kimi"]), { bus, claude, codex, kimi } = await trio(undefined, { rostered: peer => !off.has(peer) });
+  try {
+    expect(bus.isRostered("kimi")).toBe(false); expect(bus.isRostered("external-peer")).toBe(true);
+    const broadcast = newEnvelope("claude", "broadcast");
+    expect(bus.offRosterRecipients(broadcast)).toEqual([]);
+    expect(bus.publish(broadcast)).toEqual(["codex"]);
+    expect(bus.publish(newEnvelope(USER, "addressed off", { to: ["kimi"] }))).toEqual([]);
+    expect(bus.publish(newEnvelope(USER, "mixed", { to: ["kimi", "claude"] }))).toEqual(["claude"]);
+    expect(bus.offRosterRecipients(newEnvelope("codex", "targets", { to: ["codex", "kimi", "kimi", "external-peer"] }))).toEqual(["kimi"]);
+    await rosterTurnSettled();
+    expect(codex.got.map(env => env.body)).toEqual(["broadcast"]); expect(claude.got.map(env => env.body)).toEqual(["mixed"]);
+    expect(kimi.got).toEqual([]); expect(bus.queueIds("kimi")).toEqual([]); expect(bus.attemptState()).toEqual({});
+  } finally { bus.closeJournal(); await Promise.all([claude.stop(), codex.stop(), kimi.stop()]); }
+});
+
+test("native all-off recipients refuse before publication/limits; mixed recipients charge and deliver only allowed peers (#315)", async () => {
+  const off = new Set(["kimi"]), events: BusEvent[] = [], admitted: Envelope[] = [];
+  const limiter = new Limiter({ ...DEFAULT_LIMITS, sender_per_min: 1, pair_per_min: 1, repeat_window_s: 0 });
+  const bus = new Bus({ batchMs: 0, rostered: peer => !off.has(peer), admit: env => { admitted.push(env); return limiter.admit(env.from, env.to, env.priority, env.body); } });
+  const sender = new NativeFakePeer("codex"), allowed = new FakePeer("claude"), blocked = new FakePeer("kimi");
+  for (const peer of [sender, allowed, blocked]) { bus.add(peer); await peer.start(); }
+  bus.tap(event => events.push(event));
+  try {
+    expect(sender.onMessage!("refused", { to: ["kimi", "codex", "kimi"] })).toBe("off roster: kimi");
+    expect(admitted).toEqual([]); expect(events.filter(event => event.t === "envelope")).toEqual([]);
+    expect(bus.snapshot().prefaces.codex!.body).toContain("your message was not delivered: off roster: kimi");
+    expect(sender.onMessage!("mixed accepted", { to: ["kimi", "claude"] })).toBeUndefined();
+    await rosterTurnSettled();
+    expect(admitted.map(env => env.to)).toEqual([["claude"]]); // refused pair spends nothing
+    expect(allowed.got.map(env => env.body)).toEqual(["mixed accepted"]); expect(blocked.got).toEqual([]);
+    expect(events.filter(event => event.t === "envelope")).toHaveLength(1);
+  } finally { bus.closeJournal(); await Promise.all([sender.stop(), allowed.stop(), blocked.stop()]); }
+});
+
+test("roster changes hold previously queued work and prefaces, then deliver them once without attempts (#315)", async () => {
+  let on = true, notifications = 0;
+  const bus = new Bus({ batchMs: 0, rostered: () => on }), peer = new FakePeer("kimi"); bus.add(peer); await peer.start(); peer.set("busy");
+  bus.onQueues = () => { notifications++; };
+  const env = newEnvelope(USER, "retained", { to: [peer.id] }); bus.preface(peer.id, "retained recall"); bus.publish(env);
+  try {
+    on = false; bus.rosterChanged(peer.id); peer.set("idle"); await rosterTurnSettled();
+    expect(peer.got).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([env.id]); expect(bus.attemptState()).toEqual({});
+    expect(bus.snapshot().prefaces[peer.id]!.body).toContain("retained recall"); expect(notifications).toBeGreaterThan(0);
+    on = true; bus.rosterChanged(peer.id); await rosterTurnSettled();
+    expect(peer.got.filter(item => item.id === env.id)).toHaveLength(1); expect(peer.got.filter(item => item.kind === "presence")).toHaveLength(1);
+    expect(bus.queueIds(peer.id)).toEqual([]); expect(bus.attemptState()).toEqual({});
+    bus.rosterChanged(peer.id); await rosterTurnSettled(); expect(peer.got).toHaveLength(2);
+  } finally { bus.closeJournal(); await peer.stop(); }
+});
+
+for (const hold of ["manual", "budget", "recovery", "lifecycle/conductor"] as const) test(`rosterChanged never lifts an independent ${hold} hold (#315)`, async () => {
+  let on = true, lifecycle = false;
+  const bus = new Bus({ batchMs: 0, rostered: () => on, deliveryHeld: () => lifecycle }), peer = new FakePeer("kimi"); bus.add(peer); await peer.start(); peer.set("busy");
+  const env = newEnvelope(USER, "held independently", { to: [peer.id] }); bus.publish(env);
+  if (hold === "manual") { bus.pause(peer.id); bus.setManualPaused([peer.id]); }
+  else if (hold === "budget") bus.pause(peer.id); // budget uses the same pause gate, with its record owned outside Bus
+  else if (hold === "recovery") bus.setRecoveryHold(true);
+  else lifecycle = true;
+  try {
+    on = false; bus.rosterChanged(peer.id); on = true; bus.rosterChanged(peer.id); peer.set("idle"); await rosterTurnSettled();
+    expect(peer.got).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([env.id]); expect(bus.attemptState()).toEqual({});
+    if (hold === "manual") expect(bus.manualPausedPeers()).toEqual([peer.id]);
+    if (hold === "manual" || hold === "budget") expect(bus.isPaused(peer.id)).toBe(true);
+    if (hold === "manual") { bus.setManualPaused([]); bus.resume(peer.id); }
+    else if (hold === "budget") bus.resume(peer.id);
+    else if (hold === "recovery") bus.setRecoveryHold(false);
+    else { lifecycle = false; bus.rosterChanged(peer.id); }
+    await rosterTurnSettled(); expect(peer.got.map(item => item.id)).toEqual([env.id]);
+  } finally { bus.closeJournal(); await peer.stop(); }
+});
+
+test("off-roster pull retains its batch and preface until membership returns (#315)", async () => {
+  class PullPeer extends FakePeer { readonly pullOnly = true; }
+  let on = true; const bus = new Bus({ batchMs: 0, rostered: () => on }), peer = new PullPeer("claude"); bus.add(peer); await peer.start();
+  const env = newEnvelope(USER, "queued for inbox", { to: [peer.id] }); bus.preface(peer.id, "recall"); bus.publish(env);
+  try {
+    on = false; bus.rosterChanged(peer.id);
+    expect(bus.pull(peer.id)).toBeUndefined(); expect(bus.queueIds(peer.id)).toEqual([env.id]); expect(bus.attemptState()).toEqual({});
+    expect(bus.snapshot().prefaces[peer.id]).toBeDefined(); expect(peer.got).toEqual([]);
+    on = true; bus.rosterChanged(peer.id);
+    const batch = bus.pull(peer.id)!;
+    expect(batch.filter(item => item.id === env.id)).toHaveLength(1); expect(batch.filter(item => item.kind === "presence")).toHaveLength(1);
+    expect(bus.pull(peer.id)).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([]);
+  } finally { bus.closeJournal(); await peer.stop(); }
+});
+
+test("off-roster important messages cannot steer a busy peer (#315)", async () => {
+  let on = true; const bus = new Bus({ batchMs: 0, rostered: () => on }), peer = new FakePeer("codex"); peer.canSteer = true; bus.add(peer); await peer.start(); peer.set("busy");
+  try {
+    on = false; bus.rosterChanged(peer.id);
+    expect(bus.publish(newEnvelope(USER, "off important", { to: [peer.id], priority: "important" }))).toEqual([]);
+    await rosterTurnSettled(); expect(peer.steered).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([]); expect(bus.attemptState()).toEqual({});
+    on = true; bus.rosterChanged(peer.id);
+    bus.publish(newEnvelope(USER, "on important", { to: [peer.id], priority: "important" })); await rosterTurnSettled();
+    expect(peer.steered.map(env => env.body)).toEqual(["on important"]);
+  } finally { bus.closeJournal(); await peer.stop(); }
+});
+
+for (const durable of [false, true]) test(`roster removal while async condensation waits fences the eventual handoff: durable=${durable} (#315)`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-roster-condense-"));
+  const journal = durable ? new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "roster", instanceId: "condense" }) : undefined;
+  let on = true, release!: () => void, began!: () => void;
+  const beganCondensing = new Promise<void>(resolve => { began = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const bus = new Bus({ batchMs: 0, journal, rostered: () => on, condense: async envs => { began(); await gate; return envs; } }), peer = new FakePeer("kimi"); bus.add(peer); await peer.start();
+  const env = newEnvelope(USER, "condensing original", { to: [peer.id] });
+  try {
+    bus.publish(env); await beganCondensing; on = false; bus.rosterChanged(peer.id); release(); await rosterTurnSettled();
+    expect(peer.got).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([env.id]); expect(bus.attemptState()).toEqual({});
+    if (journal) expect(journal.list(peer.id).every(row => row.state === "queued")).toBe(true);
+    on = true; bus.rosterChanged(peer.id); await rosterTurnSettled();
+    expect(peer.got.map(item => item.id)).toEqual([env.id]); expect(bus.queueIds(peer.id)).toEqual([]);
+  } finally { release(); bus.closeJournal(); await peer.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const held of [false, true]) test(`a journal restored off roster retains its queue and existing uncertainty: held=${held} (#315)`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-roster-restore-")), file = join(dir, "hub.db");
+  const options = { file, projectRoot: dir, projectId: "roster", instanceId: "restore" };
+  const firstJournal = new DeliveryJournal(options), first = new Bus({ batchMs: 0, journal: firstJournal }), old = new FakePeer("kimi"); first.add(old); await old.start(); old.set("busy");
+  const env = newEnvelope(USER, "retained after restart", { to: [old.id] }); first.publish(env);
+  const uncertain = held ? firstJournal.createDelivery({ id: "held", peer: old.id, state: "needs_review", createdAt: env.ts, originals: [newEnvelope(USER, "uncertain")], out: [], reason: "old unclear outcome" }) : undefined;
+  first.closeJournal(); await old.stop();
+  const journal = new DeliveryJournal(options); let on = false;
+  const restored = new Bus({ batchMs: 0, journal, rostered: () => on }), peer = new FakePeer("kimi"); restored.add(peer); await peer.start();
+  try {
+    restored.rosterChanged(peer.id); await rosterTurnSettled();
+    expect(peer.got).toEqual([]); expect(restored.queueIds(peer.id)).toEqual([env.id]);
+    if (uncertain) expect(journal.get(uncertain.id)).toEqual(uncertain);
+    on = true; restored.rosterChanged(peer.id); await rosterTurnSettled();
+    if (uncertain) {
+      expect(peer.got).toEqual([]); expect(journal.get(uncertain.id)).toEqual(uncertain); // recovery hold wins after roster return
+      restored.resolveDelivery(uncertain.id, uncertain.revision, "discard", "fixture resolved uncertainty"); await rosterTurnSettled();
+    }
+    expect(peer.got.map(item => item.id)).toEqual([env.id]); expect(restored.queueIds(peer.id)).toEqual([]); expect(restored.attemptState()).toEqual({});
+  } finally { restored.closeJournal(); await peer.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a roster change in the journal queue callback fences important steering before transport admission (#315)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-roster-steer-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "roster", instanceId: "steer" });
+  let on = true;
+  const bus = new Bus({ batchMs: 0, journal, rostered: () => on }), peer = new FakePeer("codex"); peer.canSteer = true; bus.add(peer); await peer.start(); peer.set("busy");
+  const env = newEnvelope(USER, "accepted just before removal", { to: [peer.id], priority: "important" });
+  bus.onQueues = () => { if (bus.queueIds(peer.id).includes(env.id)) on = false; }; // permitted observer callback changes membership before publish's dispatch phase
+  try {
+    expect(bus.publish(env)).toEqual([peer.id]); await rosterTurnSettled();
+    expect(peer.steered).toEqual([]); expect(peer.got).toEqual([]); expect(bus.queueIds(peer.id)).toEqual([env.id]);
+    expect(journal.list(peer.id).every(row => row.state === "queued")).toBe(true); expect(bus.attemptState()).toEqual({});
+    bus.onQueues = undefined; on = true; peer.set("idle"); bus.rosterChanged(peer.id); await rosterTurnSettled();
+    expect(peer.got.map(item => item.id)).toEqual([env.id]); expect(bus.queueIds(peer.id)).toEqual([]);
+  } finally { bus.closeJournal(); await peer.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("rosterChanged notifies views for an unattached peer without creating a lazy status row (#315)", () => {
+  const bus = new Bus({ batchMs: 0 }); let notifications = 0; bus.onQueues = () => { notifications++; };
+  bus.rosterChanged("kimi");
+  expect(notifications).toBe(1); expect(bus.knownPeers()).toEqual([]); expect(bus.snapshot().queues).toEqual({});
+  bus.closeJournal(); bus.rosterChanged("kimi"); expect(notifications).toBe(1);
+});
+
+test("a removed native sender cannot publish a late answer or spend admission limits (#315)", async () => {
+  let on = true, admissions = 0;
+  const bus = new Bus({ batchMs: 0, rostered: id => id !== "kimi" || on, admit: () => { admissions++; return undefined; } });
+  const sender = new FakePeer("kimi"), receiver = new FakePeer("codex"); bus.add(sender); bus.add(receiver); await sender.start(); await receiver.start(); bus.pause(receiver.id);
+  try {
+    expect(sender.onMessage!("before removal", { to: [receiver.id] })).toBeUndefined();
+    const kept = bus.queueIds(receiver.id); expect(kept).toHaveLength(1); expect(admissions).toBe(1);
+    on = false;
+    expect(sender.onMessage!("late answer after removal", { to: [receiver.id] })).toBe("off roster: kimi");
+    expect(bus.queueIds(receiver.id)).toEqual(kept); expect(admissions).toBe(1);
+    expect(bus.queued(sender.id)).toBe(0); // no undeliverable decision notice queued to the removed sender
+  } finally { bus.closeJournal(); await sender.stop(); await receiver.stop(); }
+});

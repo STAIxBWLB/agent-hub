@@ -10,6 +10,7 @@ import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecisi
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
+import { KNOWN_PEERS } from "./peer-catalog.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 
 export interface TasksDeps {
@@ -395,7 +396,7 @@ export class Tasks {
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    return { ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { offRoster: KNOWN_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
@@ -855,7 +856,7 @@ export class Tasks {
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
 
@@ -865,7 +866,9 @@ export class Tasks {
     }
     const passed = this.passedOver(task, a);
     if (!a.owner) {
-      this.releaseNotice(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
+      this.releaseNotice(opts.roster
+        ? `task ${this.publicTitle(task)}: ${task.owner} is off roster and no peer can take it; it stays with ${task.owner} in ${task.state}; assign with: ahub task assign ${task.id} <peer>`
+        : `task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
       if (opts.clearOnFail && task.owner) {
         this.cohorts.leave(task.id);
@@ -877,7 +880,7 @@ export class Tasks {
     // A person's explicit assign replaces an agent's reservation (#207). Only a refusal keeps the owner it moves away from
     // out for good: a reviewer's rejections or an escalation by hand, never the hub's own move after a failed delivery.
     const lasting = opts.event === "escalated" && task.owner && (opts.reason === "rejections" || opts.reason === "manual");
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) });
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) });
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -1509,6 +1512,7 @@ export class Tasks {
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
   async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false): Promise<Task> {
     const task = this.need(id, true, preEffect);
+    if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
     if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], event: "reassigned", reason: "manual", override: by === USER });
     const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" });
@@ -1521,35 +1525,57 @@ export class Tasks {
    * the usual constraints. Tasks it was reviewing get another reviewer. Moves are reported, never taken back automatically.
    */
   async reassignForPause(peer: PeerId, context: string | undefined, urgentOnly = false): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
+    return this.reassignWork(peer, context, urgentOnly, false);
+  }
+
+  /** A roster removal offers work through the quota relay's constraints, preserving assignments nobody can take. */
+  async reassignForRoster(peer: PeerId): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
+    return this.reassignWork(peer, undefined, false, true);
+  }
+
+  private async reassignWork(peer: PeerId, context: string | undefined, urgentOnly: boolean, roster: boolean): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
     const moved: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[] = [];
-    const routing = this.d.routing();
-    // The hand-off is screened once (#198), before anything moves, when an ordinary task will carry it.
+    const routing = this.d.routing(), why = roster ? `roster removal of ${peer}` : `budget pause of ${peer}`;
+    // Budget context is screened exactly as before; a roster removal supplies no agent-written context.
     const moves = (t: Task) => (!urgentOnly || t.signals.includes("urgent")) && t.owner === peer && OPEN.includes(t.state);
     const contextWithheld = context && this.d.board.list().some((t) => moves(t) && !this.isPii(t)) ? await this.withholds("handoff", context) : false;
     for (const task of this.d.board.list()) {
-      // Waiting out a window that resets soon (issue #36): only urgent work moves.
       if (urgentOnly && !task.signals.includes("urgent")) continue;
       if (task.owner === peer && OPEN.includes(task.state)) {
         const pii = this.isPii(task);
         const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
-        const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, `budget pause of ${peer}`) : task;
+        // Budget keeps its original release/unassign behaviour. Roster changes the state in
+        // assignOwner's same owner write only after routing has found somebody to take it.
+        const back = !roster && task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
+        let next: Task;
         try {
-          const next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", reason: "budget", note: `budget pause of ${peer}`, clearOnFail: true, ...(context ? { context, contextWithheld } : {}) });
-          moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
+          next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", reason: roster ? "manual" : "budget", note: why, ...(roster ? { roster: true } : { clearOnFail: true }), ...(context ? { context, contextWithheld } : {}) });
         } catch (e) {
-          // A saved move whose delivery failed: the console notice was printed where the error was thrown; the
-          // task counts as moved and the relay goes on (#297). No retry is needed for it: the notice already spoke.
+          // The move is saved and its central #297 notice already spoke; relay the
+          // remaining tasks and run the roster tail on the saved row as on success.
           if (!(e instanceof AssignmentUndeliveredError)) throw e;
-          moved.push({ id: task.id, title: this.publicTitle(task), to: e.task.owner, role: "owner" });
+          next = e.task;
         }
+        if (roster) {
+          if (!next.owner || next.owner === peer) continue;
+          this.releaseNotice(`task ${this.publicTitle(next)} moved from ${peer} to ${next.owner} (off roster)`);
+          if (this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline") this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${peer} it moved to ${next.owner}`, () =>
+            this.tell({ ...next, owner: peer }, `Task #${next.id} moved to ${next.owner} (off roster). Stop working on it.`, pii));
+        }
+        moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
       } else if (task.reviewer === peer && task.state !== "approved") {
-        // No owner candidates: only the reviewer is wanted, and it must be neither the paused peer nor the task's owner.
         const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
         const reviewer = a.reviewer && a.reviewer !== peer && a.reviewer !== task.owner ? a.reviewer : null;
-        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, `budget pause of ${peer}`);
+        if (roster && !reviewer) {
+          this.releaseNotice(`task ${this.publicTitle(task)}: its reviewer ${peer} is off roster and nobody else can review; the reviewer stays ${peer}; use ahub review ${task.id}`);
+          continue;
+        }
+        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, why);
         moved.push({ id: task.id, title: this.publicTitle(task), to: reviewer, role: "reviewer" });
-        if (next.state === "in_review" && reviewer && reviewer !== USER) this.sendReview(next, reviewer, `(${peer} was reviewing this and is paused for quota.)`);
-        else if (next.state === "in_review" && !reviewer) this.d.notify(`task ${this.publicTitle(next)}: its reviewer ${peer} is paused and nobody else can review; use ahub review ${next.id}`);
+        if (next.state === "in_review" && reviewer && reviewer !== USER) {
+          if (roster) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, `(${peer} was reviewing this and is off roster.)`));
+          else this.sendReview(next, reviewer, `(${peer} was reviewing this and is paused for quota.)`);
+        } else if (next.state === "in_review" && !reviewer) this.d.notify(`task ${this.publicTitle(next)}: its reviewer ${peer} is paused and nobody else can review; use ahub review ${next.id}`);
       }
     }
     return moved;

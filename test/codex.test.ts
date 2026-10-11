@@ -801,3 +801,22 @@ test("another active native turn cannot postpone an ended turn's durable steer b
     expect(steer.timers[0]!.cleared).toBe(true);
   } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
+
+test("roster detach keeps the proxy available, fences native attachment, and clears the hub runtime mode (#315)", async () => {
+  let on = true;
+  const { peer, tui, seen } = await setup(undefined, undefined, { admitAttach: () => on, permissionMode: "ask-when-needed" });
+  await until(() => seen.some(message => message.id === 1));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+  expect(peer.getPermissionMode()).toBe("ask-when-needed");
+  const url = peer.proxyUrl, detached = new Promise<number>(resolve => { tui.onclose = event => resolve(event.code); });
+  on = false; peer.detachForRoster();
+  expect(await detached).toBe(4000); expect(peer.state).toBe("offline"); expect(peer.getPermissionMode()).toBe("ask"); expect(peer.proxyUrl).toBe(url);
+  const denied = new WebSocket(url), refused = new Promise<number>(resolve => { denied.onclose = event => resolve(event.code); }); cleanup.push(() => denied.close());
+  expect(await refused).toBe(4000); expect(peer.state).toBe("offline");
+  on = true;
+  const returned = new WebSocket(url), replies: any[] = []; returned.onmessage = event => replies.push(JSON.parse(String(event.data))); cleanup.push(() => returned.close());
+  await new Promise<void>(resolve => { returned.onopen = () => resolve(); });
+  returned.send(JSON.stringify({ id: 3, method: "initialize", params: { clientInfo: { name: "returned-native-tui" } } })); await until(() => replies.some(message => message.id === 3));
+  returned.send(JSON.stringify({ id: 4, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+  expect(replies.find(message => message.id === 4).result.thread.id).toBe("th1"); expect(peer.getPermissionMode()).toBe("ask");
+});

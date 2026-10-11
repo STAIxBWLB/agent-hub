@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
@@ -11,6 +11,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting, SPLIT_MIN } from "../src/hub/routing.ts";
 import { DEFAULT_TASK_SWEEP } from "../src/hub/task-sweep.ts";
 import { AssignmentUndeliveredError, Tasks } from "../src/hub/tasks.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { Briefs, parseRows } from "../src/memory/brief.ts";
 import { MemoryClient } from "../src/memory/client.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
@@ -2780,4 +2781,140 @@ test("manual escalation preserves typed undelivered evidence across late checks 
     expect(base.notices.some(line => line.includes("escalated from kimi to codex"))).toBe(true);
     expect(attempted.some(env => env.to?.includes("kimi") && env.body.includes("Stop working on it."))).toBe(true);
   }
+});
+
+async function rosterTaskFixture(ids = ["claude", "codex", "kimi", "local"]) {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-roster-tasks-")), off = new Set<string>();
+  const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0, rostered: peer => !off.has(peer) });
+  const peers = Object.fromEntries(ids.map(id => [id, new FakePeer(id)]));
+  for (const peer of Object.values(peers)) { bus.add(peer); await peer.start(); }
+  const notices: string[] = [];
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "roster", routing: () => loadRouting(dir), notify: line => notices.push(line) });
+  cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { dir, off, board, bus, peers, notices, tasks };
+}
+
+test("Tasks health feeds the catalog roster to assignment and route explain, with Pi allowed by the legacy callback (#315)", async () => {
+  const f = await rosterTaskFixture(["claude", "codex", "kimi", "local", "pi"]);
+  const initial = await f.tasks.propose(USER, { title: "legacy Pi preference", class: "implement" });
+  expect(initial.owner).toBe("pi"); // do not infer pi.enabled in Tasks, or make Pi unconditionally off
+  f.off.add("pi"); f.off.add("local"); f.off.add("codex");
+  const next = await f.tasks.propose(USER, { title: "roster filtered routing", class: "implement" });
+  expect(next).toMatchObject({ owner: "kimi", reviewer: "claude" });
+  for (const peer of ["pi", "local", "codex"]) expect(f.tasks.explain(next.id).join("\n")).toContain(`owner candidate ${peer}: skipped, off roster`);
+});
+
+test("manual assignment refuses off-roster peers before ordinary assignment or waiting reservation writes (#315)", async () => {
+  const f = await rosterTaskFixture();
+  const ordinary = await f.tasks.propose(USER, { title: "ordinary", class: "implement", owner: "codex" });
+  const dependency = await f.tasks.propose(USER, { title: "dependency", class: "review", owner: "claude" });
+  const waiting = await f.tasks.propose(USER, { title: "waiting", class: "implement", owner: "codex", after: [dependency.id] });
+  f.off.add("kimi");
+  const before = f.board.list();
+  await expect(f.tasks.assignTo(ordinary.id, "kimi")).rejects.toThrow("kimi is off roster");
+  await expect(f.tasks.assignTo(waiting.id, "kimi", USER, true)).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(f.board.list()).toEqual(before); expect(f.board.get(waiting.id)).toMatchObject({ owner: null, reserved: "codex" });
+});
+
+test("roster removal offers proposed and in-progress work to another peer through the shared relay (#315)", async () => {
+  const f = await rosterTaskFixture();
+  const offered = await f.tasks.propose(USER, { title: "offered work", class: "implement", owner: "codex" });
+  const running = await f.tasks.propose(USER, { title: "running work", class: "implement", owner: "codex" });
+  f.tasks.accept("codex", running.id);
+  const heard = f.peers.codex!.got.length;
+  f.off.add("codex");
+  const moved = await f.tasks.reassignForRoster("codex");
+  expect(moved).toEqual([{ id: offered.id, title: "#1 offered work", to: "local", role: "owner" }, { id: running.id, title: "#2 running work", to: "local", role: "owner" }]);
+  for (const id of [offered.id, running.id]) {
+    expect(f.board.get(id)).toMatchObject({ owner: "local", state: "proposed", reviewer: "claude" });
+    expect(f.board.get(id)!.history.at(-1)).toMatchObject({ event: "reassigned", reason: "manual", note: "roster removal of codex" });
+  }
+  expect(f.peers.codex!.got).toHaveLength(heard); // stop/tail never bypasses Bus roster admission
+  expect(f.notices.filter(line => line.includes("moved from codex to local (off roster)"))).toHaveLength(2);
+  expect(f.tasks.accept("local", running.id)).toMatchObject({ owner: "local", state: "in_progress" });
+});
+
+for (const state of ["proposed", "in_progress"] as const) test(`roster removal with no candidate retains the old owner and ${state} row exactly (#315)`, async () => {
+  const f = await rosterTaskFixture(["codex"]);
+  const task = await f.tasks.propose(USER, { title: "no replacement", class: "implement", owner: "codex" });
+  if (state === "in_progress") f.tasks.accept("codex", task.id);
+  const before = f.board.get(task.id)!; f.off.add("codex");
+  expect(await f.tasks.reassignForRoster("codex")).toEqual([]);
+  expect(f.board.get(task.id)).toEqual(before);
+  expect(f.notices.at(-1)).toContain(`it stays with codex in ${state}`);
+  expect(f.notices.at(-1)).toContain(`ahub task assign ${task.id} <peer>`);
+});
+
+test("roster removal with no on-prem candidate keeps PII work and only emits its public title (#315)", async () => {
+  const f = await rosterTaskFixture();
+  const task = await f.tasks.propose(USER, { title: PII, class: "implement", owner: "local" }); f.tasks.accept("local", task.id);
+  const before = f.board.get(task.id)!; f.off.add("local"); const noticesBefore = f.notices.length;
+  expect(await f.tasks.reassignForRoster("local")).toEqual([]); expect(f.board.get(task.id)).toEqual(before);
+  const notices = f.notices.slice(noticesBefore).join("\n");
+  expect(notices).toContain("[pii]"); expect(notices).not.toContain(PII); expect(notices).not.toContain("900101");
+});
+
+test("roster removal replaces an in-review reviewer and preserves it if nobody else can review (#315)", async () => {
+  const f = await rosterTaskFixture();
+  const task = await f.tasks.propose(USER, { title: "ready for review", class: "implement", owner: "kimi" }); f.tasks.accept("kimi", task.id); await f.tasks.done("kimi", task.id, "recorded completion");
+  expect(f.board.get(task.id)).toMatchObject({ state: "in_review", reviewer: "claude" });
+  f.off.add("claude");
+  expect(await f.tasks.reassignForRoster("claude")).toEqual([{ id: task.id, title: "#1 ready for review", to: "codex", role: "reviewer" }]);
+  expect(f.board.get(task.id)).toMatchObject({ owner: "kimi", state: "in_review", reviewer: "codex" });
+  expect(f.peers.codex!.got.at(-1)!.body).toContain("recorded completion"); expect(f.peers.codex!.got.at(-1)!.body).toContain("is off roster");
+  f.off.add("codex"); const before = f.board.get(task.id)!;
+  expect(await f.tasks.reassignForRoster("codex")).toEqual([]); expect(f.board.get(task.id)).toEqual(before);
+  expect(f.notices.at(-1)).toContain(`the reviewer stays codex; use ahub review ${task.id}`);
+});
+
+test("a roster relay's saved assignment failure remains typed, noticed once, and does not stop later moves (#315)", async () => {
+  const f = await rosterTaskFixture();
+  const first = await f.tasks.propose(USER, { title: "first relay", class: "implement", owner: "kimi" });
+  const second = await f.tasks.propose(USER, { title: "second relay", class: "implement", owner: "kimi" }); f.tasks.accept("kimi", first.id);
+  f.off.add("kimi");
+  const original = f.bus.publish.bind(f.bus), errors: unknown[] = [];
+  const internal = f.tasks as unknown as { assignOwner(task: unknown, by: string, options: Record<string, unknown>): Promise<unknown> };
+  const assignOwner = internal.assignOwner.bind(f.tasks);
+  internal.assignOwner = async (task, by, options) => { try { return await assignOwner(task, by, options); } catch (error) { errors.push(error); throw error; } };
+  f.bus.publish = env => { if (env.kind === "task" && env.to?.includes("local")) throw new Error("assignment transport failed"); return original(env); };
+  try {
+    expect((await f.tasks.reassignForRoster("kimi")).map(move => move.id)).toEqual([first.id, second.id]);
+  } finally { f.bus.publish = original; }
+  expect(errors).toHaveLength(2);
+  for (const error of errors) {
+    expect(error).toBeInstanceOf(AssignmentUndeliveredError);
+    if (!(error instanceof AssignmentUndeliveredError)) throw new Error("expected saved assignment error");
+    expect(error.task).toMatchObject({ owner: "local", state: "proposed" });
+  }
+  for (const id of [first.id, second.id]) expect(f.notices.filter(line => line.includes(`task #${id}`) && line.includes("assignment's delivery is not confirmed"))).toHaveLength(1);
+  expect(f.notices.filter(line => line.includes("moved from kimi to local (off roster)"))).toHaveLength(2);
+});
+
+test("the shared budget relay retains its existing no-candidate unassignment behavior (#315)", async () => {
+  const f = await rosterTaskFixture(["codex"]);
+  const task = await f.tasks.propose(USER, { title: "budget fallback", class: "implement", owner: "codex" }); f.tasks.accept("codex", task.id); f.bus.pause("codex");
+  expect(await f.tasks.reassignForPause("codex", undefined)).toEqual([{ id: task.id, title: "#1 budget fallback", to: null, role: "owner" }]);
+  expect(f.board.get(task.id)).toMatchObject({ owner: null, state: "proposed" });
+  expect(f.board.get(task.id)!.history.map(entry => entry.event)).toEqual(expect.arrayContaining(["released", "unassigned"]));
+});
+
+test("a roster reviewer change stays saved when publishing its review request fails (#315)", async () => {
+  const f = await rosterTaskFixture();
+  const task = await f.tasks.propose(USER, { title: "review request failure", class: "implement", owner: "kimi" }); f.tasks.accept("kimi", task.id); await f.tasks.done("kimi", task.id, "completion is saved");
+  f.off.add("claude");
+  const publish = f.bus.publish.bind(f.bus);
+  f.bus.publish = env => { if (env.kind === "review") throw new Error("review transport failed"); return publish(env); };
+  try { await expect(f.tasks.reassignForRoster("claude")).resolves.toEqual([{ id: task.id, title: "#1 review request failure", to: "codex", role: "reviewer" }]); }
+  finally { f.bus.publish = publish; }
+  expect(f.board.get(task.id)).toMatchObject({ owner: "kimi", state: "in_review", reviewer: "codex" });
+  expect(f.notices.filter(line => line.includes("could not send the review request to codex") && line.includes("review transport failed"))).toHaveLength(1);
+});
+
+test("the shared budget relay keeps its existing reviewer-clear and quota notice behavior (#315)", async () => {
+  const f = await rosterTaskFixture(["claude", "codex", "kimi"]);
+  const task = await f.tasks.propose(USER, { title: "budget review fallback", class: "implement", owner: "kimi" }); f.tasks.accept("kimi", task.id); await f.tasks.done("kimi", task.id, "done");
+  f.bus.pause("claude"); f.bus.pause("codex");
+  expect(await f.tasks.reassignForPause("claude", undefined)).toEqual([{ id: task.id, title: "#1 budget review fallback", to: null, role: "reviewer" }]);
+  expect(f.board.get(task.id)).toMatchObject({ owner: "kimi", state: "in_review", reviewer: null });
+  expect(f.notices.at(-1)).toBe(`task #1 budget review fallback: its reviewer claude is paused and nobody else can review; use ahub review ${task.id}`);
 });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PALETTE, paint, terminalText, wrap, table, type Span } from "../src/cli/console-state.ts";
-import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "../src/cli/output.ts";
+import { outputWidth, renderRoster, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "../src/cli/output.ts";
 import { summarize, summarizeByTask, formatReport, formatTaskReport } from "../src/hub/report.ts";
 const now = 1_800_000_000_000;
 const settlement = ["8d03b496-1111-2222-3333-444444444444", "3325f7a0-1111-2222-3333-444444444444"];
@@ -785,3 +785,23 @@ test("15,470 tail-corpus renders preserve characters, three-character tails and 
   expect(renders).toBe(15_470);
   expect(failures).toEqual({ malformed: 0, width: 0, content: 0, separator: 0, shortTail: 0 });
 }, 20_000);
+
+
+test("the roster renderer keeps participation words, ids and retained counts at every presentation width (#315)", () => {
+  const data = [{ peer: "kimi", on: false, startMode: "headless", state: "offline", queued: 2, tasks: 3 }, { peer: "claude", on: true, startMode: "tui", state: "idle", queued: 0, tasks: 0 }];
+  for (const columns of [undefined, 36, 80, 120]) {
+    const lines = renderRoster(data, columns).map(line => paint(line, false));
+    expect(lines.join("\n")).toContain("ROSTER"); expect(lines.join("\n")).toContain("kimi"); expect(lines.join("\n")).toContain("off"); expect(lines.join("\n")).toContain("on");
+    if (columns) for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    expect(renderRoster(data, columns).map(line => paint(line, true).replace(/\x1b\[[0-9;]*m/g, ""))).toEqual(lines);
+  }
+});
+
+test("retained off-roster status and queue rows say why their work is held (#315)", () => {
+  const status = { peers: { kimi: { state: "offline", rostered: false, rosterNote: "off roster", queued: 3 } } };
+  const queue = [{ id: "q:kimi:retained-delivery", peer: "kimi", state: "queued", rostered: false, holdReason: "off roster", revision: 1, createdAt: now - 1000 }];
+  for (const columns of [80, 120]) for (const rendered of [renderStatus(status, columns, now), renderQueue(queue, columns, now)]) {
+    const text = rendered.map(line => paint(line, false)).join("\n"); expect(text).toContain("off"); expect(text).toContain("roster"); expect(text).toContain("kimi");
+    for (const line of rendered) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
+  }
+});

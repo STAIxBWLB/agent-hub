@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
+import { isKnownPeer } from "../hub/peer-catalog.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
@@ -49,7 +50,7 @@ import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRef
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRoster, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -1047,16 +1048,42 @@ const commands: Record<string, () => Promise<void> | void> = {
   // #269: the terminal's side of the settings registry. Everything the dashboard's Settings section can do, and the
   // same refusals; it talks to the running hub, so a setting is validated and announced in one place.
   // ponytail: needs a running hub, also for a value read only at hub start; a file-only path if that gets in the way.
+  roster: async () => {
+    const options = outputOptions(), flags = args.filter(arg => arg.startsWith("--")), positional = outputArguments().filter(arg => arg !== "--yes" && arg !== "--now");
+    const [sub = "list", peer, ...extra] = positional;
+    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !isKnownPeer(peer)) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
+    const hub = await connect();
+    try {
+      const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused")); return reply; };
+      if (sub === "list") {
+        const view = await request({ t: "settings_get" });
+        if (!Array.isArray(view.roster)) fail("upgrade the running hub to use ahub roster");
+        return options.json ? console.log(JSON.stringify(view.roster, null, 2)) : printOutput(renderRoster(view.roster, options.columns), options.color);
+      }
+      const key = `roster.${peer}`, value = sub === "add";
+      const preview = await request({ t: "settings_preview", key, value });
+      printOutput((preview.lines ?? []).map((text: string) => [{ text }]), options.color);
+      if (sub === "remove" && !flags.includes("--yes")) {
+        if (!process.stdin.isTTY) fail("not a terminal: nothing was changed; rerun with --yes after reviewing the preview");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        let answer: string; try { answer = await rl.question(`Remove ${peer}? [y/N] `); } finally { rl.close(); }
+        if (!/^(y|yes)$/i.test(answer.trim())) return console.log("nothing was changed");
+      }
+      const result = await request({ t: "settings_set", key, value, ...(sub === "remove" ? { confirm: peer, now: flags.includes("--now") } : {}) });
+      printOutput([[{ text: result.text }]], options.color);
+    } finally { hub.close(); }
+  },
   settings: async () => {
     const usage = "usage: ahub settings [list] [--json] | get <key> [--json] | set <key> <value|inherit> [--yes] [--preview] | undo";
     const flags = args.filter((arg) => arg.startsWith("--")), [sub = "list", key, text, ...extra] = args.filter((arg) => !arg.startsWith("--"));
-    const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview"], undo: [] };
+    const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview", "--now"], undo: [] };
     if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);
     if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo") && key !== undefined)) fail(usage);
     const def = key === undefined ? undefined : settingDef(key);
     if (typeof def === "string") fail(`${key}: ${def}`);
+    if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
     const value = sub === "set" ? parseSettingText(def!, text!) : undefined;
-    const peer = def?.group === "Permissions" ? def.path.at(-1)! : undefined;
+    const peer = def?.group === "Permissions" || def?.group === "Roster" ? def.path.at(-1)! : undefined;
     if (sub === "set" && value === "never-ask" && !flags.includes("--preview")) {
       if (!flags.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
       console.error(`never-ask: ${permissionBoundary(peer!)}; approval prompts are disabled`);
@@ -1071,7 +1098,17 @@ const commands: Record<string, () => Promise<void> | void> = {
         }
         return reply;
       };
-      if (sub === "undo") return console.log((await request({ t: "settings_undo" })).text);
+      if (sub === "undo") {
+        const view = await request({ t: "settings_get" }), undoDef = settingDef(view.undo);
+        const rosterPeer = typeof undoDef !== "string" && undoDef.group === "Roster" ? undoDef.path[1] : undefined;
+        let confirm: string | undefined;
+        if (rosterPeer) {
+          if (!process.stdin.isTTY) fail("undoing a roster setting needs confirmation in a terminal; use ahub settings set for an explicit scripted change");
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          try { confirm = (await rl.question(`Type ${rosterPeer} to confirm this roster undo: `)).trim(); } finally { rl.close(); }
+        }
+        return console.log((await request({ t: "settings_undo", ...(confirm ? { confirm } : {}) })).text);
+      }
       if (sub === "set" && flags.includes("--preview")) {
         const preview = await request({ t: "settings_preview", key, value });
         for (const line of preview.lines ?? []) console.log(line);
@@ -1081,7 +1118,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         return console.log("preview only; nothing was changed");
       }
       if (sub === "set") {
-        const reply = await request({ t: "settings_set", key, value, ...(flags.includes("--yes") && peer ? { confirm: peer } : {}) });
+        const reply = await request({ t: "settings_set", key, value, now: flags.includes("--now"), ...(flags.includes("--yes") && peer ? { confirm: peer } : {}) });
         console.log(reply.text);
         if (typeof reply.note === "string" && reply.note) console.log(reply.note);
         return;

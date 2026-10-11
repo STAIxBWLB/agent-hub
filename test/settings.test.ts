@@ -447,6 +447,12 @@ test("AC7: the Settings section renders every row from the registry with its sou
   expect(scripts).toHaveLength(2);
   for (const source of scripts) expect(() => new Script(source)).not.toThrow();
   expect(html.match(/<section aria-labelledby="settings-title">/g)).toHaveLength(1);
+  // The new roster group has its own removal confirmation, preview and active-turn control.
+  context.settings = { rows: [{ key: "roster.kimi", group: "Roster", label: "kimi: participates", type: "boolean", file: "config.local.json", applies: "live", risk: "raises", floor: false, value: true, source: "default" }] };
+  runInNewContext(`${code}; renderSettings(settings)`, context);
+  expect(root.text()).toContain("Roster (1)");
+  expect(root.text()).toContain("roster.kimi / from default / applies at once");
+  for (const label of ["Confirm removal of kimi", "Stop an active turn now", "Preview kimi: participates"]) expect(root.all().find(n => n.attrs["aria-label"] === label)).toBeDefined();
 });
 
 test("checkSettingValue and settingRefusal: the pure rules behind every surface", () => {
@@ -635,3 +641,13 @@ test("review of #290, round 2: with MLX off and no project routing.toml, routing
   expect(parseOverlay(text(rig.file(OVERLAY_FILE))!)).toEqual({ stay_switch: "shadow", classes: { implement: { peers: ["kimi", "codex"], pi_backend: "dgx" } } });
   expect((await rig.client.request({ t: "settings_undo" })).ok).toBe(true); // undo passes the same check
 }, 20_000);
+
+test("every catalog roster setting is a live boolean with the existing raising authority rule (#315)", () => {
+  for (const peer of ["claude", "codex", "kimi", "pi", "local"]) {
+    const setting = def(`roster.${peer}`);
+    expect(setting).toMatchObject({ group: "Roster", type: "boolean", store: "config", path: ["roster", peer], applies: "live", risk: "raises", floor: false });
+    expect(settingRefusal(setting, false, "ordinary")).toBeUndefined();
+    expect(settingRefusal(setting, true, "ordinary")).toContain("settings session");
+    for (const authority of ["settings", "terminal"] as const) for (const value of [true, false]) expect(settingRefusal(setting, value, authority)).toBeUndefined();
+  }
+});

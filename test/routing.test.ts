@@ -183,3 +183,28 @@ test("split prediction: unequal or unknown units, a queued or unavailable owner,
   // split 60 s against kimi alone 65 s: under a tenth apart, inconclusive.
   expect(predictSplit(splitInput({ observations: { codex: obs(30, 30), kimi: obs(5, 30) } }))).toMatchObject({ verdict: "unknown", splitS: 60, singleS: 65 });
 });
+
+test("pure routing excludes off-roster owners and reviewers with their own trace reason (#315)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "ahub-roster-routing-")));
+  const states = { claude: "idle", codex: "idle", kimi: "idle", pi: "idle", local: "idle" } as const;
+  const owned = assign(task("implement"), states, routing, { offRoster: ["pi", "local", "codex"] });
+  expect(owned).toMatchObject({ owner: "kimi", reviewer: "claude" });
+  for (const peer of ["pi", "local", "codex"]) expect(owned.trace).toContain(`  owner candidate ${peer}: skipped, off roster`);
+  const reviewed = assign(task("implement"), states, routing, { candidates: ["kimi"], offRoster: ["claude"] });
+  expect(reviewed).toMatchObject({ owner: "kimi", reviewer: "codex" });
+  expect(reviewed.trace).toContain("  reviewer candidate claude: skipped, off roster");
+  const absent = assign(task("implement"), { codex: "idle" }, routing, { candidates: ["kimi"], offRoster: ["kimi"] });
+  expect(absent.owner).toBeUndefined(); expect(absent.trace).toContain("  owner candidate kimi: skipped, off roster");
+  expect(states.kimi).toBe("idle"); expect(routing.classes.implement!.peers).toEqual(["pi", "local", "codex", "kimi"]);
+});
+
+test("a reserved off-roster owner is not honored and routing still enforces PII (#315)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "ahub-roster-reserved-")));
+  const states = { claude: "idle", codex: "idle", kimi: "idle", pi: "idle", local: "idle" } as const;
+  const reserved = assign({ ...task("implement"), reserved: "local" }, states, routing, { offRoster: ["local"] });
+  expect(reserved).toMatchObject({ owner: "pi", unreserved: "off roster" });
+  expect(reserved.trace).toContain("reserved owner local: not honored, off roster; routing proceeds");
+  const privateTask = assign(task("implement", ["pii"]), states, routing, { offRoster: ["local"] });
+  expect(privateTask.owner).toBeUndefined(); expect(privateTask.reviewer).toBe("user");
+  expect(privateTask.trace).toContain("  owner candidate local: skipped, off roster");
+});
