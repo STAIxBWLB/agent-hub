@@ -2817,7 +2817,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function retainedTerminalNotice(peer: string): string | undefined {
     const owner = bus.peers.get(peer);
-    return peer === "claude" || peer === "codex" || owner instanceof PiPeer && owner.mode === "tui"
+    if (peer === "codex") return "Check codex's existing terminal and stop any remaining work. Its app-server and proxy stay available, but Codex 0.146.0 exits its TUI on disconnect and does not reconnect automatically; after ahub roster add codex, run ahub codex again or resume its prior native session.";
+    return peer === "claude" || owner instanceof PiPeer && owner.mode === "tui"
       ? `Stop ${peer}'s existing work in its retained terminal; removal detaches the hub connection and does not stop that terminal's work.`
       : undefined;
   }

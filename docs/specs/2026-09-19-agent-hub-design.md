@@ -2233,7 +2233,11 @@ start. The CLI and dashboard use the settings API and no roster hub tool exists.
 Removal orders its steps as membership fence, detach or stop, then handoff. Its
 preview and result name the peer whose retained terminal work the person must
 stop, and the result lists the saved task moves with public titles. Detached
-sessions receive no forced stop notice or journal bypass. The preview names
+sessions receive no forced stop notice or journal bypass. Codex 0.146.0 exits
+its TUI on close 4000 rather than retrying. Its app-server/proxy and terminal
+window remain; after adding it back, the person relaunches through ahub codex or
+resumes the prior native session. Automatic return is guaranteed for the Claude
+channel, not this observed Codex version. The preview names
 roles offered and those without a replacement; the result names every saved
 move and every assignment that stays. An unconfirmed stop reports the skipped
 permission reset and handoff after the roster write.
@@ -2242,6 +2246,8 @@ Removal includes in-review ownership (keeping its review state) and reviewer
 roles. Later task messages follow the current owner/reviewer. An explicit
 off-roster recipient is retained, including one recipient of a mixed audience,
 with one public notice to the person; native senders get a decision note and
-console/channel senders get the existing notice field. Broadcasts omit removed
+console/channel senders get the existing notice field. A removed personal Pi TUI
+whose verified native owner is alive still blocks controlled recovery under the
+existing settlement fence; the person ends that retained TUI before restart. Broadcasts omit removed
 peers, and a person or agent addressing only removed peers is refused before
 publication. The dashboard roster undo carries peer confirmation.

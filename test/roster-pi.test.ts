@@ -90,6 +90,7 @@ test("Pi roster verification serializes roster writes and holds dispatch through
     daemon.bus.pause("pi");
     expect(await client.request({ t: "settings_set", key: "roster.pi", value: false, confirm: "pi" })).toMatchObject({ ok: true });
     const adding = client.request({ t: "settings_set", key: "roster.pi", value: true });
+    void adding.catch(() => undefined); // attach the teardown rejection handler before any assertion can fail
     await client.request({ t: "status" });
     const snapshot = await f.next(); expect(snapshot.type).toBe("get_session_state");
     expect(daemon.bus.isRostered("pi")).toBe(true); expect(f.peer.state).toBe("offline");

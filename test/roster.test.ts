@@ -264,9 +264,13 @@ test("daemon roster removal detaches Codex without killing its app-server and ga
     socket.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
     for (let n = 0; n < 200 && !seen.some(row => row.id === 2); n++) await hub.client.request({ t: "status" });
     expect(seen.find(row => row.id === 2).result.thread.id).toBe("th1");
+    const preview = await hub.client.request({ t: "settings_preview", key: "roster.codex", value: false });
+    expect(preview.lines.join("\n")).toContain("Codex 0.146.0 exits its TUI on disconnect and does not reconnect automatically");
+    expect(preview.lines.join("\n")).toContain("run ahub codex again or resume its prior native session");
     const detached = new Promise<number>(resolve => { socket.onclose = event => resolve(event.code); });
     expect(await hub.client.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex" })).toMatchObject({ ok: true });
     expect(await detached).toBe(4000); expect(() => process.kill(pid, 0)).not.toThrow();
+    expect((await hub.client.request({ t: "status" })).status.peers.codex?.state ?? "offline").toBe("offline");
     const denied = new WebSocket(owner.proxyUrl); sockets.push(denied); expect(await new Promise<number>(resolve => { denied.onclose = event => resolve(event.code); })).toBe(4000);
     expect(await hub.client.request({ t: "settings_set", key: "roster.codex", value: true })).toMatchObject({ ok: true });
     const returned = await attach(owner.proxyUrl), returnedRows: any[] = []; returned.onmessage = event => returnedRows.push(JSON.parse(String(event.data)));

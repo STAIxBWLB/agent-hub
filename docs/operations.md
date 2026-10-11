@@ -1024,11 +1024,18 @@ person's terminal, and then hands work over. The removal preview and result name
 the peer whose existing work the person must stop in that retained terminal;
 the preview names the roles offered and those with no eligible replacement; the
 result lists the saved owner/reviewer moves and every assignment that stays. No stop notice is forced into
-a detached session and nothing bypasses the journal.
+a detached session and nothing bypasses the journal. Codex 0.146.0
+exits its TUI on the close-4000 disconnect and does not reconnect automatically.
+Its app-server and proxy remain available; after `ahub roster add codex`, run
+`ahub codex` again or resume its previous native session. Removal never closes
+the terminal window itself. The Claude channel retries and reconnects on return.
 It leaves queued and held deliveries, and existing manual or budget pauses,
 untouched. The queue listing names `off roster` as the membership hold. Returning
 and starting the peer makes retained queued messages available again; held
-uncertain work still needs the existing queue resolution command. Open owner and
+uncertain work still needs the existing queue resolution command. A detached
+personal Pi TUI with a live owner still blocks controlled recovery as `pi is not
+settled`; end that retained TUI before restart/upgrade. The hub does not declare
+a live native owner settled or close it implicitly during preparation. Open owner and
 reviewer work, including ownership of `in_review` tasks, is offered through the
 existing reassignment path; a transferred review keeps its review state. If nobody can
 take it, its assignment stays and a notice names the person's next action. Task
