@@ -9,6 +9,7 @@ results and remaining prerequisites are recorded separately in [the smoke ledger
 `status --all` uses the projects table. `queue show`, `models status` and `budget execution status` show labelled fields; add `--json` for the raw fetched document.
 `report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
+In `projects --json` and `status --all --json`, an unavailable hub that explicitly refuses an inspection for SQLite contention also carries `failure: { "code": "database_busy" }`; it is additive metadata alongside the neutral `error` sentence.
 Text columns are a human interface, not a scripting contract. An identifier accepted as a command argument is whole wherever its available column can hold its own length:
 turn ids, queue ids, project ids, execution budget ids and ids in labelled views. Only status's informational settlement and hold ids are shortened;
 `status --full` keeps those whole too. Identifiers in suggested commands are always whole.
@@ -1670,6 +1671,28 @@ next actions").
   restart snapshot.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
+- If a restart stops with `database_busy`, the receipt stays `blocked` and
+  carries `failure: { code: "database_busy", retryable: true, site: [...] }`.
+  Let the other connection settle, inspect `ahub recovery status <id>` and
+  use its offered `ahub recovery resume <id>`. Resume rechecks the source and
+  reconciles a commit that may already have been requested. A busy read while
+  that committed source is stopping stays inside the existing shutdown wait.
+  A stop-and-archive that meets contention instead says to retry that
+  disposition; resume remains refused while abandonment is partway. Successful
+  abort, fresh-session choice and disposal clear the earlier failure annotation.
+  Do not delete database files or start a second operation to bypass the lock.
+  A failed installed-layout CI restart retains bounded, redacted fixture logs,
+  receipt fields (including `commitSent` and failure frames) and file-mode
+  metadata as a per-OS artifact.
+
+  The historical CI receipt (38061057253, attempt 1) kept no throw site or
+  hub log. At its main, status/inspect RPC failures were swallowed and the
+  synchronous catch sent a fixed sentence, so its raw SQLite text could only
+  have come from the commit rejection or the runner's own `registry.db` read.
+  "Resume | wait until the hub settles", without stop-and-archive, means its
+  next inspection saw neither running nor stopped/missing. Which of the two
+  paths, which statement and which holder remain unknown. The controlled
+  rollback-copy reproduction is separate evidence, not that historical cause.
 - When a target hub dies after it started (a crash or a reboot), `resume`
   starts it again from the operation's snapshot while the project's state
   directory still holds it: it records the restart (status shows `restarts`),
