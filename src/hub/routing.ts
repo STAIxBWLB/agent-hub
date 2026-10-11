@@ -210,7 +210,7 @@ export function currentRouting(cwd: string, log: (line: string) => void = () => 
   }
 }
 
-export type Signal = "pii" | "long_context" | "urgent";
+export type Signal = "pii" | "pii_path" | "long_context" | "urgent";
 
 /** What the policy can see in a task. Context length is estimated from the referenced files, 3 characters per token as elsewhere. */
 export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, routing: Routing, cwd: string): Signal[] {
@@ -287,7 +287,7 @@ export function assign(
   const reserved = opts.candidates ? undefined : task.reserved ?? undefined;
   // Readiness is an input like peer states (issue #34): a task that waits for others goes to nobody yet.
   if (opts.waitsFor?.length) return { trace: [...trace, `blocked: waits for ${opts.waitsFor.map((id) => `#${id}`).join(", ")} (not approved)`, ...(reserved ? [`reserved owner ${reserved}: offered first once it is ready`] : [])] };
-  const pii = task.signals.includes("pii") && routing.constraints.pii === "local_only";
+  const pii = task.signals.includes("pii_path") || (task.signals.includes("pii") && routing.constraints.pii === "local_only");
 
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     if (opts.offRoster?.includes(peer)) return "off roster";

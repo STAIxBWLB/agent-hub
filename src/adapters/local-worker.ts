@@ -35,7 +35,7 @@ export interface LocalOptions {
   turnId?: () => string | undefined;
   onApprovalStop?: (reason: string) => void;
   onTool?: (observation: ToolObservation, task?: string) => void;
-  tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: SandboxNetwork; readAllow?: string[] };
+  tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
@@ -120,7 +120,7 @@ export class LocalPeer extends BasePeer {
       onAdvisor: event => this.opts.onAdvisor?.(event),
       onRouteOutcome: event => this.opts.onRouteOutcome?.(event),
     });
-    this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny);
+    this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny, opts.tools.readOnly);
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -292,6 +292,7 @@ export class LocalPeer extends BasePeer {
     return {
       cwd: this.opts.cwd,
       deny: this.opts.tools.deny,
+      readOnly: this.opts.tools.readOnly,
       permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath) => {
         if (turnSignal.aborted) return "aborted";
         const generation = this.turn;

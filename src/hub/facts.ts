@@ -65,6 +65,8 @@ export interface FactsOptions {
   nameable: (s: string) => boolean;
   /** `local.deny` entries: with the one denylist (`src/local/deny.ts`), paths facts never read or show. */
   deny?: string[];
+  /** Configured private paths are never read or shown as automatic facts. */
+  privatePath?: (path: string) => boolean;
 }
 
 interface Version {
@@ -176,6 +178,7 @@ export class Facts {
    * followed first), so neither a task's refs nor a tool's input can point the hub at a file outside the project.
    */
   rel(path: string): string | undefined {
+    if (this.o.privatePath?.(path)) return undefined;
     const abs = isAbsolute(path) ? path : resolve(this.root, path);
     let real = abs;
     try {

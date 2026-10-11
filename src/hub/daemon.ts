@@ -1,3 +1,4 @@
+import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
@@ -104,6 +105,8 @@ export interface HubConfig {
   roster: PeerRoster;
   roles: Record<string, string[]>;
   profile?: ProfileName;
+  pii?: { paths: string[] };
+  data?: { readonly: string[] };
   catalog_roles?: Record<string, string[]>;
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
   budget: BudgetConfig;
@@ -202,7 +205,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
+const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string): { roles: Record<string, string[]>; conductor: HubConfig["conductor"] } {
@@ -244,6 +247,11 @@ export function loadConfig(cwd: string): HubConfig {
     peerRosterConfig(file.roster);
     catalogAssignments(file.catalog_roles);
     profileName(file.profile);
+    for (const [block, key] of [["pii", "paths"], ["data", "readonly"]] as const) {
+      const raw = file[block];
+      if (raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(k => k !== key))) throw new Error(block + " must be a bounded path policy block");
+      policyPaths(raw?.[key], block + "." + key);
+    }
     if (file.jcode_cmd !== undefined && (!Array.isArray(file.jcode_cmd) || !file.jcode_cmd.length || file.jcode_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("jcode_cmd must be a nonempty executable argv");
     if (file.jcode_home !== undefined && (typeof file.jcode_home !== "string" || !isAbsolute(file.jcode_home))) throw new Error("jcode_home must be an absolute path");
     for (const key of ["jcode_home", "jcode_provider_profile"]) if (file[key] !== undefined && typeof file[key] !== "string") throw new Error(`${key} must be a string`);
@@ -286,6 +294,8 @@ export function loadConfig(cwd: string): HubConfig {
   return {
     ...DEFAULT_CONFIG,
     ...file,
+    ...(file.pii !== undefined ? { pii: { paths: policyPaths(file.pii.paths, "pii.paths") } } : {}),
+    ...(file.data !== undefined ? { data: { readonly: policyPaths(file.data.readonly, "data.readonly") } } : {}),
     permission_modes: permissionDefaults(file.permission_modes),
     protect_instruction_files: instructionProtection(file.protect_instruction_files),
     permission_default_sources: appliedPermissionSources,
@@ -504,14 +514,17 @@ export async function startDaemon(opts: DaemonOptions) {
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
     if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
   });
+  const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && ["local", "pi"].includes(peer)
+    ? contract + "\nManaged bash/git are filesystem read-only while data.readonly is active. Read data and return stdout; use managed write/edit only for unprotected outputs."
+    : contract;
   function sessionRoleContract(peer: string): string {
     try {
       const selected = selectedRoles(peer, config.roles, roleAssignments, catalog);
       if (selected.length) event({ type: "role", peer, actor: "config", stage: "prepared", roles: selected.map(roleIdentity) });
-      return roleContract(peer, config.roles, selected, config.profile);
+      return dataRoleContract(peer, roleContract(peer, config.roles, selected, config.profile));
     } catch (error) {
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
-      return roleContract(peer, config.roles, [], config.profile);
+      return dataRoleContract(peer, roleContract(peer, config.roles, [], config.profile));
     }
   }
   /**
@@ -812,6 +825,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
   const tasks: Tasks = new Tasks({
     profile: profileName(config.profile),
+    piiPaths: config.pii?.paths,
     sdlc: { config: () => lifecycleConfig },
     board,
     bus,
@@ -885,7 +899,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turn-free facts (issue #108): what the others changed in an owner's files, at its tool calls. Scopes are read from
   // the board once per change of it: every boundary asks for them.
   let scopes = new Map<PeerId, FactScope | undefined>();
-  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny });
+  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []) });
   const progress = new ProgressObserver({
     tasks: () => board.list(),
     isPrivate: () => board.list().some(task => task.state !== "approved" && tasks.isPii(task)),
@@ -2502,8 +2516,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return signal?.aborted || !valid() ? "aborted" : pi.acceptingTools && bus.peers.get("pi") === pi;
       };
       const ctx: ToolContext = {
-        cwd: opts.cwd, deny: config.local.deny,
-        sandboxProfile: profile(opts.cwd, sandboxNetwork, config.local.read_allow, config.local.deny),
+        cwd: opts.cwd, deny: config.local.deny, readOnly: config.data?.readonly,
+        sandboxProfile: profile(opts.cwd, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly),
         sandboxEnv: { ...proxyEnv(sandboxNetwork), AGENTHUB_PEER_ID: "pi" },
         permit: async () => false, // Pi's calls ask through piPermit in executeTool, which knows the tool's name
         send: (text, to) => {
@@ -2682,7 +2696,7 @@ export async function startDaemon(opts: DaemonOptions) {
         turnId: () => turns.get("local")?.id,
         onTool: (observation, task) => observeProgress("local", observation, task),
         fixedModel: args.model ?? routing.local.fixed_model,
-        tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },
+        tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit },
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
         profile: profileName(config.profile),

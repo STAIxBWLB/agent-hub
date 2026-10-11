@@ -105,7 +105,7 @@ export type SandboxNetwork = boolean | { proxyPort: number };
  * toolchain and project directories, writing the project and a temp dir of their own. The allow-default profile of
  * 0.9 and earlier was removed in 0.12.0 (issue #83).
  */
-export function profile(cwd: string, network: SandboxNetwork, readAllow: string[] = [], deny: string[] = []): string {
+export function profile(cwd: string, network: SandboxNetwork, readAllow: string[] = [], deny: string[] = [], readOnly: string[] = []): string {
   const home = homedir();
   const inHome = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
   const root = realPath(cwd);
@@ -138,7 +138,7 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     "(version 1)",
     ...start,
     "(deny file-write*)",
-    `(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
+    ...(readOnly.length ? ["(allow file-write* (literal \"/dev/null\"))"] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`]),
     // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub. The .git and
     // .agenthub patterns tolerate the code points HFS+ ignores in every segment, the .git name itself is refused
     // at any depth (creation, rename, symlink, gitfile), a submodule git dir's config and hooks under
@@ -159,14 +159,16 @@ export interface ExecResult {
 }
 
 /** Run argv under seatbelt with a scrubbed environment. Never runs unsandboxed: no sandbox, no exec. */
-export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal }): Promise<ExecResult> {
+export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal; readOnlyData?: boolean }): Promise<ExecResult> {
+  if (opts.readOnlyData && /\(allow file-write\* \(subpath /.test(opts.profile)) return Promise.resolve({ code: null, output: "error: data.readonly command profile contains a broad write grant" });
   if (!sandboxAvailable()) return Promise.resolve({ code: null, output: "error: command execution needs macOS sandbox-exec and is disabled on this host" });
   if (opts.signal?.aborted) return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
   return new Promise((resolve) => {
     // A temp dir of its own (#63): the user's is shared with every other process, and what a command reads can reach
     // an answer shown to cloud peers. Allowed after the profile's denies, and gone when the command ends.
     const own = realPath(mkdtempSync(join(tmpdir(), "ahub-cmd-")));
-    const sandbox = `${opts.profile}\n(allow file-read* file-write* process-exec (subpath ${q(own)}))`;
+    const sandbox = `${opts.profile}\n(allow file-read* ${opts.readOnlyData ? "" : "file-write* "}process-exec (subpath ${q(own)}))`;
+    // A path-only deny cannot contain hardlink aliases; data mode allows reads/stdout, never filesystem writes.
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
     // Own process group: a timeout has to take the grandchildren too, or they keep the pipes open and the project writable.
     const child = spawn(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });

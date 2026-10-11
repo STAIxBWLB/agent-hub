@@ -1,3 +1,4 @@
+import { matchesPolicy } from "./path-policy.ts";
 import { profileClass, profileTaskLabel, projectProfile, type ProfileName } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
@@ -25,6 +26,7 @@ export interface TasksDeps {
   cwd: string;
   project: string;
   profile?: ProfileName;
+  piiPaths?: string[];
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   memory?: MemoryClient;
@@ -198,7 +200,17 @@ export class Tasks {
     });
   }
 
-  isPii = (task: Pick<Task, "signals">) => task.signals.includes("pii") && this.d.routing().constraints.pii === "local_only";
+  isPii = (task: Pick<Task, "signals">) => task.signals.includes("pii_path") || (task.signals.includes("pii") && this.d.routing().constraints.pii === "local_only");
+
+  private signalsFor(task: Pick<Task, "title" | "detail" | "refs"> & { plan?: TaskPlan }, routing = this.d.routing()) {
+    const signals = detectSignals(task, routing, this.d.cwd);
+    const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!).filter(Boolean)];
+    if (paths.some(path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true))) {
+      if (!signals.includes("pii")) signals.push("pii");
+      signals.push("pii_path");
+    }
+    return signals;
+  }
 
   /** `signals.pii_screen = "local"` where the PII constraint applies (issue #198); on without a screener, every verdict is unknown. */
   private screenOn = (): boolean => {
@@ -525,7 +537,7 @@ export class Tasks {
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
     const plan = cleanPlan(input.plan, profile);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
-    const signals = detectSignals({ ...text, detail: [text.detail, planText(plan)].join("\n") }, this.d.routing(), this.d.cwd);
+    const signals = this.signalsFor({ ...text, detail: [text.detail, planText(plan)].join("\n"), plan });
     // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
     if (input.urgent === true && !signals.includes("urgent")) signals.push("urgent");
     // The PII screen (issue #198) reads the same text before anything else does: until its verdict the task is on no
@@ -538,7 +550,7 @@ export class Tasks {
     let fenced = false; // a PII task off campus: triage is not asked
     if (!cls && this.d.triage) {
       // Signals first: a PII task's text may only go to a model that is reached without leaving the campus network.
-      const pii = signals.includes("pii") && this.d.routing().constraints.pii === "local_only";
+      const pii = this.isPii({ signals });
       if (!pii || (await this.d.triage.onCampus().catch(() => false))) cls = await this.d.triage.classify(text.title, text.detail).catch(() => undefined);
       else fenced = true;
       triaged = !!cls;
@@ -821,7 +833,7 @@ export class Tasks {
       return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, ...(task.profileClass ? [`profile class ${profileTaskLabel(task)}`] : []), "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
-    const signals = detectSignals(draft, routing, this.d.cwd);
+    const signals = this.signalsFor(draft, routing);
     const base = profileClass(target.class, this.d.profile);
     const trace = [...(this.d.profile && this.d.profile !== "dev" ? [`profile class ${target.class} (base ${base}, ${this.d.profile})`] : []), ...assign({ class: base, signals }, this.states(), routing, this.weights(base)).trace];
     // A draft is not sent to the PII screen (issue #198): a proposal is, and a pii or unknown verdict adds the pii signal.
@@ -1132,7 +1144,7 @@ export class Tasks {
     const given = plan == null ? undefined : cleanPlan(plan, task.profile ?? "dev");
     const cleaned = given && Object.keys(given).length ? given : undefined;
     // A task's signals are fixed when it is proposed: text that matches a PII pattern cannot be let in afterwards.
-    if (cleaned && !this.isPii(task) && this.isPii({ signals: detectSignals({ title: "", detail: planText(cleaned), refs: {} }, this.d.routing(), this.d.cwd) })) {
+    if (cleaned && !this.isPii(task) && this.isPii({ signals: this.signalsFor({ title: "", detail: planText(cleaned), refs: {}, plan: cleaned }) })) {
       throw new PreEffectToolRefusal("this plan matches a PII pattern and is not kept: other owners would see it");
     }
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
