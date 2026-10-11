@@ -34,3 +34,5 @@ Scope: the control WS and its protocol, state files, the dashboard listener and 
 - Use `KNOWN_PEERS` for the native catalog and `rosterAllows` for participation. Change live membership only at the authorized roster settings write or undo, applying exactly that key. Keep external ids and projects without roster settings compatible with the existing admission and lazy status rules. Fence starts and attachment before detaching or stopping a removed runtime; retain its queue, uncertain deliveries and independent pauses. Refuse removal of the conductor holder and require explicit confirmation and `--now` for an active turn.
 
 - A Kimi TUI records launch mode tui and blocks controlled recovery planning before effects; never restore it as an ACP worker. Headless Kimi restoration emits its mode only for a target catalog that supports Kimi modes, preserving legacy target argv.
+
+- A Kimi one-launch TUI admission ends on its owning detach, roster removal, matched launcher cleanup or the unclaimed 30 s deadline. An old socket or launcher never clears a newer admission. Pin --mode tui in the hub-opened terminal argv.

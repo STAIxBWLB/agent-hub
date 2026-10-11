@@ -403,6 +403,7 @@ class WsPeer extends BasePeer {
     this.setState("idle");
   }
   detach(sock: Sock): void {
+    if (this.claimed === sock) this.claimed = undefined;
     if (this.sock !== sock) return;
     this.sock = undefined;
     this.nativeActive = false;
@@ -462,6 +463,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const loadedConfig = opts.config ?? loadConfig(opts.cwd);
   const config = { ...loadedConfig, roster: peerRosterConfig(loadedConfig.roster), permission_modes: permissionDefaults(loadedConfig.permission_modes), roles: { ...loadedConfig.roles }, conductor: { ...DEFAULT_CONFIG.conductor, ...loadedConfig.conductor } };
   let rosterChanging: string | undefined;
+  let kimiSessionMode: StartMode | undefined;
+  let kimiAdmissionId: string | undefined;
+  let kimiAdmissionExpiry: ReturnType<typeof setTimeout> | undefined;
+  const clearKimiAdmission = () => { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; kimiSessionMode = undefined; kimiAdmissionId = undefined; };
   const onRoster = (peer: string) => rosterAllows(config.roster, peer, config.pi.enabled);
   // pi.enabled historically gates starts, not retained queues or tools sockets. Only an explicit roster.pi changes those.
   const membershipAllowed = (peer: string) => peer === "pi" && config.roster.pi === undefined ? true : onRoster(peer);
@@ -542,7 +547,10 @@ export async function startDaemon(opts: DaemonOptions) {
         consoles.delete(sock);
         sock.data.tail?.();
         const peer = sock.data.peer ? bus.peers.get(sock.data.peer) : undefined;
-        if (peer instanceof WsPeer) peer.detach(sock);
+        if (peer instanceof WsPeer) {
+          peer.detach(sock);
+          if (sock.data.peer === "kimi" && peer.state === "offline" && !peer.claiming) clearKimiAdmission();
+        }
       },
     },
   });
@@ -2075,8 +2083,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const CLI_ENTRY = fileURLToPath(new URL("../cli/main.ts", import.meta.url));
   /** `config.peers` follows a settings write (`settingsSet`), so a changed mode applies at the peer's next start. */
   const startMode = (peer: string): StartMode => startModeOf(config.peers, peer);
-  let kimiSessionMode: StartMode | undefined;
-  const startWords = (peer: string): string[] => peer === "pi" ? ["pi", "--mode", "tui"] : [peer];
+  const startWords = (peer: string, mode: StartMode): string[] => ["pi", "kimi"].includes(peer) ? [peer, "--mode", mode] : [peer];
   const startable = onRoster;
   // ponytail: one terminal per peer per 30 s, by the clock. The hub cannot see whether the terminal it opened still
   // exists, so a peer that never attaches can be opened again after that; track the provider's handle to do better.
@@ -2085,7 +2092,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // ponytail: asks the provider on every dashboard poll (a launch-record read and a PATH lookup for Orca); cache it for a few seconds if a page feels it.
   const startPlans = () => STARTABLE_PEERS.filter(startable).map((peer) => {
     const mode = startMode(peer), owner = bus.peers.get(peer), can = mode === "tui" ? opener.available() : undefined;
-    return { peer, mode, attached: !!owner && owner.state !== "offline", command: `ahub ${startWords(peer).join(" ")}`, ...(can ? (can.ok ? { via: can.via } : { why: can.why }) : {}) };
+    return { peer, mode, attached: !!owner && owner.state !== "offline", command: peer === "kimi" ? "ahub kimi" : `ahub ${startWords(peer, mode).join(" ")}`, ...(can ? (can.ok ? { via: can.via } : { why: can.why }) : {}) };
   });
   async function hubStart(peer: unknown, by: string): Promise<Record<string, unknown>> {
     if (stopping) return { ok: false, error: "hub is stopping" };
@@ -2105,13 +2112,13 @@ export async function startDaemon(opts: DaemonOptions) {
       return startPeer(peer, peer === "pi" || peer === "kimi" ? { mode: "headless" } : {});
     }
     if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
-    const command = `ahub ${startWords(peer).join(" ")}`;
+    const command = `ahub ${startWords(peer, mode).join(" ")}`;
     const since = Date.now() - (opening.get(peer) ?? 0);
     if (since < PEER_START_RETRY_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };
     // Reserved before the provider is awaited, so starts that arrive together open one terminal, not one each.
     opening.set(peer, Date.now());
     // Every word is the hub's own: its runtime, its entry point, this project and a peer from the closed list.
-    const opened = await opener.open(`${peer} (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, ...startWords(peer)]).catch((error: Error) => ({ ok: false as const, why: "the terminal provider failed", detail: error.message }));
+    const opened = await opener.open(`${peer} (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, ...startWords(peer, mode)]).catch((error: Error) => ({ ok: false as const, why: "the terminal provider failed", detail: error.message }));
     if (!opened.ok) {
       opening.delete(peer); // nothing was opened: the next request may try again at once
       if (opened.detail) log(`terminal provider for ${peer}: ${opened.detail}`);
@@ -2191,12 +2198,16 @@ export async function startDaemon(opts: DaemonOptions) {
       if ((args.mode ?? startMode(peer)) === "tui") {
         if (args.mode !== "tui") return { ok: false, error: "Kimi uses its own TUI (pull-only); run ahub kimi in a terminal, or ahub kimi --mode headless", command: "ahub kimi" };
         if (owner instanceof AcpPeer && owner.state !== "offline") return { ok: false, error: "Kimi is running headless; run ahub stop kimi before starting its TUI" };
-        kimiSessionMode = "tui"; // the person's one-launch override authorizes its MCP hello, with no daemon file write
-        return { ok: true, mode: "tui", pullOnly: true, command: "ahub kimi" };
+        clearKimiAdmission();
+        kimiAdmissionId = crypto.randomUUID();
+        kimiSessionMode = "tui"; // scoped to this pending launch and its attached session
+        // ponytail: a launch that never claims expires after the native handshake bound; add a launcher receipt to identify failures sooner.
+        kimiAdmissionExpiry = setTimeout(clearKimiAdmission, 30_000); kimiAdmissionExpiry.unref();
+        return { ok: true, mode: "tui", pullOnly: true, command: "ahub kimi", admissionId: kimiAdmissionId };
       }
       if (owner instanceof WsPeer && (owner.state !== "offline" || owner.claiming)) return { ok: false, error: "Kimi runs in a terminal; end it there before starting a headless one" };
       if (hasKimiHubMcp(opts.cwd)) return { ok: false, error: "Kimi's project MCP file still has agent-hub; a person must run ahub kimi --mode headless to remove it before ACP starts", command: "ahub kimi --mode headless" };
-      kimiSessionMode = "headless";
+      clearKimiAdmission();
     }
     if (peer === "pi") {
       const problem = mlxLaunchProblem(config, { backend: args.backend ?? config.pi.backend, model: args.model }) ?? disabledMlxPolicyProblem(config, opts.cwd);
@@ -2910,7 +2921,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!after) {
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
         const owner = bus.peers.get(peer);
-        if (owner instanceof WsPeer) owner.detachForRoster();
+        if (owner instanceof WsPeer) { owner.detachForRoster(); if (peer === "kimi") clearKimiAdmission(); }
         else if (owner instanceof CodexPeer) owner.detachForRoster(config.permission_modes[peer] === "never-ask" ? "ask" : config.permission_modes[peer] ?? "ask");
         else if (owner instanceof PiPeer && owner.mode === "tui") await owner.detachForRoster();
         else if (owner && owner.state !== "offline") {
@@ -3373,6 +3384,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Without pushes it stands by, as a replaced session does, and never strands a channel session's deliveries.
         if (msg.channel === false && ws.channelHeld) return sock.close(4000, "a session with channel pushes holds this peer");
         ws.claim(sock, msg.channel === false);
+        if (kimiPull) { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; }
         if (c.peer === "claude") logPermissionStart(c.peer);
         writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
         void ensurePreface(c.peer).finally(() => {
@@ -3696,6 +3708,11 @@ export async function startDaemon(opts: DaemonOptions) {
       case "settings_undo":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
         return void settingsUndo("terminal", msg.confirm, msg.now).then(reply, () => reply({ ok: false, error: "the setting could not be undone; inspect hub.log" }));
+      case "kimi_launch_end": {
+        if (c.role !== "console") return void reply({ ok: false, error: "Kimi launch cleanup is console only" });
+        if (typeof msg.admissionId === "string" && msg.admissionId === kimiAdmissionId) clearKimiAdmission();
+        return void reply({ ok: true });
+      }
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.
         if (c.role !== "console") return void reply({ ok: false, error: "peer_start is a console command; use hub_peer_start with the conductor role" });

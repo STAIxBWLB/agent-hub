@@ -162,3 +162,31 @@ test("Kimi TUI argv admits only a single executable or exact final acp, and neve
     expect(reason).not.toContain(tail); expect(reason).not.toContain("PRIVATE_COMMAND");
   }
 });
+
+
+test("a one-launch Kimi TUI override ends at detach and failed launch cleanup (#316)", async () => {
+  const hub = await rig("headless");
+  const failed = await hub.console_.request({ t: "start", peer: "kimi", args: { mode: "tui" } });
+  expect(failed.admissionId).toBeString();
+  const tools = await ControlClient.connect(hub.stateDir, { role: "tools", peer: "kimi" }); cleanups.push(() => tools.close());
+  expect((await tools.request({ t: "kimi_launch_end", admissionId: failed.admissionId })).ok).toBe(false);
+  expect((await hub.console_.request({ t: "kimi_launch_end", admissionId: failed.admissionId })).ok).toBe(true);
+  await expect(ControlClient.connect(hub.stateDir, { role: "peer", peer: "kimi", channel: false })).rejects.toThrow();
+  expect((await hub.console_.request({ t: "start", peer: "kimi", args: { mode: "tui" } })).ok).toBe(true);
+  const peer = await hub.attach(); peer.close();
+  await observed(() => hub.daemon.bus.peers.get("kimi")?.state === "offline");
+  await expect(ControlClient.connect(hub.stateDir, { role: "peer", peer: "kimi", channel: false })).rejects.toThrow();
+  expect((await hub.console_.request({ t: "start", peer: "kimi", args: { mode: "tui" } })).ok).toBe(true);
+  const second = await hub.attach(); expect((await second.request({ t: "inbox" })).ok).toBe(true);
+});
+
+test("a hub-opened Kimi command pins the selected mode despite a later configuration edit (#316)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-kimi-pin-"))); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  let words: string[] = [];
+  const daemon = await startDaemon({ cwd: root, stateDir: join(root, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } },
+    terminal: () => ({ available: () => ({ ok: true, via: "template" }), open: async (_title, argv) => { words = [...argv]; return { ok: true, via: "template" }; } }) }); cleanups.push(() => daemon.stop());
+  const client = await ControlClient.connect(join(root, "state"), { role: "console" }); cleanups.push(() => client.close());
+  expect((await client.request({ t: "peer_start", peer: "kimi" })).ok).toBe(true);
+  expect(words.slice(-3)).toEqual(["kimi", "--mode", "tui"]);
+});

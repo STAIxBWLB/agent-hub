@@ -773,10 +773,16 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (peer && !["offline"].includes(peer.state) && !peer.pullOnly) fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
         const admission = await hub.request({ t: "start", peer: "kimi", args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
         if (!admission.ok) fail(admission.error);
-        const written = configureKimiMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"), "tui");
-        if (written.tracked) console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
-        hub.close();
-        return exec(launch.cmd, launch.args, "kimi");
+        let result: ReturnType<typeof spawnSync>;
+        try {
+          const written = configureKimiMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"), "tui");
+          if (written.tracked) console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
+          result = spawnSync(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+        } finally {
+          if (admission.admissionId) await hub.request({ t: "kimi_launch_end", admissionId: admission.admissionId }).catch(() => {});
+        }
+        if (result.error) fail(`cannot run ${launch.cmd}: ${result.error.message}`);
+        process.exit(result.status ?? 1);
       }
       const peer = (await hub.request({ t: "status" })).status?.peers?.kimi;
       if (peer?.pullOnly && peer.state !== "offline") fail("Kimi runs in a terminal; end it there before starting a headless one");
