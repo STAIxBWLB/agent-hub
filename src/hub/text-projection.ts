@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, isAbsolute, join, resolve } from "node:path";
 
 import { homedir } from "node:os";
@@ -89,6 +89,8 @@ export class TextProjections {
       if (result.error || result.status !== 0) throw new Error("conversion failed");
       const converted = JSON.parse(result.stdout) as { ok?: boolean; text?: string };
       if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\\0")) throw new Error("conversion failed");
+      const final = fstatSync(fd);
+      if (final.size !== before.size || final.mtimeMs !== before.mtimeMs) throw new Error("input changed during conversion");
       const value = { inputHash, rawHash, rawBlob, configHash, text: converted.text };
       mkdirSync(cacheDir, { recursive: true });
       const temporary = cache + "." + crypto.randomUUID() + ".tmp";
