@@ -26,6 +26,8 @@ jobs:
           package-manager-cache: false
       - name: The tag has to match package.json
         run: test "v$(jq -r .version package.json)" = "$GITHUB_REF_NAME"
+      - name: Verify documentation freshness and release-branch ancestry
+        run: node scripts/check-docs.mjs --require-fresh
       - name: Verify the successful full gate for the identical release tree
         env:
           GITHUB_TOKEN: ${{ github.token }}

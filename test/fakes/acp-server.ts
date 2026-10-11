@@ -128,6 +128,7 @@ async function prompt(id: number, text: string) {
       if (text.includes("DONE")) upd({ sessionUpdate: "tool_call_update", status: "completed" }); // a finished call's identity is evicted
       if (text.includes("REUSED")) upd({ sessionUpdate: "tool_call", title: "Bash", status: "pending" }); // a new call under the same id starts clean
     }
+    if (process.env.FAKE_ACP_PERMISSION_DELAY_MS) await sleep(Number(process.env.FAKE_ACP_PERMISSION_DELAY_MS));
     const result = await new Promise<any>((resolve) => {
       waiting.set(reqId, resolve);
       send({

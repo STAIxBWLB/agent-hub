@@ -1,6 +1,6 @@
 import { isKnownPeer } from "./peer-catalog.ts";
 import { lstatSync } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 /** Operator-selected approval frequency; agent sandboxes remain separate. */
 export const PERMISSION_MODES = ["ask", "ask-when-needed", "never-ask"] as const;
@@ -53,7 +53,8 @@ export function hardLinked(path: string): boolean {
  * inside the project, outside every agent's configuration, judged by the path within the project (a project that
  * itself lives under `.claude/worktrees/` is still a project), and not a hard link.
  */
-export function grantablePath(root: string, path: string): boolean {
+export function grantablePath(root: string, path: string, originalPath?: string): boolean {
   const inside = relative(root, path);
-  return !!inside && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) && !isAgentConfigPath(inside) && !isHubWritePath(inside) && !hardLinked(path);
+  const original = originalPath === undefined ? inside : relative(root, resolve(root, originalPath));
+  return !!inside && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) && !isAgentConfigPath(inside) && !isHubWritePath(inside) && !isAgentConfigPath(original) && !isHubWritePath(original) && !hardLinked(path);
 }

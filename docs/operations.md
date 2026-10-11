@@ -2161,7 +2161,12 @@ include the stamped ancestors (CI checks out full history).
 During release preparation, source review precedes restamping. Review each stale
 page against its covered source, correct drift, and use the full SHA of the
 reviewed source commit as `verifiedAgainst`. Record any deferred page and its
-specific unverified claims in the release verification report before tagging.
+specific unverified claims in the release verification report before tagging. Deferred
+pages must still be source-reviewed and current; a deferral is not a stale-stamp waiver.
+The tag gate runs `node scripts/check-docs.mjs --require-fresh` with full history
+before publishing. Stale or nonancestor stamps refuse publication, with the
+release merge-commit instruction; an identical tree and green CI cannot waive this.
+
 Do not advance a stamp solely to clear a notice. Source stamps can name an
 ancestor: the manifest-only follow-up commit need not hash or stamp itself.
 

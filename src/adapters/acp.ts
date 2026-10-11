@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId, type PeerState } from "../hub/envelope.ts";
 import { acpQuotaRefusal, type ACPQuotaRefusal } from "./acp-quota.ts";
 import { KIMI_MODE_IDS, type PermissionMode } from "../hub/permission-mode.ts";
 import { BasePeer } from "../hub/peers.ts";
@@ -84,7 +84,7 @@ export interface AcpOptions {
   onQuotaRefusal?: (window: ACPQuotaRefusal) => boolean;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
-  onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
+  onPermission?: (req: PermissionRequest, signal?: AbortSignal) => Promise<string | undefined>;
   /** Tool titles approved once without asking: the hub's own tools, as Codex gets them (issue #72). Exact names only. */
   autoApprove?: (toolTitle: string) => boolean;
   log?: (line: string) => void;
@@ -140,6 +140,17 @@ export class AcpPeer extends BasePeer {
   private deliveryAccepted = false;
   private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout> } | undefined;
   private promptActivity = false;
+  private readonly permissionWaits = new Set<AbortController>();
+
+  protected override setState(next: PeerState): void {
+    if (next === "offline") this.cancelPermissions();
+    super.setState(next);
+  }
+
+  private cancelPermissions(): void {
+    for (const wait of this.permissionWaits) wait.abort();
+    this.permissionWaits.clear();
+  }
 
   constructor(
     id: PeerId,
@@ -235,6 +246,7 @@ export class AcpPeer extends BasePeer {
 
   async stop(reason?: string): Promise<void> {
     this.stopping = true;
+    this.cancelPermissions();
     this.clearCancelWait();
     const legacy = this.activeLegacy;
     this.activeLegacy = undefined;
@@ -330,6 +342,7 @@ export class AcpPeer extends BasePeer {
     if (this.state !== "busy") return;
     if (this.cancelWait) { this.clearWatchdog(); return; }
     const cancelledTurn = this.turn;
+    this.cancelPermissions();
     this.activeLegacy = undefined; // the cancelled prompt is discarded, never returned by a later stop
     const durable = !!this.activeDeliveryId;
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
@@ -430,7 +443,7 @@ export class AcpPeer extends BasePeer {
       }
       else if (u?.sessionUpdate === "usage_update") this.observeUsage(u, "usage_update");
     } else if (msg.method === "session/request_permission") {
-      if (this.cancelWait) { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
+      if (this.cancelWait || this.state === "offline") { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
       if (this.state === "busy" && (!msg.params?.sessionId || msg.params.sessionId === this.sessionId)) this.promptActivity = true;
       void this.answerPermission(msg);
     } else if (msg.method && msg.id !== undefined) {
@@ -477,13 +490,17 @@ export class AcpPeer extends BasePeer {
     // Waiting for a person is not the agent going silent: keep the watchdog from cancelling the turn meanwhile.
     const turn = this.turn;
     const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), Math.max(10, Math.min(30_000, Math.floor(this.watchdogMs / 3))));
+    const controller = new AbortController();
+    this.permissionWaits.add(controller);
     let picked: string | undefined;
     try {
-      picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }).catch(() => undefined);
+      const cancelled = new Promise<undefined>(resolve => controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }));
+      picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }, controller.signal).catch(() => undefined), cancelled]);
     } finally {
       clearInterval(alive); // also when there is no handler at all
+      this.permissionWaits.delete(controller);
     }
-    const valid = turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
+    const valid = !controller.signal.aborted && this.state !== "offline" && turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
     this.send({
       jsonrpc: "2.0",
       id: msg.id,

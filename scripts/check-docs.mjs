@@ -4,7 +4,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Stamps record a human source review, not an automatic proof of the prose.
-const root = resolve(process.argv[2] ?? fileURLToPath(new URL("..", import.meta.url)));
+const args = process.argv.slice(2);
+const requireFresh = args.includes("--require-fresh");
+const root = resolve(args.find((arg) => arg !== "--require-fresh") ?? fileURLToPath(new URL("..", import.meta.url)));
 const errors = [];
 const reports = [];
 const git = (...args) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
@@ -45,6 +47,8 @@ try {
   }
 } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
 for (const report of reports) console.log(`docs: ${report}`);
+if (requireFresh && reports.length) errors.push("release requires fresh documentation stamps");
+if (requireFresh && errors.length) errors.push("release refused: merge the release PR with a merge commit and verify all documentation stamps before tagging");
 for (const error of errors) console.error(`docs: ERROR ${error}`);
 if (errors.length) process.exitCode = 1;
 else console.log(`docs: OK (${reports.length} stale document${reports.length === 1 ? "" : "s"})`);

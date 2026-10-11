@@ -2259,3 +2259,8 @@ that current-session binding; an explicit session mismatch is refused). Personal
 output, tokens and managed turn state remain unclaimed. That activity revokes
 an earlier empty-session resume proof; stale unowned completion cannot release
 the queue.
+
+## Amendment: offline ACP approval fencing and lexical scoped-path checks (#311, #322)
+
+- ACP cancels new permission requests while offline or waiting for watchdog cancellation, before consulting either approver. Pending permissions carry abort signals to the daemon approval registry and are withdrawn on watchdog cancellation, offline transitions and stop. Late answers cannot grant them; a restarted session may request approval normally.
+- Pi and local write/edit approval passes the original path separately from the `guardPath` real target, through every wrapper. Scoped automatic grants require both project-relative forms to avoid protected names. A protected directory symlinked into an ordinary project directory and an ordinary alias into a protected directory both require a person. `realPath` and the post-approval target check remain the authority for effects. Explicit approval and never-ask keep their meaning.

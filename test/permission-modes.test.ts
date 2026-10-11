@@ -270,6 +270,15 @@ for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude eve
   await call("write", { path: "ordinary.txt", content: "after" }); expect(pending).toHaveLength(0);
   const targets = [...AGENT_CONFIG_SEGMENTS].flatMap(segment => [segment, segment.toUpperCase()]).map(segment => segment.toLowerCase() === ".mcp.json" ? `nested/${segment}` : `nested/${segment}/policy.json`);
   mkdirSync(join(rig.cwd, "nested/.claude"), { recursive: true }); symlinkSync(join(rig.cwd, "nested/.claude"), join(rig.cwd, "policy-alias")); targets.push("policy-alias/policy.json"); targets.push("nested/.kimi-code/mcp.json", "nested/.KIMI-CODE/mcp.json");
+  for (const [index, segment] of [...AGENT_CONFIG_SEGMENTS].entries()) {
+    const parent = join(rig.cwd, `linked-${index}`); mkdirSync(parent);
+    const ordinary = join(parent, "ordinary"); mkdirSync(ordinary);
+    symlinkSync(ordinary, join(parent, segment));
+    targets.push(`linked-${index}/${segment}/policy.json`);
+    const protectedDir = join(parent, "nested", segment); mkdirSync(protectedDir, { recursive: true });
+    symlinkSync(protectedDir, join(parent, "alias"));
+    targets.push(`linked-${index}/alias/policy.json`);
+  }
   for (const target of targets) for (const name of ["write", "edit"]) {
     const file = join(rig.cwd, target); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "before");
     const before = pending.length;
@@ -278,6 +287,20 @@ for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude eve
     await rig.client.request({ t: "permit", id: pending.at(-1).id });
     expect((await result).text).toContain("did not approve"); expect(readFileSync(file, "utf8")).toBe("before");
   }
+  const target = "linked-0/.claude/policy.json";
+  const before = pending.length;
+  const approved = call("write", { path: target, content: "approved" });
+  await until(() => pending.length > before);
+  expect((await rig.client.request({ t: "permit", id: pending.at(-1).id, option: "allow" })).ok).toBe(true);
+  expect((await approved).text).toContain("wrote");
+  await rig.mode(peer, "never-ask", true);
+  const after = pending.length;
+  expect((await call("edit", { path: target, old: "approved", new: "never-ask" })).text).toContain("edited");
+  expect(pending).toHaveLength(after);
+  symlinkSync(join(rig.cwd, "ordinary.txt"), join(rig.cwd, "ordinary-alias.txt"));
+  await rig.mode(peer, "ask-when-needed");
+  expect((await call("write", { path: "ordinary-alias.txt", content: "ordinary" })).text).toContain("wrote");
+  expect(pending).toHaveLength(after);
 });
 
 test("failed unattended startup cannot poison a later default confirmation", async () => {
@@ -556,4 +579,23 @@ test("Kimi Code project policy is outside scoped grants under literal and folded
   expect(grantablePath(root, join(root, "notes.json"))).toBe(false);
   expect(grantablePath(root, join(root, "ordinary.json"))).toBe(true);
   expect(isAgentConfigPath("src/kimi-code/mcp.json")).toBe(false);
+});
+
+test("offline ACP withdraws its approval from console and dashboard before a late answer (#311)", async () => {
+  const rig = await fixture();
+  expect((await rig.client.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  const pushes: any[] = [];
+  rig.client.onPush = message => pushes.push(message); rig.client.send({ t: "tail" });
+  rig.daemon.bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"], priority: "important" }));
+  await until(() => pushes.some(p => p.t === "permission"));
+  const approval = pushes.find(p => p.t === "permission");
+  const before = await rig.client.request({ t: "ui_snapshot", after: 0 });
+  expect(before.permissions.some((p: any) => p.id === approval.id)).toBe(true);
+  const acp = rig.daemon.bus.peers.get("kimi") as unknown as { onWatchdog: () => void; state: string };
+  acp.onWatchdog();
+  await until(() => pushes.some(p => p.t === "permission_closed" && p.id === approval.id));
+  expect(acp.state).toBe("offline");
+  expect((await rig.client.request({ t: "permit", id: approval.id, option: "yes" })).ok).toBe(false);
+  const after = await rig.client.request({ t: "ui_snapshot", after: 0 });
+  expect(after.permissions.some((p: any) => p.id === approval.id)).toBe(false);
 });
