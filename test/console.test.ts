@@ -1433,3 +1433,13 @@ test("all-arrow reads retain a never-ask default confirmation until an explicit 
     expect(f.requests.filter(request => request.t === "permission_default")).toEqual([]); expect(f.sent).toEqual([{ t: "tail" }]);
   } finally { f.signal(); await running; }
 });
+
+test("tabbed Events headers and bodies stay within panel and stream widths (#319)", () => {
+  const texts = ["\tleading", "inner\ttab", "trailing\t", "several\t\t\ttabs", ...Array.from({ length: 121 }, (_, n) => "--- from\t" + "x".repeat(n))];
+  for (const columns of [40, 80, 120]) for (const text of texts) {
+    const s = state(true); s.panel = 5;
+    s.events = [{ text: text + "\n" + text, kind: "state", tone: "muted" }];
+    for (const line of renderConsole(s, columns, 24, NOW)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    for (const line of wrapStreamTokens(text + "\n" + text, columns, "muted", "state")) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
+  }
+});

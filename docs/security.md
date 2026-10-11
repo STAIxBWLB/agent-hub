@@ -157,3 +157,12 @@ config file; such an edit changes participation only at the next hub start. A
 live settings write or undo applies its own roster key and does not adopt other
 file edits. External ids outside the known native catalog keep their prior
 admission rules.
+
+Scoped Pi and local-worker write/edit grants check both the original project-relative
+path and its resolved target for protected agent configuration names. A protected
+directory symlinked to an ordinary project directory still asks a person; an alias
+into a protected directory also asks. Effects use the guarded real path and recheck
+it after approval. Explicit approval and never-ask retain their existing meaning
+(#322). ACP permissions arriving offline are cancelled before any auto-approval or
+console request; pending permissions are withdrawn on watchdog, offline or stop,
+and a late person answer cannot grant them (#311).

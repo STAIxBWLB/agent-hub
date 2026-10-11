@@ -179,7 +179,7 @@ export function stateTone(state: string): Tone | undefined {
 }
 const span = (text: unknown, tone?: Tone): Span => ({ text: String(text ?? ""), ...(tone ? { tone } : {}) });
 /** One line of sanitized text: a newline or a tab becomes a space, as wrap() counts a tab (stringWidth("\t") is 0). */
-const flat = (value: unknown) => terminalText(value).replace(/[\n\t]/g, " ");
+const flat = (value: unknown) => terminalText(terminalText(value).replace(/[\n\t]/g, " "));
 /**
  * Clip sanitized plain text to the width and keep the tones of the surviving prefix. Widths are measured as paint()
  * prints them: paint() sanitizes each span again, and a cut that ends a span in `[agent-hub` earns it a `> `.
