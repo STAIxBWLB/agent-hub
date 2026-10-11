@@ -7,7 +7,7 @@
 # Private task flow
 
 - Declared refs, plan paths and section file anchors matching pii.paths receive a hard private signal before triage, board writes, notices or memory. The task remains local-only even if ordinary pattern-based PII routing is off.
-- Public titles/views stay stubs, private envelopes stay private, and automatic notes skip memory. Newly accepted plans cannot silently add a private path to an ordinary task. Existing pattern screening and unknown verdict handling remain in force.
+- Directory scopes containing a protected path are private too. Automatic facts omit configured private files even without an open private task. Public titles/views stay stubs, private envelopes stay private, and automatic notes skip memory. Newly accepted plans cannot silently add a private path to an ordinary task. Existing pattern screening and unknown verdict handling remain in force.
 - This governs declared task paths and the managed flow. It does not contain a same-user external shell or another native peer reading arbitrary files outside its declared task.
 
 # Read-only managed tools

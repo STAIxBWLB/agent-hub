@@ -24,7 +24,7 @@ test("bounded data path config defaults absent, merges locally and matches symli
   for (const raw of [null, "private", ["/outside"], ["../outside"], ["a/../b"], Array(65).fill("raw"), ["bad\npath"], ["data/*"]]) expect(() => policyPaths(raw, "pii.paths")).toThrow();
   expect(policyPaths(["data/raw/", "data/raw"], "pii.paths")).toEqual(["data/raw"]);
   for (const path of ["data/raw/input.json", "alias/input.json", "DATA/RAW/new.json"]) expect(matchesPolicy(dir, path, ["data/raw"])).toBe(true);
-  expect(matchesPolicy(dir, "data/raw-other/input.json", ["data/raw"])).toBe(false);
+  expect(matchesPolicy(dir, "data/raw-other/input.json", ["data/raw"])).toBe(false); expect(matchesPolicy(dir, ".", ["data/raw"], true)).toBe(true);
   writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ pii: { paths: ["data/raw"] }, data: { readonly: ["data/raw"] } }));
   writeFileSync(join(dir, ".agenthub/config.local.json"), JSON.stringify({ data: { readonly: [] } }));
   expect(loadConfig(dir)).toMatchObject({ pii: { paths: ["data/raw"] }, data: { readonly: [] } });
@@ -39,7 +39,8 @@ test("private declared paths force local-only before triage even with pattern co
   const task = await tasks.propose("local", { title: "PATH_PRIVATE_TASK_MARKER", owner: "local", plan: { paths: ["data/private/input.csv"] } });
   expect(task.signals).toContain("pii_path"); expect(tasks.isPii(task)).toBe(true); expect(task.owner).toBe("local"); expect(triaged).toBe(0);
   expect(JSON.stringify(tasks.publicView(task))).not.toContain("PATH_PRIVATE_TASK_MARKER"); expect(notices.join("\n")).not.toContain("PATH_PRIVATE_TASK_MARKER");
-  const choice = assign(task, { claude: "idle", codex: "idle", kimi: "idle", local: "idle" }, routing); expect(choice.owner).toBe("local"); await tasks.done("local", task.id, "PRIVATE_RESULT_MARKER"); expect(memory.saved).toEqual([]);
+  const choice = assign(task, { claude: "idle", codex: "idle", kimi: "idle", local: "idle" }, routing); expect(choice.owner).toBe("local"); expect(assign(task, { claude: "idle", codex: "idle", kimi: "idle", local: "idle" }, routing, { namedOwner: "codex", candidates: ["codex"] }).owner).toBeUndefined(); await tasks.done("local", task.id, "PRIVATE_RESULT_MARKER"); expect(memory.saved).toEqual([]);
+  for (const path of ["data", "."]) { const parent = await tasks.propose("local", { title: "PRIVATE_PARENT_SCOPE", class: "draft", owner: "local", refs: { paths: [path] } }); expect(tasks.isPii(parent)).toBe(true); }
   const publicTask = await tasks.propose("codex", { title: "Public", class: "draft", owner: "codex" });
   expect(() => tasks.accept("codex", publicTask.id, { sections: ["data/private/report.md#results"] })).toThrow("PII");
 });
@@ -113,4 +114,15 @@ test.skipIf(process.platform !== "darwin")("managed command runner refuses temp 
   const dir = root(), ctx: ToolContext = { cwd: dir, deny: [], readOnly: ["data/raw"], sandboxProfile: profile(dir, false, [], [], ["data/raw"]), permit: async () => true, send: () => "sent" };
   const result = await runTool("bash", JSON.stringify({ command: 'printf scratch > "$TMPDIR/probe"' }), ctx);
   expect(result).toContain("(exit 1)");
+});
+test("private files never reach automatic facts, including unrelated directory scopes (#259)", async () => {
+  const dir = root(); mkdirSync(join(dir, "data/private"), { recursive: true }); writeFileSync(join(dir, "data/public.txt"), "public"); writeFileSync(join(dir, "data/private/PRIVATE_FILE_MARKER.txt"), "PRIVATE_CONTENT_MARKER");
+  const { Facts } = await import("../src/hub/facts.ts"), { hubGitSync } = await import("../src/hub/git.ts");
+  expect(hubGitSync(["init", "--quiet"], { cwd: dir, encoding: "utf8" }).status).toBe(0);
+  const facts = new Facts({ root: dir, tmp: join(dir, ".facts"), instance: "fixture", scope: () => ({ paths: ["data"], plans: [] }), peers: () => ["claude", "codex"], nameable: () => true,
+    privatePath: path => matchesPolicy(dir, path, ["data/private"]) });
+  const first = facts.due("claude"); expect(first).toBeDefined(); expect(first!.text).toContain("public.txt"); expect(JSON.stringify(first)).not.toContain("PRIVATE_FILE_MARKER"); expect(JSON.stringify(first)).not.toContain("PRIVATE_CONTENT_MARKER"); if (first) facts.ack("claude", first.id);
+  writeFileSync(join(dir, "data/private/PRIVATE_FILE_MARKER.txt"), "PRIVATE_CHANGED_MARKER");
+  facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: join(dir, "data/private/PRIVATE_FILE_MARKER.txt"), kind: { type: "update" }, diff: "+PRIVATE_CHANGED_MARKER" }] });
+  const after = facts.due("claude"); expect(JSON.stringify(after) ?? "").not.toContain("PRIVATE_CHANGED_MARKER"); expect(JSON.stringify(after) ?? "").not.toContain("PRIVATE_FILE_MARKER");
 });

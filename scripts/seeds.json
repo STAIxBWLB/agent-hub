@@ -708,7 +708,7 @@
     {
       "id": "data-private-before-triage",
       "file": "src/hub/tasks.ts",
-      "search": "if (paths.some(path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [])))",
+      "search": "if (paths.some(path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true)))",
       "replacement": "if (false)",
       "testFile": "test/path-policy.test.ts",
       "testName": "private declared paths force local-only before triage even with pattern constraint off (#259)"
@@ -752,6 +752,22 @@
       "replacement": "false ?",
       "testFile": "test/path-policy.test.ts",
       "testName": "read-only command profiles contain no project/temp write grant and reject mismatched runner policy (#259)"
+    },
+    {
+      "id": "data-private-facts",
+      "file": "src/hub/facts.ts",
+      "search": "if (this.o.privatePath?.(path)) return undefined;",
+      "replacement": "if (false) return undefined;",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "private files never reach automatic facts, including unrelated directory scopes (#259)"
+    },
+    {
+      "id": "data-private-parent-scope",
+      "file": "src/hub/path-policy.ts",
+      "search": "(includeParents && (beneath(target, lexical) || beneath(target, actual)))",
+      "replacement": "false",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "private declared paths force local-only before triage even with pattern constraint off (#259)"
     }
   ]
 }

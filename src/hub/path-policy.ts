@@ -20,10 +20,10 @@ export function policyTargets(cwd: string, paths: string[]): string[] {
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
 }
 /** Compare both declared spelling and real target. Unknown alias resolution conservatively matches an active policy. */
-export function matchesPolicy(cwd: string, path: string, paths: string[]): boolean {
+export function matchesPolicy(cwd: string, path: string, paths: string[], includeParents = false): boolean {
   if (!paths.length) return false;
   try {
     const root = realPath(cwd), lexical = resolve(root, path), actual = policyRealPath(lexical), targets = policyTargets(root, paths);
-    return targets.some(target => beneath(lexical, target) || beneath(actual, target));
+    return targets.some(target => beneath(lexical, target) || beneath(actual, target) || (includeParents && (beneath(target, lexical) || beneath(target, actual))));
   } catch { return true; }
 }

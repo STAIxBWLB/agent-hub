@@ -205,7 +205,7 @@ export class Tasks {
   private signalsFor(task: Pick<Task, "title" | "detail" | "refs"> & { plan?: TaskPlan }, routing = this.d.routing()) {
     const signals = detectSignals(task, routing, this.d.cwd);
     const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!).filter(Boolean)];
-    if (paths.some(path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? []))) {
+    if (paths.some(path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true))) {
       if (!signals.includes("pii")) signals.push("pii");
       signals.push("pii_path");
     }
