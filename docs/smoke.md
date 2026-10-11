@@ -1556,7 +1556,10 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
   closed its socket with 4000, and it printed the off-roster reason and exited 1.
   Re-adding left the preserved proxy/app-server unattached. A person must relaunch
   with `ahub codex resume <thread-id>` (or the resume picker) after adding it back. No tool
-  update or model prompt was run.
+  update or model prompt was run. Actual native resume after the exit is not
+  verified: the follow-up no-turn probe was admission-deferred with exit 75
+  before starting, and was not bypassed or retried. The scripted proxy test sends
+  thread/resume with the same thread id; this is separate transport evidence.
 - Pi native TUI: not run. Resource admission deferred the live probe with exit
   75; it was not bypassed. The scripted authenticated bridge tests separately
   verify retained owner identity, idle/busy return and queue delivery.

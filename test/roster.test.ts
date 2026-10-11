@@ -258,7 +258,7 @@ test("daemon roster removal detaches Codex without killing its app-server and ga
   const attach = async (url: string) => { const socket = new WebSocket(url); sockets.push(socket); await new Promise<void>(resolve => { socket.onopen = () => resolve(); }); return socket; };
   try {
     expect(await hub.client.request({ t: "start", peer: "codex" })).toMatchObject({ ok: true });
-    const owner = hub.daemon.bus.peers.get("codex") as unknown as { proxyUrl: string; proc: { pid: number } }, pid = owner.proc.pid;
+    const owner = hub.daemon.bus.peers.get("codex") as unknown as { proxyUrl: string; proc: { pid: number }; thread: string; proxyAttached: boolean }, pid = owner.proc.pid;
     const socket = await attach(owner.proxyUrl), seen: any[] = []; socket.onmessage = event => seen.push(JSON.parse(String(event.data)));
     socket.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "daemon-roster-tui" } } }));
     socket.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
@@ -268,17 +268,21 @@ test("daemon roster removal detaches Codex without killing its app-server and ga
     expect(preview.lines.join("\n")).toContain("Codex 0.146.0 exits its TUI on disconnect and does not reconnect automatically");
     expect(preview.lines.join("\n")).toContain("resume the previous session with ahub codex resume th1");
     const detached = new Promise<number>(resolve => { socket.onclose = event => resolve(event.code); });
-    expect(await hub.client.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex" })).toMatchObject({ ok: true });
+    const removed = await hub.client.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex" });
+    expect(removed).toMatchObject({ ok: true });
+    expect(removed.text).toContain("Codex 0.146.0 exits its TUI on disconnect");
+    expect(removed.text).toContain("resume the previous session with ahub codex resume th1");
     expect(await detached).toBe(4000); expect(() => process.kill(pid, 0)).not.toThrow();
     expect((await hub.client.request({ t: "status" })).status.peers.codex?.state ?? "offline").toBe("offline");
     const denied = new WebSocket(owner.proxyUrl); sockets.push(denied); expect(await new Promise<number>(resolve => { denied.onclose = event => resolve(event.code); })).toBe(4000);
     const restored = await hub.client.request({ t: "settings_set", key: "roster.codex", value: true });
     expect(restored).toMatchObject({ ok: true });
     expect(restored.text).toContain("resume the previous native session with ahub codex resume th1");
+    expect(owner.proxyAttached).toBe(false); expect(hub.daemon.bus.stateOf("codex")).toBe("offline");
     const returned = await attach(owner.proxyUrl), returnedRows: any[] = []; returned.onmessage = event => returnedRows.push(JSON.parse(String(event.data)));
-    returned.send(JSON.stringify({ id: 3, method: "initialize", params: { clientInfo: { name: "returned-roster-tui" } } })); returned.send(JSON.stringify({ id: 4, method: "thread/start", params: {} }));
+    returned.send(JSON.stringify({ id: 3, method: "initialize", params: { clientInfo: { name: "returned-roster-tui" } } })); returned.send(JSON.stringify({ id: 4, method: "thread/resume", params: { threadId: "th1" } }));
     for (let n = 0; n < 200 && !returnedRows.some(row => row.id === 4); n++) await hub.client.request({ t: "status" });
-    expect(returnedRows.find(row => row.id === 4).result.thread.id).toBe("th1"); expect(() => process.kill(pid, 0)).not.toThrow();
+    expect(returnedRows.find(row => row.id === 4).result.thread.id).toBe("th1"); expect(owner.thread).toBe("th1"); expect(() => process.kill(pid, 0)).not.toThrow();
   } finally { for (const socket of sockets) socket.close(); await hub.close(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
 });
 
