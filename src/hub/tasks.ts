@@ -1,6 +1,6 @@
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
-import { profileClass, profileTaskLabel, projectProfile, type ProfileName } from "./profiles.ts";
+import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
@@ -27,6 +27,7 @@ export interface TasksDeps {
   cwd: string;
   project: string;
   profile?: ProfileName;
+  profileData?: ProjectProfile;
   piiPaths?: string[];
   catalog?: RoleCatalog;
   /** Role ids whose contract was prepared for the current native session. */
@@ -163,9 +164,9 @@ function cleanRefs(input: unknown): TaskRefs {
 }
 
 /** The same for a plan (issue #31): only its four lists, each of short strings. */
-function cleanPlan(input: unknown, profile: ProfileName = "dev"): TaskPlan {
+function cleanPlan(input: unknown, profile: ProfileSelection = "dev"): TaskPlan {
   const r = fields(input);
-  return Object.fromEntries((projectProfile(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length));
+  return Object.fromEntries((profileData(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length));
 }
 
 /** A plan as one line for other owners; the whole plan is on the board. */
@@ -539,9 +540,9 @@ export class Tasks {
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     const profile = this.d.profile ?? "dev";
     let baseGiven: TaskClass | undefined;
-    try { if (given !== undefined) baseGiven = profileClass(given, profile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    try { if (given !== undefined) baseGiven = profileClass(given, this.d.profileData ?? profile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
-    const plan = cleanPlan(input.plan, profile);
+    const plan = cleanPlan(input.plan, this.d.profileData ?? profile);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
     const signals = this.signalsFor({ ...text, detail: [text.detail, planText(plan)].join("\n"), plan });
     // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
@@ -568,7 +569,7 @@ export class Tasks {
     let selected;
     try { selected = taskRole(input.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
-    const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" ? { profile, profileClass: given ?? cls } : {}) };
+    const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls ? { profile, profileClass: given ?? cls } : {}) };
     let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
     if (screening) task = this.screenedTask(task, screened);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
@@ -843,7 +844,7 @@ export class Tasks {
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     const signals = this.signalsFor(draft, routing);
-    const base = profileClass(target.class, this.d.profile);
+    const base = profileClass(target.class, this.d.profileData ?? this.d.profile);
     const trace = [...(this.d.profile && this.d.profile !== "dev" ? [`profile class ${target.class} (base ${base}, ${this.d.profile})`] : []), ...assign({ class: base, signals }, this.states(), routing, this.weights(base)).trace];
     // A draft is not sent to the PII screen (issue #198): a proposal is, and a pii or unknown verdict adds the pii signal.
     return [...workflow, ...(this.screenOn() && !signals.includes("pii") ? [...trace, "pii_screen is on: at proposal a pii or unknown verdict adds signal pii (local only)"] : trace)];
@@ -1184,7 +1185,7 @@ export class Tasks {
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
-    const given = plan == null ? undefined : cleanPlan(plan, task.profile ?? "dev");
+    const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
     const cleaned = given && Object.keys(given).length ? given : undefined;
     // A task's signals are fixed when it is proposed: text that matches a PII pattern cannot be let in afterwards.
     if (cleaned && !this.isPii(task) && this.isPii({ signals: this.signalsFor({ title: "", detail: planText(cleaned), refs: {}, plan: cleaned }) })) {

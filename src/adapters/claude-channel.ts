@@ -1,4 +1,4 @@
-import { profileName, projectProfile, type ProfileName } from "../hub/profiles.ts";
+import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName, type ProjectProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 // Claude Code channel plugin server (MCP over stdio). Bundled to plugins/agent-hub/server.js.
 // Inbound: hub `deliver` -> notifications/claude/channel. Outbound: the hub_send tool.
@@ -40,16 +40,28 @@ function roles(): Record<string, string[]> {
   };
   return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
 }
-function sessionProfile(): ProfileName {
-  let raw: unknown;
-  for (const name of ["config.json", "config.local.json"]) try { const value = JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")).profile; if (value !== undefined) raw = value; } catch { /* missing files retain the prior layer */ }
-  try { return profileName(raw); } catch { console.error("[agent-hub] invalid project profile; retaining dev guidance"); return "dev"; }
+function sessionProfile(): ProjectProfile {
+  let raw: unknown, overrides: unknown;
+  try {
+    for (const name of ["config.json", "config.local.json"]) {
+      let data: any;
+      try { data = JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+      if (data.profile !== undefined) raw = data.profile;
+      overrides = mergeProfileOverrides(overrides, data.profile_overrides);
+    }
+    return resolveProfile(raw, overrides);
+  } catch {
+    console.error("[agent-hub] invalid project profile overrides; retaining shipped guidance");
+    try { return projectProfile(profileName(raw)); } catch { return projectProfile("dev"); }
+  }
 }
+
 const profile = sessionProfile();
 function sessionRoles(): import("../hub/roles.ts").CatalogRole[] {
   try {
     const read = (name: string) => { let raw: unknown; try { raw = JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")).catalog_roles; } catch { return {}; } return catalogAssignments(raw); };
-    const assignments = catalogAssignments({ ...projectProfile(profile).catalog_roles, ...read("config.json"), ...read("config.local.json") });
+    const assignments = catalogAssignments({ ...profile.catalog_roles, ...read("config.json"), ...read("config.local.json") });
     const catalog = loadRoleCatalog(projectRoot);
     for (const error of catalog.errors) console.error(`[agent-hub] catalog role ${error.id}: ${error.reason}`);
     return selectedRoles(peerId, roles(), assignments, catalog);

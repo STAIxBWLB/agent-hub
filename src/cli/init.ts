@@ -1,5 +1,5 @@
 import { initShadow, repoOf } from "../hub/snapshots.ts";
-import { profileName, projectProfile, type ProfileName } from "../hub/profiles.ts";
+import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "../hub/profiles.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -50,7 +50,12 @@ function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedW
   const configPath = join(cwd, ".agenthub", "config.json");
   const existingProfile = existsSync(configPath) ? profileName(JSON.parse(readFileSync(configPath, "utf8")).profile) : undefined;
   if (requested !== undefined && existingProfile !== undefined && requested !== existingProfile) throw new Error("init profile differs from existing config; edit the project profile explicitly before refreshing instructions");
-  const profile = projectProfile(requested ?? existingProfile);
+  let overrides: unknown;
+  for (const name of ["config.json", "config.local.json"]) {
+    const path = join(cwd, ".agenthub", name);
+    if (existsSync(path)) overrides = mergeProfileOverrides(overrides, JSON.parse(readFileSync(path, "utf8")).profile_overrides);
+  }
+  const profile = resolveProfile(requested ?? existingProfile, overrides);
   const changed: PlannedWrite[] = [];
   if (shadow && !repository?.shadow) changed.push({ action: "create", path: join(cwd, ".agenthub/shadow.git"), reason: "create opt-in shadow Git metadata without .git", shadow: true });
   const write = (path: string, next: string, reason: string, managedBlock?: InitChange["managedBlock"]) => {
@@ -69,7 +74,7 @@ function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedW
   }
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
-  write(agents, upsertBlock(existing, profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8")), "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
+  write(agents, upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8")), "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
   const claude = join(cwd, "CLAUDE.md");
   const own = lstatSync(claude, { throwIfNoEntry: false });
   // The write preserves an existing inode, including AGENTS.md -> CLAUDE.md and hard links.
