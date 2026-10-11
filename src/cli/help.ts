@@ -35,7 +35,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ["Agents", [
     ["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"],
     ["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"],
-    ["ahub kimi [--print-command] [--model <alias>]", "start Kimi headless under ACP"],
+    ["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"],
     ["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"],
     ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
     ["ahub stop <peer>", "human only: stop a hub-owned headless peer; end TUI agents in their terminals"],
@@ -60,7 +60,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub board [state | --ready] [--json] [--color=auto|always|never]", "the task board; --ready: proposed tasks with nothing left to wait for"],
     ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
-    ["ahub task assign <id> <peer>", "give a task to a peer yourself; a task that still waits is reserved for that peer instead"],
+    ["ahub task assign <id> <peer> [--role owner|reviewer]", "name the owner (default) or reviewer; a task that still waits reserves its owner"],
     ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned", "your later verdict on an approved task, kept in the research records (research must be on)"],
     ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]...", "give a review verdict on a task"],
     ["ahub route explain <id>", "why a task went where it went, its reserved owner included"],

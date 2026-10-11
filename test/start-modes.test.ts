@@ -47,12 +47,12 @@ async function hub(config: Partial<HubConfig> = {}, terminal?: () => TerminalOpe
   return { cwd, stateDir, daemon, client, page, log };
 }
 
-test("start modes: tui is the default wherever a peer has one, and only pi and codex can be set", () => {
-  expect(["claude", "codex", "pi", "kimi", "local"].map((peer) => startModeOf({}, peer))).toEqual(["tui", "tui", "tui", "headless", "headless"]);
+test("start modes: tui is the default wherever a peer has one, including Kimi (#316)", () => {
+  expect(["claude", "codex", "pi", "kimi", "local"].map((peer) => startModeOf({}, peer))).toEqual(["tui", "tui", "tui", "tui", "headless"]);
   const set = peerStartConfig({ pi: { start_mode: "headless" }, codex: {} });
   expect([startModeOf(set, "pi"), startModeOf(set, "codex"), startModeOf(set, "claude")]).toEqual(["headless", "tui", "tui"]);
   expect(startModeOf(undefined, "pi")).toBe("tui");
-  for (const bad of [[], "tui", { kimi: { start_mode: "tui" } }, { claude: { start_mode: "headless" } }, { pi: "headless" }, { pi: { start_mode: "window" } }]) expect(() => peerStartConfig(bad)).toThrow("peers");
+  for (const bad of [[], "tui", { local: { start_mode: "tui" } }, { claude: { start_mode: "headless" } }, { pi: "headless" }, { pi: { start_mode: "window" } }]) expect(() => peerStartConfig(bad)).toThrow("peers");
   // The terminal template is an argv with {command} in exactly one element, and it is a machine-local field.
   expect(terminalTemplate(["tmux", "new-window", "{command}"])).toEqual(["tmux", "new-window", "{command}"]);
   expect(terminalTemplate(undefined)).toEqual([]);
@@ -74,7 +74,7 @@ test("AC6: a hub-made start of a TUI peer opens the fixed command through the pr
   // The dashboard's Start control says what will happen before it is pressed.
   const starts = (await ui.snapshot()).starts as Record<string, any>[];
   expect(starts.map((s) => [s.peer, s.mode, s.via ?? null, s.command])).toEqual([
-    ["claude", "tui", "fake", "ahub claude"], ["codex", "tui", "fake", "ahub codex"], ["kimi", "headless", null, "ahub kimi"], ["pi", "tui", "fake", "ahub pi --mode tui"], ["local", "headless", null, "ahub local"]]);
+    ["claude", "tui", "fake", "ahub claude"], ["codex", "tui", "fake", "ahub codex"], ["kimi", "tui", "fake", "ahub kimi"], ["pi", "tui", "fake", "ahub pi --mode tui"], ["local", "headless", null, "ahub local"]]);
   // Dashboard.
   expect(await ui.act({ action: "start_peer", peer: "pi" })).toEqual({ ok: true, text: "Opened a terminal running ahub pi --mode tui; pi attaches when its TUI is ready." });
   expect(fake.opened).toEqual([{ title: "pi (agent-hub)", argv: fixed("pi", "--mode", "tui") }]);
@@ -108,7 +108,7 @@ test("AC6: a hub-made start of a TUI peer opens the fixed command through the pr
 }, 30_000);
 
 test("AC6: with no terminal provider a TUI start is refused with the command to run by hand and is never downgraded to headless", async () => {
-  const rig = await hub({ pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: PI }, roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor"] } });
+  const rig = await hub({ peers: { kimi: { start_mode: "headless" } }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: PI }, roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor"] } });
   // pi.auto_start at hub start: said out loud, and no Pi.
   await until(() => rig.log().includes("pi.auto_start did not start Pi"));
   expect(rig.log()).toContain("pi.auto_start did not start Pi: pi starts in its TUI and the hub could not open a terminal for it (this hub was started without a terminal provider). Run ahub pi --mode tui in a terminal, or set its start mode to headless (ahub settings set peers.pi.start_mode headless)");
@@ -125,7 +125,7 @@ test("AC6: with no terminal provider a TUI start is refused with the command to 
   expect(conducted.ok).toBe(false); expect(conducted.error).toContain("Run ahub pi --mode tui in a terminal");
   await Bun.sleep(100);
   expect(rig.daemon.bus.peers.has("pi")).toBe(false);
-  // Headless-only peers are not affected: Kimi starts as before.
+  // Explicit headless Kimi still starts under ACP.
   expect(await ui.act({ action: "start_peer", peer: "kimi" })).toEqual({ ok: true, text: "kimi started (headless)." });
   await until(() => rig.daemon.bus.stateOf("kimi") === "idle");
   expect((await ui.snapshot()).starts.find((s: any) => s.peer === "kimi").attached).toBe(true);
@@ -154,7 +154,7 @@ test("AC6: a headless start mode is how a person asks for headless: auto-start a
   expect(rig.daemon.bus.stateOf("pi")).toBe("idle");
   expect(fake.opened).toHaveLength(1);
   // The terminal template and anything under peers but a start mode are not settings.
-  for (const key of ["terminal.open", "terminal", "peers.pi.cmd", "peers.kimi.start_mode", "peers.claude.start_mode"]) expect((await settings.act({ action: "setting", key, value: "tui" })).ok).toBe(false);
+  for (const key of ["terminal.open", "terminal", "peers.pi.cmd", "peers.local.start_mode", "peers.claude.start_mode"]) expect((await settings.act({ action: "setting", key, value: "tui" })).ok).toBe(false);
 }, 30_000);
 
 test("terminal providers: the machine-local template gets one quoted command line, Orca gets the worktree on record, and without either there is none", async () => {

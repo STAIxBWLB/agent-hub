@@ -209,7 +209,9 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
         : flat(p.paused).replace(/^(budget: .*), resets .+$/, "$1; reset unknown");
       out.push(...detail("paused", pauseText, columns, "attention"));
     }
-    if (p.toolsOnly) out.push(...detail("tools-only", flat(p.toolsOnly).replace(/^tools-only:\s*/, ""), columns, "attention"));
+    if (p.toolsOnly) out.push(...detail(id === "kimi" && p.pullOnly ? "pull-only" : "tools-only", flat(p.toolsOnly).replace(/^(?:tools-only|pull-only):\s*/, ""), columns, "attention"));
+    if (p.pullOnly && id === "kimi") out.push(...detail("kimi last read", typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never", columns, "muted"));
+    if (p.permissionNote) out.push(...detail("permission", p.permissionNote, columns, "muted"));
     if (p.requestedModel && p.servedBy && p.requestedModel !== p.servedBy) out.push(...detail("requested model", p.requestedModel, columns));
     if (typeof p.oldestQueuedAt === "number") out.push(...detail(`${id} oldest queued`, relative(p.oldestQueuedAt, now), columns, "muted"));
     return out;

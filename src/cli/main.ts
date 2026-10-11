@@ -21,7 +21,8 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
+import { cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
+import { configureKimiMcp } from "./kimi-mcp.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
@@ -177,7 +178,7 @@ async function healthy(): Promise<boolean> {
   finally { hub?.close(); }
 }
 
-function exec(bin: string, argv: string[], tool?: "claude" | "codex"): never {
+function exec(bin: string, argv: string[], tool?: "claude" | "codex" | "kimi"): never {
   const env = tool ? nativeLaunchEnv(tool, childEnv()) : childEnv();
   const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
   if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
@@ -466,6 +467,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     });
     process.exit(code);
   }
+  if (kind === "upgrade") console.error("ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless");
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io));
   const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined);
   console.log(JSON.stringify(plan, null, 2));
@@ -733,13 +735,41 @@ const commands: Record<string, () => Promise<void> | void> = {
       try { return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2)); }
       catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
     }
-    const i = args.indexOf("--model");
-    const model = i === -1 ? undefined : args[i + 1] ?? fail("--model needs an alias");
+    assertLifecycleAvailable();
+    const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
+    const mode = one["--mode"] ?? startModeOf(projectConfig().peers, "kimi"), model = one["--model"];
+    if (rest.length || !["tui", "headless"].includes(mode)) fail("usage: ahub kimi [--mode tui|headless] [--model <alias>]");
+    if (mode === "tui" && one["--mode"] === undefined && !(process.stdin.isTTY && process.stdout.isTTY)) {
+      if (model) fail("Kimi's TUI needs a terminal for these options; run in a terminal or add --mode headless");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "peer_start", peer: "kimi" }, 35_000);
+        if (!reply.ok) fail(reply.error);
+        return console.log(reply.already ? "kimi is already attached" : `kimi: opened a terminal running ${reply.command}; it attaches pull-only when its TUI is ready`);
+      } finally { hub.close(); }
+    }
     const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "kimi", args: { model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-    hub.close();
-    if (!res.ok) fail(res.error);
-    console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: ahub say @kimi "..."');
+    try {
+      if (mode === "tui") {
+        const launch = buildKimiTuiLaunch(projectConfig().kimi_cmd, model);
+        const snapshot = (await hub.request({ t: "status" })).status;
+        if (snapshot?.roster?.find((row: any) => row.peer === "kimi")?.on === false) fail("kimi is off roster; add it with ahub roster add kimi");
+        const peer = snapshot?.peers?.kimi;
+        if (peer && !["offline"].includes(peer.state) && !peer.pullOnly) fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
+        const admission = await hub.request({ t: "start", peer: "kimi", args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+        if (!admission.ok) fail(admission.error);
+        const written = configureKimiMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"), "tui");
+        if (written.tracked) console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
+        hub.close();
+        return exec(launch.cmd, launch.args, "kimi");
+      }
+      const peer = (await hub.request({ t: "status" })).status?.peers?.kimi;
+      if (peer?.pullOnly && peer.state !== "offline") fail("Kimi runs in a terminal; end it there before starting a headless one");
+      configureKimiMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"), "headless");
+      const res = await hub.request({ t: "start", peer: "kimi", args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+      if (!res.ok) fail(res.error);
+      console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: ahub say @kimi "..."');
+    } finally { hub.close(); }
   },
 
   pi: async () => {
@@ -953,7 +983,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [sub, ...rest] = args;
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
-    if (sub === "assign") return console.log(await taskOp("task_assign", { id: rest[0], peer: rest[1] }));
+    if (sub === "assign") {
+      const { one, rest: positional } = takeFlags(rest, ["--role"], []);
+      const role = one["--role"] ?? "owner";
+      if (positional.length !== 2 || !["owner", "reviewer"].includes(role)) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer]");
+      return console.log(await taskOp("task_assign", { id: positional[0], peer: positional[1], ...(role === "reviewer" ? { role } : {}) }));
+    }
     if (sub === "label") {
       // #247: a person's later verdict on an approved task (the identity gate keeps it human-only), for research records.
       const { one, rest: positional } = takeFlags(rest, ["--created"], []);
@@ -1531,8 +1566,10 @@ async function runConductorCommand(): Promise<void> {
   let input: Record<string, unknown>;
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
-    if (!args[1] || (args[0] === "assign" && !args[2]) || args.length !== (args[0] === "assign" ? 3 : 2)) fail("usage: ahub task assign <id> <peer> | escalate <id>");
-    input = { id: Number(args[1]), ...(args[0] === "assign" ? { peer: args[2] } : {}) };
+    const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);
+    const role = one["--role"] ?? "owner";
+    if (!positional[0] || positional.length !== (args[0] === "assign" ? 2 : 1) || !["owner", "reviewer"].includes(role)) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer] | escalate <id>");
+    input = { id: Number(positional[0]), ...(args[0] === "assign" ? { peer: positional[1], ...(role === "reviewer" ? { role } : {}) } : {}) };
   } else if (cmd === "pause" || cmd === "resume") {
     if (args.length !== 1) fail(`usage: ahub ${cmd} <peer>`);
     op = cmd === "pause" ? "hub_peer_hold" : "hub_peer_release";

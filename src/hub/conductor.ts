@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
 import { HUB, USER } from "./envelope.ts";
-import { OWNERSHIP_EVENTS } from "./tasks.ts";
+import { OWNERSHIP_EVENTS, type TaskAssignmentRole } from "./tasks.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { isStartablePeer, type StartablePeer, type StartMode } from "./start-mode.ts";
 import type { HubEvent } from "./events.ts";
@@ -156,7 +156,7 @@ export interface ConductorHooks {
   task(id: number): Task | undefined;
   publicView(task: Task): Record<string, unknown>;
   /** These callbacks must call Tasks, never Board.update. */
-  assign(actor: string, id: number, peer: string): Promise<unknown>;
+  assign(actor: string, id: number, peer: string, role?: TaskAssignmentRole): Promise<unknown>;
   escalate(actor: string, id: number): Promise<unknown>;
   preview(peer: "claude" | "codex" | "pi"): string;
   /** The mode a start of this peer takes: a person's setting. */
@@ -182,6 +182,8 @@ export class Conductor {
   constructor(private readonly holds: ConductorHolds, private readonly hooks: ConductorHooks) {}
   async execute(actor: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
     if (!CONDUCTOR_TOOL_NAMES.has(tool)) throw new PreEffectToolRefusal("unknown conductor tool");
+    const role = args.role ?? "owner";
+    if (tool === "hub_task_assign" && role !== "owner" && role !== "reviewer") throw new PreEffectToolRefusal("role must be owner or reviewer");
     if ((tool === "hub_task_show" || tool === "hub_task_assign") && conductorPeer(this.hooks.roles()) !== actor) {
       const id = taskId(args.id);
       const task = id === undefined ? undefined : this.hooks.task(id);
@@ -193,7 +195,7 @@ export class Conductor {
       // moves are not decisions).
       const moved = task?.history.findLast((h) => h.by !== HUB && (OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved"));
       const accepted = task?.history.some((h) => h.event === "accepted");
-      if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && !accepted && moved?.by !== USER) {
+      if (task && tool === "hub_task_assign" && role === "owner" && task.history[0]?.by === actor && task.state === "proposed" && !accepted && moved?.by !== USER) {
         const peer = peerId(args.peer, true);
         if (peer !== actor) requireAssign(actor, this.hooks.capabilities(), true);
         await this.hooks.assign(actor, task.id, peer);
@@ -215,7 +217,9 @@ export class Conductor {
       if (tool === "hub_task_show") { const result = publicConductorTask(task, this.hooks.publicView); emit({ task: task.id }); return result; }
       if (tool === "hub_task_assign") {
         const peer = peerId(args.peer, true);
-        await this.hooks.assign(actor, task.id, peer); emit({ task: task.id, peer });
+        if (role === "reviewer") await this.hooks.assign(actor, task.id, peer, role);
+        else await this.hooks.assign(actor, task.id, peer);
+        emit({ task: task.id, peer });
       } else { await this.hooks.escalate(actor, task.id); emit({ task: task.id }); }
       // Task callbacks may return raw objects; always re-read and apply the public view.
       const updated = this.hooks.task(task.id);

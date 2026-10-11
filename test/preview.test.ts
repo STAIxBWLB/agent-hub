@@ -50,7 +50,7 @@ test("default previews match native builders with explicit dynamic placeholders"
     const codex = launcherPreview("codex", [], dir, state, false);
     expect(codex.args).toEqual(buildLaunch("codex", [], { unattended: false, proxyUrl: "[unresolved]" }).args);
     expect(codex.unresolved.length).toBeGreaterThan(0);
-    const kimi = launcherPreview("kimi", [], dir, state, false);
+    const kimi = launcherPreview("kimi", ["--mode", "headless"], dir, state, false);
     expect(kimi.args).toEqual(buildKimiLaunch(["kimi", "acp"]).args);
     const claude = launcherPreview("claude", ["--settings", "{}"], dir, state, false);
     const nativeClaude = buildLaunch("claude", ["--settings", "{}"], { preview: true, unattended: false, facts: claudeObservationHooks({}, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir: state }) });
@@ -85,7 +85,7 @@ test("CLI previews neither create state nor execute configured natives, and reda
       ["claude", "--print-command", "--settings", JSON.stringify({ token: canary }), canary, "--token=" + canary],
       ["claude", "--dry-run"],
       ["codex", "--print-command", "-c", "password=" + canary],
-      ["kimi", "--print-command", "--model", canary],
+      ["kimi", "--mode", "headless", "--print-command", "--model", canary],
       ["pi", "--dry-run", "--mode", "headless", "--session-id", canary],
       ["pi", "--print-command", "--mode", "tui", "--model", canary],
     ]) {

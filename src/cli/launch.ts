@@ -9,11 +9,12 @@ import { peerChildEnv, processTable } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
 /** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
-export function nativeLaunchEnv(tool: "claude" | "codex" | "pi", source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function nativeLaunchEnv(tool: "claude" | "codex" | "pi" | "kimi", source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = peerChildEnv(tool, source);
   delete env.AGENTHUB_UNATTENDED;
   // Channel evidence for the plugin (issue #205): set beside the development-channel flag `buildLaunch` always passes.
   if (tool === "claude") env.AGENTHUB_CHANNEL = "1";
+  if (tool === "kimi") delete env.AGENTHUB_MODE; // its MCP child must attach pull-only, never as a tools socket
   return env;
 }
 
@@ -390,4 +391,11 @@ export function buildLaunch(
 export function buildKimiLaunch(command: string[], model?: string): Launch {
   const [cmd, ...args] = command;
   return { cmd: cmd!, args: model ? ["--model", model, ...args] : args };
+}
+
+/** The configured ACP argv has a TUI form only when its exact final word is the ACP subcommand. */
+export function buildKimiTuiLaunch(command: string[], model?: string): Launch {
+  if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("kimi_cmd must name an executable");
+  if (command.length > 1 && command.at(-1) !== "acp") throw new Error("kimi_cmd has no derivable TUI form; use a single executable or an argv ending in acp, or run ahub kimi --mode headless");
+  return buildKimiLaunch(command.length > 1 ? command.slice(0, -1) : command, model);
 }

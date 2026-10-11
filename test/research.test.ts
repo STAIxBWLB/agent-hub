@@ -250,7 +250,7 @@ async function daemonWithKimi(home: string, delayMs: number) {
   process.env.AGENTHUB_HOME = home;
   cleanup.push(() => { if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; });
   const daemon = await startDaemon({ cwd: root, stateDir, projectId: "p-research", instanceId: "i-research", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, researchGraceMs: 30,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, research: { enabled: true },
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, research: { enabled: true },
       kimi_cmd: ["env", `FAKE_ACP_DELAY_MS=${delayMs}`, "bun", join(import.meta.dir, "fakes/acp-server.ts")] } });
   let stopped = false;
   const stop = async () => { if (!stopped) { stopped = true; await daemon.stop(); } };

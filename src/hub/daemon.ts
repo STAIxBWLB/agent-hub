@@ -73,6 +73,7 @@ import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapsh
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
 import { isStartablePeer, peerStartConfig, PEER_START_RETRY_MS, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
+import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
@@ -363,6 +364,7 @@ class WsPeer extends BasePeer {
   private nativeActive = false;
   /** The attached session said it cannot show channel pushes (issue #205): the bus keeps its queue for `inbox`. */
   pullOnly = false;
+  lastInboxAt: number | undefined;
   private claimedPullOnly = false;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
   claim(sock: Sock, pullOnly = false): void {
@@ -389,6 +391,7 @@ class WsPeer extends BasePeer {
     this.nativeSession = undefined;
     this.nativeActive = false;
     this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
+    this.lastInboxAt = undefined;
     this.setState("idle");
   }
   detach(sock: Sock): void {
@@ -1377,7 +1380,8 @@ export async function startDaemon(opts: DaemonOptions) {
       case "task_assign": {
         const peer = peerArg(a.peer, "peer");
         if (!peer) throw new Error("peer is required");
-        return line(await tasks.assignTo(a.id, peer, USER, true));
+        if (a.role !== undefined && a.role !== "owner" && a.role !== "reviewer") throw new Error("role must be owner or reviewer");
+        return line(await tasks.assignTo(a.id, peer, USER, true, a.role));
       }
       case "task_escalate":
         return line(await tasks.escalate(USER, a.id, undefined, undefined, true));
@@ -1615,6 +1619,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return permissionMode(id);
   };
   const permissionStatus = (id: string, peer: PeerAdapter | undefined): Record<string, unknown> => {
+    if (id === "kimi" && peer instanceof WsPeer && peer.pullOnly) return { permissionNote: "Kimi approves tools in its own TUI; no hub permission mode" };
     const mode = permissionDisplay(id, peer);
     return mode === "ask" ? {} : { permissionMode: mode };
   };
@@ -1639,7 +1644,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { toolsOnly: "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude" } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
@@ -2062,6 +2067,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const CLI_ENTRY = fileURLToPath(new URL("../cli/main.ts", import.meta.url));
   /** `config.peers` follows a settings write (`settingsSet`), so a changed mode applies at the peer's next start. */
   const startMode = (peer: string): StartMode => startModeOf(config.peers, peer);
+  let kimiSessionMode: StartMode | undefined;
   const startWords = (peer: string): string[] => peer === "pi" ? ["pi", "--mode", "tui"] : [peer];
   const startable = onRoster;
   // ponytail: one terminal per peer per 30 s, by the clock. The hub cannot see whether the terminal it opened still
@@ -2088,7 +2094,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // like one whose terminal was closed, so a headless start in that window replaces it; record when a launch was
       // issued to tell the two apart.
       if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
-      return startPeer(peer, peer === "pi" ? { mode: "headless" } : {});
+      return startPeer(peer, peer === "pi" || peer === "kimi" ? { mode: "headless" } : {});
     }
     if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
     const command = `ahub ${startWords(peer).join(" ")}`;
@@ -2114,6 +2120,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof peer !== "string" || !PEER_ID.test(peer)) return { ok: false, error: "unknown peer; run ahub status and choose a hub-owned headless peer" };
     if (peer === "claude" || peer === "codex") return { ok: false, error: "this peer belongs to a native terminal; end it in its terminal" };
     const owner = bus.peers.get(peer);
+    if (peer === "kimi" && (owner instanceof WsPeer || (!owner && startMode(peer) === "tui"))) return { ok: false, error: "Kimi belongs to its own TUI terminal; end it in that terminal" };
     if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
     if (owner instanceof PiPeer && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
     if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ahub ${peer} before stopping it` };
@@ -2169,6 +2176,19 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
+    if (peer === "kimi") {
+      if (args.mode !== undefined && !["headless", "tui"].includes(args.mode)) return { ok: false, error: "invalid Kimi mode" };
+      const owner = bus.peers.get(peer);
+      if ((args.mode ?? startMode(peer)) === "tui") {
+        if (args.mode !== "tui") return { ok: false, error: "Kimi uses its own TUI (pull-only); run ahub kimi in a terminal, or ahub kimi --mode headless", command: "ahub kimi" };
+        if (owner instanceof AcpPeer && owner.state !== "offline") return { ok: false, error: "Kimi is running headless; run ahub stop kimi before starting its TUI" };
+        kimiSessionMode = "tui"; // the person's one-launch override authorizes its MCP hello, with no daemon file write
+        return { ok: true, mode: "tui", pullOnly: true, command: "ahub kimi" };
+      }
+      if (owner instanceof WsPeer && (owner.state !== "offline" || owner.claiming)) return { ok: false, error: "Kimi runs in a terminal; end it there before starting a headless one" };
+      if (hasKimiHubMcp(opts.cwd)) return { ok: false, error: "Kimi's project MCP file still has agent-hub; a person must run ahub kimi --mode headless to remove it before ACP starts", command: "ahub kimi --mode headless" };
+      kimiSessionMode = "headless";
+    }
     if (peer === "pi") {
       const problem = mlxLaunchProblem(config, { backend: args.backend ?? config.pi.backend, model: args.model }) ?? disabledMlxPolicyProblem(config, opts.cwd);
       if (problem) return { ok: false, error: problem };
@@ -2654,7 +2674,7 @@ export async function startDaemon(opts: DaemonOptions) {
       };
     },
     task: id => board.get(id), publicView: task => tasks.publicView(task, true),
-    assign: (actor, id, peer) => tasks.assignTo(id, peer, actor, true), escalate: (actor, id) => tasks.escalate(actor, id, undefined, undefined, true),
+    assign: (actor, id, peer, role) => tasks.assignTo(id, peer, actor, true, role), escalate: (actor, id) => tasks.escalate(actor, id, undefined, undefined, true),
     preview: peer => {
       // The operator wrapper runs the same planner again at launch, with runtime endpoints then resolved.
       launcherPreview(peer, peer === "pi" ? ["--mode", "tui"] : [], opts.cwd, opts.stateDir, false);
@@ -3017,7 +3037,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: true, text: result };
       }
       case "assign":
-        return taskId() && peer() ? { ok: true, text: await taskOp(USER, "task_assign", { id: a.id, peer: a.peer }) } : bad;
+        return taskId() && peer() && (a.role === undefined || a.role === "owner" || a.role === "reviewer") ? { ok: true, text: await taskOp(USER, "task_assign", { id: a.id, peer: a.peer, role: a.role }) } : bad;
       case "start_peer": {
         // #269: the hub's own start of a peer from the closed list, in the mode a person set. No argument reaches a command.
         if (!peer()) return bad;
@@ -3180,6 +3200,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function changePermission(peer: unknown, mode: unknown, confirmed: unknown): Promise<Record<string, unknown>> {
     if (!isKnownPeer(peer)) return { ok: false, error: "unknown permission peer" };
+    if (peer === "kimi" && (bus.peers.get(peer) instanceof WsPeer || (!bus.peers.has(peer) && startMode(peer) === "tui"))) return { ok: false, error: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode" };
     if (requestedPeerStops.has(peer)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
     const owner = bus.peers.get(peer);
     if (mode === "ask" && (!owner || owner.state === "offline")) {
@@ -3301,10 +3322,12 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
       } else {
         c.peer = String(msg.peer ?? "claude");
-        if (!PEER_ID.test(c.peer) || RESERVED_IDS.has(c.peer)) return sock.close(4403, "peer id is reserved or malformed");
+        const kimiPull = c.peer === "kimi" && (kimiSessionMode ?? startMode("kimi")) === "tui" && msg.channel === false;
+        if (!PEER_ID.test(c.peer) || (RESERVED_IDS.has(c.peer) && !kimiPull)) return sock.close(4403, c.peer === "kimi" ? "Kimi attaches pull-only in TUI mode; run ahub kimi" : "peer id is reserved or malformed");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
         let peer = bus.peers.get(c.peer);
+        if (kimiPull && peer instanceof AcpPeer && peer.state === "offline") peer = undefined;
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
         const ws = peer;
@@ -3371,6 +3394,8 @@ export async function startDaemon(opts: DaemonOptions) {
         try {
           const envs = bus.pull(peer.id);
           if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
+          peer.lastInboxAt = Date.now();
+          writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
           return void reply({ ok: true, envs, waiting: bus.queued(peer.id) });
         } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }

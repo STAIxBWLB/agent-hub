@@ -5,7 +5,8 @@ import { childEnv } from "../hub/child-process.ts";
 import { relayModelIds } from "../models/relay.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
 import { startModeOf } from "../hub/start-mode.ts";
-import { buildLaunch, buildKimiLaunch, claudeObservationHooks, type Launch } from "./launch.ts";
+import { buildLaunch, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, claudeObservationHooks, type Launch } from "./launch.ts";
+import { kimiMcpPlan } from "./kimi-mcp.ts";
 
 const REDACTED = "[redacted]";
 const UNRESOLVED = "[unresolved]";
@@ -24,6 +25,7 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
   const config = loadConfig(cwd);
   const unresolved: { field: string; reason: string }[] = [];
   let launch: Launch;
+  let kimiMetadata: { mode: "tui" | "headless"; mcp: { file: string; action: string; changed: boolean; tracked: boolean } } | undefined;
   let envNames = Object.keys(childEnv()).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
   const value = (flag: string) => {
     const at = args.indexOf(flag);
@@ -60,8 +62,19 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     unresolved.push({ field: "proxyUrl", reason: "assigned when the native adapter starts; preview does not start it" });
   } else if (tool === "kimi") {
     const model = value("--model");
-    launch = buildKimiLaunch(nativeCommand(config.kimi_cmd, ["kimi", "acp"]), model ? REDACTED : undefined);
-    unresolved.push({ field: "sessionId", reason: "ACP session identity is available only after native initialization" });
+    const mode = value("--mode") ?? startModeOf(config.peers, "kimi");
+    if (mode !== "tui" && mode !== "headless") throw new Error("invalid Kimi mode");
+    for (let i = 0; i < args.length; i += 2) if (!["--model", "--mode"].includes(args[i]!) || !args[i + 1]) throw new Error("unknown Kimi option");
+    if (mode === "headless") {
+      launch = buildKimiLaunch(nativeCommand(config.kimi_cmd, ["kimi", "acp"]), model ? REDACTED : undefined);
+      unresolved.push({ field: "sessionId", reason: "ACP session identity is available only after native initialization" });
+    } else {
+      const native = buildKimiTuiLaunch(config.kimi_cmd, model ? REDACTED : undefined);
+      launch = { ...native, cmd: native.cmd === "kimi" ? "kimi" : REDACTED, args: native.args.map(arg => arg === "--model" || arg === REDACTED ? arg : REDACTED) };
+      envNames = Object.keys(nativeLaunchEnv("kimi", childEnv())).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
+    }
+    const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join(import.meta.dir, "../../plugins/agent-hub/server.js"), mode);
+    kimiMetadata = { mode, mcp: { file, action, changed, tracked } };
   } else {
     const mode = value("--mode") ?? startModeOf(config.peers, "pi"); // #269: the same default `ahub pi` takes
     const backend = value("--backend") ?? config.pi.backend;
@@ -88,5 +101,5 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     unresolved.push({ field: "env.AGENTHUB_INSTANCE_ID", reason: tool === "claude" ? "injected when an existing daemon instance is read at launch; preview does not read runtime state" : "injected when a verified Orca terminal launch is recorded against the daemon; preview does not record it" });
     unresolved.push({ field: "env.AGENTHUB_LAUNCH_ID", reason: "allocated only for a verified Orca terminal launch; preview does not query Orca, allocate identity or write launch records" });
   }
-  return { tool, cmd: launch.cmd, args: launch.args, settings: tool === "claude" && launch.args.includes("--settings") ? launch.args[launch.args.indexOf("--settings") + 1] : undefined, envNames: [...new Set(envNames)].sort(), ...(launch.warning ? { warning: launch.warning } : {}), unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
+  return { tool, ...(kimiMetadata ?? {}), cmd: launch.cmd, args: launch.args, settings: tool === "claude" && launch.args.includes("--settings") ? launch.args[launch.args.indexOf("--settings") + 1] : undefined, envNames: [...new Set(envNames)].sort(), ...(launch.warning ? { warning: launch.warning } : {}), unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
 }

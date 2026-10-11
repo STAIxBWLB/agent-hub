@@ -208,3 +208,42 @@ test("a reserved off-roster owner is not honored and routing still enforces PII 
   expect(privateTask.owner).toBeUndefined(); expect(privateTask.reviewer).toBe("user");
   expect(privateTask.trace).toContain("  owner candidate local: skipped, off roster");
 });
+
+test("pull-only routing excludes automatic singleton owners and reviewer-role candidates (#316)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "ahub-pull-routing-")));
+  routing.classes.implement!.peers = ["kimi", "codex"]; routing.classes.review!.peers = ["kimi"];
+  const states = { kimi: "idle", codex: "idle" } as const;
+  const automatic = assign(task("implement"), states, routing, { pullOnly: ["kimi"], roles: { kimi: ["reviewer"] } });
+  expect(automatic.owner).toBe("codex"); expect(automatic.reviewer).toBeUndefined();
+  expect(automatic.trace).toContain("  owner candidate kimi: skipped, pull-only: takes work when named or when it claims it");
+  expect(automatic.trace).toContain("  reviewer candidate kimi: skipped, pull-only: takes work when named or when it claims it");
+  expect(assign(task("implement"), states, routing, { pullOnly: ["kimi"], candidates: ["kimi"] }).owner).toBeUndefined();
+  expect(assign(task("review"), states, routing, { pullOnly: ["kimi"], candidates: ["kimi"] }).owner).toBeUndefined();
+});
+
+test("pull-only explicit nominations are role-specific and an honored reservation survives as a name (#316)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "ahub-pull-named-")));
+  routing.classes.implement!.peers = ["kimi", "codex"]; routing.classes.review!.peers = ["watcher", "claude"];
+  const states = { kimi: "idle", codex: "idle", watcher: "idle", claude: "idle" } as const;
+  expect(assign(task("implement"), states, routing, { pullOnly: ["kimi", "watcher"], candidates: ["kimi"], namedOwner: "kimi" })).toMatchObject({ owner: "kimi", reviewer: "claude" });
+  const reviewer = assign(task("implement"), states, routing, { pullOnly: ["kimi", "watcher"], namedReviewer: "watcher" });
+  expect(reviewer).toMatchObject({ owner: "codex", reviewer: "watcher" });
+  const reserved = { ...task("implement"), reserved: "kimi" };
+  expect(assign(reserved, states, routing, { pullOnly: ["kimi"] }).owner).toBe("kimi");
+  expect(assign(reserved, states, routing, { pullOnly: ["kimi"], candidates: ["kimi"] }).owner).toBeUndefined();
+  expect(assign(reserved, states, routing, { pullOnly: ["kimi"], waitsFor: [1] }).owner).toBeUndefined();
+  expect(assign(reserved, states, routing, { pullOnly: ["kimi"], exclude: ["kimi"] }).owner).toBe("codex");
+});
+
+test("a pull-only name never bypasses roster, pause, exclusion, PII or self-review (#316)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "ahub-pull-guards-")));
+  for (const options of [{ offRoster: ["kimi"] }, { exclude: ["kimi"] }]) {
+    expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: ["kimi"], namedOwner: "kimi", ...options }).owner).toBeUndefined();
+    expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: [], namedReviewer: "kimi", ...options }).reviewer).toBeUndefined();
+  }
+  expect(assign(task("implement"), { kimi: "paused" }, routing, { pullOnly: ["kimi"], candidates: ["kimi"], namedOwner: "kimi" }).owner).toBeUndefined();
+  expect(assign(task("implement", ["pii"]), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: ["kimi"], namedOwner: "kimi", namedReviewer: "kimi" }).owner).toBeUndefined();
+  expect(assign(task("implement", ["pii"]), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: [], namedReviewer: "kimi" }).reviewer).toBe("user");
+  expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: ["kimi"], namedOwner: "kimi", namedReviewer: "kimi" }).reviewer).toBeUndefined();
+  expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: [], namedReviewer: "kimi", notReviewer: "kimi" }).reviewer).toBeUndefined();
+});
