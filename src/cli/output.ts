@@ -9,6 +9,10 @@ export interface StatusOutput {
   tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[]; switchyard?: string;
 }
 export interface BudgetOutput { budget: Record<string, any>; gate?: number }
+export interface RosterRow { peer: string; on: boolean; startMode: string; state: string; queued: number; tasks: number }
+export function renderRoster(data: RosterRow[], columns?: number): Span[][] {
+  return rows(["PEER", "ROSTER", "START", "STATE", "Q", "TASKS"], data.map(row => [span(row.peer, "info", true), span(row.on ? "on" : "off", row.on ? "success" : "muted", true), span(row.startMode, undefined, true), span(row.state, stateTone(row.state), true), span(row.queued, undefined, true), span(row.tasks, undefined, true)]), columns);
+}
 export function outputWidth(env: { isTTY: boolean; columns?: number; COLUMNS?: string }): number | undefined {
   if (env.isTTY) return Math.max(80, Number.isFinite(env.columns) ? env.columns! : 80);
   return env.COLUMNS && /^[1-9][0-9]*$/.test(env.COLUMNS) && Number.isSafeInteger(Number(env.COLUMNS)) ? Number(env.COLUMNS) : undefined;

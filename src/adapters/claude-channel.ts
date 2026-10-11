@@ -159,6 +159,7 @@ async function connectLoop(): Promise<void> {
       continue;
     }
     let code: number | undefined;
+    let closeReason: string | undefined;
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsMode ? "tools" : "peer", peer: peerId, ...(toolsMode ? {} : { channel }),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
@@ -175,11 +176,12 @@ async function connectLoop(): Promise<void> {
       standingBy = false;
       detached = undefined;
       log(`connected to hub as "${peerId}"`);
-      code = await new Promise<number>((r) => (client.onClose = r));
+      code = await new Promise<number>((r) => { client.onClose = (value, reason) => { closeReason = reason; r(value); }; });
       hub = undefined;
       log("hub connection lost");
     } catch (e) {
       code = (e as { code?: number }).code;
+      closeReason = (e as Error).message;
       if (attempt === 0) log((e as Error).message);
     }
     // Retrying these only hammers a hub that will refuse again.
@@ -188,9 +190,10 @@ async function connectLoop(): Promise<void> {
       return log(`stopped reconnecting: ${detached}`);
     }
     if (code === HELD_CLOSE) {
-      if (!standingBy) log(`standing by: ${HELD}`);
+      const reason = closeReason?.includes("off roster") ? `${peerId} is off roster; a person can add it with ahub roster add ${peerId}` : HELD;
+      if (!standingBy || detached !== reason) log(`standing by: ${reason}`);
       standingBy = true;
-      detached = HELD;
+      detached = reason;
     }
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }

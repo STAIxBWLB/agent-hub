@@ -1,3 +1,4 @@
+import { isKnownPeer } from "./peer-catalog.ts";
 import { lstatSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 
@@ -11,7 +12,7 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("permission_modes must be an object with ask, ask-when-needed or never-ask values");
   const result: Record<string, PermissionMode> = {};
   for (const [peer, mode] of Object.entries(value)) {
-    if (!["claude", "codex", "kimi", "pi", "local"].includes(peer)) throw new Error(`permission_modes.${peer}: unsupported peer`);
+    if (!isKnownPeer(peer)) throw new Error(`permission_modes.${peer}: unsupported peer`);
     if (!isPermissionMode(mode)) throw new Error(`permission_modes.${peer} must be ask, ask-when-needed or never-ask`);
     result[peer] = mode;
   }

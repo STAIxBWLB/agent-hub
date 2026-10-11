@@ -19,7 +19,7 @@ async function until(condition: () => boolean): Promise<void> {
 
 class Implementer extends BasePeer {
   readonly received: Envelope[] = [];
-  constructor() { super("codex"); }
+  constructor(id = "codex") { super(id); }
   async start(): Promise<void> { this.setState("idle"); }
   async stop(): Promise<void> { this.setState("offline"); }
   async deliver(envs: Envelope[], id?: string): Promise<void> {
@@ -33,16 +33,16 @@ class Implementer extends BasePeer {
   }
 }
 
-async function fixture(args: string[] = [], recordProtocol = false) {
+async function fixture(args: string[] = [], recordProtocol = false, routingOptions: { implementPeers?: string[]; roster?: { codex: boolean } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-acp-quota-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8")
     .replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"')
-    .replace('[classes.implement]\npeers = ["pi", "local", "codex", "kimi"]', '[classes.implement]\npeers = ["kimi", "codex"]');
+    .replace('[classes.implement]\npeers = ["pi", "local", "codex", "kimi"]', `[classes.implement]\npeers = ${JSON.stringify(routingOptions.implementPeers ?? ["kimi", "codex"])}`);
   writeFileSync(join(dir, ".agenthub/routing.toml"), routing);
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(routingOptions.roster ? { roster: routingOptions.roster } : {}),
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal", ...args, ...(recordProtocol ? ["--record-protocol", join(dir, "protocol.jsonl")] : [])],
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 1 },
@@ -209,3 +209,30 @@ test("a quota refusal during the daemon recovery hold is unconfirmed and held wi
   expect(daemon.bus.queueList("kimi").filter(row => row.state === "needs_review")).toHaveLength(1);
   expect((await console_.request({ t: "recovery", op: "abort", operationId: "quota-held", expectedInstanceId: status.instanceId })).ok).toBe(true);
 });
+
+
+test("daemon quota handoff skips an off-roster preferred implementer and delivers once to the next on-roster peer (#315)", async () => {
+  const { dir, daemon, console_, implementer: offCandidate, tools } = await fixture([], false, { implementPeers: ["kimi", "codex", "local"], roster: { codex: false } });
+  const successor = new Implementer("local"); await successor.start(); daemon.bus.add(successor);
+  expect(offCandidate.state).toBe("idle"); expect(daemon.bus.isRostered("codex")).toBe(false); expect(daemon.bus.isRostered("local")).toBe(true);
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "quota relay roster original", class: "implement", owner: "kimi", refs: { paths: ["roster-relay.ts"] } } })).ok).toBe(true);
+  expect((await tools.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("kimi") === "idle" && daemon.bus.queued("kimi") === 0 && !daemon.bus.hasInFlight("kimi"));
+  const refused = newEnvelope("user", "QUOTA_REFUSAL roster relay", { to: ["kimi"] }); daemon.bus.publish(refused);
+  await until(() => daemon.bus.isPaused("kimi") && daemon.bus.queueIds("kimi").includes(refused.id) && successor.received.some(env => env.kind === "task" && env.refs?.task === "1"));
+  expect(JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text)).toMatchObject({ owner: "local", state: "proposed" });
+  const explanation = await console_.request({ t: "task", op: "route_explain", args: { title: "next roster relay work", class: "implement" } });
+  expect(explanation.text).toContain("owner candidate kimi: skipped, paused");
+  expect(explanation.text).toContain("owner candidate codex: skipped, off roster");
+  expect((await console_.request({ t: "budget" })).budget.kimi.paused.reason).toContain("kimi ACP usage-limit refusal");
+  expect(daemon.bus.queueSummary("kimi").needsReview).toBe(0);
+  await (daemon.bus.peers.get("kimi") as AcpPeer).setPermissionMode("ask"); // consuming native barrier, not a timing guess
+  const db = new Database(join(dir, "hub.db"), { readonly: true });
+  try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    await until(() => (db.query("SELECT handed_off FROM budget_pauses WHERE peer = ?").get("kimi") as { handed_off: number } | null)?.handed_off === 1);
+  } finally { db.close(); }
+  expect(successor.received.filter(env => env.kind === "task" && env.refs?.task === "1")).toHaveLength(1);
+  expect(offCandidate.received).toEqual([]); expect(daemon.bus.queued("codex")).toBe(0);
+  expect(daemon.bus.queueIds("kimi").filter(id => id === refused.id)).toHaveLength(1);
+}, 20_000);

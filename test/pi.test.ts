@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { processTable } from "../src/hub/child-process.ts";
 import { join } from "node:path";
+import { rosterPiFixture } from "./fakes/pi-roster-tui.ts";
+import { Bus } from "../src/hub/bus.ts";
 import { PiPeer, type PiExit } from "../src/adapters/pi.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { newEnvelope, type EnvelopeOpts } from "../src/hub/envelope.ts";
@@ -564,3 +566,272 @@ for (const denied of [false, true]) test(`an old normal budget reply cannot chan
     await post("/event", { type: "agent_settled", generation: 2 });
   } finally { release(); await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 }, 30_000);
+
+
+
+test("Pi roster detach preserves its native owner and bridge while fencing hub admission", async () => {
+  let calls = 0;
+  const f = await rosterPiFixture(async () => { calls++; return "ok"; });
+  const messages: string[] = [], receipts: any[] = [];
+  f.peer.onMessage = (text) => messages.push(text); f.peer.onDelivery = (receipt) => receipts.push(receipt);
+  try {
+    const delivering = f.peer.deliver([newEnvelope("user", "original", { to: ["pi"] })], "original-delivery");
+    const prompt = await f.next(); expect(prompt.type).toBe("prompt"); await f.ack(prompt); await delivering;
+    await f.post("/event", { type: "agent_start", generation: 1 });
+    const metadata = f.peer.recoveryMetadata();
+    await f.peer.detachForRoster(); await f.peer.detachForRoster();
+    expect(f.peer.state).toBe("offline"); expect(f.peer.acceptingTools).toBe(false);
+    expect(currentSignature(f.owner.pid)).toBe((f.peer as any).ownerSignature);
+    expect(f.peer.tuiLaunch).toBe(f.launch); expect(f.peer.recoveryMetadata()).toEqual(metadata);
+    expect(receipts.filter((r) => r.state === "needs_review")).toEqual([{ id: "original-delivery", state: "needs_review", reason: "Pi removed from roster before settlement; inspect the native session before retrying" }]);
+    const offTool = await f.post("/tool", { name: "write", toolCallId: "off", sessionId: f.sessionId, generation: 1 });
+    expect(offTool.status).toBe(409); expect((await offTool.json() as any).text).toContain("off roster");
+    const offBudget = await f.post("/budget", { unit: "model_calls", generation: 1 });
+    expect(offBudget.status).toBe(409); expect((await offBudget.json() as any).error).toContain("off roster");
+    await expect(f.peer.deliver([newEnvelope("user", "off")])).rejects.toThrow("not ready");
+    await expect(f.peer.steer([newEnvelope("user", "off", { priority: "important" })])).rejects.toThrow("must queue");
+    await f.post("/event", { type: "agent_end", generation: 1, text: "off output" });
+    await f.post("/event", { type: "agent_settled", generation: 1, text: "off output" });
+    await f.post("/event", { type: "agent_start", generation: 2 });
+    expect(f.peer.state).toBe("offline"); expect(messages).toEqual([]); expect(calls).toBe(0); expect(f.budgetCalls()).toBe(0);
+    expect((f.peer as any).ownerMonitor).toBeDefined();
+    await f.resume(true); expect(f.peer.state).toBe("idle"); expect(f.peer.acceptingTools).toBe(true);
+    await f.peer.resumeFromRoster(); // unchanged membership is a no-op, with no snapshot command queued
+    expect((f.peer as any).tuiQueue).toEqual([]); expect(f.peer.tuiLaunch).toBe(f.launch);
+  } finally { await f.cleanup(); }
+});
+
+test("Pi roster return keeps a busy personal turn unowned and drains queued work once after settlement", async () => {
+  const f = await rosterPiFixture();
+  let rostered = true;
+  const bus = new Bus({ batchMs: 0, rostered: () => rostered });
+  const messages: string[] = [];
+  bus.add(f.peer); bus.pause("pi");
+  try {
+    rostered = false; await f.peer.detachForRoster(); bus.rosterChanged("pi");
+    // Work already queued before membership changed stays queued under the independent pause.
+    rostered = true; bus.publish(newEnvelope("user", "queued once", { to: ["pi"] })); rostered = false;
+    rostered = true; await f.resume(false); bus.rosterChanged("pi");
+    expect(f.peer.state).toBe("busy"); expect(bus.stateOf("pi")).toBe("paused");
+    expect(f.peer.acceptingTools).toBe(false); expect((f.peer as any).timer).toBeUndefined();
+    expect((f.peer as any).tuiQueue).toEqual([]);
+    f.peer.onMessage = (body) => messages.push(body);
+    bus.resume("pi"); expect((f.peer as any).tuiQueue).toEqual([]);
+    await f.post("/event", { type: "agent_end", text: "personal output" });
+    await f.post("/event", { type: "agent_settled", text: "personal output" });
+    expect(messages).toEqual([]);
+    const prompt = await f.next(); expect(prompt.type).toBe("prompt"); expect(prompt.message).toContain("queued once");
+    await f.ack(prompt);
+    await f.post("/event", { type: "agent_start", generation: 1 });
+    await f.post("/event", { type: "agent_settled", generation: 1, text: "hub answer" });
+    expect(messages).toEqual(["hub answer"]); expect(f.peer.state).toBe("idle");
+    expect((f.peer as any).tuiQueue).toEqual([]); expect(f.peer.tuiLaunch).toBe(f.launch);
+  } finally { bus.closeJournal(); await f.cleanup(); }
+});
+
+test("Pi roster return refuses changed snapshots and cannot resurrect a stopped or dead owner", async () => {
+  const f = await rosterPiFixture();
+  try {
+    await f.peer.detachForRoster();
+    const returning = f.peer.resumeFromRoster().catch((error: Error) => error);
+    const command = await f.next(); await f.ack(command, { sessionId: "different", sessionFile: f.sessionFile, idle: true }); const result = await returning; expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toContain("could not verify");
+    expect(f.peer.state).toBe("offline"); expect(f.peer.acceptingTools).toBe(false);
+    f.owner.kill(); await f.owner.exited;
+    const deadReturn = f.peer.resumeFromRoster().catch((error: Error) => error);
+    expect((f.peer as any).tuiQueue).toEqual([]);
+    expect((await deadReturn as Error).message).toContain("no verified live TUI");
+    await f.post("/event", { type: "session_shutdown" });
+    await expect(f.peer.resumeFromRoster()).rejects.toThrow("no verified live TUI");
+    expect(f.peer.state).toBe("offline");
+  } finally { await f.cleanup(); }
+});
+
+test("Pi roster detach fences a pending prompt ACK without shutting down the native owner", async () => {
+  const f = await rosterPiFixture();
+  const receipts: any[] = []; f.peer.onDelivery = (receipt) => receipts.push(receipt);
+  try {
+    const delivery = f.peer.deliver([newEnvelope("user", "pending", { to: ["pi"] })], "pending");
+    const command = await f.next(); expect(command.type).toBe("prompt");
+    await f.peer.detachForRoster(); await delivery;
+    expect((await f.ack(command).catch(() => undefined))?.status).toBe(404);
+    expect(f.peer.state).toBe("offline"); expect(currentSignature(f.owner.pid)).toBe((f.peer as any).ownerSignature);
+    expect(receipts.map((r) => r.state)).toEqual(["needs_review"]);
+    await f.resume(true); expect(f.peer.state).toBe("idle");
+  } finally { await f.cleanup(); }
+});
+
+
+test("Pi roster detach aborts admitted tools before return and fences their approval callbacks", async () => {
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let aborted = false, currentAfter = true;
+  const f = await rosterPiFixture(async (_name, _args, _id, _session, signal, context) => {
+    await new Promise<void>((resolve) => { signal!.addEventListener("abort", () => { aborted = true; resolve(); }, { once: true }); entered(); });
+    currentAfter = context!.isCurrent();
+    context!.onApproval({ source: "expired", answerEpoch: 0, eligibleExpiry: true });
+    context!.onApproval({ source: "expired", answerEpoch: 0, eligibleExpiry: true });
+    return "error: cancelled";
+  });
+  try {
+    await f.post("/event", { type: "agent_start", generation: 1 });
+    const tool = f.post("/tool", { name: "write", toolCallId: "pending-tool", sessionId: f.sessionId, generation: 1 });
+    await started; await f.peer.detachForRoster();
+    expect(aborted).toBe(true); await tool; expect(currentAfter).toBe(false); expect((f.peer as any).activeTools).toBe(0);
+    expect((f.peer as any).approvalStopReason).toBe(""); expect((f.peer as any).tuiQueue).toEqual([]);
+    expect(f.peer.state).toBe("offline"); await f.resume(true); expect(f.peer.state).toBe("idle");
+  } finally { await f.cleanup(); }
+});
+
+test("Pi roster detach fences awaited model selection before native dispatch", async () => {
+  const f = await rosterPiFixture();
+  let entered!: () => void, release!: () => void;
+  const selected = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const receipts: any[] = []; f.peer.onDelivery = (receipt) => receipts.push(receipt);
+  (f.peer as any).opts.selectModel = async () => { entered(); await blocked; return undefined; };
+  try {
+    const delivering = f.peer.deliver([newEnvelope("user", "not dispatched")], "selection");
+    await selected; await f.peer.detachForRoster(); release();
+    // The consuming HTTP bridge is a barrier after the awaited selection continuation.
+    await f.post("/event", { type: "activity" });
+    expect((f.peer as any).tuiQueue).toEqual([]); expect(f.peer.state).toBe("offline");
+    await delivering;
+    expect(receipts.map((r) => r.state)).toEqual(["failed_safe"]); expect(currentSignature(f.owner.pid)).toBe((f.peer as any).ownerSignature);
+  } finally { release(); await f.cleanup(); }
+});
+
+test("Pi roster return snapshot cannot undo a concurrent native shutdown", async () => {
+  const f = await rosterPiFixture();
+  try {
+    await f.peer.detachForRoster();
+    const returning = f.peer.resumeFromRoster().catch((error: Error) => error);
+    const command = await f.next();
+    await f.post("/event", { type: "session_shutdown" });
+    await f.ack(command, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true });
+    const result = await returning; expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toContain("could not verify");
+    expect(f.peer.state).toBe("offline"); expect(f.peer.acceptingTools).toBe(false);
+  } finally { await f.cleanup(); }
+});
+
+test("Pi roster detach bounds uncooperative tool settlement while retaining the verified native owner", async () => {
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const f = await rosterPiFixture(async () => { entered(); await blocked; return "late result"; });
+  const originalTimeout = globalThis.setTimeout;
+  let expire!: () => void;
+  try {
+    await f.post("/event", { type: "agent_start", generation: 1 });
+    const tool = f.post("/tool", { name: "write", toolCallId: "uncooperative", sessionId: f.sessionId, generation: 1 });
+    await started;
+    globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+      if (delay === 100) { expire = () => callback(...args); return originalTimeout(() => {}, 60_000); }
+      return originalTimeout(callback, delay, ...args);
+    }) as typeof setTimeout;
+    const detached = f.peer.detachForRoster().catch((error: Error) => error);
+    globalThis.setTimeout = originalTimeout;
+    expect(typeof expire).toBe("function"); expire();
+    expect((await detached as Error).message).toContain("did not settle after roster detach");
+    expect(f.peer.state).toBe("offline"); expect(currentSignature(f.owner.pid)).toBe((f.peer as any).ownerSignature);
+    expect(f.peer.tuiLaunch).toBe(f.launch); expect(f.peer.acceptingTools).toBe(false);
+    release(); await tool; expect(f.peer.state).toBe("offline");
+    await f.resume(true); expect(f.peer.state).toBe("idle");
+  } finally { globalThis.setTimeout = originalTimeout; release(); await f.cleanup(); }
+});
+
+for (const namedSession of [false, true]) test(`Pi roster return preserves idle user shell generation after detached native activity (${namedSession ? "named session" : "shipped unnamed event"}) (#315)`, async () => {
+  let calls = 0, userShell = false;
+  const f = await rosterPiFixture(async (_name, _args, _id, _session, _signal, context) => { calls++; userShell = context!.userBash; return { text: "shell result", exitCode: 0 }; });
+  const messages: string[] = []; f.peer.onMessage = text => messages.push(text);
+  try {
+    await f.peer.detachForRoster();
+    await f.post("/event", { type: "agent_start", generation: 1, ...(namedSession ? { sessionId: f.sessionId } : {}) });
+    expect((await f.post("/budget", { unit: "model_calls", generation: 1 })).status).toBe(409);
+    await f.post("/event", { type: "agent_settled", generation: 1, text: "detached personal output", ...(namedSession ? { sessionId: f.sessionId } : {}) });
+    expect(f.peer.state).toBe("offline"); expect(messages).toEqual([]);
+    await f.resume(true);
+    const admission = await f.post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 1 });
+    expect(admission.status).toBe(200);
+    const budget = await admission.json() as any; expect(typeof budget.reservation).toBe("string");
+    const tool = await f.post("/tool", { name: "bash", args: { command: "fixture shell" }, toolCallId: "returned-shell", purpose: "idle_user_bash", generation: 1, sessionId: f.sessionId, reservation: budget.reservation });
+    expect(tool.status).toBe(200); expect(await tool.json()).toMatchObject({ text: "shell result", exitCode: 0, failed: false });
+    expect(calls).toBe(1); expect(userShell).toBe(true); expect(messages).toEqual([]); expect(f.peer.state).toBe("idle");
+  } finally { await f.cleanup(); }
+});
+
+
+for (const busyReturn of [false, true]) test(`Pi ${busyReturn ? "unowned busy return" : "detached owner"} retains only verified monotonic native generation (#315)`, async () => {
+  const f = await rosterPiFixture();
+  const messages: string[] = [], tokens: number[] = [], receipts: any[] = [];
+  f.peer.onMessage = text => messages.push(text); f.peer.onDelivery = receipt => receipts.push(receipt);
+  (f.peer as any).opts.onTokens = (count: number) => tokens.push(count);
+  try {
+    await f.peer.detachForRoster();
+    if (busyReturn) await f.resume(false);
+    await f.post("/event", { type: "agent_start", generation: 3, sessionId: f.sessionId });
+    expect((f.peer as any).budgetGeneration).toBe(3);
+    for (const event of [
+      { generation: 100, sessionId: "wrong-session" }, { generation: 100, sessionId: null },
+      { generation: 3.5 }, { generation: "4" }, { generation: Number.MAX_SAFE_INTEGER + 1 },
+      { generation: -1 }, { generation: 2 }, { generation: 3 },
+    ]) {
+      await f.post("/event", { type: "agent_start", ...event });
+      expect((f.peer as any).budgetGeneration).toBe(3);
+    }
+    await f.post("/event", { type: "tokens", id: "personal", tokens: 99 });
+    await f.post("/event", { type: "activity" });
+    await f.post("/event", { type: "agent_end", generation: 3, text: "personal output" });
+    if (busyReturn) {
+      for (const generation of [2, 3.5, "3", Number.MAX_SAFE_INTEGER + 1, null]) {
+        await f.post("/event", { type: "agent_settled", generation }); expect(f.peer.state).toBe("busy");
+      }
+      await f.post("/event", { type: "agent_settled", generation: 3, sessionId: "wrong-session" }); expect(f.peer.state).toBe("busy");
+    }
+    expect(f.peer.state).toBe(busyReturn ? "busy" : "offline");
+    expect(messages).toEqual([]); expect(tokens).toEqual([]); expect(receipts).toEqual([]);
+    expect((f.peer as any).tuiQueue).toEqual([]); expect(f.budgetCalls()).toBe(0);
+    expect((f.peer as any).timer).toBeUndefined();
+    if (busyReturn) await f.post("/event", { type: "agent_settled", generation: 3 });
+    else await f.resume(true);
+    expect(f.peer.state).toBe("idle");
+    const admission = await f.post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 3 }); expect(admission.status).toBe(200);
+  } finally { await f.cleanup(); }
+});
+
+test("a lost detached Pi owner cannot advance the remembered native generation (#315)", async () => {
+  const f = await rosterPiFixture();
+  try {
+    await f.peer.detachForRoster();
+    await f.post("/event", { type: "agent_start", generation: 1 }); expect((f.peer as any).budgetGeneration).toBe(1);
+    f.owner.kill(); await f.owner.exited;
+    await f.post("/event", { type: "agent_start", generation: 2, sessionId: f.sessionId });
+    expect((f.peer as any).budgetGeneration).toBe(1); expect(f.peer.state).toBe("offline");
+  } finally { await f.cleanup(); }
+});
+
+
+for (const busyReturn of [false, true]) test(`Pi personal activity invalidates cached ID-only empty resume (${busyReturn ? "unowned return" : "detached"}) (#315)`, async () => {
+  const f = await rosterPiFixture();
+  try {
+    const capture = f.peer.captureResume();
+    const snapshot = await f.next(); expect(snapshot.type).toBe("get_session_state");
+    await f.ack(snapshot, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true, empty: true });
+    expect(await capture).toMatchObject({ sessionId: f.sessionId });
+    expect(f.peer.pendingResume).toEqual({ sessionId: f.sessionId });
+    await f.peer.detachForRoster();
+    if (busyReturn) await f.resume(false);
+    await f.post("/event", { type: "agent_start", generation: 1, sessionId: f.sessionId });
+    if (busyReturn) await f.post("/event", { type: "agent_settled", generation: 1 });
+    else await f.resume(true);
+    expect(f.peer.state).toBe("idle");
+    // With no persisted file or configured restoration target, personal activity revokes the cached shortcut.
+    expect(f.peer.pendingResume).toEqual({ sessionId: undefined, sessionFile: undefined });
+    const freshCapture = f.peer.captureResume().catch((error: Error) => error);
+    const reread = await f.next(); expect(reread.type).toBe("get_session_state");
+    await f.ack(reread, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: true, empty: true });
+    const result = await freshCapture; expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toContain("session history is not persisted; refusing to recreate it");
+  } finally { await f.cleanup(); }
+});

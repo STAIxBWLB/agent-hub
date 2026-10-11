@@ -996,6 +996,75 @@ permission_mode (peer/from/to) with no tool arguments under events schema 1.
 The optional control requests preserve PROTOCOL; an older hub answers unknown
 and the CLI advises upgrading.
 
+## Change the participating peers while the hub runs
+
+`ahub roster` lists every known peer, whether it participates, its start mode,
+current state, queued messages and open tasks. `ahub roster --json` is the same
+ordered catalog view for scripts. Status and the console keep their existing lazy
+rows; an off-roster peer is shown only while it has retained messages, an uncertain
+delivery or open work, with the words `off roster`.
+
+```bash
+ahub roster
+ahub roster remove kimi --yes         # print the preview, confirm and remove
+ahub roster remove kimi --yes --now   # stop a busy owned runtime before handing work over
+ahub roster add kimi
+ahub settings set roster.kimi false --preview
+ahub settings set roster.kimi false --yes
+```
+
+These are person's commands and use the same settings preview, write and undo as
+the dashboard's Roster settings. An ordinary dashboard session may remove a peer;
+adding requires `ahub ui --settings` or a person's terminal. Removal requires the
+peer id as confirmation. Without `--now`, a busy peer is refused. A conductor
+holder cannot be removed until its role is moved.
+
+Removal fences membership, stops hub-owned runtimes or detaches sessions in a
+person's terminal, and then hands work over. The removal preview and result name
+the peer whose existing work the person must stop in that retained terminal;
+the preview names the roles offered and those with no eligible replacement; the
+result lists the saved owner/reviewer moves and every assignment that stays. No stop notice is forced into
+a detached session and nothing bypasses the journal. Codex 0.146.0
+exits its TUI on the close-4000 disconnect and does not reconnect automatically.
+Its app-server and proxy remain available; after `ahub roster add codex`, run
+`ahub codex resume <thread-id>` (the full id is printed in the preview, removal
+result and return) or `ahub codex resume` to select its previous native session. Removal never closes
+the terminal window itself. The Claude channel retries and reconnects on return.
+Pi return retains the verified owner's monotonic generation even after refused
+native activity while detached; it shares no personal output and invalidates any
+cached empty-session resume proof after that activity.
+It leaves queued and held deliveries, and existing manual or budget pauses,
+untouched. The queue listing names `off roster` as the membership hold. Returning
+and starting the peer makes retained queued messages available again; held
+uncertain work still needs the existing queue resolution command. A detached
+personal Pi TUI with a live owner still blocks controlled recovery as `pi is not
+settled`; end that retained TUI before restart/upgrade. The hub does not declare
+a live native owner settled or close it implicitly during preparation. Open owner and
+reviewer work, including ownership of `in_review` tasks, is offered through the
+existing reassignment path; a transferred review keeps its review state. If nobody can
+take it, its assignment stays and a notice names the person's next action. Task
+text in a notice uses its public title, so a private task remains a stub. A stop
+that is unconfirmed leaves the roster saved and reports that permission reset and
+handoff were not attempted; reapply the removal after checking the runtime.
+
+A hub task, verdict, review or budget message addressed to an off-roster peer
+stays in its retained queue, with one public notice to the person. Task operations
+use the current owner and reviewer after reassignment. A mixed addressed audience
+receives the on-roster copies now and retains the off-roster copies; the sender
+sees the existing notice field (or a decision note for native answers). Broadcasts
+exclude off-roster peers; a person or agent addressing only removed peers is
+refused before publishing. The dashboard roster undo has its own peer-id
+confirmation and optional active-turn stop checkbox.
+
+Without a roster setting, participation keeps the previous defaults. An explicit
+`roster.pi` overrides `pi.enabled`; otherwise that legacy switch continues to
+control Pi starts. External peer ids remain governed by their existing admission
+rules. A runtime permission override is cleared on removal and the configured
+default governs the next attachment. Config file edits outside the authorized
+roster setting do not change running participation: they take effect at the next
+hub start. The tracked config can provide defaults and config.local.json can
+override them.
+
 ## Settings from the dashboard and the terminal
 
 The dashboard's Settings section and `ahub settings` show and change the same

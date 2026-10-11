@@ -801,3 +801,58 @@ test("another active native turn cannot postpone an ended turn's durable steer b
     expect(steer.timers[0]!.cleared).toBe(true);
   } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
+
+test("roster detach keeps the proxy available, fences native attachment, and clears the hub runtime mode (#315)", async () => {
+  let on = true;
+  const { peer, tui, seen } = await setup(undefined, undefined, { admitAttach: () => on, permissionMode: "ask-when-needed" });
+  await until(() => seen.some(message => message.id === 1));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+  expect(peer.getPermissionMode()).toBe("ask-when-needed");
+  const url = peer.proxyUrl, detached = new Promise<number>(resolve => { tui.onclose = event => resolve(event.code); });
+  on = false; peer.detachForRoster();
+  expect(await detached).toBe(4000); expect(peer.state).toBe("offline"); expect(peer.getPermissionMode()).toBe("ask"); expect(peer.proxyUrl).toBe(url);
+  const denied = new WebSocket(url), refused = new Promise<number>(resolve => { denied.onclose = event => resolve(event.code); }); cleanup.push(() => denied.close());
+  expect(await refused).toBe(4000); expect(peer.state).toBe("offline");
+  on = true;
+  const returned = new WebSocket(url), replies: any[] = []; returned.onmessage = event => replies.push(JSON.parse(String(event.data))); cleanup.push(() => returned.close());
+  await new Promise<void>(resolve => { returned.onopen = () => resolve(); });
+  returned.send(JSON.stringify({ id: 3, method: "initialize", params: { clientInfo: { name: "returned-native-tui" } } })); await until(() => replies.some(message => message.id === 3));
+  returned.send(JSON.stringify({ id: 4, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+  expect(replies.find(message => message.id === 4).result.thread.id).toBe("th1"); expect(peer.getPermissionMode()).toBe("ask");
+});
+
+test("an admitted Codex proxy socket rechecks live roster before forwarding each request (#315)", async () => {
+  let onRoster = true;
+  const forwarded: string[] = [];
+  let result!: (outcome: { kind: "forwarded" } | { kind: "closed"; code: number; reason: string }) => void;
+  const outcome = new Promise<{ kind: "forwarded" } | { kind: "closed"; code: number; reason: string }>((resolve) => { result = resolve; });
+  const native = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response("native fixture"); },
+    websocket: { message(socket, data) {
+      const message = JSON.parse(String(data)); forwarded.push(message.method);
+      if (message.method === "initialize") socket.send(JSON.stringify({ id: message.id, result: { userAgent: "codex/0.154.0" } }));
+      else if (message.id === 2) socket.send(JSON.stringify({ id: message.id, result: { thread: { id: "roster-thread" } } }));
+      else result({ kind: "forwarded" });
+    } },
+  });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${native.port}`, cwd: process.cwd(), admitAttach: () => onRoster });
+  let tui: WebSocket | undefined;
+  try {
+    await peer.start(); tui = new WebSocket(peer.proxyUrl);
+    await new Promise<void>((resolve) => { tui!.onopen = () => resolve(); });
+    const initialized = new Promise<void>((resolve) => { tui!.onmessage = event => { if (JSON.parse(String(event.data)).id === 1) resolve(); }; });
+    tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "already-admitted-tui" } } }));
+    await initialized;
+    const adopted = new Promise<void>((resolve) => { tui!.onmessage = event => { if (JSON.parse(String(event.data)).id === 2) resolve(); }; });
+    tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await adopted;
+    expect(peer.proxyAttached).toBe(true); expect(tui.readyState).toBe(WebSocket.OPEN);
+    expect(forwarded).toEqual(["initialize", "thread/start"]);
+    tui.onclose = event => result({ kind: "closed", code: event.code, reason: event.reason });
+    // Keep the admitted socket open: do not call detachForRoster or make a new connection.
+    onRoster = false;
+    tui.send(JSON.stringify({ id: 3, method: "thread/start", params: {} }));
+    expect(await outcome).toEqual({ kind: "closed", code: 4000, reason: "codex is off roster" });
+    expect(forwarded).toEqual(["initialize", "thread/start"]);
+    expect(peer.state).toBe("offline");
+  } finally { tui?.close(); await peer.stop(); native.stop(true); }
+});

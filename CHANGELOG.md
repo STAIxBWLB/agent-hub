@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A person can change the live peer roster through settings, the dashboard or ahub roster: removed peers stop receiving new work while their queued messages, uncertain deliveries and pauses remain available, and all open owner/reviewer roles are offered to another eligible peer; explicit off-roster messages are retained with a public notice and removal reports both moves and work that stays (#315).
+
 ## 0.12.23
 
 - Console panels: Left and Right move between the five tabs with the digit keys' guards and resets, wrapping at both ends (a read holding only arrow sequences is that many key presses, never a paste), and the Events tab colours each row's header through the stream's own tokenizer on the same tab-flattened header, so an event reads the same in both places (body lines and command output stay plain; with colour off the panel is byte-identical); the tail no longer repeats an unchanged context reading: a context line prints when the printed percentage, freshness, source or known-ness changes for that peer, not at every report (#309).

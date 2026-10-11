@@ -14,6 +14,8 @@ export interface CodexOptions {
   appPort: number;
   /** Attach to an already running app-server instead of spawning one (tests). */
   upstreamUrl?: string;
+  /** Live project membership. The proxy remains available for the same native terminal's return. */
+  admitAttach?: () => boolean;
   bin?: string;
   /** Extra `codex app-server` arguments: the `-c mcp_servers.agent-hub.*` overrides that give Codex the hub's task tools. */
   extraArgs?: string[];
@@ -135,6 +137,7 @@ export class CodexPeer extends BasePeer {
       },
       websocket: {
         open: (tui) => {
+          if (this.opts.admitAttach?.() === false) { tui.close(4000, "codex is off roster; retry when a person adds it"); return; }
           if (this.claimedTui) {
             tui.close(1013, "codex TUI already attached to this hub");
             return;
@@ -142,6 +145,7 @@ export class CodexPeer extends BasePeer {
           this.attach(tui, upstream);
         },
         message: (tui, data) => {
+          if (this.opts.admitAttach?.() === false) { tui.close(4000, "codex is off roster"); return; }
           if (tui.data?.up) this.fromTui(tui.data, String(data));
         },
         close: (tui) => {
@@ -401,6 +405,13 @@ export class CodexPeer extends BasePeer {
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.forgetTurn();
     this.setState("offline");
+  }
+  detachForRoster(mode: PermissionMode = "ask"): void {
+    this.permissionMode = mode;
+    const link = this.claimedTui;
+    if (!link) return;
+    link.tui.close(4000, "codex is off roster; retry when a person adds it");
+    this.detach(link);
   }
 
   /** Nothing of an interrupted turn may address a later answer: a TUI that comes back starts its own. */

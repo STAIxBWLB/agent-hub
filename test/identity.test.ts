@@ -53,3 +53,8 @@ test("audit labels and human-action hints contain command names only", () => {
   for (const args of [[], ["pi"], ["pi", "never-ask", "--yes"], ["pi", "never-ask", "--yes", "--as-user"]]) expect(classifyPeerCommand("permission", args)).toBe("console");
   expect(cliCommandLabel("permission", ["private-peer"])).toBe("permission");
 });
+
+test("the roster and its settings remain human-only for an agent identity (#315)", () => {
+  for (const args of [[], ["--json"], ["add", "kimi"], ["remove", "kimi", "--yes", "--now"]]) expect(classifyPeerCommand("roster", args)).toBe("console");
+  for (const args of [["set", "roster.kimi", "true"], ["set", "roster.kimi", "false", "--yes"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
+});

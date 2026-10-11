@@ -253,6 +253,8 @@ export function assign(
   routing: Routing,
   opts: {
     exclude?: PeerId[];
+    /** Live membership supplied as data; routing never reads the roster store. */
+    offRoster?: PeerId[];
     candidates?: PeerId[];
     notReviewer?: PeerId;
     waitsFor?: number[];
@@ -284,6 +286,7 @@ export function assign(
   const pii = task.signals.includes("pii") && routing.constraints.pii === "local_only";
 
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
+    if (opts.offRoster?.includes(peer)) return "off roster";
     if (!Object.hasOwn(states, peer)) return "not attached";
     if (opts.exclude?.includes(peer)) return "excluded (declined or replaced)";
     if (states[peer] === "offline") return "offline";

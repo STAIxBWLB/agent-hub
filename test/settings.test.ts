@@ -447,6 +447,12 @@ test("AC7: the Settings section renders every row from the registry with its sou
   expect(scripts).toHaveLength(2);
   for (const source of scripts) expect(() => new Script(source)).not.toThrow();
   expect(html.match(/<section aria-labelledby="settings-title">/g)).toHaveLength(1);
+  // The new roster group has its own removal confirmation, preview and active-turn control.
+  context.settings = { rows: [{ key: "roster.kimi", group: "Roster", label: "kimi: participates", type: "boolean", file: "config.local.json", applies: "live", risk: "raises", floor: false, value: true, source: "default" }] };
+  runInNewContext(`${code}; renderSettings(settings)`, context);
+  expect(root.text()).toContain("Roster (1)");
+  expect(root.text()).toContain("roster.kimi / from default / applies at once");
+  for (const label of ["Confirm removal of kimi", "Stop an active turn now", "Preview kimi: participates"]) expect(root.all().find(n => n.attrs["aria-label"] === label)).toBeDefined();
 });
 
 test("checkSettingValue and settingRefusal: the pure rules behind every surface", () => {
@@ -635,3 +641,61 @@ test("review of #290, round 2: with MLX off and no project routing.toml, routing
   expect(parseOverlay(text(rig.file(OVERLAY_FILE))!)).toEqual({ stay_switch: "shadow", classes: { implement: { peers: ["kimi", "codex"], pi_backend: "dgx" } } });
   expect((await rig.client.request({ t: "settings_undo" })).ok).toBe(true); // undo passes the same check
 }, 20_000);
+
+test("every catalog roster setting is a live boolean with the existing raising authority rule (#315)", () => {
+  for (const peer of ["claude", "codex", "kimi", "pi", "local"]) {
+    const setting = def(`roster.${peer}`);
+    expect(setting).toMatchObject({ group: "Roster", type: "boolean", store: "config", path: ["roster", peer], applies: "live", risk: "raises", floor: false });
+    expect(settingRefusal(setting, false, "ordinary")).toBeUndefined();
+    expect(settingRefusal(setting, true, "ordinary")).toContain("settings session");
+    for (const authority of ["settings", "terminal"] as const) for (const value of [true, false]) expect(settingRefusal(setting, value, authority)).toBeUndefined();
+  }
+});
+
+test("roster settings undo sends typed confirmation and now, and renders live retained-work metadata (#315)", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const code = /const SETTING_GROUPS = [\s\S]*?\nfunction render\(snapshot\) \{/.exec(html)![0].replace(/\nfunction render\(snapshot\) \{$/, "");
+  class Node {
+    children: Node[] = []; attrs: Record<string, string> = {}; listeners: Record<string, () => void> = {}; dataset: Record<string, string> = {};
+    value = ""; checked = false; hidden = false; disabled = false; open = false; htmlFor = ""; id = ""; type = ""; placeholder = "";
+    constructor(public tag: string, public textContent = "", public className = "") {}
+    append(...nodes: Node[]) { this.children.push(...nodes); }
+    replaceChildren(...nodes: Node[]) { this.children = nodes; }
+    setAttribute(name: string, value: string) { this.attrs[name] = value; }
+    addEventListener(name: string, callback: () => void) { this.listeners[name] = callback; }
+    all(): Node[] { return [this, ...this.children.flatMap(child => child.all())]; }
+    text(): string { return this.all().map(node => node.textContent).join("\n"); }
+  }
+  const target = new Node("div"), session = new Node("span"), sent: { payload: Record<string, unknown>; control: Node }[] = [];
+  const row: SettingRow = { key: "roster.kimi", group: "Roster", label: "kimi: participates", type: "boolean", file: "config.local.json", applies: "live", risk: "raises", floor: false, value: true, source: "config.local.json" };
+  const settings = { rows: [row], undo: "roster.kimi", sessionUntil: Date.now() + 60_000 };
+  const roster = [{ peer: "kimi", on: true, startMode: "headless", state: "busy", queued: 3, tasks: 2 }];
+  let frame = "";
+  const context: Record<string, any> = {
+    $: (id: string) => id === "settings-session" ? session : target, managerMode: false, snapshotValid: true, stopped: false, Date,
+    el: (tag: string, text?: string, cls?: string) => new Node(tag, text === undefined ? "" : String(text), cls ?? ""),
+    badge: (text: string, cls = "") => new Node("span", text, cls),
+    empty: (node: Node, text: string) => node.append(new Node("p", text)),
+    update: (_id: string, data: unknown, render: (node: Node) => void) => { const signature = JSON.stringify(data); if (signature !== frame) { frame = signature; target.replaceChildren(); render(target); } },
+    button: (text: string, payload: Record<string, unknown>) => { const node = new Node("button", text); node.listeners.click = () => { sent.push({ payload, control: node }); }; return node; },
+    action: (payload: Record<string, unknown>, control: Node) => { sent.push({ payload, control }); return Promise.resolve(true); },
+    settings, roster,
+  };
+  runInNewContext(`${code}; globalThis.again = (nextRoster) => renderSettings(settings, nextRoster); renderSettings(settings, roster)`, context);
+  expect(target.text()).toContain("Last settings write: roster.kimi");
+  expect(target.text()).toContain("busy; 3 queued; 2 open tasks");
+  const confirmation = target.all().find(node => node.attrs["aria-label"] === "Confirm roster undo for kimi")!;
+  const force = target.all().find(node => node.attrs["aria-label"] === "Stop an active turn now for undo")!;
+  const undo = target.all().find(node => node.tag === "button" && node.textContent === "Undo last write")!;
+  expect(confirmation.type).toBe("text"); expect(force.type).toBe("checkbox"); expect(undo.dataset.mutation).toBe("project");
+  confirmation.value = " kimi "; force.checked = true; undo.listeners.click!();
+  expect(sent[0]!.payload).toEqual({ action: "setting_undo", confirm: "kimi", now: true }); expect(sent[0]!.control).toBe(undo);
+  force.checked = false; undo.listeners.click!();
+  expect(sent[1]!.payload).toEqual({ action: "setting_undo", confirm: "kimi", now: false });
+  // Membership counters change independently of settings rows; their own row signature must follow them.
+  context.again([{ peer: "kimi", on: false, startMode: "headless", state: "offline", queued: 4, tasks: 1 }]);
+  expect(target.text()).toContain("offline; 4 queued; 1 open tasks");
+  expect(target.text()).not.toContain("busy; 3 queued; 2 open tasks");
+  expect(target.all().find(node => node.attrs["aria-label"] === "Confirm roster undo for kimi")).toBe(confirmation);
+  expect(confirmation.value).toBe(" kimi ");
+});

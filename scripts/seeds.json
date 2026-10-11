@@ -48,6 +48,342 @@
       "replacement": "const state: JournalDeliveryState = receipt.state === \"accepted\" ? \"accepted\" : receipt.state === \"completed\" ? \"completed\" : receipt.state === \"failed_safe\" ? \"failed\" : \"completed\";",
       "testFile": "test/durable-invariants.test.ts",
       "testName": "an uncertain native receipt retains needs_review instead of fabricating completion"
+    },
+    {
+      "id": "roster-c-cli",
+      "file": "src/cli/main.ts",
+      "search": "  roster: async () => {",
+      "replacement": "  rosterDisabled: async () => {",
+      "testFile": "test/roster.test.ts",
+      "testName": "the real roster CLI uses settings for live changes, stable JSON, and refuses agent shells (#315)"
+    },
+    {
+      "id": "roster-s-registry",
+      "file": "src/hub/settings.ts",
+      "search": "group: \"Roster\", label: `${peer}: participates`",
+      "replacement": "group: \"Start\", label: `${peer}: participates`",
+      "testFile": "test/settings.test.ts",
+      "testName": "every catalog roster setting is a live boolean with the existing raising authority rule (#315)"
+    },
+    {
+      "id": "roster-o-retained",
+      "file": "src/cli/console-state.ts",
+      "search": "return [id(row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),",
+      "replacement": "return [id(row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.state, stateTone(row.state)),",
+      "testFile": "test/output.test.ts",
+      "testName": "retained off-roster status and queue rows say why their work is held (#315)"
+    },
+    {
+      "id": "roster-d-membership",
+      "file": "src/hub/daemon.ts",
+      "search": "new Bus({ rostered: membershipAllowed,",
+      "replacement": "new Bus({ rostered: () => true,",
+      "testFile": "test/roster.test.ts",
+      "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
+    },
+    {
+      "id": "roster-d-start",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (!membershipAllowed(peer)) return Promise.resolve({ ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` });\n",
+      "replacement": "// seeded guard removed\n",
+      "testFile": "test/roster.test.ts",
+      "testName": "busy owned ACP removal is refused until --now stops it, and a conductor holder is never removed (#315)"
+    },
+    {
+      "id": "roster-d-confirm",
+      "file": "src/hub/daemon.ts",
+      "search": "        if (confirm !== peer) return { ok: false, error: `removing ${peer} needs its peer id as confirmation; preview ${def.key} first` };\n",
+      "replacement": "// seeded guard removed\n",
+      "testFile": "test/roster.test.ts",
+      "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
+    },
+    {
+      "id": "roster-d-busy",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (owner?.state === \"busy\" && !now) return `${peer} is in a turn; retry when it is idle, or pass --now`;\n",
+      "replacement": "// seeded guard removed\n",
+      "testFile": "test/roster.test.ts",
+      "testName": "busy owned ACP removal is refused until --now stops it, and a conductor holder is never removed (#315)"
+    },
+    {
+      "id": "roster-d-conductor",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (conductorPeer(config.roles) === peer) return `${peer} holds the conductor role; move the role before removing it`;\n",
+      "replacement": "// seeded guard removed\n",
+      "testFile": "test/roster.test.ts",
+      "testName": "busy owned ACP removal is refused until --now stops it, and a conductor holder is never removed (#315)"
+    },
+    {
+      "id": "roster-d-exact-key",
+      "file": "src/hub/daemon.ts",
+      "search": "      config.roster = next;",
+      "replacement": "      config.roster = storedConfig()!.roster;",
+      "testFile": "test/roster.test.ts",
+      "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
+    },
+    {
+      "id": "roster-d-permission",
+      "file": "src/hub/daemon.ts",
+      "search": "        permissionModes.set(peer, mode === \"never-ask\" ? \"ask\" : mode);",
+      "replacement": "        // negative control: retained runtime override",
+      "testFile": "test/roster.test.ts",
+      "testName": "removal clears an ACP runtime permission override and return takes the configured default (#315)"
+    },
+    {
+      "id": "roster-d-peer-hello",
+      "file": "src/hub/daemon.ts",
+      "search": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (!membershipAllowed(c.peer)) return sock.close(4000, \"peer is off roster; retry when a person adds it\");",
+      "replacement": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");",
+      "testFile": "test/roster.test.ts",
+      "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
+    },
+    {
+      "id": "roster-d-send",
+      "file": "src/hub/daemon.ts",
+      "search": "        if (offRoster.length && offRoster.length === new Set(env.to?.filter(id => id !== env.from)).size) return void reply({ t: \"sent\", ok: false, error: `off roster: ${offRoster.join(\", \")}` });",
+      "replacement": "        // negative control: all-off send falsely confirmed",
+      "testFile": "test/roster.test.ts",
+      "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
+    },
+    {
+      "id": "roster-s-authority",
+      "file": "src/hub/settings.ts",
+      "search": "  if (def.risk === \"safe\" || authority !== \"ordinary\") return undefined;",
+      "replacement": "  if (def.group === \"Roster\" || def.risk === \"safe\" || authority !== \"ordinary\") return undefined;",
+      "testFile": "test/roster.test.ts",
+      "testName": "roster writes use the existing human settings fence and dashboard authority (#315)"
+    },
+    {
+      "id": "roster-b-sender",
+      "file": "src/hub/bus.ts",
+      "search": "      if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;\n",
+      "replacement": "// seeded guard removed\n",
+      "testFile": "test/bus.test.ts",
+      "testName": "a removed native sender cannot publish a late answer or spend admission limits (#315)"
+    },
+    {
+      "id": "roster-r-pi-override",
+      "file": "src/hub/roster.ts",
+      "search": "  return roster[peer] ?? (peer === \"pi\" ? piEnabled : DEFAULT_ON[peer] ?? false);",
+      "replacement": "  return peer === \"pi\" ? piEnabled : roster[peer] ?? DEFAULT_ON[peer] ?? false;",
+      "testFile": "test/roster.test.ts",
+      "testName": "roster validates the closed boolean catalog and explicit Pi membership wins its legacy switch (#315)"
+    },
+    {
+      "id": "roster-r-catalog",
+      "file": "src/hub/roster.ts",
+      "search": "    if (!isKnownPeer(peer)) throw new Error(\"roster contains an unsupported peer\");",
+      "replacement": "    // negative control: unknown key accepted",
+      "testFile": "test/roster.test.ts",
+      "testName": "roster validates the closed boolean catalog and explicit Pi membership wins its legacy switch (#315)"
+    },
+    {
+      "id": "roster-u-roster-group",
+      "file": "src/ui/index.html",
+      "search": "const SETTING_GROUPS = ['Roster', 'Permissions', 'Start', 'Routing', 'Switches']",
+      "replacement": "const SETTING_GROUPS = ['Permissions', 'Start', 'Routing', 'Switches']",
+      "testFile": "test/settings.test.ts",
+      "testName": "AC7: the Settings section renders every row from the registry with its source, apply time and pending restart, and every control has a label"
+    },
+    {
+      "id": "roster-c-mode",
+      "file": "src/adapters/codex-appserver.ts",
+      "search": "    this.permissionMode = mode;\n    const link = this.claimedTui;",
+      "replacement": "    const link = this.claimedTui;",
+      "testFile": "test/codex.test.ts",
+      "testName": "roster detach keeps the proxy available, fences native attachment, and clears the hub runtime mode (#315)"
+    },
+    {
+      "id": "roster-preview-stop-text",
+      "file": "src/hub/daemon.ts",
+      "search": "...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []),",
+      "replacement": "...[], ",
+      "testFile": "test/roster.test.ts",
+      "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
+    },
+    {
+      "id": "roster-result-stop-text",
+      "file": "src/hub/daemon.ts",
+      "search": "...(!after && terminalNotice ? [terminalNotice] : []), ...(after && peer === \"codex\" ? [`Codex 0.146.0 needs a manual return: resume the previous native session with ${codexResumeCommand()}.`] : []),",
+      "replacement": "...[], ",
+      "testFile": "test/roster.test.ts",
+      "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
+    },
+    {
+      "id": "roster-result-task-moves",
+      "file": "src/hub/daemon.ts",
+      "search": "handoff = await tasks.reassignForRoster(peer);",
+      "replacement": "await tasks.reassignForRoster(peer);",
+      "testFile": "test/roster.test.ts",
+      "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
+    },
+    {
+      "id": "roster-terminal-safe-settings-preview",
+      "file": "src/cli/main.ts",
+      "search": "for (const line of preview.lines ?? []) console.log(paint([{ text: line }], false));",
+      "replacement": "for (const line of preview.lines ?? []) console.log(line);",
+      "testFile": "test/roster.test.ts",
+      "testName": "the real roster CLI uses settings for live changes, stable JSON, and refuses agent shells (#315)"
+    },
+    {
+      "id": "roster-request-fence",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (c.role !== \"console\" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });",
+      "replacement": "    if (c.role !== \"console\" && c.peer && false) return void reply({ ok: false, error: `${c.peer} is off roster` });",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-conductor-start",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };",
+      "replacement": "    if (false) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-late-attach",
+      "file": "src/hub/daemon.ts",
+      "search": "          if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);",
+      "replacement": "          if (sock.readyState === WebSocket.OPEN) ws.attach(sock);",
+      "testFile": "test/roster.test.ts",
+      "testName": "a late preface completion cannot attach an off-roster claimant (#315)"
+    },
+    {
+      "id": "roster-empty-status",
+      "file": "src/hub/daemon.ts",
+      "search": "    return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
+      "replacement": "    return [...ids];",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-dashboard-send",
+      "file": "src/hub/daemon.ts",
+      "search": "        if (off.length && off.length === targets.length) return { ok: false, error: `off roster: ${off.join(\", \")}` };",
+      "replacement": "        if (false) return { ok: false, error: `off roster: ${off.join(\", \")}` };",
+      "testFile": "test/roster.test.ts",
+      "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
+    },
+    {
+      "id": "roster-proxy-message",
+      "file": "src/adapters/codex-appserver.ts",
+      "search": "if (this.opts.admitAttach?.() === false) { tui.close(4000, \"codex is off roster\"); return; }",
+      "replacement": "if (false) { tui.close(4000, \"codex is off roster\"); return; }",
+      "testFile": "test/codex.test.ts",
+      "testName": "an admitted Codex proxy socket rechecks live roster before forwarding each request (#315)"
+    },
+    {
+      "id": "roster-transaction-serialized",
+      "file": "src/hub/daemon.ts",
+      "search": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false): Promise<Record<string, unknown>> {\n    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "replacement": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false): Promise<Record<string, unknown>> {\n    if (false) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "testFile": "test/roster-pi.test.ts",
+      "testName": "Pi roster verification serializes roster writes and holds dispatch through its idle replay (#315)"
+    },
+    {
+      "id": "roster-transaction-delivery",
+      "file": "src/hub/daemon.ts",
+      "search": "deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer",
+      "replacement": "deliveryHeld: peer => requestedPeerStops.has(peer)",
+      "testFile": "test/roster-pi.test.ts",
+      "testName": "Pi roster verification serializes roster writes and holds dispatch through its idle replay (#315)"
+    },
+    {
+      "id": "roster-cancel-permission",
+      "file": "src/hub/daemon.ts",
+      "search": "      if (!after) {\n        for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);",
+      "replacement": "      if (!after) {\n        // seeded removal skips pending approval cancellation",
+      "testFile": "test/roster.test.ts",
+      "testName": "native terminal removal cancels its pending approval before any transport teardown (#315)"
+    },
+    {
+      "id": "roster-retained-explicit",
+      "file": "src/hub/bus.ts",
+      "search": "(env.to !== undefined || this.isRostered(id))",
+      "replacement": "this.isRostered(id)",
+      "testFile": "test/roster.test.ts",
+      "testName": "mixed console and dashboard audiences retain removed recipients with one public notice and a visible sender result (#315)"
+    },
+    {
+      "id": "roster-in-review-owner",
+      "file": "src/hub/tasks.ts",
+      "search": "(OPEN.includes(task.state) || roster && task.state === \"in_review\")",
+      "replacement": "OPEN.includes(task.state)",
+      "testFile": "test/roster.test.ts",
+      "testName": "removal hands over in-review ownership and routes the later verdict to the new owner (#315)"
+    },
+    {
+      "id": "roster-reviewed-owner-instructions",
+      "file": "src/hub/tasks.ts",
+      "search": "      task.state === \"in_review\"\n        ? `Ownership moved while this task is already under review.",
+      "replacement": "      false\n        ? `Ownership moved while this task is already under review.",
+      "testFile": "test/tasks.test.ts",
+      "testName": "removal hands over an in-review owner's work while preserving an irreplaceable reviewer request and verdict (#315)"
+    },
+    {
+      "id": "roster-detached-pi-recovery",
+      "file": "src/hub/daemon.ts",
+      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;",
+      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
+      "testFile": "test/roster-pi.test.ts",
+      "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
+    },
+    {
+      "id": "roster-pi-remember-generation",
+      "file": "src/adapters/pi.ts",
+      "search": "        this.budgetGeneration = event.generation;",
+      "replacement": "        // seeded: drop detached generation",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi roster return preserves idle user shell generation after detached native activity (shipped unnamed event) (#315)"
+    },
+    {
+      "id": "roster-pi-generation-integer",
+      "file": "src/adapters/pi.ts",
+      "search": "event.type === \"agent_start\" && Number.isSafeInteger(event.generation) && event.generation > this.budgetGeneration",
+      "replacement": "event.type === \"agent_start\" && event.generation > this.budgetGeneration",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi detached owner retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-generation-monotonic",
+      "file": "src/adapters/pi.ts",
+      "search": "event.type === \"agent_start\" && Number.isSafeInteger(event.generation) && event.generation > this.budgetGeneration",
+      "replacement": "event.type === \"agent_start\" && Number.isSafeInteger(event.generation)",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi detached owner retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-generation-session",
+      "file": "src/adapters/pi.ts",
+      "search": "const bound = !this.stopping && this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId);",
+      "replacement": "const bound = !this.stopping && this.verifiedOwner();",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi detached owner retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-generation-owner",
+      "file": "src/adapters/pi.ts",
+      "search": "const bound = !this.stopping && this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId);",
+      "replacement": "const bound = !this.stopping && (event.sessionId === undefined || event.sessionId === this.sessionId);",
+      "testFile": "test/pi.test.ts",
+      "testName": "a lost detached Pi owner cannot advance the remembered native generation (#315)"
+    },
+    {
+      "id": "roster-pi-unowned-settlement",
+      "file": "src/adapters/pi.ts",
+      "search": "event.type === \"agent_settled\" && (event.generation === undefined || event.generation === this.budgetGeneration)",
+      "replacement": "event.type === \"agent_settled\"",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi unowned busy return retains only verified monotonic native generation (#315)"
+    },
+    {
+      "id": "roster-pi-empty-proof",
+      "file": "src/adapters/pi.ts",
+      "search": "        this.noteActivity(); // personal native activity also revokes an earlier ID-only empty-resume proof",
+      "replacement": "        // seeded: retain stale empty-resume proof",
+      "testFile": "test/pi.test.ts",
+      "testName": "Pi personal activity invalidates cached ID-only empty resume (detached) (#315)"
     }
   ]
 }

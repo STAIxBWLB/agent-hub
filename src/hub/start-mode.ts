@@ -1,3 +1,5 @@
+import { KNOWN_PEERS, isKnownPeer } from "./peer-catalog.ts";
+
 /**
  * #269: how a peer comes up when the hub starts it: its own TUI in a terminal, or headless. A person who types
  * `ahub <peer>` gets the same default and can override it with a flag.
@@ -9,9 +11,9 @@ export type StartMode = typeof START_MODES[number];
 /** The peers with both forms. Claude has only a TUI; Kimi (ACP) and the local worker have none the hub attaches to. */
 export const START_MODE_PEERS = ["pi", "codex"] as const;
 /** Every peer the hub can start itself. */
-export const STARTABLE_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
+export const STARTABLE_PEERS = KNOWN_PEERS;
 export type StartablePeer = typeof STARTABLE_PEERS[number];
-export const isStartablePeer = (value: unknown): value is StartablePeer => typeof value === "string" && (STARTABLE_PEERS as readonly string[]).includes(value);
+export const isStartablePeer = (value: unknown): value is StartablePeer => isKnownPeer(value);
 
 export type PeerStartConfig = Record<string, { start_mode?: StartMode }>;
 /** The checked `peers` block of the config; throws on anything but `{ pi|codex: { start_mode: "tui"|"headless" } }`. */

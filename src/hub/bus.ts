@@ -10,9 +10,12 @@ export type BusEvent =
   | { t: "undeliverable"; env: Envelope; peer: PeerId; reason?: string }
   | { t: "stale"; env: Envelope; peer: PeerId; reason: string }
   | { t: "quiet"; env: Envelope; peers: PeerId[]; reason: string }
+  | { t: "off_roster"; env: Envelope; peers: PeerId[] }
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
+  /** Live project membership; absent preserves the existing audience and delivery behaviour. */
+  rostered?: (peer: PeerId) => boolean;
   /** Transient owner lifecycle fence: retain new work without changing console/budget pauses. */
   deliveryHeld?: (peer: PeerId) => boolean;
   /** Observe original envelopes immediately before a transport starts its turn. */
@@ -155,6 +158,7 @@ export class Bus {
     if (!this.queues.has(peer.id)) this.queues.set(peer.id, []);
     peer.onDelivery = (receipt) => this.deliveryReceipt(peer.id, receipt);
     peer.onMessage = (text, opts) => {
+      if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
       const { priority, body } = parseMarker(text);
       if (!body) return;
       // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience
@@ -167,15 +171,22 @@ export class Bus {
       const audienceOriginals = originals ?? (opts?.to?.includes(DIGEST) && condensed ? last?.originals : undefined);
       const to = opts?.to?.length ? resolveTo(opts.to, audienceOriginals) : undefined;
       let env = newEnvelope(peer.id, body, { ...opts, ...(to ? { to } : {}), priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals) });
+      const offRoster = this.offRosterRecipients(env);
+      if (offRoster.length && offRoster.length === new Set(env.to?.filter(id => id !== env.from)).size) {
+        const reason = `off roster: ${offRoster.join(", ")}`;
+        this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${reason}`));
+        return reason; // no publication and no limiter spend for an entirely refused audience
+      }
+      const admittedEnv = offRoster.length ? { ...env, to: env.to!.filter(id => !offRoster.includes(id)) } : env;
       // Limits count what is sent: the envelope as built (a reply goes to its parent's sender, `digest` is resolved,
       // the priority is capped), never the raw `to`.
       const parent = opts?.inReplyTo?.id;
       // Held back from every recipient (issue #107): nothing goes out, so nothing counts against the sender's limits.
       const hushed = this.hushed(env);
       const heldBack = hushed.length > 0 && hushed.length === this.audience(env).length;
-      let refused = heldBack ? undefined : this.opts.admit?.(env, parent);
+      let refused = heldBack ? undefined : this.opts.admit?.(admittedEnv, parent);
       // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
-      if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {
+      if (refused && env.priority === "important" && !this.opts.admit?.({ ...admittedEnv, priority: "status" }, parent)) {
         // It went out, so the advice on how to send it does not apply.
         this.note(peer.id, noteLine(HUB, "decision", `your [IMPORTANT] message went out as status: ${refused.replace(/[;:] (retry after \d+ s, or )?send it without \[IMPORTANT\]$/, "")}`));
         env = { ...env, priority: "status" };
@@ -186,6 +197,7 @@ export class Bus {
         return refused;
       }
       this.publish(env);
+      if (offRoster.length) this.note(peer.id, noteLine(HUB, "decision", `your message is retained off roster for ${offRoster.join(", ")}; delivered to the other recipients`));
       // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery. It counts as
       // not sent only when nobody got it.
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
@@ -541,12 +553,12 @@ export class Bus {
 
     const hushed = this.hushed(env);
     if (hushed.length) this.emit({ t: "quiet", env, peers: hushed.map((h) => h.peer), reason: hushed[0]!.reason });
-    const targets = this.audience(env).filter((id) => !hushed.some((h) => h.peer === id));
+    const targets = this.audience(env).filter((id) => !hushed.some((h) => h.peer === id) || !this.isRostered(id));
     this.suppressDrain = !!this.journal;
     try { for (const id of targets) {
       const peer = this.peers.get(id);
       if (!peer) { this.enqueue(id, env); continue; }
-      if (!this.journal && !this.recoveryHeld && !this.recoveryHeldPeers.has(id) && !this.opts.deliveryHeld?.(id) && env.priority === "important" && peer.steer && this.stateOf(id) === "busy") {
+      if (!this.journal && !this.held(id) && env.priority === "important" && peer.steer && this.stateOf(id) === "busy") {
         // Not queued while the steer is in flight, or an idle transition would deliver it a second time.
         this.steering++;
         const deliveryId = crypto.randomUUID();
@@ -566,23 +578,39 @@ export class Bus {
       this.onQueues?.();
       for (const id of targets) {
         const peer = this.peers.get(id);
-        if (!this.recoveryHeld && !this.recoveryHeldPeers.has(id) && !this.opts.deliveryHeld?.(id) && env.priority === "important" && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env);
+        if (!this.held(id) && env.priority === "important" && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env);
         else void this.drain(id);
       }
     }
+    const offRoster = targets.filter(id => !this.isRostered(id));
+    if (offRoster.length) this.emit({ t: "off_roster", env, peers: offRoster });
     return targets;
+  }
+
+  isRostered(peer: PeerId): boolean { return this.opts.rostered?.(peer) ?? true; }
+
+  /** Explicit off-roster recipients, including unattached retained targets; broadcasts have none. */
+  offRosterRecipients(env: Envelope): PeerId[] {
+    return [...new Set(env.to ?? [])].filter(peer => peer !== env.from && !this.isRostered(peer));
+  }
+
+  /** Membership changed externally: reconsider delivery, keeping every independent hold intact. */
+  rosterChanged(peer: PeerId): void {
+    if (this.closed) return;
+    this.onQueues?.();
+    void this.drain(peer);
   }
 
   /** Who an envelope is queued for: its `to`, or every peer but its sender. */
   audience(env: Envelope): PeerId[] {
     const known = new Set([...this.peers.keys(), ...this.queues.keys(), ...(this.journal?.list().map((d) => d.peer) ?? [])]);
-    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && known.has(id));
+    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && (known.has(id) || !this.isRostered(id)) && (env.to !== undefined || this.isRostered(id)));
   }
 
   /** The recipients of `env` that the silence policy holds it back from, each with why (issue #107). */
   hushed(env: Envelope): { peer: PeerId; reason: string }[] {
     if (!this.opts.silence || env.hop > MAX_HOP || env.priority === "fyi") return [];
-    return this.audience(env).flatMap((peer) => {
+    return this.audience(env).filter(peer => this.isRostered(peer)).flatMap((peer) => {
       const reason = this.opts.silence!(env, peer);
       return reason ? [{ peer, reason }] : [];
     });
@@ -728,9 +756,9 @@ export class Bus {
     finally { this.steering--; this.onQueues?.(); }
   }
 
-  /** Holds on a peer's queue, for a drain and a pull alike: recovery, an uncertain delivery, a pause (console, budget, conductor). */
+  /** Holds on a peer's queue, for a drain and a pull alike: off roster, recovery, an uncertain delivery, a pause (console, budget, conductor). */
   private held(id: PeerId): boolean {
-    return this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id) || this.opts.deliveryHeld?.(id) === true;
+    return !this.isRostered(id) || this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id) || this.opts.deliveryHeld?.(id) === true;
   }
 
   /** What a peer was just handed stays resolvable for `reply_to`: moved to the newest end, the stored envelope kept. */

@@ -1,3 +1,4 @@
+import { KNOWN_PEERS, defaultPeerRoles } from "./peer-catalog.ts";
 // The hub's task tools, defined once: the MCP server (Claude plugin, Kimi, Codex) and the local worker both read this.
 import { NOTE_KINDS } from "./envelope.ts";
 
@@ -53,7 +54,7 @@ export const CONDUCTOR_TOOLS: HubTool[] = [
   tool("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor and the task's current owner and reviewer may use this tool.", { id }, ["id"]),
   tool("hub_task_assign", "Move a task to another peer, as the conductor, or redirect a task you proposed while it is proposed and nobody accepted it. A task that still waits gets the peer as its reserved owner. When you have an explicit capabilities list, the conductor needs assign capability for any assign, the proposer only to hand the task to another peer.", { id, peer: str }, ["id", "peer"]),
   tool("hub_task_escalate", "Escalate a task through the normal task flow, as the conductor. Requires assign capability when explicitly listed.", { id }, ["id"]),
-  tool("hub_peer_start", "Start local, kimi, pi, claude or codex in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (claude, and pi and codex by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.", { peer: { type: "string", enum: ["local", "kimi", "pi", "claude", "codex"] } }, ["peer"]),
+  tool("hub_peer_start", "Start local, kimi, pi, claude or codex in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (claude, and pi and codex by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.", { peer: { type: "string", enum: ["local", "kimi", "pi", ...KNOWN_PEERS.filter(peer => !["local", "kimi", "pi"].includes(peer))] } }, ["peer"]),
   tool("hub_peer_hold", "Hold a peer's deliveries as the conductor. This hold is separate from the person's hold and budget pauses.", { peer: str }, ["peer"]),
   tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str }, ["peer"]),
 ];
@@ -68,7 +69,7 @@ export const ROLE_TEXT: Record<string, string> = {
   reviewer: "reviewer: when asked to review, read the change itself, then hub_review with approved or changes_requested and a note that says what to fix.",
 };
 
-export const DEFAULT_ROLES: Record<string, string[]> = { claude: ["planner", "reviewer"], codex: ["implementer"], kimi: ["implementer", "verifier"], local: ["implementer", "verifier"], pi: ["implementer", "verifier"] };
+export const DEFAULT_ROLES: Record<string, string[]> = defaultPeerRoles();
 
 export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES): string {
   const mine = (roles[peer] ?? []).map((r) => ROLE_TEXT[r]).filter(Boolean);

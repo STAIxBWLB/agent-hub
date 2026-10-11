@@ -584,3 +584,102 @@ test("the installed-layout restart fixture retains diagnostics around its assert
   const fixture = source.slice(source.indexOf('test("installed-layout detached restart'), source.indexOf('test(', source.indexOf('test("installed-layout detached restart') + 6));
   expect(fixture).toContain("await withRestartDiagnostics(async () => {");
 });
+
+
+test("installed-layout restart preserves an off-roster peer queue and open task without relaunch (#315)", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-roster-recovery-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_")) delete env[key];
+  env.AGENTHUB_HOME = home;
+  const main = join(import.meta.dir, "../src/cli/main.js");
+  const cli = async (args: string[], extra: Record<string, string> = {}) => {
+    const p = Bun.spawn([process.execPath, main, "--project", root, ...args], { cwd: root, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, out, err };
+  };
+  let operation: string | undefined;
+  // Every daemon generation this test starts (up, restart, recovery) is recorded, so a
+  // failed `kill` can never leave a detached hub spinning behind the suite (issue #56).
+  const pids = new Set<number>();
+  const status = async () => {
+    const client = await ControlClient.connect(join(root, ".agenthub/state"), { role: "console", projectRoot: root });
+    try {
+      const reply = (await client.request({ t: "status" })).status;
+      if (typeof reply?.pid === "number") pids.add(reply.pid);
+      return reply;
+    }
+    finally { client.close(); }
+  };
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const waitDead = async (pid: number, ms: number) => {
+    const deadline = Date.now() + ms;
+    while (alive(pid) && Date.now() < deadline) await Bun.sleep(50);
+    return !alive(pid);
+  };
+  try {
+    await withRestartDiagnostics(async () => {
+    expect((await cli(["init"])).code).toBe(0);
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, omniroute: { urls: [] } }));
+    expect((await cli(["up"])).code).toBe(0);
+    const stateDir = join(root, ".agenthub/state");
+    const request = async (message: Record<string, unknown>) => {
+      const client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
+      try { return await client.request(message); } finally { client.close(); }
+    };
+    const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", projectRoot: root, channel: false });
+    try {
+      let attached: any;
+      for (let n = 0; n < 100; n++) { attached = await status(); if (attached.peers.claude?.state === "idle") break; }
+      expect(attached.peers.claude.state).toBe("idle");
+      const task = await request({ t: "task", op: "hub_task_propose", args: { title: "retained planner work", class: "plan", owner: "claude" } });
+      expect(task.ok).toBe(true);
+      const id = Number(task.text.match(/task #(\d+)/)![1]);
+      expect((await request({ t: "pause", peer: "claude" })).ok).toBe(true);
+      expect((await request({ t: "send", to: ["claude"], body: "retained installed-layout message" })).ok).toBe(true);
+      const removed = await request({ t: "settings_set", key: "roster.claude", value: false, confirm: "claude" });
+      expect(removed.ok).toBe(true); expect(removed.text).toContain("retained planner work stays with claude");
+      const taskBefore = JSON.parse((await request({ t: "task", op: "task_show", args: { id } })).text);
+      const queueBefore = (await request({ t: "queue", op: "list", peer: "claude" })).deliveries;
+      const originals = queueBefore.flatMap((row: any) => row.envelopeIds).sort();
+      expect(originals.length).toBeGreaterThanOrEqual(2);
+      const before = await status(); expect(before.peers.claude).toMatchObject({ state: "offline", rostered: false });
+      const plan = await cli(["restart", "--dry-run"]); expect(plan.code).toBe(0);
+      const planned = JSON.parse(plan.out).projects[0]; expect(planned.blockers).toEqual([]);
+      expect(planned.source.peers.find((row: any) => row.id === "claude").state).toBe("offline");
+      expect(planned.reconnectOnly ?? []).not.toContain("claude"); expect(planned.terminals).toEqual([]);
+      const applied = await cli(["restart", "--yes"]); expect(applied.code).toBe(0);
+      operation = /Recovery operation ([a-f0-9-]{36}) scheduled/.exec(applied.out)?.[1]; expect(operation).toBeDefined();
+      let receipt: any;
+      const deadline = Date.now() + 10_000;
+      do {
+        receipt = JSON.parse(readFileSync(join(home, "recovery", `${operation}.json`), "utf8"));
+        if (["completed", "blocked"].includes(receipt.phase)) break;
+        await Bun.sleep(50);
+      } while (Date.now() < deadline);
+      expect({ phase: receipt.phase, step: receipt.step, error: receipt.error }).toEqual({ phase: "completed", step: "completed", error: undefined });
+      const after = await status(); expect(after.instanceId).not.toBe(before.instanceId);
+      expect(after.peers.claude).toMatchObject({ state: "offline", rostered: false, queued: before.peers.claude.queued });
+      expect(JSON.parse((await request({ t: "task", op: "task_show", args: { id } })).text)).toEqual(taskBefore);
+      const queueAfter = (await request({ t: "queue", op: "list", peer: "claude" })).deliveries;
+      expect(queueAfter.flatMap((row: any) => row.envelopeIds).sort()).toEqual(originals);
+      expect(queueAfter.every((row: any) => row.rostered === false && row.holdReason === "off roster")).toBe(true);
+      expect((await request({ t: "settings_get" })).roster.find((row: any) => row.peer === "claude").on).toBe(false);
+    } finally { peer.close(); }
+    }, () => ({ root, home, operation }));
+  } finally {
+    try { await cli(["kill"], operation ? { AGENTHUB_RECOVERY_OPERATION: operation } : {}); } catch { /* best effort; the pid sweep below is the guarantee */ }
+    // The recovery flow also runs a detached dashboard manager out of the staged source.
+    try {
+      const manifest = JSON.parse(readFileSync(join(home, "manager", "status.json"), "utf8"));
+      if (typeof manifest?.pid === "number") pids.add(manifest.pid);
+    } catch { /* no manager this run */ }
+    for (const pid of pids) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
+    for (const pid of pids) if (!(await waitDead(pid, 5_000))) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
+    const stuck = [];
+    for (const pid of pids) if (!(await waitDead(pid, 2_000))) stuck.push(pid);
+    rmSync(temp, { recursive: true, force: true }); // unconditional: the watchdog removes the state a straggler still holds
+    if (stuck.length) throw new Error(`hub daemon(s) survived SIGTERM and SIGKILL: ${stuck.join(", ")}`);
+  }
+}, 30_000);

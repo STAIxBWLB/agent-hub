@@ -49,3 +49,37 @@ test("seed copy uses current tracked bytes and excludes state, outputs, dependen
     expect(readFileSync(join(root, "src/guard.ts"), "utf8")).toBe("current tracked edit");
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(output, { recursive: true, force: true }); }
 });
+
+
+test("seed classification ignores an echoed source error property but rejects real error diagnostics (#315)", () => {
+  const source = '187 | expect(reply).toMatchObject({ ok: false, error: "peer is off roster" });\n';
+  const assertion = 'error: expect(received).toMatchObject(expected)\n(fail) roster guard [1ms]\n 0 pass\n 1 fail\n';
+  expect(classifyRun(source + assertion, 1, "roster guard", true)).toBe("detected");
+  expect(() => classifyRun('error: actual setup failure\n' + assertion, 1, "roster guard", true)).toThrow("setup, compiler");
+});
+
+
+for (const diagnostic of [
+  "TypeError: undefined is not an object",
+  "ReferenceError: nmae is not defined",
+  "  error: indented setup failure",
+  "\terror: tab-indented setup failure",
+  "[hub] error: listen EADDRINUSE",
+  "[adapter] TypeError: invalid native response",
+  "[hub] ERROR: uppercase logged failure",
+  "187: error: not a Bun source excerpt",
+]) test(`seed classification rejects runtime diagnostics before a named assertion: ${diagnostic.trim()} (#315)`, () => {
+  const assertion = "error: expect(received).toBe(expected)\n(fail) roster guard [1ms]\n 0 pass\n 1 fail\n";
+  expect(() => classifyRun(diagnostic + "\n" + assertion, 1, "roster guard", true)).toThrow("invalid detection: setup, compiler or timeout failure");
+  // Runtime failures invalidate the green control too, even if its named test passed.
+  expect(() => classifyRun(diagnostic + "\n(pass) roster guard [1ms]\n 1 pass\n 0 fail\n", 0, "roster guard", false)).toThrow("invalid detection: setup, compiler or timeout failure");
+});
+
+test("seed diagnostic exclusion applies only to Bun's numbered source excerpts (#315)", () => {
+  const assertion = "error: expect(received).toBe(expected)\n(fail) roster guard [1ms]\n 0 pass\n 1 fail\n";
+  const excerpts = '  187 | throw new TypeError("error: source text");\n\t188 | const message = "ReferenceError: source text";\n189 | const timeout = "Cannot find module";\n';
+  expect(classifyRun(excerpts + assertion, 1, "roster guard", true)).toBe("detected");
+  expect(() => classifyRun(excerpts + "[hub] error: actual setup failure\n" + assertion, 1, "roster guard", true)).toThrow("invalid detection: setup, compiler or timeout failure");
+  // An echoed assertion cannot stand in for the actual assertion diagnostic.
+  expect(() => classifyRun("190 | error: expect(received).toBe(expected)\n(fail) roster guard [1ms]\n 0 pass\n 1 fail\n", 1, "roster guard", true)).toThrow("failure is not the named assertion");
+});

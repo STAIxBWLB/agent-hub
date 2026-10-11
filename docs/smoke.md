@@ -1548,3 +1548,18 @@ In the console run `status --all`, `queue list`, `queue show <id>`, `turns`, `bu
 run `ahub projects`, `ahub doctor --orphans` and `ahub models status` in the terminal outside the console. Status's informational ids can be compared with `status --full`.
 Confirm JSON output stays plain under `--color=always`. Record the exact head and visual verdict here after the owner performs this leg.
 
+
+## Live roster return (#315)
+
+- Codex 0.146.0: run without a model turn against the real native app-server and
+  hub proxy. The TUI reached attached/idle with zero input/output tokens; removal
+  closed its socket with 4000, and it printed the off-roster reason and exited 1.
+  Re-adding left the preserved proxy/app-server unattached. A person must relaunch
+  with `ahub codex resume <thread-id>` (or the resume picker) after adding it back. No tool
+  update or model prompt was run. Actual native resume after the exit is not
+  verified: the follow-up no-turn probe was admission-deferred with exit 75
+  before starting, and was not bypassed or retried. The scripted proxy test sends
+  thread/resume with the same thread id; this is separate transport evidence.
+- Pi native TUI: not run. Resource admission deferred the live probe with exit
+  75; it was not bypassed. The scripted authenticated bridge tests separately
+  verify retained owner identity, idle/busy return and queue delivery.

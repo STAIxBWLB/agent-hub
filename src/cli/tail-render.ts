@@ -8,6 +8,7 @@ export function renderTailEvent(e: BusEvent): string {
   }
   if (e.t === "overflow") return `  ! ${e.peer}'s queue is full: dropped ${e.env.id} (from ${e.env.from})`;
   if (e.t === "stale") return `  . dropped ${e.env.id} (from ${e.env.from}) for ${e.peer}: ${e.reason}`;
+  if (e.t === "off_roster") return `  . ${e.env.id} retained off roster for ${e.peers.join(", ")}`;
   if (e.t === "quiet") return `  . ${e.env.id} (from ${e.env.from}) not delivered to ${e.peers.join(", ")}: turn-free cohort`;
   const { env } = e;
   const note = e.dropped === "hop" ? " [not delivered: hop limit]" : e.dropped === "fyi" ? " [fyi: record only]" : "";
