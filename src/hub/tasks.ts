@@ -958,6 +958,26 @@ export class Tasks {
     return next;
   }
 
+  /** Person-only advice changes never change ownership, class or authority. */
+  setRole(by: PeerId, id: unknown, raw: unknown): Task {
+    if (by !== USER) throw new PreEffectToolRefusal("only the person may change an existing task catalog role");
+    if (raw === undefined) throw new PreEffectToolRefusal("name a catalog role id or explicit null to clear it");
+    const task = this.need(id, false, true);
+    if (task.state === "approved") throw new PreEffectToolRefusal("an approved task's role is historical; propose new work instead");
+    let selected;
+    try { selected = taskRole(raw === null ? undefined : raw, task.class, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
+    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    if (task.role === selected?.id) return task;
+    const next = this.d.board.update(task.id, by, "catalog role changed", { role: selected?.id });
+    for (const peer of new Set([next.owner, next.state === "in_review" ? next.reviewer : null])) {
+      if (!peer || peer === USER) continue;
+      this.releaseNotice(`task ${this.publicTitle(next)}: catalog role update delivery unconfirmed`, () => this.d.bus.publish(newEnvelope(HUB,
+        `Task #${next.id}: catalog role changed by the person. ${next.role ? this.roleGuidance(next, peer, peer === next.reviewer) : "Catalog guidance cleared; follow the task's existing plan and requirements."}`,
+        { to: [peer], kind: "task", refs: { task: String(next.id) }, ...(this.isPii(next) ? { private: true } : {}) })));
+    }
+    return next;
+  }
+
   /** A self-claim has no assignment envelope; its tool result carries the same bounded guidance. */
   claimRoleGuidance(task: Task, peer: PeerId): string {
     return task.owner === peer && task.state === "in_progress" ? this.roleGuidance(task, peer) : "";

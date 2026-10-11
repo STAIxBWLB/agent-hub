@@ -514,14 +514,29 @@ export async function startDaemon(opts: DaemonOptions) {
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
   const catalog = loadRoleCatalog(opts.cwd);
   for (const error of catalog.errors) log(`catalog role ${error.id}: ${error.reason}`);
-  const roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(config.catalog_roles) };
+  let roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(config.catalog_roles) };
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
     if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
   });
+  const compatibleRoles = (peer: string) => [...catalog.roles.values()].filter(role => role.base.some(base => config.roles[peer]?.includes(base))).map(role => role.id).sort();
+  const configuredRoles = (peer: string) => selectedRoles(peer, config.roles, roleAssignments, catalog).map(role => role.id);
   const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && ["local", "pi"].includes(peer)
     ? contract + "\nManaged bash/git are filesystem read-only while data.readonly is active. Read data and return stdout; use managed write/edit only for unprotected outputs."
     : contract;
   const preparedSessionRoles = new Map<string, string[]>();
+  function roleState(peer: string) {
+    let configured: string[] = [], note: string | undefined;
+    try { configured = configuredRoles(peer); } catch { note = "catalog selection is incompatible or unavailable"; }
+    const prepared = preparedSessionRoles.get(peer);
+    const active = bus.peers.get(peer)?.state !== "offline" && bus.peers.has(peer);
+    const value = active ? prepared ?? null : configured;
+    return { value, values: compatibleRoles(peer), ...(active && JSON.stringify(prepared ?? null) !== JSON.stringify(configured) ? { pending: configured } : {}), ...(note ? { note } : active && !prepared ? { note: "Current session guidance is unconfirmed; configuration is not receipt of model consumption." } : {}) };
+  }
+  function validateRoleSetting(scratch: string, peer: string) {
+    const candidate = loadConfig(scratch);
+    selectedRoles(peer, config.roles, { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(candidate.catalog_roles) }, catalog);
+    return candidate;
+  }
   function sessionRoleContract(peer: string): string {
     try {
       const selected = selectedRoles(peer, config.roles, roleAssignments, catalog);
@@ -1067,7 +1082,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
-    if (h.event === "proposed" && t.role && catalog.roles.has(t.role)) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: [roleIdentity(catalog.roles.get(t.role)!)] });
+    if ((h.event === "proposed" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
     supervision.taskChanged(t, h);
@@ -1726,7 +1741,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
@@ -2912,7 +2927,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return storedConfigCache.config;
   };
   /** Stored start modes and the scoped instruction policy follow a settings write or undo. */
-  const applyStartModes = () => { const stored = storedConfig(); if (stored) { config.peers = stored.peers; config.protect_instruction_files = stored.protect_instruction_files; } };
+  const applyStartModes = () => { const stored = storedConfig(); if (stored) { config.peers = stored.peers; config.protect_instruction_files = stored.protect_instruction_files; config.catalog_roles = stored.catalog_roles; roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(stored.catalog_roles) }; } };
   const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
   const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
     settingScalar(def.path[0] === "stay_switch" ? routing.stay_switch : (routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
@@ -2932,6 +2947,7 @@ export async function startDaemon(opts: DaemonOptions) {
       cwd: opts.cwd, routing: currentRouting(opts.cwd, log), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
       running: (path) => path[0] === "roster" ? onRoster(path[1]!) : valueAt(config, path),
       next: stored ? (path) => path[0] === "roster" ? rosterAllows(stored.roster, path[1]!, stored.pi.enabled) : valueAt(stored, path) : undefined,
+      roles: roleState,
       mode: (peer) => {
         const owner = bus.peers.get(peer), attached = !!owner && owner.state !== "offline";
         const note = pendingPermissionDefaults.has(peer) ? "a never-ask default waits for y in ahub console" : attached ? undefined : "not attached: only ask can be set";
@@ -2994,7 +3010,8 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roster changes" };
       rosterChanging = peer;
-      if (undo) undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);
+      if (undo) undoSetting(opts.cwd, opts.stateDir, (scratch) => def.type === "roles" ? validateRoleSetting(scratch, def.path[1]!) : loadConfig(scratch), routingCheck);
+      storedConfigCache = undefined;
       else writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch));
       // Apply exactly the authorized key. Other file edits stay pending until the next hub start.
       config.roster = next;
@@ -3034,7 +3051,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const def = settingDef(key);
     if (typeof def === "string") return { error: def };
     const routing = currentRouting(opts.cwd, log);
-    try { return { def, value: checkSettingValue(def, raw, [...Object.keys(routing.routes), ...Object.keys(routing.hub_routes ?? {})]) }; }
+    try { return { def, value: checkSettingValue(def, raw, def.type === "roles" ? compatibleRoles(def.path[1]!) : [...Object.keys(routing.routes), ...Object.keys(routing.hub_routes ?? {})]) }; }
     catch (error) { return { error: (error as Error).message }; }
   }
   async function settingsSet(key: unknown, raw: unknown, authority: SettingAuthority, confirm?: unknown, now?: unknown): Promise<Record<string, unknown>> {
@@ -3069,10 +3086,12 @@ export async function startDaemon(opts: DaemonOptions) {
       // Removing the machine-local value uncovers the shared file's: never-ask there needs the same confirmation.
       if (peer && value === null && storedLocally(opts.cwd, def) && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
       const from = settingScalar(valueAt(storedConfig(), def.path));
-      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => def.type === "roles" ? validateRoleSetting(scratch, def.path[1]!) : loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+      storedConfigCache = undefined;
       const to = settingScalar(valueAt(storedConfig(), def.path));
       applyStartModes();
       recordSetting(def.key, from, to, source);
+      if (def.type === "roles") event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) });
       // Config trust (#17) can drop a machine-local field at load: the write happened, and the person is told it will not count.
       const dropped = ignoredLine(storedConfig()?.ignored, def);
       return { ok: true, text: dropped ? `${def.key}: written, but the hub does not read it (${dropped})` : `${def.key}: ${settingText(to)} (${def.applies === "live" ? "in force now" : def.applies === "peer start" ? "applies at the peer's next start" : "applies at the next hub start"})` };
@@ -3098,6 +3117,7 @@ export async function startDaemon(opts: DaemonOptions) {
       undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);
       applyStartModes();
       recordSetting(def.key, from, read(), settingSource(authority), true);
+      if (def.type === "roles") event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) });
       return { ok: true, text: `${def.key}: put back to ${settingText(read())}` };
     } catch (error) {
       return { ok: false, error: (error as Error).message };
@@ -3809,6 +3829,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!msg.action || typeof msg.action !== "object" || Array.isArray(msg.action)) return void reply({ ok: false, error: "invalid dashboard action" });
         void uiAction(msg.action).then((result) => reply(result as Record<string, unknown>), () => reply({ ok: false, error: "dashboard action failed; check its inputs" }));
         return;
+      case "task_catalog_role":
+        if (c.role !== "console") return void reply({ ok: false, error: "task roles are a person command" });
+        if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding task role changes" });
+        try { const task = tasks.setRole(USER, msg.id, msg.role); return void reply({ ok: true, text: `task #${task.id}: catalog role ${task.role ?? "none"}` }); }
+        catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       case "settings_get":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
         return void reply({ ok: true, ...settingsView(), roster: rosterView() });

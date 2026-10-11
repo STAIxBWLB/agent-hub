@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add person-only catalog role assignment/clear, task role edits and Roles settings controls with pending guidance metadata (#295).
+
 - Add validated persistent task catalog roles with bounded assignment/review guidance and identity-only records (#295).
 
 - Add machine-local bounded read-only text projections for rich-document facts while preserving raw attribution (#259).

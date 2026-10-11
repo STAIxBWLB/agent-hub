@@ -221,7 +221,7 @@ function renderApprovals(permissions) {
     }
   });
 }
-const SETTING_GROUPS = ['Roster', 'Permissions', 'Start', 'Routing', 'Switches'], INHERIT = '__inherit__';
+const SETTING_GROUPS = ['Roster', 'Permissions', 'Roles', 'Start', 'Routing', 'Switches'], INHERIT = '__inherit__';
 const settingsOpen = new Set(['Permissions']);
 const settingText = (value) => value === null || value === undefined ? '(not set)' : Array.isArray(value) ? (value.join(', ') || '(none)') : String(value);
 async function previewSetting(row, value, out, control) {
@@ -245,13 +245,24 @@ function settingRow(row, raise) {
   const title = el('label', row.label, 'label'); title.htmlFor = id;
   head.append(title, badge(settingText(row.value), row.group === 'Permissions' && row.value !== null && row.value !== 'ask' ? 'warn' : ''));
   node.append(head, el('p', row.key + ' / from ' + row.source + ' / ' + (row.applies === 'live' ? 'applies at once' : row.applies === 'peer start' ? "applies at the peer's next start" : 'read at hub start') + ' / written to ' + row.file, 'meta'));
-  if (row.pending !== undefined) node.append(el('p', 'Pending restart: ' + settingText(row.pending) + ' at the next hub start.', 'meta'));
+  if (row.pending !== undefined) node.append(el('p', 'Pending restart: ' + settingText(row.pending) + ' at the next ' + (row.applies === 'peer start' ? 'peer' : 'hub') + ' start.', 'meta'));
   if (row.hint) node.append(el('p', 'Bounds: ' + row.hint, 'meta'));
   if (row.note) node.append(el('p', row.note, 'meta'));
   if (row.risk === 'raises' && !raise) node.append(el('p', 'Raising this needs a settings session: run ahub ui --settings.' + (row.floor === undefined ? '' : ' Setting it to ' + row.floor + ' works here.'), 'meta'));
   const actions = el('div', undefined, 'actions'), stored = row.file !== 'this hub run';
   let read, confirm, force;
-  if (row.type === 'peers') {
+  if (row.type === 'roles') {
+    const current = Array.isArray(row.pending) ? row.pending : Array.isArray(row.value) ? row.value : [];
+    const choices = [0, 1].map(index => {
+      const select = el('select'); select.id = index ? id + '-second' : id;
+      if (index) select.setAttribute('aria-label', row.label + ': second optional role');
+      select.append(Object.assign(el('option', 'No role'), {value:''}));
+      for (const value of row.values || []) select.append(Object.assign(el('option', value), {value}));
+      if (current[index] && !(row.values || []).includes(current[index])) select.append(Object.assign(el('option', current[index] + ' (unavailable)'), {value:current[index],disabled:true}));
+      select.value = current[index] || ''; actions.append(select); return select;
+    });
+    read = () => choices.map(select => select.value).filter(Boolean);
+  } else if (row.type === 'peers') {
     const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(row.value) ? row.value.join(', ') : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
     read = () => { const list = input.value.split(',').map((value) => value.trim()).filter(Boolean); return list.length ? list : null; };
     actions.append(input);
@@ -280,13 +291,14 @@ function settingRow(row, raise) {
     const label = el('label', ' Stop an active turn now (--now)'); label.append(force); actions.append(confirm, label);
   }
   const out = el('div', undefined, 'preview'); out.setAttribute('role', 'status'); out.setAttribute('aria-live', 'polite');
+  if (row.type === 'roles') for (const select of actions.querySelectorAll('select')) select.addEventListener('change', () => { const ids = read(); out.textContent = new Set(ids).size !== ids.length ? 'Choose two distinct roles, or clear the second.' : 'Selection applies at the next peer start.'; });
   if (row.group === 'Permissions' || row.group === 'Routing' || row.group === 'Roster') {
     const preview = el('button', 'Preview'); preview.type = 'button'; preview.setAttribute('aria-label', 'Preview ' + row.label);
     preview.addEventListener('click', () => void previewSetting(row, read(), out, preview)); actions.append(preview);
   }
   const save = el('button', 'Save', 'primary'); save.type = 'button'; save.dataset.mutation = 'project'; save.disabled = managerMode && !snapshotValid; save.setAttribute('aria-label', 'Save ' + row.label);
-  save.addEventListener('click', async () => { const payload = {action:'setting', key:row.key, value:read()}; if (confirm && !confirm.hidden && confirm.value.trim()) payload.confirm = confirm.value.trim(); if (force) payload.now = force.checked; if (row.group === 'Roster') await previewSetting(row, read(), out, save); void action(payload, save); });
-  actions.append(save); node.append(actions, out);
+  save.addEventListener('click', async () => { const payload = {action:'setting', key:row.key, value:read()}; if (confirm && !confirm.hidden && confirm.value.trim()) payload.confirm = confirm.value.trim(); if (force) payload.now = force.checked; if (row.group === 'Roster') await previewSetting(row, read(), out, save); if (row.type === 'roles') { if (new Set(payload.value).size !== payload.value.length) { out.textContent = 'Choose two distinct roles, or clear the second.'; return; } out.textContent = 'Saving role guidance...'; const accepted = await action(payload, save); out.textContent = accepted ? 'Saved. Applies at the next peer start.' : $('notice').textContent; } else void action(payload, save); });
+  actions.append(save); if (row.type === 'roles') { const inherit = el('button', 'Use profile/shared roles'); inherit.type = 'button'; inherit.dataset.mutation = 'project'; inherit.disabled = managerMode && !snapshotValid; inherit.setAttribute('aria-label', 'Inherit ' + row.label); inherit.addEventListener('click', async () => { out.textContent = 'Restoring inherited role guidance...'; const accepted = await action({action:'setting',key:row.key,value:null}, inherit); out.textContent = accepted ? 'Inherited selection saved. Applies at the next peer start.' : $('notice').textContent; }); actions.append(inherit); } node.append(actions, out);
   return node;
 }
 const settingSlots = new Map();
@@ -367,6 +379,8 @@ function render(snapshot) {
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
       head.append(name, badge(peer.rostered === false ? peer.state + ' off roster' : peer.state, peerDot[peer.state] || ''));
       row.append(head, el('p', peer.queued + ' queued' + (peer.queuedImportant ? ' (' + peer.queuedImportant + ' important)' : ''), 'meta'));
+      if (peer.flowRoles) row.append(el('p', 'Flow roles: ' + (peer.flowRoles.join(', ') || 'none'), 'meta'));
+      if (peer.catalogRoles) { row.append(el('p', 'Catalog guidance: ' + (Array.isArray(peer.catalogRoles.value) ? peer.catalogRoles.value.join(', ') || 'none' : 'unconfirmed'), 'meta')); if (peer.catalogRoles.pending !== undefined) row.append(el('p', 'Pending at next start: ' + (peer.catalogRoles.pending.join(', ') || 'none'), 'meta')); }
       if (peer.needsReview) row.append(el('p', peer.needsReview + ' need review: use ahub queue list', 'meta'));
       if (peer.oldestQueuedAt !== undefined) row.append(el('p', 'Oldest pending: ' + Math.max(0, Math.floor((Date.now() - peer.oldestQueuedAt) / 1000)) + 's', 'meta'));
       if (peer.attached === false) row.append(el('p', 'Disconnected recipient; work is retained.', 'meta'));

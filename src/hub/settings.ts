@@ -19,9 +19,9 @@ export const SETTING_PEERS = SUPPORTED_PEERS;
 export type SettingValue = string | boolean | string[] | null;
 export interface SettingDef {
   key: string;
-  group: "Permissions" | "Start" | "Routing" | "Switches" | "Roster";
+  group: "Permissions" | "Start" | "Routing" | "Switches" | "Roster" | "Roles";
   label: string;
-  type: "enum" | "boolean" | "peers";
+  type: "enum" | "boolean" | "peers" | "roles";
   /** The closed values of an enum; a route setting takes the project's own route ids instead. */
   values?: readonly string[];
   /** `runtime` lives in the running hub only; the others are the machine-local file that holds the value. */
@@ -44,6 +44,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
   { key: `routing.classes.${name}.pi_backend`, group: "Routing", label: `${name}: Pi backend`, type: "enum", values: ["dgx", "mlx"], store: "routing", applies: "live", risk: "raises", path: ["classes", name, "pi_backend"] },
 ];
 export const SETTINGS: readonly SettingDef[] = [
+  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "peer start", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
   ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
@@ -83,6 +84,11 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
     if (typeof raw !== "boolean") throw new Error(`${def.key} takes true or false`);
     return raw;
   }
+  if (def.type === "roles") {
+    const allowed = def.values ?? routes;
+    if (!Array.isArray(raw) || raw.length > 2 || new Set(raw).size !== raw.length || raw.some(id => typeof id !== "string" || !allowed.includes(id))) throw new Error(`${def.key} takes at most two distinct compatible catalog ids; allowed: ${allowed.join(", ") || "(none)"}`);
+    return [...raw] as string[];
+  }
   if (def.type === "peers") {
     if (!Array.isArray(raw) || raw.length > PEERS_MAX || raw.some((p) => typeof p !== "string" || !PEER.test(p)) || new Set(raw).size !== raw.length) throw new Error(`${def.key} takes up to ${PEERS_MAX} distinct peer ids`);
     return [...(raw as string[])];
@@ -96,7 +102,7 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
 export function parseSettingText(def: SettingDef, text: string): unknown {
   if (text === "inherit") return null;
   if (def.type === "boolean") return text === "true" ? true : text === "false" ? false : text;
-  if (def.type === "peers") return text.split(",").map((p) => p.trim()).filter(Boolean);
+  if (def.type === "peers" || def.type === "roles") return text.split(",").map((p) => p.trim()).filter(Boolean);
   return text;
 }
 export const settingText = (value: unknown): string => value === null || value === undefined ? "(not set)" : Array.isArray(value) ? value.join(",") || "(none)" : String(value);
@@ -367,6 +373,7 @@ export function settingRows(input: {
   routingProblem?: string;
   /** The loader's own lines about machine-local fields it ignored (`HubConfig.ignored`). */
   ignored?: string[];
+  roles?: (peer: string) => { value: SettingValue; pending?: SettingValue; values: string[]; note?: string };
 }): SettingRow[] {
   const raw = (name: string): unknown => { try { return JSON.parse(readFileSync(join(input.cwd, ".agenthub", name), "utf8")); } catch { return undefined; } };
   const local = raw(CONFIG_LOCAL), shared = raw("config.json");
@@ -385,6 +392,7 @@ export function settingRows(input: {
       return { ...base, ...(def.type === "enum" ? { values: def.values ?? routes } : {}), file: OVERLAY_FILE, value, source: input.routing.sources?.[def.key.slice("routing.".length)] ?? (value === null ? "default" : projectRouting ? "routing.toml" : "default"),
         ...(input.routingProblem ? { note: `the routing files do not load, so the last policy that did stays in force: ${input.routingProblem}` } : {}) };
     }
+    if (def.type === "roles" && input.roles) return { ...base, ...input.roles(def.path[1]!), file: CONFIG_LOCAL, source: valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "profile/default", hint: "Guidance only; grants no tool or permission. At most two roles, applied at the next peer start." };
     const value = scalar(input.running(def.path));
     const stored = input.next ? scalar(input.next(def.path)) : value;
     const source = valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "default";

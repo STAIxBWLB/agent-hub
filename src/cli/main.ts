@@ -1073,6 +1073,13 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   task: async () => {
     const [sub, ...rest] = args;
+    if (sub === "role") {
+      if (rest.length !== 2 || !/^[1-9]\d*$/.test(rest[0]!)) fail("usage: ahub task role <id> <role|none>");
+      const hub = await connect();
+      try { const reply = await hub.request({ t: "task_catalog_role", id: Number(rest[0]), role: rest[1] === "none" ? null : rest[1] }); if (!reply.ok) fail(reply.error); console.log(reply.text); }
+      finally { hub.close(); }
+      return;
+    }
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {
@@ -1258,9 +1265,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       let group = "";
       for (const row of rows) {
         if (sub === "list" && row.group !== group) console.log(`${group ? "\n" : ""}${group = row.group}`);
-        const facts = [`from ${row.source}`, row.applies === "live" ? "applies at once" : row.applies === "peer start" ? "applies at the peer's next start" : "read at hub start", ...(row.pending !== undefined ? [`${settingText(row.pending)} at the next hub start`] : []), ...(row.note ? [row.note] : [])];
+        const facts = [`from ${row.source}`, row.applies === "live" ? "applies at once" : row.applies === "peer start" ? "applies at the peer's next start" : "read at hub start", ...(row.pending !== undefined ? [`${settingText(row.pending)} at the next ${row.applies === "peer start" ? "peer" : "hub"} start`] : []), ...(row.note ? [row.note] : [])];
         console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join("; ")}`);
-        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "peers" ? "a comma list of peer ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
+        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
       }
       if (sub === "list" && view.undo) console.log(`\nahub settings undo puts back the last write (${view.undo})`);
     } finally { hub.close(); }
@@ -1582,7 +1589,20 @@ const commands: Record<string, () => Promise<void> | void> = {
       const role = catalog.roles.get(args[1]!); if (!role) fail("unknown catalog role; run ahub role list");
       return console.log(paint([{ text: JSON.stringify(role, null, 2) }], false));
     }
-    fail("usage: ahub role list [--group <group>] | show <id>; assignment surfaces are not shipped yet");
+    if (["assign", "clear"].includes(args[0] ?? "")) {
+      const [op, peer, id] = args;
+      if (!peer || !isSupportedPeer(peer) || !id && op === "assign" || args.length > 3) fail("usage: ahub role assign <peer> <id> | clear <peer> [<id>]");
+      const hub = await connect();
+      try {
+        const view = await hub.request({ t: "settings_get" }); if (!view.ok) fail(view.error);
+        const row = (view.rows as SettingRow[]).find(row => row.key === `catalog_roles.${peer}`); if (!row) fail("this hub does not support catalog role settings");
+        const current = Array.isArray(row!.pending) ? row!.pending : Array.isArray(row!.value) ? row!.value : [];
+        const value = op === "assign" ? [...new Set([...current, id!])] : id ? current.filter(role => role !== id) : [];
+        const reply = await hub.request({ t: "settings_set", key: row!.key, value }); if (!reply.ok) fail(reply.error); console.log(reply.text);
+      } finally { hub.close(); }
+      return;
+    }
+    fail("usage: ahub role list [--group <group>] | show <id> | assign <peer> <id> | clear <peer> [<id>]");
   },
   doctor: async () => {
     const options = outputOptions();

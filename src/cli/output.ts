@@ -193,6 +193,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   let settling = false;
   const peerDetails = Object.entries(data.peers).map(([id, p]) => {
     const out: Span[][] = [];
+    if (p.flowRoles) out.push(...detail(`${id} flow roles`, p.flowRoles.join(", ") || "none", columns));
+    if (p.catalogRoles) { out.push(...detail(`${id} catalog roles`, Array.isArray(p.catalogRoles.value) ? p.catalogRoles.value.join(", ") || "none" : "unconfirmed", columns)); if (p.catalogRoles.pending !== undefined) out.push(...detail(`${id} pending roles`, p.catalogRoles.pending.join(", ") || "none", columns, "attention")); }
     if (p.liveAccepted?.length) { settling = true; out.push(...detail("settling", p.liveAccepted.map((v: string) => shortId(v, columns, full)).join(", "), columns, "attention")); }
     if (p.heldBy) {
       const note = flat(p.holdNote ?? "");

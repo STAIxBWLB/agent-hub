@@ -2521,3 +2521,8 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 # Task catalog guidance (#295)
 
 - A proposal may name `role` from `ahub role list`. The allowed class list is checked in Tasks, and assignment/review notices carry bounded guidance. The role grants no authority and changes no routing decision. Scope and pending person-assignment surfaces: [roles](roles.md).
+
+# Person catalog-role assignment (#295)
+
+- Use `ahub role assign <peer> <id>` or `ahub role clear <peer> [<id>]`, or the dashboard Roles settings group. The selection is bounded to two compatible catalog ids, writes only machine-local settings and applies at the next peer start. Inherit and explicit no roles are distinct.
+- Change an open task's guidance with `ahub task role <id> <role|none>`. Agent shells and peer/tools control clients cannot use these mutation commands. Details and unconfirmed native consumption: [roles](roles.md).
