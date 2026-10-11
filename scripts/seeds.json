@@ -660,7 +660,7 @@
     {
       "id": "profile-document-plan",
       "file": "src/hub/tasks.ts",
-      "search": "projectProfile(profile).plan_keys as (keyof TaskPlan)[]",
+      "search": "profileData(profile).plan_keys as (keyof TaskPlan)[]",
       "replacement": "projectProfile(\"dev\").plan_keys as (keyof TaskPlan)[]",
       "testFile": "test/profiles.test.ts",
       "testName": "document plans overlap only on declared shared anchors/sources and preserve all keys (#259)"
@@ -692,7 +692,7 @@
     {
       "id": "profile-cli-positional-alias",
       "file": "src/cli/main.ts",
-      "search": "Object.hasOwn(projectProfile(projectConfig().profile).classes, flags.rest[0] ?? \"\")",
+      "search": "Object.hasOwn((() => { const config = projectConfig(); return resolveProfile(config.profile, config.profile_overrides); })().classes, flags.rest[0] ?? \"\")",
       "replacement": "false",
       "testFile": "test/profiles.test.ts",
       "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
@@ -860,8 +860,8 @@
     {
       "id": "role-peer-scoped-apply",
       "file": "src/hub/daemon.ts",
-      "search": "roleAssignments[peer] = ids ?? projectProfile(config.profile).catalog_roles[peer] ?? [];",
-      "replacement": "roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(stored.catalog_roles) };",
+      "search": "roleAssignments[peer] = ids ?? resolvedProfile.catalog_roles[peer] ?? [];",
+      "replacement": "roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(stored.catalog_roles) };",
       "testFile": "test/role-settings.test.ts",
       "testName": "catalog role application is scoped to the named peer and leaves other hand edits pending (#295)"
     },
