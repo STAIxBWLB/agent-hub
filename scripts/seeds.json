@@ -904,6 +904,14 @@
       "replacement": "const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? [];",
       "testFile": "test/role-settings.test.ts",
       "testName": "external turns keep preparation unknown despite configured catalog ids (#295)"
+    },
+    {
+      "id": "role-research-fallback-empty",
+      "file": "src/hub/daemon.ts",
+      "search": "preparedSessionRoleIdentities.set(peer, []);",
+      "replacement": "preparedSessionRoleIdentities.delete(peer);",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "native fallback preamble records explicit empty preparation for unavailable catalog roles (#295)"
     }
   ]
 }

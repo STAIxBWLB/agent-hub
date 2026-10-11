@@ -549,7 +549,10 @@ export async function startDaemon(opts: DaemonOptions) {
       preparedSessionRoles.delete(peer);
       preparedSessionRoleIdentities.delete(peer);
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
-      return dataRoleContract(peer, roleContract(peer, config.roles, [], config.profile));
+      const fallback = dataRoleContract(peer, roleContract(peer, config.roles, [], config.profile));
+      preparedSessionRoles.set(peer, []);
+      preparedSessionRoleIdentities.set(peer, []);
+      return fallback;
     }
   }
   /**

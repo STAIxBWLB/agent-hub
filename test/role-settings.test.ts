@@ -23,10 +23,10 @@ class Peer extends BasePeer {
   async deliver(envs: Envelope[]) { this.got.push(...envs); }
   turn() { this.setState("busy"); this.setState("idle"); }
 }
-async function fixture(managedKimi = false) {
+async function fixture(managedKimi = false, initialKimiRoles?: string[]) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-role-settings-"))), state = join(dir, ".agenthub/state"); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
-  const shared = JSON.stringify({ roles: DEFAULT_CONFIG.roles, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, snapshots: { enabled: false }, catalog_roles: { codex: ["backend-engineer"] } });
+  const shared = JSON.stringify({ roles: DEFAULT_CONFIG.roles, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, snapshots: { enabled: false }, catalog_roles: { codex: ["backend-engineer"], ...(initialKimiRoles ? {kimi:initialKimiRoles} : {}) } });
   writeFileSync(join(dir, ".agenthub/config.json"), shared);
   writeFileSync(join(dir, ".agenthub/routing.toml"), readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"'));
   const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...loadConfig(dir), batch_ms: 0, ...(managedKimi ? { peers: { kimi: { start_mode: "headless" as const } }, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts"), "--record-protocol", join(dir, "protocol.jsonl")] } : {}) } }); cleanup.push(() => daemon.stop());
@@ -188,4 +188,16 @@ test("external turns keep preparation unknown despite configured catalog ids (#2
   const ended=readEvents(join(f.state,"events.jsonl")).find(e=>e.type==="turn_end" && e.peer==="codex");
   if(ended?.type!=="turn_end")throw new Error("missing external turn");
   expect(ended.preparedRoles).toBeNull();
+});
+
+test("native fallback preamble records explicit empty preparation for unavailable catalog roles (#295)", async () => {
+  const f=await fixture(true,["missing-role"]);
+  expect((await f.client.request({t:"peer_start",peer:"kimi"},15000)).ok).toBe(true);
+  expect((await f.client.request({t:"send",body:"fallback preparation probe",to:["kimi"]})).ok).toBe(true);
+  const ended=()=>readEvents(join(f.state,"events.jsonl")).find(e=>e.type==="turn_end" && e.peer==="kimi");
+  for(let i=0;i<200 && !ended();i++)await Bun.sleep(5);
+  const turn=ended(); if(turn?.type!=="turn_end")throw new Error("missing fallback turn");
+  expect(turn.preparedRoles).toEqual([]);
+  const row=(await f.client.request({t:"settings_get"})).rows.find((r:any)=>r.key==="catalog_roles.kimi");
+  expect(row.value).toEqual([]); expect(row.note).toContain("incompatible or unavailable");
 });
