@@ -330,7 +330,7 @@ export class Tasks {
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
-    return { ...rest, ...(task.sdlc && (this.d.sdlc?.config().mode ?? "off") !== "off" ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(task.sdlc && ((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -1069,6 +1069,7 @@ export class Tasks {
     const next = sdlcReceipt(input, task.sdlc);
     if (input && typeof input === "object" && "phase" in input) {
       this.mine(task, by, "reviewer", true);
+      if (next.phase && !this.isPii(task) && !this.nameable(JSON.stringify(next.phase))) throw new PreEffectToolRefusal("phase metadata matches a PII pattern; use private work");
       if (next.phase) validatePhaseLinks(task, next.phase, id => this.d.board.get(id), t => this.isPii(t));
     }
     if (next.reviewedHead !== task.sdlc?.reviewedHead) this.mine(task, by, "reviewer", true);

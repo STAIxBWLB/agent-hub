@@ -50,6 +50,7 @@ test("phase imports require exact current after edges and preserve accepted owne
 test("only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)", async () => {
   const r = rig();
   expect(() => r.tasks.recordLifecycle("codex", r.parent, { phase: phase("verified") })).toThrow("only its reviewer");
+  expect(() => r.tasks.recordLifecycle(USER, r.parent, { phase: { ...phase(), criteria: [{ ...phase().criteria[0], id: "claim-900101-1234567" }] } })).toThrow("PII pattern");
   r.tasks.recordLifecycle(USER, r.parent, { phase: phase() });
   await r.tasks.done("codex", r.parent, "done");
   await expect(r.tasks.review(USER, r.parent, "approved", undefined, undefined, A)).rejects.toThrow("phase criterion criterion-one: unverified");
@@ -63,7 +64,10 @@ test("gsd-lite advise preserves transitions, none preserves traces, and exports 
   await r.tasks.done("codex", r.parent, "done"); expect((await r.tasks.review(USER, r.parent, "approved")).state).toBe("approved");
   expect((await r.tasks.lifecycleStatus(r.parent)).ready).toBe(false); expect(r.notices.join(" ")).toContain("unverified");
   expect(r.tasks.explain(r.parent).join(" ")).toContain("workflow: gsd-lite");
+  const off = rig("off"); off.tasks.recordLifecycle(USER, off.parent, { phase: phase() });
+  expect((off.tasks.publicView(off.board.get(off.parent)!).lifecycle as any).workflow).toBe("gsd-lite");
   const plain = rig("off", false, "none"); expect(plain.tasks.explain(plain.parent).join(" ")).not.toContain("workflow:");
+  expect(plain.tasks.publicView(plain.board.get(plain.parent)!).lifecycle).toBeUndefined();
   const exported = r.tasks.workflowExport(r.parent); expect(exported.stateHash).toBe(workflowHash(exported.state)); expect(exported.sourceHash).toBe(workflowHash(r.config));
   expect(JSON.stringify(exported)).not.toContain('"title"');
   const secret = rig("advise", true); secret.tasks.recordLifecycle(USER, secret.parent, { phase: phase("verified") });

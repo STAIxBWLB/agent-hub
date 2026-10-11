@@ -16,7 +16,9 @@ const fields = (v: unknown, keys: string[], label: string): Record<string, unkno
   return v as Record<string, unknown>;
 };
 export function phaseReceipt(value: unknown): PhaseReceipt {
-  if (Buffer.byteLength(JSON.stringify(value)) > 32768) throw new Error("phase: receipt exceeds 32 KiB");
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== "string") throw new Error("phase: invalid fields");
+  if (Buffer.byteLength(serialized) > 32768) throw new Error("phase: receipt exceeds 32 KiB");
   const p = fields(value, ["id", "head", "tasks", "criteria"], "phase");
   if (!name(p.id) || (p.head !== undefined && !hash(p.head))) throw new Error("phase: expected bounded id and full head SHA");
   if (!Array.isArray(p.tasks) || p.tasks.length > 64 || !Array.isArray(p.criteria) || !p.criteria.length || p.criteria.length > 32) throw new Error("phase: at most 64 tasks and 1..32 criteria");
