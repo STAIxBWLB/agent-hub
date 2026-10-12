@@ -1986,7 +1986,8 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
   };
 
-  const tooled = new Set<string>();
+  const tooled = new Map<string, number>();
+  let attachments = 0;
   bus.tap((e) => {
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
@@ -1996,7 +1997,12 @@ export async function startDaemon(opts: DaemonOptions) {
       event({ type: "state", peer: e.peer, state: e.state });
       // #248: the add-ons it works with, once per attach (names and versions only).
       if (e.state === "offline") tooled.delete(e.peer);
-      else if (!tooled.has(e.peer)) { tooled.add(e.peer); const peer = e.peer; void detectTooling(peer, { cwd: opts.cwd }).then((addons) => event({ type: "tooling", peer, addons }), () => undefined); }
+      else if (!tooled.has(e.peer)) {
+        // A result is written only while the attachment that started its detection is still the current one.
+        const peer = e.peer, attachment = ++attachments;
+        tooled.set(peer, attachment);
+        void detectTooling(peer, { cwd: opts.cwd }).then((addons) => { if (tooled.get(peer) === attachment) event({ type: "tooling", peer, addons }); }, () => undefined);
+      }
       const open = turns.get(e.peer);
       // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";

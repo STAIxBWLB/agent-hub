@@ -105,6 +105,11 @@ test("research records carry each working peer's latest fingerprint, and a peer 
     task(7, "proposed", "proposed", null), task(7, "assigned", "in_progress", "codex", null), turn(7, "pi"),
     state("pi", "offline"), state("pi", "busy"), turn(7, "pi"), { v: 1, at: at(), type: "tooling", peer: "pi", addons: [] }, task(7, "done", "approved", "codex", null),
   ];
+  // Work under a new attachment whose fingerprint never arrives is unknown, not the earlier attachment's (review of #351).
+  const stale: StampedEvent[] = [state("kimi", "idle"), { v: 1, at: at(), type: "tooling", peer: "kimi", addons: [{ name: "ripwire", version: null }] },
+    task(8, "proposed", "proposed", null), task(8, "assigned", "in_progress", "codex", null), turn(8, "kimi"), state("kimi", "offline"), state("kimi", "idle"), turn(8, "kimi"),
+    task(8, "done", "approved", "codex", null)];
+  expect(taskRecords(stale, "proj", writer)[0]!.tooling?.kimi).toBeUndefined();
   const [six, seven] = taskRecords(windows, "proj", writer);
   expect(six!.tooling).toBeUndefined(); // worked before any fingerprint of its attachment existed
   expect(seven!.tooling).toEqual({ pi: [] }); // its last work was in the later attachment

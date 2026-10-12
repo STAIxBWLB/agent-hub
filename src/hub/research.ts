@@ -97,6 +97,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     const now = attach.get(peer) ?? 0, f = tooling.get(peer);
     a.peers.set(peer, now);
     if (f?.attach === now) a.tooling[peer] = f.addons;
+    else delete a.tooling[peer]; // a fingerprint of an earlier attachment does not describe this work: unknown until one comes
   };
   for (const e of events) {
     if (e.type === "state") {
