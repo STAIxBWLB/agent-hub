@@ -1069,6 +1069,14 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   sdlc: async () => {
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
+    if (sub === "queue" || sub === "release") {
+      const repo = args[1], liveIssues = args.slice(2).map(Number);
+      if (!repo || args.length > 34 || (sub === "queue" && args.length !== 2) || liveIssues.some(id => !Number.isSafeInteger(id) || id <= 0)) fail("usage: ahub sdlc queue <owner/repository> | release <owner/repository> [live-issue...]");
+      const hub = await connect();
+      try { const reply = await hub.request({ t: "sdlc", op: sub, repo, liveIssues }, 30_000); if (!reply.ok) fail(reply.error); console.log(JSON.stringify(reply, null, 2)); }
+      finally { hub.close(); }
+      return;
+    }
     if (sub === "record") {
       if (args.length !== 3 || !Number.isSafeInteger(id) || id! <= 0 || Buffer.byteLength(args[2]!) > 32768) fail("usage: ahub sdlc record <task> '<receipt JSON>'");
       let receipt: unknown; try { receipt = JSON.parse(args[2]!); } catch { fail("receipt must be valid JSON"); }

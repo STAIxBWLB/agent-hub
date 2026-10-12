@@ -1194,6 +1194,246 @@
       "testName": "read-only hardlink identity refusal is stable for the protected original and its ordinary alias (#259)"
     },
     {
+      "id": "delivery-person-order",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "const ordered = reaches(left.pr, right.pr) || reaches(right.pr, left.pr);",
+      "replacement": "const ordered = true;",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "merge queue uses explicit dependency order and never guesses precedence from touching paths (#257)"
+    },
+    {
+      "id": "delivery-file-coverage",
+      "file": "src/hub/sdlc.ts",
+      "search": "pathsComplete: Number.isSafeInteger(p.changedFiles) && p.changedFiles >= 0 && p.changedFiles === paths.length",
+      "replacement": "pathsComplete: true",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "queue stale heads incomplete files private and unlinked work remain blocked (#257)"
+    },
+    {
+      "id": "release-remote-tag-identity",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "return typeof oid === \"string\" && SHA.test(oid) && oid === commit;",
+      "replacement": "return true;",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release mismatched tags stale docs old version open native ledger and changing heads remain blocked (#257)"
+    },
+    {
+      "id": "release-head-readback-fence",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "last.code !== 0 || last.stdout.trim() !== head",
+      "replacement": "false",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release mismatched tags stale docs old version open native ledger and changing heads remain blocked (#257)"
+    },
+    {
+      "id": "delivery-board-readback-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "if (before !== after) { report.complete = false;",
+      "replacement": "if (false) { report.complete = false;",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "queue board revision fence invalidates late evidence instead of offering stale merge readiness (#257)"
+    },
+    {
+      "id": "delivery-current-phase-view",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "sdlcStatus(config, holder?.receipt, read, holder?.phase)",
+      "replacement": "sdlcStatus(config, holder?.receipt, read)",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "gsd-lite queue readiness uses current board phase views and keeps absent or failed views unknown (#257)"
+    },
+    {
+      "id": "release-post-tag-pr-coverage",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "const batch = report.commits.slice(start, start + 100);",
+      "replacement": "const batch = report.commits.slice(0, 0);",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release merged PR coverage reads only post-tag commits despite over 100 historical PRs (#257)"
+    },
+    {
+      "id": "release-committed-doc-metadata",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "root, \"--json\", \"--committed\"",
+      "replacement": "root, \"--json\"",
+      "testFile": "test/check-docs.test.ts",
+      "testName": "release doc evidence rejects working-tree restamps and reads committed metadata (#257)"
+    },
+    {
+      "id": "queue-truncated-row-readiness",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (result.truncated) row.blockers.push",
+      "replacement": "if (false) row.blockers.push",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "truncated open PR coverage blocks every otherwise ready queue row (#257)"
+    },
+    {
+      "id": "release-prerelease-precedence",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "Bun.semver.order(report.version, tag.slice(1)) > 0",
+      "replacement": "Bun.semver.satisfies(report.version, `>${tag.slice(1)}`)",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release version advancement follows SemVer precedence including prereleases and build metadata (#257)"
+    },
+    {
+      "id": "queue-peer-file-coverage",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (touchingCoverageUnknown) row.blockers.push",
+      "replacement": "if (false) row.blockers.push",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "unknown or private peer PR file coverage blocks ordinary readiness without private reads (#257)"
+    },
+    {
+      "id": "release-prerelease-predecessor",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "[\"release\",\"list\",\"--repo\",repo",
+      "replacement": "[\"release\",\"view\",\"--repo\",repo",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release predecessor read includes the published prerelease instead of stable-only latest (#257)"
+    },
+    {
+      "id": "manager-delivery-forwarding",
+      "file": "src/hub/manager.ts",
+      "search": "\"start_peer\", \"sdlc_queue\", \"sdlc_release\"",
+      "replacement": "\"start_peer\", \"unavailable_queue\", \"unavailable_release\"",
+      "testFile": "test/manager.test.ts",
+      "testName": "manager forwards scoped delivery evidence reads beyond ordinary deadlines and rejects stale targets (#257)"
+    },
+    {
+      "id": "manager-delivery-deadline",
+      "file": "src/hub/manager.ts",
+      "search": "else if (deliveryRead) nominalMs = 30_000;",
+      "replacement": "else if (deliveryRead) nominalMs = 10_000;",
+      "testFile": "test/manager.test.ts",
+      "testName": "manager forwards scoped delivery evidence reads beyond ordinary deadlines and rejects stale targets (#257)"
+    },
+    {
+      "id": "delivery-http-idle-limit",
+      "file": "src/hub/ui.ts",
+      "search": "server.timeout(req, 35);",
+      "replacement": "setTimeout(() => server.stop(true), 1_000);",
+      "testFile": "test/ui.test.ts",
+      "testName": "authenticated delivery HTTP reads outwait the default idle limit without extending ordinary actions (#257)"
+    },
+    {
+      "id": "queue-target-branch-completeness",
+      "file": "src/hub/sdlc.ts",
+      "search": "...(typeof p.baseRefName === \"string\" && p.baseRefName && p.baseRefName.length <= 200 && !/[\\x00-\\x1f\\x7f]/.test(p.baseRefName) ? { base: p.baseRefName } : {})",
+      "replacement": "...({ base: p.baseRefName ?? \"main\" })",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "queue completeness includes verified target branches beyond complete file pagination (#257)"
+    },
+    {
+      "id": "queue-person-order-result",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "result.order = result.order.filter(pr => !unresolvedOrder.has(pr));",
+      "replacement": "result.order = result.order;",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "touching PRs and their dependents stay unordered until a person supplies dependency order (#257)"
+    },
+    {
+      "id": "queue-board-order-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "report.complete = false; report.order = [];",
+      "replacement": "report.complete = false;",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "board revision fence removes a previously ordered nonempty delivery result (#257)"
+    },
+    {
+      "id": "queue-open-set-readback-fence",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
+      "replacement": "if (false)",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "open PR identity readback fence invalidates added removed or unavailable sets (#257)"
+    },
+    {
+      "id": "queue-repository-identity-case",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "value.toLowerCase() === repo.toLowerCase()",
+      "replacement": "value === repo",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "case-insensitive repository identities retain linked holders and merged dependencies (#257)"
+    },
+    {
+      "id": "docs-clean-filter-execution",
+      "file": "scripts/check-docs.mjs",
+      "search": "const dirty = dirtiness(entry.paths);",
+      "replacement": "const dirty = git(\"status\", \"--porcelain\", \"--untracked-files=all\", \"--\", ...entry.paths);",
+      "testFile": "test/check-docs.test.ts",
+      "testName": "documentation drift checks never execute configured clean or process filters (#257)"
+    },
+    {
+      "id": "queue-head-snapshot-readback",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
+      "replacement": "if (!finalPrs || JSON.stringify(finalPrs.map(pr => ({ number: pr.number, base: pr.base, baseHead: pr.baseHead }))) !== JSON.stringify(initialPrs.map(pr => ({ number: pr.number, base: pr.base, baseHead: pr.baseHead }))))",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "final queue snapshot refuses changed heads even when open PR identities stay the same (#257)"
+    },
+    {
+      "id": "queue-base-snapshot-readback",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
+      "replacement": "if (!finalPrs || JSON.stringify(finalPrs.map(pr => ({ number: pr.number, head: pr.head }))) !== JSON.stringify(initialPrs.map(pr => ({ number: pr.number, head: pr.head }))))",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "final queue snapshot rejects retargets and advancing bases without a head change (#257)"
+    },
+    {
+      "id": "queue-private-associations",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "tasks: holders.some(t => t.private) ? [] : holders.map(t => t.id)",
+      "replacement": "tasks: holders.map(t => t.id)",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "private and mixed queue holders never expose board associations (#257)"
+    },
+    {
+      "id": "docs-committed-document-existence",
+      "file": "scripts/check-docs.mjs",
+      "search": "return type.status === 0 && type.stdout.trim() === \"blob\";",
+      "replacement": "return existsSync(join(root, path)) && statSync(join(root, path)).isFile();",
+      "testFile": "test/check-docs.test.ts",
+      "testName": "committed docs reject ignored document and coverage ghosts absent from HEAD (#257)"
+    },
+    {
+      "id": "docs-committed-coverage-existence",
+      "file": "scripts/check-docs.mjs",
+      "search": "committed ? git(\"cat-file\", \"-e\", `${headId}:${path}`).status === 0",
+      "replacement": "committed ? existsSync(join(root, path))",
+      "testFile": "test/check-docs.test.ts",
+      "testName": "committed docs reject ignored document and coverage ghosts absent from HEAD (#257)"
+    },
+    {
+      "id": "queue-mutable-gate-snapshot",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "const gatesStable = finalRead.gatesStable;",
+      "replacement": "const gatesStable = true;",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "final queue gate snapshot rejects changed checks reviews requests and threads on the same head (#257)"
+    },
+    {
+      "id": "queue-final-combined-snapshot",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "const finalPrs = finalRead.prs;",
+      "replacement": "const finalPrs = finalRead.prs; await bounded(listArgs);",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "last remote queue read combines identities and gates without an intervening identity-only window (#257)"
+    },
+    {
+      "id": "release-predecessor-final-fence",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "if (!stable) report.blockers.push(\"published release or remote tag changed or could not be reverified\");",
+      "replacement": "if (false) report.blockers.push(\"published release or remote tag changed or could not be reverified\");",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release final snapshot refuses a new predecessor moved tag or unavailable evidence (#257)"
+    },
+    {
+      "id": "release-ledger-final-snapshot",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "if (!issuesStable) report.blockers.push(\"live issue states changed or could not be reverified\");",
+      "replacement": "if (false) report.blockers.push(\"live issue states changed or could not be reverified\");",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release final snapshot invalidates reopened missing or mismatched ledger identities (#257)"
+    },
+    {
       "id": "backlog-staging",
       "file": "src/hub/tasks.ts",
       "search": "const backlog = input.backlog === true;",

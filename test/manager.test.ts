@@ -103,11 +103,36 @@ async function scriptedAction(refusal?: Record<string, unknown>) {
   const url = await openManager(fixture), origin = new URL(url).origin;
   const session = await fetch(`${origin}/session`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ ticket: new URL(url).hash.slice(1) }) });
   const cookie = session.headers.get("set-cookie")!;
-  const action = async (kind: string) => (await fetch(`${origin}/action`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ action: kind, projectId: project.id, instanceId: "i1", peer: "pi" }) })).json() as Promise<any>;
+  const action = async (kind: string, extra: Record<string, unknown> = {}) => (await fetch(`${origin}/action`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ action: kind, projectId: project.id, instanceId: "i1", peer: "pi", ...extra }) })).json() as Promise<any>;
   const arrived = (kind: string) => replies.has(kind) ? Promise.resolve() : new Promise<void>(resolve => observed.set(kind, resolve));
   const reply = (kind: string, result: Record<string, unknown>) => replies.get(kind)!(result);
   return { ...fixture, hub, action, requests, limits, arrived, reply };
 }
+
+test("manager forwards scoped delivery evidence reads beyond ordinary deadlines and rejects stale targets (#257)", async () => {
+  const f = await scriptedAction();
+  try {
+    for (const kind of ["sdlc_queue", "sdlc_release"]) {
+      const reading = f.action(kind, { repo: "owner/repo", liveIssues: [273] });
+      const arrived = await Promise.race([f.arrived(kind).then(() => "arrived"), reading.then(() => "returned")]);
+      expect(arrived).toBe("arrived");
+      const ordinary = f.action("pause");
+      await f.arrived("pause");
+      expect((await ordinary).ok).toBe(false);
+      f.reply(kind, { ok: true, report: { repo: "owner/repo", native: "unverified" } });
+      expect(await reading).toEqual({ ok: true, report: { repo: "owner/repo", native: "unverified" } });
+    }
+    expect(f.limits).toEqual([["sdlc_queue", 30_000], ["pause", 10_000], ["sdlc_release", 30_000], ["pause", 10_000]]);
+    const forwarded = f.requests.filter(request => request.t === "ui_action" && String(request.action.action).startsWith("sdlc_"));
+    expect(forwarded).toHaveLength(2);
+    for (const request of forwarded) expect(request).toMatchObject({ instanceId: "i1", action: { projectId: "p1", instanceId: "i1", repo: "owner/repo", liveIssues: [273] } });
+    const before = f.requests.filter(request => request.t === "ui_action").length;
+    expect((await f.action("sdlc_queue", { instanceId: "stale" })).ok).toBe(false);
+    expect((await f.action("sdlc_release", { projectId: "other" })).ok).toBe(false);
+    expect((await f.action("sdlc_ship")).ok).toBe(false);
+    expect(f.requests.filter(request => request.t === "ui_action")).toHaveLength(before);
+  } finally { await stopManager({ home: f.home }); f.hub.stop(true); }
+});
 
 test("unified peer start outwaits 10 seconds using the provider cap, with ordinary authority", async () => {
   // Hold the start reply until the ordinary action's old deadline is observed; no sleep between deadline fractions.
