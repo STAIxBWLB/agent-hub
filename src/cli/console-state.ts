@@ -1,3 +1,4 @@
+import { consoleNeeds, attentionLine } from "./attention.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
@@ -11,6 +12,7 @@ export interface Approval {
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
+  petEnabled?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;
   /** The selected request, by id: a, d and v act on it alone, and it is cleared, never moved, when the request closes. */
   approvalId?: string;
@@ -443,6 +445,26 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
+  if (key === "n" && s.petEnabled && !s.optionChoice && !s.help) {
+    const items = consoleNeeds(s, now).items;
+    if (!items.length) return done();
+    const index = ((s.attentionSelection ?? -1) + 1) % items.length;
+    s.attentionSelection = index;
+    const item = items[index]!;
+    s.detail = undefined; s.requestDetail = undefined;
+    if (item.kind === "approval") {
+      s.approvalId = String(item.id);
+      if (s.mode === "panels") { s.panel = 2; s.selection = s.approvals.findIndex(row => row.id === item.id); }
+    } else if (item.kind === "delivery" && s.mode === "panels") {
+      s.panel = 4;
+      const rows = panelRows(s);
+      s.selection = Math.max(0, rows.findIndex(row => item.id !== undefined ? row.id === item.id : row.peer === item.peer));
+    } else {
+      const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : "ahub console";
+      effects.push({ type: "print", text: `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`, kind: "attention", tone: "attention" });
+    }
+    return done();
+  }
   if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
   const switchPanel = (panel: number) => { s.panel = panel; s.selection = 0; s.detail = undefined; s.requestDetail = undefined; return done(); };
@@ -652,6 +674,9 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
+  const attention = s.petEnabled ? consoleNeeds(s, now) : undefined;
+  const pet = attention ? attentionLine(attention) : "";
+  const attentionRule = pet && Bun.stringWidth(pet) + 4 <= columns ? [span("-".repeat(columns - Bun.stringWidth(pet) - 2) + " ", "muted"), span(pet, attention!.state === "blocked" ? "failure" : attention!.act ? "attention" : "muted"), span("-", "muted")] : rule;
   if (s.mode === "stream") {
     const counts = s.taskCounts;
     const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
@@ -659,7 +684,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (!noticeShown && defaultSource === undefined && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
       footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
     }
-    return [rule, ...footer];
+    return [attentionRule, ...footer];
   }
   const progress = taskProgress(s.tasks);
   const height = rows - 6; // header, rule, body, rule, three footer lines
@@ -706,5 +731,5 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     }
   }
   const body = lines.slice(0, height); while (body.length < height) body.push([]);
-  return [header(s, columns), rule, ...body, rule, ...footer];
+  return [header(s, columns), rule, ...body, attentionRule, ...footer];
 }
