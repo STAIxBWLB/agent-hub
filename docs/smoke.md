@@ -2,21 +2,25 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
-## Office view (#264, phases 1-3)
+## Office view (#264, phases 1-4)
 
-Not run live yet (unverified). Phases 1-3 ship the Flat office with
-snapshot-driven motion (card moves, message arcs, delivery marks, the busy
-latch, the settle rule), the Off/Flat control, and the optional turn/checking/
-links snapshot fields (exact task bubble, check-running mark, finishing-a-turn,
-warning lines); `test/office-model.test.ts`, `test/office-view.test.ts`,
+Not run live yet (unverified). Phases 1-4 ship the office with its Off/Flat/
+Isometric control: snapshot-driven motion (card moves, message arcs, delivery
+marks, the busy latch, the settle rule), the optional turn/checking/links
+snapshot fields (exact task bubble, check-running mark, finishing-a-turn,
+warning lines), and the isometric projection of the same model.
+`test/office-model.test.ts`, `test/office-view.test.ts`,
 `test/tasks.test.ts` and `test/daemon.test.ts` cover the model, the daemon
-fields, the cookie, the CSP cleanliness, the motion wiring and the settle rule
-against fakes, but no browser was opened.
+fields, the cookie, the CSP cleanliness, the motion wiring, the settle rule and
+the projection (same focus order and names as Flat) against fakes, but no
+browser was opened.
 The live leg: `ahub up` on a scratch project with two agents working, `ahub ui`,
-set the Office View control to Flat. Check the scene in both themes and at phone
+set the Office View control to Flat and to Isometric. Check the scene in both
+projections, in both themes and at phone
 width with the browser console open (no CSP violations), that cards glide between
 rooms and desks as tasks change state, that arcs and marks fade after about ten
-seconds, that desks and cards are focusable with sensible names, that activating
+seconds, that desks and cards are focusable with sensible names in the same
+order under both projections, that activating
 one scrolls to and highlights the matching list row, that reduced motion gives
 static positions, and that the page weight stays within the 30 KB budget of the
 issue. Record the look here when performed.

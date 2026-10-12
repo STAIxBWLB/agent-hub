@@ -77,7 +77,7 @@ function startOfficeRuntime(view: () => string) {
   const context = {
     get, el, officeModel, taskProgress,
     officeView: { get: view, set: () => {} },
-    document: { createElement: () => new Node(), createElementNS: () => new Node() },
+    document: { createElement: (tag: string) => { const node = new Node(); node.tag = tag; return node; }, createElementNS: (_ns: string, tag: string) => { const node = new Node(); node.tag = tag; return node; } },
   };
   const api = runInNewContext(`
     let stopped=false, managerMode=false, selectedProjectId='', selectedInstanceId='', snapshotValid=true, viewGeneration=0, lastSnapshot=null, eventCount=0, cursor=0, draftChoicesPending=false, officePrev=null;
@@ -124,7 +124,7 @@ test("the served page injects the shared office model and stays within the CSP r
   // Off is the default in the markup; Flat is the only other choice in this phase.
   expect(served).toContain('<section id="office-section" aria-labelledby="office-title" hidden>');
   const control = served.match(/<select id="office-view">([\s\S]*?)<\/select>/)![1]!;
-  expect([...control.matchAll(/value="(\w+)"/g)].map((match) => match[1])).toEqual(["off", "flat"]);
+  expect([...control.matchAll(/value="(\w+)"/g)].map((match) => match[1])).toEqual(["off", "flat", "isometric"]);
 });
 
 test("the scene code has no timer, frame loop, request, action or colour literal", () => {
@@ -155,9 +155,9 @@ test("the office view choice persists in the agent-hub-office cookie with the th
     const writes: string[] = [];
     const document = { get cookie() { return cookie; }, set cookie(value: string) { writes.push(value); cookie = value; } };
     const view = runInNewContext(source, { document });
-    expect(view.get()).toBe(saved === "flat" ? "flat" : "off");
-    view.set("flat");
-    expect(writes[0]).toBe("agent-hub-office=flat; Path=/; Max-Age=31536000; SameSite=Strict");
+    expect(view.get()).toBe(["off", "flat", "isometric"].includes(saved) ? saved : "off");
+    view.set("isometric");
+    expect(writes[0]).toBe("agent-hub-office=isometric; Path=/; Max-Age=31536000; SameSite=Strict");
     view.set("bogus");
     expect(view.get()).toBe("off");
   }
@@ -381,4 +381,59 @@ test("phase 3: warning lines draw between the desks a link names", () => {
   // The link is state-driven: it stays while the link exists and leaves when it is gone.
   api.draw({ ...snapshot, links: [] });
   expect(get("office").findAll((node) => (node.attrs.class ?? "").split(" ").includes("office-link") && !node.classList.contains("office-leaving"))).toHaveLength(0);
+});
+
+test("isometric renders the same model with the same focus order and accessible names (AC7)", () => {
+  const flat = startOfficeRuntime(() => "flat");
+  flat.api.draw(snapshot);
+  const iso = startOfficeRuntime(() => "isometric");
+  iso.api.draw(snapshot);
+  const focusOrder = (office: Node) => office.findAll((node) => node.attrs.tabindex === "0").map((node) => node.attrs["aria-label"]);
+  const flatOrder = focusOrder(flat.get("office"));
+  expect(flatOrder.length).toBeGreaterThan(0);
+  expect(focusOrder(iso.get("office"))).toEqual(flatOrder); // same DOM order, same names
+  expect(iso.get("office").text()).toContain("codex"); // upright labels, unrotated
+  // Geometry: codex is desk slot 1 at grid (12, 3); iso maps x' = (x - y) cos 30, y' = (x + y) sin 30.
+  const flatDesk = flat.api.maps.officeDesks.get("codex")!;
+  expect(flatDesk.style.transform).toBe("translate(12px,3px)");
+  expect(flatDesk.children[0]!.tag).toBe("rect");
+  const isoDesk = iso.api.maps.officeDesks.get("codex")!;
+  expect(isoDesk.style.transform).toBe(`translate(${(12 - 3) * 0.8660254}px,${(12 + 3) * 0.5}px)`);
+  const tile = isoDesk.children[0]!;
+  expect(tile.tag).toBe("polygon");
+  expect(tile.attrs.points).toBe("0,0 8.66,5 -1.73,11 -10.39,6"); // desk is 10 x 12 grid units
+  // The viewBox covers the projected extents with a margin.
+  const w = 94, h = 42; // flat viewBox of this fixture: four rooms in a row, one desk row
+  expect(flat.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox).toBe(`0 0 ${w} ${h}`);
+  const isoBox = iso.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox!.split(" ").map(Number);
+  expect(isoBox[0]).toBeCloseTo(-h * 0.8660254 - 3);
+  expect(isoBox[1]).toBeCloseTo(-3);
+  expect(isoBox[2]).toBeCloseTo((w + h) * 0.8660254 + 6);
+  expect(isoBox[3]).toBeCloseTo((w + h) * 0.5 + 6);
+});
+
+test("motion and the settle rule work under isometric, and a view switch jumps", () => {
+  let view = "flat";
+  const { api, get } = startOfficeRuntime(() => view);
+  api.draw(snapshot);
+  const svg = () => get("office").children[0]!;
+  expect(svg().attrs.class).toContain("office-settle");
+  const card = api.maps.officeCards.get(4)!;
+  const flatAt = card.style.transform;
+  view = "isometric";
+  api.draw(snapshot); // same model, new projection: repaint in place, no animation
+  expect(api.maps.officeCards.get(4)).toBe(card);
+  expect(card.style.transform).not.toBe(flatAt);
+  expect(svg().attrs.class).toContain("office-settle");
+  // A card move under isometric keeps its node and animates by transform as in flat.
+  const moved = { ...snapshot, tasks: snapshot.tasks.map((task) => task.id === 4 ? { ...task, state: "proposed", owner: "" } : task) };
+  api.draw(moved);
+  expect(api.maps.officeCards.get(4)).toBe(card);
+  expect(svg().attrs.class).not.toContain("office-settle");
+  const isoAt = card.style.transform;
+  expect(isoAt).toMatch(/^translate\(-?\d/);
+  // Back to flat: the card returns to the flat coordinate of its room slot.
+  view = "flat";
+  api.draw(moved);
+  expect(card.style.transform).not.toBe(isoAt);
 });

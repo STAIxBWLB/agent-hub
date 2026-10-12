@@ -2,7 +2,7 @@
 title: Office view of live agent work in the dashboard
 date: 2026-10-12
 project: agent-hub
-status: phases 1-3 implemented (Flat office with motion and turn/checking/link fields); phases 4-5 pending
+status: phases 1-4 implemented (Flat and Isometric office with motion and turn/checking/link fields); phase 5 pending #263
 issue: 264
 ---
 
@@ -132,6 +132,28 @@ Phase 3 decisions within the spec:
   links as state: no fade, present while the link exists.
 - `PROTOCOL` (16) and `EVENTS_SCHEMA` (1) are pinned by a test; the fields are
   additive and optional both ways.
+
+Phase 4 decisions within the spec:
+
+- Isometric is a pure coordinate projection at the renderer, not a second
+  scene: `officeProject(x, y)` maps grid coordinates to (x - y) cos 30,
+  (x + y) sin 30 and every node is laid out upright in local coordinates and
+  positioned by its projected CSSOM transform. Desk and room tiles become
+  parallelogram polygons (the linear image of their rect); cards, text labels,
+  bubbles, marks and arc labels stay upright. No WebGL, no library, no new
+  route, no CSP change.
+- The DOM is projection-independent: the same keyed nodes in the same order
+  with the same accessible names, so focus order is identical (AC7, tested by
+  comparing serialized tab order between Flat and Isometric). The viewBox is
+  the projected bounding box with a small margin; the SVG keeps `width: 100%`,
+  so phone width scales without horizontal page scroll.
+- A projection switch repaints every node in place (the projection is part of
+  each reconcile signature) and is treated as a settle: positions jump, no
+  transform transition storms. Card moves under Isometric animate through the
+  same transform transition as Flat; reduced motion removes it all as before.
+- Size accounting against the issue's 30 KB budget (page base 59,329 bytes at
+  phase 1 branch point): phase 1 +11,040, phase 2 +7,340, phase 3 +2,141,
+  phase 4 +1,704; final 81,554 bytes, +22,225 total, inside the budget.
 
 ## Verification
 

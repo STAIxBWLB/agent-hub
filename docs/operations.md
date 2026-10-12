@@ -160,13 +160,19 @@ condition (idle, busy, offline, paused, waiting on approval) has a glyph and a
 text label, and the scene carries ids, classes, states, kinds, counts and public
 titles only: message bodies, task details and approval titles never enter it.
 The scene adds no timer, frame loop or request and re-renders only when its
-signature changes. A View control offers Off (the default) and Flat; the choice
-is stored in a second host-scoped loopback cookie `agent-hub-office` with the
+signature changes. A View control offers Off (the default), Flat and
+Isometric; the choice is stored in a second host-scoped loopback cookie `agent-hub-office` with the
 same attributes as the theme cookie, and blocked cookie access defaults to Off
 without preventing operation. Desks and cards are focusable buttons; activating
 one scrolls to and highlights the matching list row, and a list row highlights
 its desk or card on focus and hover. The scene performs no action: every control
-stays in the lists. The live browser look is tracked in `docs/smoke.md` and
+stays in the lists. The View control's third option, Isometric (phase 4),
+renders the same model through the same code path with the grid coordinates
+projected (x' = (x - y) cos 30, y' = (x + y) sin 30): tiles become
+parallelograms, cards and labels stay upright, and the DOM order and
+accessible names are identical to Flat. Switching the view jumps to the new
+projection without animating; the settle rule and reduced motion apply
+unchanged. The live browser look is tracked in `docs/smoke.md` and
 remains unverified until performed.
 
 Motion (phase 2): card moves between rooms and desks, message arcs between

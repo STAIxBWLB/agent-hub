@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add the Isometric projection to the dashboard Office view: the same model through the same code path with projected grid coordinates, upright labels, identical focus order and accessible names, and jump-on-switch (#264, phase 4 of 4).
+
 - Add optional turn/checking/links snapshot fields for the dashboard office view (exact task bubble, finishing-a-turn, check-running mark, overlap/conflict/cohort warning lines), ids-only and PII-safe with PROTOCOL and EVENTS_SCHEMA unchanged (#264, phase 3 of 4).
 
 - Add snapshot-driven motion to the dashboard Office view: card moves by CSS transform transition, message arcs, delivery warning marks and the busy latch from event rows with timer-free keyframe fades, and the settle rule, with reduced-motion support (#264, phase 2 of 4).

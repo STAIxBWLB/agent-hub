@@ -27,7 +27,7 @@ const dashboardTheme = (() => {
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
 <div class="stack">
-<section id="office-section" aria-labelledby="office-title" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option></select></div></div><div id="office" class="content"></div></section>
+<section id="office-section" aria-labelledby="office-title" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 <section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="proposed">Proposed</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
@@ -49,8 +49,8 @@ const dashboardTheme = (() => {
 /* OFFICE_MODEL */
 const officeView = (() => {
   let choice = 'off';
-  try { const saved = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('agent-hub-office='))?.slice('agent-hub-office='.length); if (['off','flat'].includes(saved)) choice = saved; } catch {}
-  return { get: () => choice, set: (value) => { choice = ['off','flat'].includes(value) ? value : 'off'; try { document.cookie = `agent-hub-office=${choice}; Path=/; Max-Age=31536000; SameSite=Strict`; } catch {} } };
+  try { const saved = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('agent-hub-office='))?.slice('agent-hub-office='.length); if (['off','flat','isometric'].includes(saved)) choice = saved; } catch {}
+  return { get: () => choice, set: (value) => { choice = ['off','flat','isometric'].includes(value) ? value : 'off'; try { document.cookie = `agent-hub-office=${choice}; Path=/; Max-Age=31536000; SameSite=Strict`; } catch {} } };
 })();
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
 const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; });
@@ -511,11 +511,30 @@ async function poll() {
   catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
-// office-scene-begin (issue 264): the Flat office. Draws the shared officeModel as inline SVG from the
-// same render(snapshot) call as the lists; no timer, no frame loop, no request and no action lives here.
-// Motion is CSS only: transitions on transform/opacity for card moves, keyframe fades for arcs, alerts
-// and the busy latch. Fading uses animation-delay computed from the model's timestamps at render time;
+// office-scene-begin (issue 264): the office, drawn Flat or Isometric. Draws the shared officeModel as inline
+// SVG from the same render(snapshot) call as the lists; no timer, no frame loop, no request and no action
+// lives here. Motion is CSS only: transitions on transform/opacity for card moves, keyframe fades for arcs,
+// alerts and the busy latch. Fading uses animation-delay computed from the model's timestamps at render time;
 // expired nodes purge lazily on the next changed render or on their own animationend, never on a timer.
+// The projection (phase 4) maps grid coordinates only: x' = (x - y) cos 30, y' = (x + y) sin 30. Every node is
+// laid out upright in local coordinates and positioned by its projected transform; tiles become parallelograms.
+// Text is never rotated, and the DOM order and accessible names do not depend on the projection.
+let officeProjection = 'flat';
+let officeLastProjection = '';
+function officeProject(x, y) { return officeProjection === 'iso' ? [(x - y) * 0.8660254, (x + y) * 0.5] : [x, y]; }
+function officePlace(node, x, y) { const p = officeProject(x, y); node.style.transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)'; }
+function officeTile(w, h, cls) {
+  if (officeProjection !== 'iso') return officeNode('rect', { x: 0, y: 0, width: w, height: h, rx: 1, class: cls });
+  const c = 0.8660254, s = 0.5, round = (v) => Math.round(v * 100) / 100;
+  return officeNode('polygon', { points: [[0, 0], [w * c, w * s], [(w - h) * c, (w + h) * s], [-h * c, h * s]].map((p) => p.map(round).join(',')).join(' '), class: cls });
+}
+function officeViewBox(w, h) {
+  if (officeProjection !== 'iso') return '0 0 ' + w + ' ' + h;
+  const corners = [officeProject(0, 0), officeProject(w, 0), officeProject(0, h), officeProject(w, h)];
+  const xs = corners.map((p) => p[0]), ys = corners.map((p) => p[1]), m = 3;
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  return (minX - m) + ' ' + (minY - m) + ' ' + (Math.max(...xs) - minX + 2 * m) + ' ' + (Math.max(...ys) - minY + 2 * m);
+}
 function officeClip(text, max) { text = String(text); return text.length > max ? text.slice(0, max - 3) + '...' : text; }
 function officeNode(tag, attrs, text) { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const key in attrs) node.setAttribute(key, String(attrs[key])); if (text !== undefined) node.textContent = text; return node; }
 function officeKeys(event, activate) { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } }
@@ -547,45 +566,48 @@ function officeCardPaint(node, card) {
 function officeDeskPaint(node, desk) {
   node.setAttribute('class', 'office-desk office-' + desk.condition + (desk.dimmed ? ' office-dimmed' : ''));
   node.setAttribute('aria-label', desk.name);
-  const children = [officeNode('rect', { x: desk.x, y: desk.y, width: desk.w, height: desk.h, rx: 1, class: 'office-desk-surface' })];
+  officePlace(node, desk.x, desk.y);
+  const children = [officeTile(desk.w, desk.h, 'office-desk-surface')];
   if (desk.bubble) {
-    children.push(officeNode('rect', { x: desk.x + 0.6, y: desk.y - 2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
-    children.push(officeNode('text', { x: desk.x + desk.w / 2, y: desk.y - 0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
+    children.push(officeNode('rect', { x: 0.6, y: -2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
+    children.push(officeNode('text', { x: desk.w / 2, y: -0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
   }
-  children.push(officeNode('text', { x: desk.x + 1, y: desk.y + 2, class: 'office-name' }, desk.id));
-  if (desk.mode) children.push(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 2, 'text-anchor': 'end', class: 'office-mode' }, desk.mode));
-  children.push(officeNode('text', { x: desk.x + 1, y: desk.y + 3.9, class: 'office-glyph' }, desk.glyph));
-  children.push(officeNode('text', { x: desk.x + 2.6, y: desk.y + 3.9, class: 'office-state' }, desk.label));
-  if (desk.approvals > 0) children.push(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 3.9, 'text-anchor': 'end', class: 'office-hand' }, '⚑ ' + desk.approvals));
+  children.push(officeNode('text', { x: 1, y: 2, class: 'office-name' }, desk.id));
+  if (desk.mode) children.push(officeNode('text', { x: desk.w - 1, y: 2, 'text-anchor': 'end', class: 'office-mode' }, desk.mode));
+  children.push(officeNode('text', { x: 1, y: 3.9, class: 'office-glyph' }, desk.glyph));
+  children.push(officeNode('text', { x: 2.6, y: 3.9, class: 'office-state' }, desk.label));
+  if (desk.approvals > 0) children.push(officeNode('text', { x: desk.w - 1, y: 3.9, 'text-anchor': 'end', class: 'office-hand' }, '⚑ ' + desk.approvals));
   let line = 5.1;
-  if (desk.breakNote) { children.push(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip('Break: ' + desk.breakNote + (desk.breakResetsAt ? ' / resets ' + rel(desk.breakResetsAt) : ''), 38))); line += 1.05; }
-  if (desk.finishing) { children.push(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, 'finishing a turn')); line += 1.05; }
-  if (!desk.attached) { children.push(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, 'disconnected; work retained')); line += 1.05; }
+  if (desk.breakNote) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip('Break: ' + desk.breakNote + (desk.breakResetsAt ? ' / resets ' + rel(desk.breakResetsAt) : ''), 38))); line += 1.05; }
+  if (desk.finishing) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, 'finishing a turn')); line += 1.05; }
+  if (!desk.attached) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, 'disconnected; work retained')); line += 1.05; }
   const tray = [];
   if (desk.tray.queued) tray.push(desk.tray.queued + ' queued');
   if (desk.tray.important) tray.push(desk.tray.important + ' important');
   if (desk.tray.needsReview) tray.push(desk.tray.needsReview + ' to review');
   if (desk.tray.heldBy) tray.push('held by ' + desk.tray.heldBy);
-  if (tray.length) children.push(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
-  if (desk.extraCards > 0) children.push(officeNode('text', { x: desk.x + 1, y: desk.y + desk.h - 0.4, class: 'office-meta' }, '+' + desk.extraCards + ' more'));
+  if (tray.length) children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
+  if (desk.extraCards > 0) children.push(officeNode('text', { x: 1, y: desk.h - 0.4, class: 'office-meta' }, '+' + desk.extraCards + ' more'));
   node.replaceChildren(...children);
 }
 function officeRoomPaint(node, room) {
   node.setAttribute('class', 'office-roombox office-roombox-' + room.id);
+  officePlace(node, room.x, room.y);
   node.replaceChildren(
-    officeNode('rect', { x: room.x, y: room.y, width: room.w, height: room.h, rx: 1, class: 'office-room' }),
-    officeNode('text', { x: room.x + 1, y: room.y + 2.2, class: 'office-room-title' }, room.label),
-    officeNode('text', { x: room.x + room.w - 1, y: room.y + 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
+    officeTile(room.w, room.h, 'office-room'),
+    officeNode('text', { x: 1, y: 2.2, class: 'office-room-title' }, room.label),
+    officeNode('text', { x: room.w - 1, y: 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
   if (room.overflow > 0 && room.filterState) {
     const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + room.overflow + ' more ' + room.filterState.replaceAll('_', ' ') + ' tasks in the task list' });
-    more.append(officeNode('text', { x: room.x + 1, y: room.y + room.h - 1, class: 'office-more' }, '+' + room.overflow + ' more'));
+    more.append(officeNode('text', { x: 1, y: room.h - 1, class: 'office-more' }, '+' + room.overflow + ' more'));
     const open = () => officeFilter(room.filterState);
     more.addEventListener('click', open);
     more.addEventListener('keydown', (event) => officeKeys(event, open));
     node.append(more);
   }
 }
-let officeScene = null;function officeEnsure(target) {
+let officeScene = null;
+function officeEnsure(target) {
   if (officeScene) return officeScene;
   const svg = officeNode('svg', { class: 'office-scene', role: 'group', 'aria-label': 'Office: desks, rooms and task cards' });
   const layers = {};
@@ -603,11 +625,14 @@ function officeLeave(scene, key) {
 }
 function drawOffice(target, model) {
   const scene = officeEnsure(target), els = scene.els, now = Date.now();
-  scene.svg.setAttribute('viewBox', '0 0 ' + model.width + ' ' + model.height);
-  scene.svg.setAttribute('class', 'office-scene' + (model.settle ? ' office-settle' : ''));
+  scene.svg.setAttribute('viewBox', officeViewBox(model.width, model.height));
+  const switched = officeLastProjection !== officeProjection; // a view switch jumps, never animates
+  officeLastProjection = officeProjection;
+  scene.svg.setAttribute('class', 'office-scene' + (model.settle || switched ? ' office-settle' : ''));
   const seen = new Set();
   const keep = (key, sig, layer, paint, appear) => {
     seen.add(key);
+    sig = officeProjection + '|' + sig; // a projection switch repaints every node in place
     const entry = els.get(key);
     if (entry && entry.sig === sig) return { node: entry.node, fresh: false };
     const node = entry ? entry.node : officeNode('g', {});
@@ -636,7 +661,7 @@ function drawOffice(target, model) {
   for (const desk of model.desks) cards.push(...desk.cards);
   for (const room of model.rooms) cards.push(...room.cards);
   for (const card of cards) {
-    const key = 'card:' + card.id, transform = 'translate(' + card.x + 'px,' + card.y + 'px)';
+    const key = 'card:' + card.id;
     const { node, fresh } = keep(key, JSON.stringify([card.label, card.name, card.waiting, card.rework, card.checking, card.w, card.h]), scene.layers.cards, (n) => officeCardPaint(n, card));
     if (fresh && !node.getAttribute('tabindex')) {
       node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
@@ -644,26 +669,27 @@ function drawOffice(target, model) {
       node.addEventListener('click', open);
       node.addEventListener('keydown', (event) => officeKeys(event, open));
     }
+    const p = officeProject(card.x, card.y), transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)';
     if (node.style.transform !== transform) node.style.transform = transform; // the only animated property
   }
   if (model.extraPeers > 0) {
     keep('extra:peers', String(model.extraPeers) + ':' + model.width, scene.layers.marks,
-      (node) => node.replaceChildren(officeNode('text', { x: model.width, y: 1.8, 'text-anchor': 'end', class: 'office-meta' }, '+' + model.extraPeers + ' peers')), false);
+      (node) => { officePlace(node, model.width, 0); node.replaceChildren(officeNode('text', { x: 0, y: 1.8, 'text-anchor': 'end', class: 'office-meta' }, '+' + model.extraPeers + ' peers')); }, false);
   }
   const deskById = new Map(model.desks.map((desk) => [desk.id, desk]));
   // Warning lines between desks (phase 3): overlap, conflict and cohort links, ids only, state-driven (no fade).
   for (const link of model.links) {
-    const points = [...new Set(link.peers)].map((id) => deskById.get(id)).filter(Boolean);
+    const points = [...new Set(link.peers)].map((id) => deskById.get(id)).filter(Boolean).map((d) => officeProject(d.x + d.w / 2, d.y + d.h / 2));
     if (points.length < 2) continue;
     const segments = [];
     for (let i = 0; i + 1 < points.length; i++) segments.push([points[i], points[i + 1]]);
     const label = link.kind + ' ' + link.tasks.map((id) => '#' + id).join(' ');
-    keep('link:' + link.kind + ':' + link.tasks.join(','), JSON.stringify([link.kind, link.tasks, link.peers, points.map((d) => [d.x, d.y])]), scene.layers.links,
+    keep('link:' + link.kind + ':' + link.tasks.join(','), JSON.stringify([link.kind, link.tasks, link.peers, points]), scene.layers.links,
       (n) => {
         n.setAttribute('class', 'office-link office-link-' + link.kind);
         n.setAttribute('aria-hidden', 'true');
-        n.replaceChildren(...segments.map(([a, b]) => officeNode('line', { x1: a.x + a.w / 2, y1: a.y + a.h / 2, x2: b.x + b.w / 2, y2: b.y + b.h / 2, class: 'office-link-line' })),
-          officeNode('text', { x: (segments[0][0].x + segments[0][1].x) / 2 + 1, y: (segments[0][0].y + segments[0][1].y) / 2 - 1, class: 'office-link-label' }, officeClip(label, 28)));
+        n.replaceChildren(...segments.map(([a, b]) => officeNode('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: 'office-link-line' })),
+          officeNode('text', { x: (segments[0][0][0] + segments[0][1][0]) / 2 + 1, y: (segments[0][0][1] + segments[0][1][1]) / 2 - 1, class: 'office-link-label' }, officeClip(label, 28)));
       }, false);
   }
   for (const arc of model.arcs) {
@@ -672,12 +698,13 @@ function drawOffice(target, model) {
     for (const target of arc.to.length ? arc.to : model.desks.map((desk) => desk.id)) {
       const to = deskById.get(target);
       if (!to) continue;
-      const x1 = from ? from.x + from.w / 2 : 1, y1 = from ? from.y : 1, x2 = to.x + to.w / 2, y2 = to.y;
+      const p1 = officeProject(from ? from.x + from.w / 2 : 1, from ? from.y : 1), p2 = officeProject(to.x + to.w / 2, to.y);
+      const mx = (p1[0] + p2[0]) / 2, my = Math.min(p1[1], p2[1]) - 4;
       const cls = 'office-arc-path' + (arc.priority === 'important' ? ' office-arc-important' : '') + (arc.dropped ? ' office-arc-dropped' : '');
-      const { node, fresh } = keep('arc:' + arc.seq + ':' + target, JSON.stringify([arc.seq, target, arc.kind, arc.task, arc.priority, arc.dropped, x1, y1, x2, y2]), scene.layers.arcs,
+      const { node, fresh } = keep('arc:' + arc.seq + ':' + target, JSON.stringify([arc.seq, target, arc.kind, arc.task, arc.priority, arc.dropped, p1, p2]), scene.layers.arcs,
         (n) => { n.setAttribute('class', 'office-arc'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(
-          officeNode('path', { d: 'M ' + x1 + ' ' + y1 + ' Q ' + (x1 + x2) / 2 + ' ' + (Math.min(y1, y2) - 4) + ' ' + x2 + ' ' + y2, class: cls }),
-          officeNode('text', { x: (x1 + x2) / 2, y: Math.min(y1, y2) - 4.8, 'text-anchor': 'middle', class: 'office-arc-label' }, label)); }, false);
+          officeNode('path', { d: 'M ' + p1[0] + ' ' + p1[1] + ' Q ' + mx + ' ' + my + ' ' + p2[0] + ' ' + p2[1], class: cls }),
+          officeNode('text', { x: mx, y: my - 0.8, 'text-anchor': 'middle', class: 'office-arc-label' }, label)); }, false);
       if (fresh) officeFade(node, arc.until, now);
     }
   }
@@ -687,14 +714,14 @@ function drawOffice(target, model) {
     const desk = deskById.get(peer);
     if (!desk) continue;
     const { node, fresh } = keep('alert:' + peer, String(alert.seq), scene.layers.marks,
-      (n) => { n.setAttribute('class', 'office-alertmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 5.1, 'text-anchor': 'end', class: 'office-alert' }, '! ' + alert.kind)); }, false);
+      (n) => { officePlace(n, desk.x, desk.y); n.setAttribute('class', 'office-alertmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: desk.w - 1, y: 5.1, 'text-anchor': 'end', class: 'office-alert' }, '! ' + alert.kind)); }, false);
     if (fresh) officeFade(node, alert.until, now);
   }
   for (const desk of model.desks) {
     const latch = model.latched[desk.id];
     if (desk.condition !== 'idle' || !latch || latch.until <= now) continue;
     const { node, fresh } = keep('latch:' + desk.id, String(latch.seq), scene.layers.marks,
-      (n) => { n.setAttribute('class', 'office-latchmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: desk.x + 5.2, y: desk.y + 3.9, class: 'office-latch' }, '● busy')); }, false);
+      (n) => { officePlace(n, desk.x, desk.y); n.setAttribute('class', 'office-latchmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: 5.2, y: 3.9, class: 'office-latch' }, '● busy')); }, false);
     if (fresh) officeFade(node, latch.until, now);
   }
   for (const key of [...els.keys()]) if (!seen.has(key)) officeLeave(scene, key);
@@ -706,6 +733,7 @@ function drawOffice(target, model) {
 }
 function renderOffice(snapshot) {
   const view = officeView.get(), section = $('office-section');
+  officeProjection = view === 'isometric' ? 'iso' : 'flat';
   section.hidden = view === 'off';
   if (view === 'off') {
     if (signatures.has('office')) { signatures.delete('office'); $('office').replaceChildren(); officeScene = null; }
