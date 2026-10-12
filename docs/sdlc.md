@@ -136,7 +136,7 @@ Queue reads fetch PR numbers and bounded head/check/review/thread/file-count met
 
 A truncated open-PR list blocks every row because omitted PRs may change the touching order. Version advancement uses SemVer precedence, including prereleases; build metadata alone is not an advance.
 
-Missing/incomplete file evidence or a private PR also prevents conflict coverage for other rows. Their readiness stays blocked without reading the private PR.
+Missing/incomplete file evidence, an unknown target branch or a private PR also prevents conflict coverage for other rows. Their readiness stays blocked without reading the private PR.
 
 # Read-only release report contract (#257)
 

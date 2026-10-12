@@ -58,9 +58,11 @@ test("truncated open PR coverage blocks every otherwise ready queue row (#257)",
 });
 test("unknown or private peer PR file coverage blocks ordinary readiness without private reads (#257)", async () => {
  const paths={1:["src/one.ts"],2:["src/two.ts"]};
- const f=fake({paths}),run:SdlcGh=async args=>{const result=await f.run(args);if(args[0]==="pr"&&args[1]==="view"&&args[2]==="2"){const row=JSON.parse(result.stdout);row.changedFiles=2;return{code:0,stdout:JSON.stringify(row)}}return result};
- const incomplete=await readMergeQueue("owner/repo",config,[task(1,1),task(2,2)],run);
- expect(incomplete.rows[0]?.ready).toBe(false);expect(incomplete.rows[0]?.blockers).toContain("open PR file coverage incomplete; touching order unknown");
+ for(const unknown of ["files","base"]){
+  const f=fake({paths}),run:SdlcGh=async args=>{const result=await f.run(args);if(args[0]==="pr"&&args[1]==="view"&&args[2]==="2"){const row=JSON.parse(result.stdout);if(unknown==="files")row.changedFiles=2;else delete row.baseRefName;return{code:0,stdout:JSON.stringify(row)}}return result};
+  const incomplete=await readMergeQueue("owner/repo",config,[task(1,1),task(2,2)],run);
+  expect(incomplete.rows[0]?.ready).toBe(false);expect(incomplete.rows[0]?.blockers).toContain("open PR file coverage incomplete; touching order unknown");
+ }
  const privateFake=fake({paths}),privateView=await readMergeQueue("owner/repo",config,[task(1,1),task(2,2,[],true)],privateFake.run);
  expect(privateView.rows[0]?.ready).toBe(false);expect(privateView.rows[1]?.private).toBe(true);
  expect(privateFake.calls.filter(args=>args[0]==="pr"&&args[1]==="view").map(args=>args[2])).toEqual(["1"]);
