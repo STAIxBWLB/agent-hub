@@ -82,3 +82,17 @@ test("planner pull preserves person P0 order and unavailable person reservations
   capacity.claude=0;
   await expect(tasks.pullPlanned("claude", { id: first.id, revision: 1, reason: "use another peer" })).rejects.toThrow("person's reservation");
 });
+
+test("planner offers recheck reserved capacity and refuse another peer's slot (#263)", async () => {
+  const {tasks,board,capacity}=await rig();
+  const task=await tasks.propose(USER,{title:"future",class:"implement",backlog:true});
+  await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});
+  capacity.codex=0;
+  await tasks.releaseReady();expect(board.get(task.id)).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
+  capacity.codex=1;
+  const previous=board.onChange;
+  board.onChange=(changed,entry)=>{previous?.(changed,entry);if(changed.id===task.id&&entry.event==="ready")capacity.codex=0;};
+  await tasks.releaseReady();expect(board.get(task.id)).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
+  board.onChange=previous;capacity.codex=1;
+  await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("codex");
+});

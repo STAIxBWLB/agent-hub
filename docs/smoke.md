@@ -1670,3 +1670,10 @@ remains unverified; no account, release, installation or live activation ran.
 Dependency/reservation grooming regression covers direct/transitive cycles,
 missing or duplicate ids, off-roster reservations, atomic rejection and undo,
 and started-task refusal. Current source/fixture proof remains pending.
+
+
+Planner pull source regressions cover slot capacity, role and revision, P0/person
+reservation floors, post-screen races, offer-time capacity changes, dependency
+approval and pin refusal, pending-only undo, bounded integer settings/local
+store and actual HTTP/tool/status projections. Current full proof and native
+planner/two-release/desktop/phone readback remain unverified.

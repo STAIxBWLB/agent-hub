@@ -153,7 +153,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
           return { ok: true };
         }
         // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
-        if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
+        if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
         client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
         const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
         let nominalMs = 10_000;

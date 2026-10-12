@@ -1052,6 +1052,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");
     if (["pull", "return"].includes(sub ?? "") && args.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
     if (!/^\d+$/.test(revision ?? "")) fail("planning revision is required");
+    if (sub === "pull-ready" && args.length >= 4) return console.log(await taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: args.slice(3).join(" ") }));
     if (sub === "undo" && args.length === 3) return console.log(await taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
     if (!["plan", "pin"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
     let fields: unknown;

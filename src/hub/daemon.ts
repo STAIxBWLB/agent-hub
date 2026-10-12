@@ -1,3 +1,4 @@
+import { planningWipLimits } from "./planning.ts";
 import { projectedDiff } from "./projected-diff.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
@@ -125,7 +126,7 @@ export interface HubConfig {
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
-  tasks: { release_after_min: number };
+  tasks: { release_after_min: number; wip_limits?: Record<string, number> };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
@@ -324,7 +325,7 @@ export function loadConfig(cwd: string): HubConfig {
       timeout_s: file.approvals?.timeout_s ?? DEFAULT_CONFIG.approvals.timeout_s,
       notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
     },
-    tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
+    tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
     task_sweep: taskSweepConfig(file.task_sweep),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
@@ -864,6 +865,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
   const tasks: Tasks = new Tasks({
     recordPlanning: change => event({ type: "planning", ...change }),
+    wipLimit: peer => Object.hasOwn(config.tasks.wip_limits ?? {}, peer) ? config.tasks.wip_limits![peer]! : 1,
     profile: profileName(config.profile),
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
@@ -1431,7 +1433,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -1462,6 +1464,9 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(tasks.releaseList(by));
       case "hub_backlog_plan":
         return JSON.stringify(tasks.publicView(await tasks.planBacklog(by, { id: a.id, revision: a.revision, fields: a.fields, reason: a.reason })));
+      case "hub_backlog_pull":
+        need("assign", "pull and route backlog work");
+        return JSON.stringify(tasks.publicView(await tasks.pullPlanned(by, { id: a.id, revision: a.revision, reason: a.reason })));
       case "hub_backlog_undo":
         return JSON.stringify(tasks.publicView(await tasks.undoPlanning(by, a.id, a.revision)));
       case "hub_task_propose": {
@@ -1820,7 +1825,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), wip: tasks.wip(id), wipLimit: tasks.wipLimit(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     roleInfo: Object.fromEntries(statusPeerIds().map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id) }])),
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
@@ -3025,7 +3030,7 @@ export async function startDaemon(opts: DaemonOptions) {
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,
         permissionMode: "permissionNote" in peer && peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
-        wip: boardTasks.filter(task => task.owner === id && task.state !== "approved" && task.state !== "backlog").length,
+        wip: tasks.wip(id), wipLimit: tasks.wipLimit(id),
         activeTasks: boardTasks.filter(task => task.owner === id && ["in_progress", "changes_requested"].includes(task.state)).map(task => task.id),
       })),
       tasks: boardTasks.map((task) => {
@@ -3074,7 +3079,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (ids === undefined) delete config.catalog_roles[peer]; else config.catalog_roles[peer] = ids;
     roleAssignments[peer] = ids ?? resolvedProfile.catalog_roles[peer] ?? [];
   };
-  const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
+  const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
   const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
     settingScalar(def.path[0] === "stay_switch" ? routing.stay_switch : (routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
   /** For the dashboard: the rows, and until when this session may raise. A project whose files do not read still gets its dashboard. */
@@ -3341,6 +3346,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner, ...(a.backlog === true ? { backlog: true } : {}) });
         return { ok: true, text: result };
       }
+      case "planner_pull":
+        if (!taskId()) return bad;
+        await taskOp(USER, "hub_backlog_pull", { id: a.id, revision: a.revision, reason: a.reason });
+        return { ok: true, text: "WIP slot reserved; task pulled into To Do." };
       case "planning":
       case "planning_undo": {
         if (!taskId()) return bad;

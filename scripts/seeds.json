@@ -1912,6 +1912,30 @@
       "replacement": "await taskOp(USER, \"release_change\", { name: a.name, revision: a.revision, fields: a.fields });",
       "testFile": "test/task-board-surfaces.test.ts",
       "testName": "dashboard release actions forward public ids through the authenticated HTTP path (#263)"
+    },
+    {
+      "id": "planner-offer-capacity-recheck",
+      "file": "src/hub/tasks.ts",
+      "search": "const plannerFull = opts.planner ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];",
+      "replacement": "const plannerFull: string[] = [];",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner offers recheck reserved capacity and refuse another peer's slot (#263)"
+    },
+    {
+      "id": "planner-settings-integer-range",
+      "file": "src/hub/settings.ts",
+      "search": "raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)",
+      "replacement": "false",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "planner WIP settings use bounded integers and the existing local registry write (#263)"
+    },
+    {
+      "id": "planner-pull-role-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    this.planningAuthority(by);",
+      "replacement": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    void by;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
     }
   ]
 }
