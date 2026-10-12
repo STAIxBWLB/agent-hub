@@ -19,7 +19,7 @@ async function cli(root: string, args: string[]) {
   const child=Bun.spawn([process.execPath,file],{cwd:root,stdin:"ignore",stdout:"pipe",stderr:"pipe"}),timer=setTimeout(()=>child.kill("SIGKILL"),5000);
   try {const [code,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);return {code,stdout,stderr};}finally{clearTimeout(timer);}
 }
-type Snapshot = { ok: boolean; tasks: { id: number; state: string; owner: string | null; reserved?: string | null; planningRevision: number }[]; boardLegend: { peer: string; wip: number; wipLimit: number }[]; status: { peers: Record<string, {wip: number; wipLimit: number}> } };
+type Snapshot = { ok: boolean; tasks: { id: number; state: string; owner: string | null; reserved?: string | null; planningRevision: number }[]; boardLegend: { peer: string; wip: number; wipLimit: number }[]; status: { peers: Record<string, unknown>; taskWip: Record<string, {wip: number; wipLimit: number}> } };
 test("planner pull surfaces enforce role revisions and shared WIP status through HTTP (#263)", async () => {
   const root=mkdtempSync(join(tmpdir(),"ahub-pull-surfaces-")),stateDir=join(root,".agenthub/state");
   const daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},tasks:{...DEFAULT_CONFIG.tasks,wip_limits:{codex:1,claude:0}},roles:{claude:["planner"],codex:["implementer"]},batch_ms:0}});
@@ -35,7 +35,7 @@ test("planner pull surfaces enforce role revisions and shared WIP status through
     expect(await other.request({t:"task",op:"hub_backlog_pull",args:{id,revision:0,reason:"ready"}})).toMatchObject({ok:false});
     expect(await planner.request({t:"task",op:"hub_backlog_pull",args:{id,revision:0,reason:"ready"}})).toMatchObject({ok:true});
     const reserved=await post("snapshot");expect(reserved.tasks[0]).toMatchObject({state:"proposed",owner:null,reserved:"codex",planningRevision:1});
-    expect(reserved.boardLegend.find(row=>row.peer==="codex")).toMatchObject({wip:1,wipLimit:1});expect(reserved.status.peers.codex).toMatchObject({wip:1,wipLimit:1});
+    expect(reserved.boardLegend.find(row=>row.peer==="codex")).toMatchObject({wip:1,wipLimit:1});expect(reserved.status.taskWip.codex).toMatchObject({wip:1,wipLimit:1});
     expect(await post("action",{action:"planning_undo",id,revision:1})).toMatchObject({ok:true});
     expect(await post("action",{action:"planner_pull",id,revision:2,reason:"person queued ready work"})).toMatchObject({ok:true});
     expect(await post("action",{action:"planner_pull",id,revision:2,reason:"stale"})).toMatchObject({ok:false});

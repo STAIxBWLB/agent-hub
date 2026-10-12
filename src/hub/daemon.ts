@@ -1825,8 +1825,9 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), wip: tasks.wip(id), wipLimit: tasks.wipLimit(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
+    taskWip: Object.fromEntries(statusPeerIds().map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     roleInfo: Object.fromEntries(statusPeerIds().map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id) }])),
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
@@ -3018,12 +3019,12 @@ export async function startDaemon(opts: DaemonOptions) {
         return ta && tb && CONFLICT_STATES.includes(ta.state) && CONFLICT_STATES.includes(tb.state) ? [{ kind: "conflict" as const, tasks: conflict.tasks, peers: conflict.peers }] : [];
       }),
     ];
-    const peerView = Object.fromEntries(Object.entries(status().peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
+    const daemonStatus = status(), peerView = Object.fromEntries(Object.entries(daemonStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
     return {
       ok: true,
       projectId,
       instanceId,
-      status: { peers: peerView },
+      status: { peers: peerView, taskWip: daemonStatus.taskWip },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true },
       releases: tasks.releaseList(USER),
@@ -3096,8 +3097,8 @@ export async function startDaemon(opts: DaemonOptions) {
     try { parseRouting(routingText(opts.cwd), readOverlay(opts.cwd)); } catch (error) { routingProblem = (error as Error).message; }
     const rows = settingRows({
       cwd: opts.cwd, routing: currentRouting(opts.cwd, log), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
-      running: (path) => path[0] === "roster" ? onRoster(path[1]!) : valueAt(config, path),
-      next: stored ? (path) => path[0] === "roster" ? rosterAllows(stored.roster, path[1]!, stored.pi.enabled) : valueAt(stored, path) : undefined,
+      running: (path) => path[0] === "roster" ? onRoster(path[1]!) : path[0] === "tasks" && path[1] === "wip_limits" ? tasks.wipLimit(path[2]!) : valueAt(config, path),
+      next: stored ? (path) => path[0] === "roster" ? rosterAllows(stored.roster, path[1]!, stored.pi.enabled) : path[0] === "tasks" && path[1] === "wip_limits" ? (Object.hasOwn(stored.tasks.wip_limits ?? {}, path[2]!) ? stored.tasks.wip_limits![path[2]!] : 1) : valueAt(stored, path) : undefined,
       roles: roleState,
       mode: (peer) => {
         const owner = bus.peers.get(peer), attached = !!owner && owner.state !== "offline";
