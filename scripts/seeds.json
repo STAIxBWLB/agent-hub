@@ -1596,8 +1596,8 @@
     {
       "id": "office-backlog-assign-floor",
       "file": "src/ui/index.html",
-      "search": "task.state !== 'approved' && task.state !== 'backlog' && ids.length",
-      "replacement": "task.state !== 'approved' && ids.length",
+      "search": "if (card.assignable && ids.length) {",
+      "replacement": "if (task.state !== 'approved' && ids.length) {",
       "testFile": "test/office-view.test.ts",
       "testName": "backlog rows show no assignment action before they are pulled (#264 merge)"
     },
