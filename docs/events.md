@@ -25,6 +25,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `progress` | `peer`, `task` (task id), `severity`, `spinning`, `exploring`, `production`: normalized tool activity dimensions for an open task; coverage differs by peer and no commands or task text are recorded |
 | `stuck` | `peer`, `task` (task id), `category` (`repetition`, `false_progress`, `drift`, `desperation`, `capability_gap`), `streak`, `latched`: an escalation verdict; it recommends considering reassignment and never reassigns automatically |
 | `capability` | `peer`, `state` (`verified` or `lost`), `via`: a peer's context path for facts |
+| `memory_brief` | `peer`, `task`, `native`, `fails`, `claudeMem`: what a task brief carried, as counts (#258, docs/memory.md) |
 | `hub_start` | `instance`: a hub run began, written once it holds its control port and before any peer can attach (a daemon that cannot bind writes none); every peer counts as detached until its next `state` event |
 | `tooling` | `peer`, `addons` (`{ name, version }` from a closed list, version null when unknown): the add-ons a peer works with, at each attach (#248, docs/research.md) |
 | `native_turn_end` | `peer`, `id` (an opaque hash that names the completed turn): the end of a Claude turn, recorded once the hub finds the turn its Stop hook reported completed in the native transcript (Codex's is its `turn_end`); quiescence evidence for an integration |

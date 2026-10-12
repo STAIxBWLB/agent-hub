@@ -1,7 +1,8 @@
 import { GOAL_STATES, KINDS, looksSecret, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "../memory/store.ts";
 import { syncMemory, type SyncOptions } from "../memory/sync.ts";
-import { memoryProjectKey, promotionScreen, withoutPii } from "../memory/recall.ts";
-import { currentRouting } from "../hub/routing.ts";
+import { importClaudeMem } from "../memory/import.ts";
+import { currentRouting, detectSignals } from "../hub/routing.ts";
+import { memoryProjectKey, mentionsPrivatePath, projectChain, promotionScreen, withoutPii } from "../memory/recall.ts";
 import { loadConfig } from "../hub/daemon.ts";
 
 /** The project's config, or none when there is no valid one (reading memory needs none). */
@@ -11,7 +12,7 @@ const loadConfigSafe = (cwd: string) => { try { return loadConfig(cwd); } catch 
  * #258: `ahub memory`, straight on the machine's store (no hub needed). Reading is anyone's; promote, demote, forget,
  * supersede and rebuild are a person's (the identity gate refuses agent shells).
  */
-export const MEMORY_USAGE = "usage: ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> | show <id> | graph <id|node> [--hops 1|2] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>]  [--json]";
+export const MEMORY_USAGE = "usage: ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> | show <id> | graph <id|node> [--hops 1|2] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] | suggestions | confirm|reject <suggestion id>  [--json]";
 export const GOAL_USAGE = "usage: ahub goal [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]";
 
 const fail = (message: string): never => { throw new Error(message); };
@@ -83,6 +84,25 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
         if (json) return JSON.stringify(r, null, 2);
         if (!r.ok) fail(`hub memory sync: ${r.error}`);
         return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${r.warning ? `\nnote: ${r.warning}` : ""}`;
+      }
+      case "import": {
+        const db = flag("--db"), limit = flag("--limit");
+        if (rest[0] !== "claude-mem" || rest.length !== 1) fail("usage: ahub memory import claude-mem [--db <path>] [--limit N]");
+        if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
+        const routing = currentRouting(cwd);
+        const policy = privatePaths(); // a note about a private path never reaches the synced log
+        const r = importClaudeMem(store, { project: memoryProjectKey(cwd), chain: projectChain(cwd), isPii: (text) => detectSignals({ title: text, detail: "", refs: {} }, routing, cwd).includes("pii") || mentionsPrivatePath(text, [], policy, cwd), ...(db ? { db } : {}), ...(limit ? { limit: Number(limit) } : {}) });
+        if (json) return JSON.stringify(r, null, 2);
+        return `imported ${r.added} of ${r.read} hub notes from claude-mem as long-term entries (skipped: ${r.skipped.project} other projects, ${r.skipped.model} model answers, ${r.skipped.pii} PII, ${r.skipped.secret} secret-looking; the rest were already here)`;
+      }
+      case "suggestions": {
+        const pending = store.suggestions(project).filter((x) => x.status === "suggested");
+        if (json) return JSON.stringify(pending, null, 2);
+        return pending.length ? pending.map((x) => `${x.id.slice(0, 8)}  ${x.from.slice(0, 8)} ${x.rel} ${x.to.slice(0, 8)}  (suggested by the hub's model ${x.at}; not evidence until confirmed)`).join("\n") : "no edge suggestions waiting";
+      }
+      case "confirm": case "reject": {
+        const x = store.judge(rest[0] ?? fail(`usage: ahub memory ${sub} <suggestion id>`), sub, actor, project) ?? fail(`no suggestion ${rest[0]} (ahub memory suggestions lists them)`);
+        return `${sub === "confirm" ? "confirmed" : "rejected"}: ${x.from.slice(0, 8)} ${x.rel} ${x.to.slice(0, 8)}`;
       }
       case "machine": {
         const label = flag("--label");

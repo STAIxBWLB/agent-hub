@@ -28,7 +28,7 @@ export async function related(client: MemoryClient, project: string, query: stri
 }
 
 /** A native memory line for a brief (#258): `mem:<id8> <kind> <tier>: <title or text>`, fails first. */
-export interface NativeItem { id: string; line: string }
+export interface NativeItem { id: string; line: string; kind?: string }
 export type NativeBrief = (task: BriefTask) => NativeItem[];
 export interface BriefTask { id?: number; created?: number; title: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }
 
@@ -47,6 +47,8 @@ export class Briefs {
     private readonly project: string,
     private readonly maxItems = 8,
     private readonly native?: NativeBrief,
+    /** Counts of what a brief carried, for the research records (#258 AC11); never its text. */
+    private readonly observe?: (peer: PeerId, task: number, counts: { native: number; fails: number; claudeMem: number }) => void,
   ) {}
 
   async forTask(peer: PeerId, task: BriefTask): Promise<string | undefined> {
@@ -64,6 +66,7 @@ export class Briefs {
     if (!own.length && !items.length) return undefined;
     for (const item of own) seen.add(item.id);
     for (const item of items) seen.add(`#${item.id}`);
+    if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: own.length, fails: own.filter((i) => i.kind === "fail").length, claudeMem: items.length }); } catch { /* telemetry never fails a brief */ }
     const header = own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; claude-mem by #id):" : "Memory brief (claude-mem; fetch details by id if you need them):";
     return [header, ...own.map((i) => i.line), ...items.map((i) => `#${i.id} ${i.time} ${i.type} ${i.title}`)].join("\n");
   }
