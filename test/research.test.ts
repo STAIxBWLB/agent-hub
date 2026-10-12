@@ -327,3 +327,16 @@ test("backlog pull initializes research identity once and label lookup follows r
   expect(both).toHaveLength(2); expect(both.map(r => r.createdAt)).toEqual([pulled.at, next.at]);
   expect(labelTarget(both, events, 7)).toBe(both[1]!);
 });
+
+
+test("unpulled backlog generations cannot contaminate a reused normal proposal (#264 merge)", () => {
+  const events: StampedEvent[] = [task(7,"backlogged","backlog",{pii:true,role:"old-role",owner:"local"}),
+    {v:1,at:at(),type:"turn_end",peer:"local",turn:"old",task:7,pii:true,ms:20},
+    task(7,"proposed","proposed",{role:"new-role",owner:"codex"}),
+    task(7,"accepted","in_progress",{owner:"codex"}),task(7,"approved","approved",{owner:"codex"})];
+  const records=taskRecords(events,"alpha",writer);
+  expect(records).toHaveLength(1);
+  expect(records[0]!.pii).toBe(false);expect(records[0]!.role).toBe("new-role");
+  expect(records[0]!.activeMs).toBe(0);expect(records[0]!.owners).not.toContain("local");
+  expect(records[0]!.createdAt).toBe(events[2]!.at);
+});

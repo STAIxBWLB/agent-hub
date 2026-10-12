@@ -1600,6 +1600,22 @@
       "replacement": "task.state !== 'approved' && ids.length",
       "testFile": "test/office-view.test.ts",
       "testName": "backlog rows show no assignment action before they are pulled (#264 merge)"
+    },
+    {
+      "id": "office-backlog-count",
+      "file": "src/ui/office-model.ts",
+      "search": "if (state === \"backlog\") { counts.backlog = (counts.backlog ?? 0) + 1; waitingById.set(task.id, false); continue; }",
+      "replacement": "if (false) { counts.backlog = (counts.backlog ?? 0) + 1; waitingById.set(task.id, false); continue; }",
+      "testFile": "test/office-model.test.ts",
+      "testName": "office recognizes staged backlog and matches the shared progress counts (#264 merge)"
+    },
+    {
+      "id": "research-unpulled-reset",
+      "file": "src/hub/research.ts",
+      "search": "(e.event === \"proposed\" && tasks.has(e.id))",
+      "replacement": "(e.event === \"proposed\" && tasks.get(e.id)?.createdAt)",
+      "testFile": "test/research.test.ts",
+      "testName": "unpulled backlog generations cannot contaminate a reused normal proposal (#264 merge)"
     }
   ]
 }

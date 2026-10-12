@@ -473,3 +473,13 @@ test("a sparse rightmost sticky desk remains inside a narrow office view (#264 m
   const sparse = officeModel({status:{peers:{pi:{state:"idle"}}},tasks:[]},first,{cols:1,now:1100});
   const desk=sparse.desks[0]!;expect(sparse.width).toBeGreaterThanOrEqual(desk.x+desk.w);
 });
+
+
+test("office recognizes staged backlog and matches the shared progress counts (#264 merge)", () => {
+  const tasks=[{id:1,title:"staged",class:"implement",state:"backlog",deps:[99]},{id:2,title:"work",class:"implement",state:"proposed",deps:[]}];
+  const model=officeModel({status:{peers:{}},tasks},null,{cols:1,now:1000});
+  expect(model.counts).toEqual(taskProgress(tasks).counts);
+  expect(model.counts.backlog).toBe(1);expect(model.counts.unknown).toBeUndefined();
+  expect(model.placed[1]).toBe("counted:backlog");
+  expect(model.rooms.flatMap(room=>room.cards).some(card=>card.id===1)).toBe(false);
+});

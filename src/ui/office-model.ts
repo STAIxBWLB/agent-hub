@@ -67,6 +67,7 @@ export interface OfficeLink {
 }
 export interface OfficeCounts {
   proposed: number; waiting: number; in_progress: number; in_review: number; changes_requested: number; approved: number;
+  backlog?: number;
   unknown?: number;
 }
 /** One task card. Positions are grid units; the renderer maps them into the SVG viewBox. */
@@ -201,6 +202,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const waitingById = new Map<number, boolean>();
   for (const task of tasks) {
     const state = text(task.state);
+    if (state === "backlog") { counts.backlog = (counts.backlog ?? 0) + 1; waitingById.set(task.id, false); continue; }
     if (!KNOWN.includes(state)) { counts.unknown = (counts.unknown ?? 0) + 1; waitingById.set(task.id, false); continue; }
     const waiting = state === "proposed" && (task.deps ?? []).some((id: number) => states.get(id) !== "approved");
     waitingById.set(task.id, waiting);
@@ -347,7 +349,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       : state === "in_review" ? "room:review"
       : state === "approved" ? "shelf:done"
       : state === "in_progress" || state === "changes_requested" ? (owner && shownSet.has(owner) ? `desk:${owner}` : "room:work")
-      : "counted:unknown";
+      : state === "backlog" ? "counted:backlog" : "counted:unknown";
   }
   const transitions: OfficeTransitions = { desksAdded: [], desksRemoved: [], cardsMoved: [] };
   if (previous) {
