@@ -13,3 +13,10 @@ test("GitHub import refuses malformed selections identities duplicates and overs
   for(const page of [[{...issue(1),url:"https://example.com/secret"}],[issue(1),issue(1)],[{...issue(1),state:"CLOSED"}],Array.from({length:34},(_,i)=>issue(i+1)),[{...issue(1),body:"x".repeat(8001)}]])await expect(readGitHubImport({repo:"Owner/Repo",label:"ready"},async()=>({code:0,stdout:JSON.stringify(page)}))).rejects.toThrow();
   await expect(readGitHubImport({repo:"Owner/Repo",label:"ready"},async()=>({code:1,stdout:"secret diagnostic"}))).rejects.toThrow("read failed");
 });
+
+
+test("GitHub import selection is captured before repository resolution awaits (#263)",async()=>{
+ const selection={label:"approved",milestone:"first"},calls:string[][]=[];
+ const result=await readGitHubImport(selection,async args=>{calls.push(args);if(args[0]==="repo"){selection.label="--mutated";selection.milestone="changed";return {code:0,stdout:JSON.stringify({nameWithOwner:"Owner/Repo"})};}return {code:0,stdout:JSON.stringify([issue(1)])};});
+ expect(result.issues).toHaveLength(1);expect(calls[1]).toContain("approved");expect(calls[1]).toContain("first");expect(calls[1]).not.toContain("--mutated");expect(calls[1]).not.toContain("changed");
+});

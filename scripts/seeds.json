@@ -2072,6 +2072,14 @@
       "replacement": "...[]",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites inherit the higher-ranked P0 goal ahead of unrelated work (#263)"
+    },
+    {
+      "id": "github-import-captured-selection",
+      "file": "src/hub/github-import.ts",
+      "search": "\"--label\",label,...(milestone===undefined?[]:[\"--milestone\",milestone])",
+      "replacement": "\"--label\",input.label,...(input.milestone===undefined?[]:[\"--milestone\",input.milestone])",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub import selection is captured before repository resolution awaits (#263)"
     }
   ]
 }

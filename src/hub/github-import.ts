@@ -7,13 +7,14 @@ const selectionText=(value:unknown):value is string=>typeof value==="string"&&va
 /** Read-only issue intake; the existing reader bounds process time, stdout and diagnostics. */
 export async function readGitHubImport(input: GitHubImportSelection, run: SdlcGh=sdlcGh): Promise<{ issues: GitHubImportIssue[]; partial: boolean; }> {
   if(!selectionText(input.label)||input.milestone!==undefined&&!selectionText(input.milestone)||input.repo!==undefined&&!REPO.test(input.repo))throw new Error("invalid GitHub import selection");
+  const {label,milestone}=input;
   const deadline=performance.now()+10_000;
-  const read=async(args:string[])=>{const left=deadline-performance.now();if(left<=0)throw new Error("GitHub import read deadline expired");const result=await run(args,Math.min(left,10_000));if(result.code!==0||new TextEncoder().encode(result.stdout).length>256*1024)throw new Error("GitHub import read failed or exceeded its output bound");return JSON.parse(result.stdout) as unknown;};
+  const read=async(args:string[])=>{const left=deadline-performance.now();if(left<=0)throw new Error("GitHub import read deadline expired");const result=await run(args,Math.min(left,10_000));if(performance.now()>deadline)throw new Error("GitHub import read deadline expired");if(result.code!==0||new TextEncoder().encode(result.stdout).length>256*1024)throw new Error("GitHub import read failed or exceeded its output bound");return JSON.parse(result.stdout) as unknown;};
   let repo=input.repo;
   if(repo===undefined){const raw=await read(["repo","view","--json","nameWithOwner"]);if(!raw||typeof raw!=="object"||typeof (raw as Record<string,unknown>).nameWithOwner!=="string")throw new Error("GitHub repository identity unavailable");repo=(raw as {nameWithOwner:string}).nameWithOwner;}
   if(!REPO.test(repo))throw new Error("invalid GitHub repository identity");
   // ponytail: one bounded page of32 issues; add paginated reads under the shared deadline for larger intake.
-  const args=["issue","list","--repo",repo,"--state","open","--label",input.label,...(input.milestone===undefined?[]:["--milestone",input.milestone]),"--limit","33","--json","number,title,body,url,state"];
+  const args=["issue","list","--repo",repo,"--state","open","--label",label,...(milestone===undefined?[]:["--milestone",milestone]),"--limit","33","--json","number,title,body,url,state"];
   const raw=await read(args);if(!Array.isArray(raw)||raw.length>33)throw new Error("invalid GitHub issue page");
   const seen=new Set<number>();
   const issues=raw.map(row=>{
