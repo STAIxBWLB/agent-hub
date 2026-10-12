@@ -63,7 +63,8 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     if (!next.length) { for (const row of result.rows.filter(r => remaining.has(r.pr))) row.blockers.push("artifact dependency cycle requires a person"); break; }
     for (const pr of next) { remaining.delete(pr); result.order.push(pr); }
   }
-  for (const row of result.rows) { if (result.truncated) row.blockers.push("open PR coverage truncated; touching order unknown"); row.blockers = [...new Set(row.blockers)]; row.ready = !row.private && !row.blockers.length; }
+  const touchingCoverageUnknown = result.rows.some(row => evidence.get(row.pr)?.pathsComplete !== true);
+  for (const row of result.rows) { if (result.truncated) row.blockers.push("open PR coverage truncated; touching order unknown"); if (touchingCoverageUnknown) row.blockers.push("open PR file coverage incomplete; touching order unknown"); row.blockers = [...new Set(row.blockers)]; row.ready = !row.private && !row.blockers.length; }
   result.complete = !result.truncated && !remaining.size && result.rows.every(r => evidence.get(r.pr)?.pathsComplete === true);
   return result;
 }

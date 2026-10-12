@@ -1272,6 +1272,14 @@
       "replacement": "Bun.semver.satisfies(report.version, `>${tag.slice(1)}`)",
       "testFile": "test/sdlc-release.test.ts",
       "testName": "release version advancement follows SemVer precedence including prereleases and build metadata (#257)"
+    },
+    {
+      "id": "queue-peer-file-coverage",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (touchingCoverageUnknown) row.blockers.push",
+      "replacement": "if (false) row.blockers.push",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "unknown or private peer PR file coverage blocks ordinary readiness without private reads (#257)"
     }
   ]
 }

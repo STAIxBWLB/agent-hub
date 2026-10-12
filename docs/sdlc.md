@@ -136,6 +136,8 @@ Queue reads fetch PR numbers and bounded head/check/review/thread/file-count met
 
 A truncated open-PR list blocks every row because omitted PRs may change the touching order. Version advancement uses SemVer precedence, including prereleases; build metadata alone is not an advance.
 
+Missing/incomplete file evidence or a private PR also prevents conflict coverage for other rows. Their readiness stays blocked without reading the private PR.
+
 # Read-only release report contract (#257)
 
 Report reads bind the observed local head, committed package version, published release tag and matching local/remote commit identity. Only a verified tag ancestor defines the bounded first-parent commit list. The package-owned JSON doc checker must report freshness at that same head; open/unknown native issue metadata remains a blocker. Source readiness never certifies native acceptance or permits publication, and a changed head invalidates the report. No body, issue title, task text, version bump, restamp, tag or release mutation is included.
