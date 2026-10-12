@@ -18,6 +18,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],
     ["ahub console [--panels] [--color=auto|always|never]", "enter the human console, leaving the daemon running on exit"],
     ["ahub sdlc status [task] | explain <task> | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
+    ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...]", "read-only merge and release evidence (person only)"],
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts"],
     ["ahub status --all [--json] [--color=auto|always|never]", "show every registered project"],
     ["ahub logs [-f]", "the last 100 lines of hub.log; -f shows the last 10 and follows it"],
@@ -64,7 +65,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["Tasks and review", [
     ["ahub board [state | --ready] [--json] [--color=auto|always|never]", "the task board; --ready: proposed tasks with nothing left to wait for"],
-    ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
+    ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--backlog] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
+    ["ahub backlog pull|return <id>", "person only: pull backlog into To Do or return ownerless proposed work; --backlog on task propose stages unoffered work"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
     ["ahub task role <id> <role|none>", "person only: change bounded catalog guidance on an open task; routing and authority are unchanged"],
     ["ahub task assign <id> <peer> [--role owner|reviewer]", "name the owner (default) or reviewer; a task that still waits reserves its owner"],

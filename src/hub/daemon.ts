@@ -42,7 +42,7 @@ import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
 import { Briefs } from "../memory/brief.ts";
-import { Board, CLASSES, type Task, type TaskClass } from "./board.ts";
+import { Board, taskProposalAt, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
@@ -1101,11 +1101,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
-    if ((h.event === "proposed" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
+    if ((h.event === "proposed" || h.event === "backlog pulled" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
-    if (h.event === "proposed" && projections.enabled && turnLog) {
-      const created = t.history.find(entry => entry.event === "proposed")?.at;
+    if ((h.event === "proposed" || h.event === "backlog pulled") && projections.enabled && turnLog) {
+      const created = taskProposalAt(t);
       if (created !== undefined) {
         const tree = privateSnapshotWindow() ? undefined : snap(`task #${t.id} proposal`).tree;
         try { turnLog.rememberTaskStart(t.id, created, tree); } catch { log(`task #${t.id} projection baseline unavailable`); }
@@ -1277,7 +1277,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!projections.enabled || tasks.isPii(task)) return undefined;
     if (!repo || !turnLog) return "(projected review unavailable: snapshots are disabled or unavailable)";
     if (privateSnapshotWindow()) return "(projected review unavailable: private snapshot window)";
-    const created = task.history.find(entry => entry.event === "proposed")?.at;
+    const created = taskProposalAt(task);
     const from = created === undefined ? undefined : turnLog.taskStart(task.id, created);
     if (!from || !hasTree(repo, from)) return "(projected review unavailable: original task snapshot is unknown)";
     const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!)].map(path => relative(opts.cwd, resolve(opts.cwd, path)));
@@ -1452,6 +1452,7 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
+        if (t.state === "backlog") return line(t);
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // as for an accept
         return [line(t), overlap, tasks.claimRoleGuidance(t, by)].filter(Boolean).join("\n");
@@ -1505,15 +1506,22 @@ export async function startDaemon(opts: DaemonOptions) {
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }
       case "hub_task_list":
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => a.ready !== true || !tasks.waitsFor(t).length).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
     }
     if (op === "task_show" && by !== USER) {
       const task = board.get(Number(a.id));
+      if (task?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
       return JSON.stringify(task ? publicConductorTask(task, (t) => tasks.publicView(t, true)) : `no task #${a.id}`);
     }
-    if (op === "route_explain" && by !== USER) return tasks.publicExplain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
+    if (op === "route_explain" && by !== USER) {
+      if (a.id !== undefined && board.get(Number(a.id))?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
+      return tasks.publicExplain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
+    }
     if (by !== USER) throw new Error(`${op} is a console command`);
     switch (op) {
+      case "backlog_pull":
+      case "backlog_return":
+        return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
       case "task_show":
         return JSON.stringify(board.get(Number(a.id)) ? { ...board.get(Number(a.id)), reviews: board.reviews({ task: Number(a.id) }) } : `no task #${a.id}`, null, 2);
       case "task_assign": {
@@ -3244,6 +3252,12 @@ export async function startDaemon(opts: DaemonOptions) {
     const text = (key: string, max: number) => typeof a[key] === "string" && (a[key] as string).length <= max;
     const peer = () => text("peer", 32) && PEER_ID.test(a.peer as string);
     const taskId = () => typeof a.id === "number" && Number.isSafeInteger(a.id) && a.id > 0;
+    if (a.action === "sdlc_queue" || a.action === "sdlc_release") {
+      const liveIssues = a.liveIssues ?? [];
+      if (typeof a.repo !== "string" || !Array.isArray(liveIssues) || liveIssues.length > 32) return bad;
+      const report = a.action === "sdlc_queue" ? await tasks.deliveryQueue(a.repo) : await tasks.releaseReadiness(a.repo, liveIssues);
+      return { ok: true, report };
+    }
     switch (a.action) {
       case "pause":
       case "resume":
@@ -3888,6 +3902,12 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       case "sdlc": {
         if (c.role !== "console") return void reply({ ok: false, error: "SDLC readback is console only; task owners record ids through hub_sdlc_record" });
+        if (msg.op === "queue" || msg.op === "release") {
+          if (typeof msg.repo !== "string" || !Array.isArray(msg.liveIssues ?? []) || (msg.liveIssues ?? []).length > 32) return void reply({ ok: false, error: "invalid delivery readback arguments" });
+          const read = msg.op === "queue" ? tasks.deliveryQueue(msg.repo) : tasks.releaseReadiness(msg.repo, msg.liveIssues ?? []);
+          void read.then(report => reply({ ok: true, report }), () => reply({ ok: false, error: "delivery readback unavailable" }));
+          return;
+        }
         if (msg.op === "export") {
           try { return void reply({ ok: true, export: tasks.workflowExport(msg.id) }); } catch { return void reply({ ok: false, error: "workflow export unavailable" }); }
         }

@@ -56,6 +56,7 @@ export class SupervisionFeed {
   }
 
   includes(task: Task): boolean {
+    if (task.state === "backlog") return false;
     const peer = this.recipient();
     return !!peer && (this.d.scope() === "all" || task.history.some((h) => h.by === peer && ["proposed", "assigned", "reassigned", "escalated"].includes(h.event)));
   }
