@@ -1280,6 +1280,14 @@
       "replacement": "if (false) row.blockers.push",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "unknown or private peer PR file coverage blocks ordinary readiness without private reads (#257)"
+    },
+    {
+      "id": "release-prerelease-predecessor",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "[\"release\",\"list\",\"--repo\",repo",
+      "replacement": "[\"release\",\"view\",\"--repo\",repo",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release predecessor read includes the published prerelease instead of stable-only latest (#257)"
     }
   ]
 }

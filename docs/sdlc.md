@@ -144,6 +144,8 @@ Report reads bind the observed local head, committed package version, published 
 
 Merged PR identities are resolved from those post-tag commits in batches of at most 100, with at most 10 associated PRs per commit and the same shared read deadline. Repository lifetime PR counts cannot truncate the report. Missing, mismatched or paginated associations remain unknown; direct commits may have no associated PR.
 
+The predecessor is the newest non-draft entry from GitHub's descending release list, which includes prereleases. The stable-only "latest release" endpoint is not used; an RC can anchor the next RC's tag and commit coverage.
+
 
 # Delivery readback commands and surfaces (#257)
 

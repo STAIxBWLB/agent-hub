@@ -14,7 +14,7 @@ function fake(options:{version?:string;tag?:string;remote?:string;ancestor?:bool
  };
  const gh:SdlcGh=async args=>{
   calls.push(args);
-  if(args[0]==="release")return{code:0,stdout:JSON.stringify({tagName:options.tag??"v1.2.3",isDraft:false,isPrerelease:false})};
+  if(args[0]==="release")return{code:0,stdout:JSON.stringify([{tagName:options.tag??"v1.2.3",isDraft:false,isPrerelease:(options.tag??"").includes("-"),publishedAt:"2026-10-11T00:00:00Z"}])};
   if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:1,mergeCommit:{oid:C}}])};
   if(args.some(arg=>arg.includes("associatedPullRequests")))return{code:0,stdout:JSON.stringify({data:{repository:{c0:{oid:C,associatedPullRequests:{nodes:[{number:1,state:"MERGED",mergeCommit:{oid:C}}],pageInfo:{hasNextPage:false}}}}}})};
   if(args[0]==="issue")return{code:0,stdout:JSON.stringify({number:273,state:options.native??"CLOSED"})};
@@ -33,6 +33,13 @@ test("release version advancement follows SemVer precedence including prerelease
  for(const [version,tag,expected] of [["1.3.0-rc.1","v1.2.3",true],["1.3.0-rc.2","v1.3.0-rc.1",true],["1.3.0","v1.3.0-rc.2",true],["1.3.0-rc.1","v1.3.0",false],["1.2.3+build.2","v1.2.3+build.1",false]] as const){
   expect((await readReleaseReadiness("fixture","owner/repo",[273],fake({version,tag}).readers)).sourceReady).toBe(expected);
  }
+});
+test("release predecessor read includes the published prerelease instead of stable-only latest (#257)", async () => {
+ const f=fake({version:"1.3.0-rc.2",tag:"v1.3.0-rc.1"}),gh=f.readers.gh;
+ f.readers.gh=async args=>args[0]==="release"&&args[1]==="view"?{code:0,stdout:JSON.stringify({tagName:"v1.2.3",isDraft:false,isPrerelease:false})}:gh(args);
+ const report=await readReleaseReadiness("fixture","owner/repo",[273],f.readers);
+ expect(report.sourceReady).toBe(true);expect(report.tag).toBe("v1.3.0-rc.1");expect(report.tagCommit).toBe(T);
+ const request=f.calls.find(args=>args[0]==="release");expect(request?.slice(0,2)).toEqual(["release","list"]);expect(request).toContain("--exclude-drafts");expect(request).not.toContain("--exclude-pre-releases");
 });
 test("release merged PR coverage reads only post-tag commits despite over 100 historical PRs (#257)", async () => {
  const f=fake(), original=f.readers.gh;

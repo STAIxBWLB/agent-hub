@@ -39,9 +39,9 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
   const first = git(["rev-parse","--verify","HEAD"]); const head = first.stdout.trim();
   if (first.code !== 0 || !SHA.test(head)) { report.blockers.push("local HEAD unknown"); return report; } report.head = head;
   try { const r = git(["show",`${head}:package.json`]), pkg = JSON.parse(r.stdout); if (r.code === 0 && typeof pkg.version === "string" && VERSION.test(pkg.version)) report.version = pkg.version; else report.blockers.push("package version unknown"); } catch { report.blockers.push("package version unknown"); }
-  const published = await gh(["release","view","--repo",repo,"--json","tagName,isDraft,isPrerelease"]);
+  const published = await gh(["release","list","--repo",repo,"--exclude-drafts","--order","desc","--limit","1","--json","tagName,isDraft,isPrerelease,publishedAt"]);
   let tag: string | undefined;
-  try { const p = JSON.parse(published.stdout); if (published.code === 0 && typeof p.tagName === "string" && p.tagName.startsWith("v") && VERSION.test(p.tagName.slice(1)) && p.isDraft === false) tag = p.tagName; } catch { /* unknown metadata */ }
+  try { const rows = JSON.parse(published.stdout), p = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined; if (published.code === 0 && p && typeof p.tagName === "string" && p.tagName.startsWith("v") && VERSION.test(p.tagName.slice(1)) && p.isDraft === false && typeof p.isPrerelease === "boolean" && typeof p.publishedAt === "string" && Number.isFinite(Date.parse(p.publishedAt))) tag = p.tagName; } catch { /* unknown metadata */ }
   if (!tag) report.blockers.push("published release identity unknown");
   else {
     report.tag = tag; const local = git(["rev-parse","--verify",`refs/tags/${tag}^{commit}`]);
