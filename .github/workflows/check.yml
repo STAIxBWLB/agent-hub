@@ -122,6 +122,18 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Six sequential green and seeded guard pairs
         run: bun scripts/seeded-check.ts
+      - name: Retain failed seeded-guard phase diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seeded-diagnostics-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 5
+          path: |
+            /tmp/ahub-seed-*/green/test-output.txt
+            /tmp/ahub-seed-*/seeded/test-output.txt
+            /tmp/ahub-seed-*/green/leaks.txt
+            /tmp/ahub-seed-*/seeded/leaks.txt
 
   macos-timing:
     # Explicit #287 evidence only; never adds work to the ordinary PR/push path.
