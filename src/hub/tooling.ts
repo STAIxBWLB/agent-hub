@@ -78,7 +78,8 @@ function codexPlugins(root: string): Addon[] {
 function onPath(name: string, path: string, cwd: string): string | undefined {
   for (const dir of path.split(delimiter)) {
     const file = resolve(cwd, dir || ".", name);
-    try { accessSync(file, constants.X_OK); return file; } catch { /* not here */ }
+    // A shell runs the first executable regular file; a directory of that name is skipped like a missing one.
+    try { if (statSync(file).isFile()) { accessSync(file, constants.X_OK); return file; } } catch { /* not here */ }
   }
   return undefined;
 }

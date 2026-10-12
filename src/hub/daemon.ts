@@ -526,7 +526,6 @@ export async function startDaemon(opts: DaemonOptions) {
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
     if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
   });
-  event({ type: "hub_start", instance: instanceId });
   const compatibleRoles = (peer: string) => [...catalog.roles.values()].filter(role => role.base.some(base => config.roles[peer]?.includes(base))).map(role => role.id).sort();
   const configuredRoles = (peer: string) => selectedRoles(peer, config.roles, roleAssignments, catalog).map(role => role.id);
   const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && ["local", "pi"].includes(peer)
@@ -639,6 +638,9 @@ export async function startDaemon(opts: DaemonOptions) {
       },
     },
   });
+  // Written once this run owns the port, before any connection can attach a peer: a daemon that fails to bind (another
+  // is running) never marks a run boundary in the live one's events.
+  event({ type: "hub_start", instance: instanceId });
   startupCleanup.push(() => server.stop(true));
 
 

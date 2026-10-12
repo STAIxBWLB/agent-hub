@@ -80,6 +80,11 @@ test("detection reads names and versions from the closed list, per runtime, and 
   expect(await detectTooling("pi", { env: {}, home, cwd: proj, path: "bin" })).toEqual([{ name: "ripwire", version: null }]);
   exe(proj, "ripwire");
   expect(await detectTooling("pi", { env: {}, home, cwd: proj, path: "" })).toEqual([{ name: "ripwire", version: null }]);
+  // A directory named like the program is skipped; the executable after it counts (review of #351).
+  const dirFirst = temp("dirfirst"), realBin = temp("realbin");
+  mkdirSync(join(dirFirst, "ripwire")); exe(realBin, "ripwire");
+  expect(await detectTooling("pi", { env: {}, home, path: dirFirst })).toEqual([]);
+  expect(await detectTooling("pi", { env: {}, home, path: [dirFirst, realBin].join(":") })).toEqual([{ name: "ripwire", version: null }]);
   // A `dot` that floods its output is cut off at a few kilobytes, not read for the whole deadline (review of #351).
   const flood = temp("flood");
   writeFileSync(join(flood, "dot"), "#!/bin/sh\nexec yes 'dot version 9.9.9'\n"); chmodSync(join(flood, "dot"), 0o755);
