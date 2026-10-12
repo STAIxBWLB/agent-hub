@@ -74,6 +74,12 @@ test("detection reads names and versions from the closed list, per runtime, and 
   const started = Date.now();
   expect(await detectTooling("pi", { env: {}, home, path: stuck })).toEqual([]);
   expect(Date.now() - started).toBeLessThan(5000);
+  // Relative and empty PATH entries are the peer's, resolved from the project directory (review of #351).
+  const proj = temp("relpath");
+  mkdirSync(join(proj, "bin")); exe(join(proj, "bin"), "ripwire");
+  expect(await detectTooling("pi", { env: {}, home, cwd: proj, path: "bin" })).toEqual([{ name: "ripwire", version: null }]);
+  exe(proj, "ripwire");
+  expect(await detectTooling("pi", { env: {}, home, cwd: proj, path: "" })).toEqual([{ name: "ripwire", version: null }]);
   // A `dot` that floods its output is cut off at a few kilobytes, not read for the whole deadline (review of #351).
   const flood = temp("flood");
   writeFileSync(join(flood, "dot"), "#!/bin/sh\nexec yes 'dot version 9.9.9'\n"); chmodSync(join(flood, "dot"), 0o755);

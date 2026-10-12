@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 /**
  * #248: which add-ons a peer works with, from a closed list. Names and versions only, read from the machine's plugin
@@ -74,11 +74,11 @@ function codexPlugins(root: string): Addon[] {
   return out;
 }
 
-/** The first executable of that name on PATH. */
-function onPath(name: string, path: string): string | undefined {
+/** The first executable of that name on PATH, relative and empty entries resolved from the peer's working directory. */
+function onPath(name: string, path: string, cwd: string): string | undefined {
   for (const dir of path.split(delimiter)) {
-    if (!dir) continue;
-    try { accessSync(join(dir, name), constants.X_OK); return join(dir, name); } catch { /* not here */ }
+    const file = resolve(cwd, dir || ".", name);
+    try { accessSync(file, constants.X_OK); return file; } catch { /* not here */ }
   }
   return undefined;
 }
@@ -130,7 +130,7 @@ export async function detectTooling(peer: string, src: ToolingSources = {}): Pro
   if (peer === "codex") codexPlugins(env.CODEX_HOME?.trim() || join(home, ".codex")).forEach(add);
   const path = src.path ?? process.env.PATH ?? "";
   for (const [bin, spec] of Object.entries(BINARIES)) {
-    const file = onPath(bin, path);
+    const file = onPath(bin, path, src.cwd ?? process.cwd());
     if (!file) continue;
     const v = spec.version ? await identify(file, spec.version) : null;
     if (v !== false) add({ name: spec.name, version: v });
