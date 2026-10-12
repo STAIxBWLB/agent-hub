@@ -155,4 +155,6 @@ The all-project manager forwards both delivery reads through the same scoped con
 
 After dashboard authentication, those two delivery operations get a 35-second HTTP idle limit so Bun's ordinary 10-second limit cannot cut the report early. Other actions keep the ordinary limit.
 
+The connection idle setting is not a guaranteed 10-second deadline for an active handler. The actual HTTP fixture records that an ordinary action also completes after 11.5 seconds; that legacy behavior is retained. The owner approved correcting only the newly added test's mistaken ordinary-action failure expectation. Manager control request caps are separate from HTTP connection idle behavior. Delivery HTTP results omit the internal control-request rid.
+
 - Runtime doc checker ships explicitly in the npm tarball and package verification asserts its presence. Merge queue phase readiness derives each holder's current board phase view under gsd-lite; absent or blocked phases remain unknown/blocked.

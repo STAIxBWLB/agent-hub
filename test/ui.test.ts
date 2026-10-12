@@ -60,7 +60,7 @@ test("authenticated delivery HTTP reads outwait the default idle limit without e
     release();
     expect(await queue).toEqual({ ok: true, report: { native: "unverified" } });
     expect(await checklist).toEqual({ ok: true, report: { native: "unverified" } });
-    expect(await ordinary).toEqual({ ok: false });
+    expect(await ordinary).toEqual({ ok: true, report: { native: "unverified" } });
   } finally { release(); }
 }, 20_000);
 

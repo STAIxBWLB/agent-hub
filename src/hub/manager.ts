@@ -168,6 +168,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
           const text = "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
           return { ok: false, unconfirmed: true, text, error: text };
         }
+        if (deliveryRead) { const { rid: _transportId, ...report } = result; return report; }
         return result;
       } catch (error) { return { ok: false, error: safeError(error) }; }
       finally { client?.close(); }
