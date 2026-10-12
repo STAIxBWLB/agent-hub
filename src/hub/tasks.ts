@@ -570,12 +570,9 @@ export class Tasks {
     };
     const task = validate(), withheld = await this.withholds("note", input.reason, task);
     validate(); // a person may have changed planning or frozen a release while the screen ran
-    try {
-      const updated = this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld);
-      this.planningRecorded({ by, task: task.id, fields: Object.keys(patch), revision: updated.planningRevision! });
-      return updated;
-    }
-    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    const updated = this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld);
+    this.planningRecorded({ by, task: task.id, fields: Object.keys(patch), revision: updated.planningRevision! });
+    return updated; // persistence/readback failures must never claim no effect
   }
 
   async undoPlanning(by: PeerId, id: number, revision: number): Promise<Task> {
@@ -605,12 +602,9 @@ export class Tasks {
     if (input.state === "shipped" && this.d.board.list().some(task => task.release === release.id && task.state !== "approved")) throw new PreEffectToolRefusal("every release task must be approved or moved out before ship");
     const { id, revision, ...patch } = input;
     if (!Object.keys(patch).length || Object.keys(patch).some(key => !["state", "plannedStart", "cut", "ship"].includes(key))) throw new PreEffectToolRefusal("unknown or empty release fields");
-    try {
-      const updated = this.d.board.updateRelease(id, patch, revision);
-      this.planningRecorded({ by, release: id, fields: Object.keys(patch), revision: updated.revision });
-      return updated;
-    }
-    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    const updated = this.d.board.updateRelease(id, patch, revision);
+    this.planningRecorded({ by, release: id, fields: Object.keys(patch), revision: updated.revision });
+    return updated; // a failed readback may follow a durable release write
   }
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown }): Promise<Task> {

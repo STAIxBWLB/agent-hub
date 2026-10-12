@@ -8,6 +8,7 @@ import { Tasks } from "../src/hub/tasks.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { planningPatch, actualTaskDates } from "../src/hub/planning.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -79,4 +80,24 @@ test("planning dates refuse values outside UTC Date range before persistence (#2
   const release = await tasks.newRelease(USER, { name: "next", goal: "Deliver", order: 0 });
   expect(() => tasks.changeRelease(USER, { id: release.id, revision: 0, ship: 8_640_000_000_000_001 })).toThrow("invalid release planned dates");
   expect(board.release(release.id)?.revision).toBe(0);
+});
+
+
+test("planning persistence failures never claim a pre-effect refusal (#263)", async () => {
+  const { board, tasks } = rig();
+  const task = await tasks.propose(USER, { title: "future", class: "implement", backlog: true });
+  const plan = board.plan.bind(board);
+  board.plan = (...args) => { plan(...args); throw new Error("planning readback failed"); };
+  const planningError = await tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { priority: 1 }, reason: "needed" }).catch(error => error);
+  expect(planningError).toBeInstanceOf(Error);
+  expect(planningError).not.toBeInstanceOf(PreEffectToolRefusal);
+  expect(board.get(task.id)?.planningRevision).toBe(1);
+  const release = await tasks.newRelease(USER, { name: "next", goal: "Deliver", order: 0 });
+  const change = board.updateRelease.bind(board);
+  board.updateRelease = (...args) => { change(...args); throw new Error("release readback failed"); };
+  let releaseError: unknown;
+  try { tasks.changeRelease(USER, { id: release.id, revision: 0, state: "active" }); } catch (error) { releaseError = error; }
+  expect(releaseError).toBeInstanceOf(Error);
+  expect(releaseError).not.toBeInstanceOf(PreEffectToolRefusal);
+  expect(board.release(release.id)?.state).toBe("active");
 });
