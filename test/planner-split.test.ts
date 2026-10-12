@@ -61,6 +61,6 @@ test("person P0 integration order allows its split prerequisites first (#263)",a
   const parent=await tasks.propose(USER,{title:"urgent integration",class:"implement",backlog:true,urgent:true});
   await tasks.planBacklog(USER,{id:parent.id,revision:0,fields:{rank:1,priority:0},reason:"person first goal"});
   const split=await tasks.splitBacklog("claude",{id:parent.id,revision:1,parts:[{title:"first"},{title:"second"}],reason:"prerequisites"});
-  const part=split.children[0]!;expect(await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"required first"})).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
+  const part=split.children[0]!,pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"required first"}).catch(()=>null);expect(pulled).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
   expect(board.get(parent.id)?.state).toBe("backlog");
 });
