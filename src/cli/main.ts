@@ -1065,10 +1065,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [sub, name, revision, value] = args;
     if (sub === "list" && args.length === 1) return console.log(await taskOp("hub_release_list", {}));
     if (sub === "show" && name && args.length === 2) {
-      const releases = JSON.parse(await taskOp("hub_release_list", {})) as { name: string }[];
-      const release = releases.find(release => release.name === name);
-      if (!release) fail("no such release");
-      return console.log(JSON.stringify(release, null, 2));
+      return console.log(await taskOp("release_show", { name }));
     }
     if (sub === "new" && name && revision && args.length === 4 && /^\d+$/.test(value ?? "")) return console.log(await taskOp("release_new", { name, goal: revision, order: Number(value) }));
     if (!name || !/^\d+$/.test(revision ?? "")) fail("usage: ahub release new <name> <goal> <order>|list|show <name>|plan <name> <revision> <dates-json>|activate|freeze|ship|drop <name> <revision>");

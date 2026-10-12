@@ -2694,3 +2694,10 @@ Planner backlog plans also accept `deps` (at most 64 unique task ids) and
 unstarted, unowned backlog work even for the person; cycles and missing ids
 are refused before persistence. Planning undo restores previous dependency and
 reservation values at the same revision fence. Editing never routes work.
+
+
+Release date editors invalidate stale revisions and offer Reload current release
+without overwriting unsaved dates. Project changes clear release creation drafts.
+Dashboard release actions use public numeric ids even when labels are withheld;
+`ahub release show <name>` looks up the stored identity on the console and returns
+the screened public projection. Source verification remains pending.

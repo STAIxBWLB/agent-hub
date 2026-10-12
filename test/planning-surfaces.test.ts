@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
@@ -84,5 +84,26 @@ test("planning events retain saved priority and unknown urgent metadata (#263)",
     expect(await person.request({ t: "task", op: "hub_backlog_plan", args: { id, revision: 1, fields: { priority: 3 }, reason: "later phase" } })).toMatchObject({ ok: true });
     const events = readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "task" && event.id === id && event.event === "planned");
     expect(events.map(event => event.type === "task" ? event.priority : undefined)).toEqual([null, 3]);
+  } finally { person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+
+test("redacted release labels retain stable mutation and console lookup identity (#263)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-release-identity-")), stateDir = join(root, ".agenthub/state");
+  mkdirSync(join(root, ".agenthub"));
+  const routing = readFileSync(new URL("../templates/routing.toml", import.meta.url), "utf8");
+  writeFileSync(join(root, ".agenthub/routing.toml"), routing);
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, batch_ms: 0 } });
+  const person = await ControlClient.connect(stateDir, { role: "console" });
+  try {
+    const created = await person.request({ t: "task", op: "release_new", args: { name: "hidden-release", goal: "safe goal", order: 0 } });
+    expect(created.ok).toBe(true);const id=JSON.parse(created.text).id;
+    writeFileSync(join(root, ".agenthub/routing.toml"), routing.replace(/^pii_patterns = .*$/m, 'pii_patterns = ["hidden-release"]'));
+    const listed = await person.request({ t: "task", op: "hub_release_list", args: {} });
+    expect(JSON.parse(listed.text)[0]).toMatchObject({ id, name: "[withheld]" });
+    expect(await person.request({ t: "task", op: "release_change", args: { id, revision: 0, fields: { state: "active" } } })).toMatchObject({ ok: true });
+    const shown = await person.request({ t: "task", op: "release_show", args: { name: "hidden-release" } });
+    expect(JSON.parse(shown.text)).toMatchObject({ id, name: "[withheld]", state: "active" });
+    expect((await cli(root, ["release", "show", "hidden-release"])).code).toBe(0);
   } finally { person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
