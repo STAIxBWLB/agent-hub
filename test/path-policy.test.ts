@@ -21,7 +21,7 @@ class Peer extends BasePeer { async start() { this.setState("idle"); } async sto
 test("bounded data path config defaults absent, merges locally and matches symlink/case aliases (#259)", () => {
   const dir = root(); mkdirSync(join(dir, ".agenthub")); mkdirSync(join(dir, "data/raw"), { recursive: true }); symlinkSync("data/raw", join(dir, "alias"));
   expect(loadConfig(dir).pii).toBeUndefined(); expect(loadConfig(dir).data).toBeUndefined();
-  for (const raw of [null, "private", ["/outside"], ["../outside"], ["a/../b"], Array(65).fill("raw"), ["bad\npath"], ["data/*"]]) expect(() => policyPaths(raw, "pii.paths")).toThrow();
+  for (const raw of [null, "private", ["/outside"], ["../outside"], ["a/../b"], Array(65).fill("raw"), ["bad\npath"], ["data/[raw]"]]) expect(() => policyPaths(raw, "pii.paths")).toThrow();
   expect(policyPaths(["data/raw/", "data/raw"], "pii.paths")).toEqual(["data/raw"]);
   for (const path of ["data/raw/input.json", "alias/input.json", "DATA/RAW/new.json"]) expect(matchesPolicy(dir, path, ["data/raw"])).toBe(true);
   expect(matchesPolicy(dir, "data/raw-other/input.json", ["data/raw"])).toBe(false); expect(matchesPolicy(dir, ".", ["data/raw"], true)).toBe(true);

@@ -3710,7 +3710,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const permissionLaunch = peer === "claude" ? claudePermissionLaunch() : undefined;
           const permission = nativeClaude && permissionLaunch && !permissionLaunch.unattended && msg.nativeLaunchId === permissionLaunch.launchId ? permissionMode(peer) : undefined;
           if (permission !== undefined && nativePeer instanceof WsPeer) claudePermissionGenerations.set(peer, nativePeer.sessionGeneration);
-          const protectedWrite = config.protect_instruction_files && ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(msg.tool) && !projectFileTool(msg.tool, msg.input, opts.cwd, true);
+          const protectedWrite = ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(msg.tool) && !projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files, config.data?.readonly);
           const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: opts.cwd, protectInstructionFiles: config.protect_instruction_files } : {};
           // Permission-only hooks carry no native-turn evidence and must never drive busy state.
           const purpose = permissionLaunch?.hookPurpose ?? msg.hookPurpose;

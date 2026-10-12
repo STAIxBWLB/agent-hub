@@ -3,6 +3,7 @@
 // PreToolUse preserves facts additionalContext and adds permission decisions; other phases observe only.
 // A failed or timed-out hub decides nothing, leaving Claude's native permission rules in effect.
 import { relative, resolve, isAbsolute } from "node:path";
+import { matchesPolicy } from "../hub/path-policy.ts";
 import { realPath } from "../hub/project.ts";
 import { isAgentConfigPath, isInstructionPath, isPermissionMode, hardLinked, isHubWritePath } from "../hub/permission-mode.ts";
 import { ControlClient } from "../hub/control-client.ts";
@@ -14,7 +15,7 @@ export function nativeHookIdentity(stateDir: string, peer: string, env: NodeJS.P
 }
 
 /** Only resolving project paths outside the hub/native configuration directories receive a file grant. */
-export function projectFileTool(tool: unknown, input: unknown, projectRoot: unknown, protectInstructions = false): boolean {
+export function projectFileTool(tool: unknown, input: unknown, projectRoot: unknown, protectInstructions = false, readOnly: string[] = []): boolean {
   if (typeof projectRoot !== "string" || !isAbsolute(projectRoot) || !input || typeof input !== "object" || Array.isArray(input)) return false;
   const args = input as Record<string, unknown>;
   const key = ["Read", "Edit", "Write", "MultiEdit"].includes(String(tool)) ? "file_path" : tool === "NotebookEdit" ? "notebook_path" : ["LS", "Glob", "Grep"].includes(String(tool)) ? "path" : undefined;
@@ -35,6 +36,7 @@ export function projectFileTool(tool: unknown, input: unknown, projectRoot: unkn
     };
     const target = typeof args[key] === "string" ? args[key] as string : root;
     if (target.split(/[\\/]/).includes("..") || !safe(target)) return false;
+    if (mutates && matchesPolicy(root, target, readOnly, true)) return false;
     if (tool === "Grep" && args.glob !== undefined) {
       if (typeof args.glob !== "string" || !args.glob || args.glob.split(/[\\/]/).includes("..") || protectedPath(args.glob)) return false;
       if (/[?*[{]/.test(args.glob) || !safe(resolve(root, target, args.glob))) return false;

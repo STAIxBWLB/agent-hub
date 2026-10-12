@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Support bounded private/read-only data globs, real wildcard aliases and conservative discovery limits; withhold Claude scoped write grants on read-only data (#259).
+
 - Add isolated project profile data overrides across task aliases/plans, schemas, native guidance and init while preserving flow/check authority (#259).
 
 - Add explicit non-git shadow repositories for hub facts, snapshots and conservative undo without creating .git (#259).
