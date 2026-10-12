@@ -61,7 +61,7 @@ while the store keeps the older records.
 | `usageByModel` | provider-reported total tokens per served (else requested) model |
 | `models` | model routes and served models of the attributed requests |
 | `writer` | the release and `live` or `backfill` |
-| `tooling` | #248: for each peer that worked on the task (owner, reviewer, a peer with attributed turns or tokens), the add-ons from its latest `tooling` event: `{ name, version }` from the closed list `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`, `dot-admit`; version null when unknown. A peer missing here is unknown; records built from events written before #248 have no field |
+| `tooling` | #248: for each peer that worked on the task (owner, reviewer, a peer with attributed turns or tokens), the add-ons from the `tooling` event of the attachment it last worked in (an attachment runs from a `state` event that brings the peer online to the next `offline`; detection may settle after the work started): `{ name, version }` from the closed list `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`, `dot-admit`; version null when unknown. A peer missing here is unknown; records built from events written before #248 have no field |
 | `peers` | with `tooling`: every peer with an event attributed to the task (a turn, tokens, a route), fingerprinted or not, so a peer without a fingerprint makes the task unknown for an add-on rather than off |
 
 ## Label record (`kind: "label"`)

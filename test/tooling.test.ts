@@ -95,6 +95,19 @@ test("research records carry each working peer's latest fingerprint, and a peer 
     { v: 1, at: at(), type: "turn_end", peer: "pi", turn: "pi#1", ms: 10, task: 5, attribution: "delivery" }, task(5, "done", "approved", "codex", null),
     { v: 1, at: at(), type: "tooling", peer: "pi", addons: [{ name: "ripwire", version: null }] }];
   expect(taskRecords(late, "proj", writer)[0]!.tooling).toEqual({ codex: [], pi: [{ name: "ripwire", version: null }] });
+  // A fingerprint binds to the attachment it was detected in: work before a reattachment (or an upgrade that brought
+  // the first tooling events) is not credited with it, and work after one never keeps the earlier fingerprint (review of #351).
+  const state = (peer: string, s: string): StampedEvent => ({ v: 1, at: at(), type: "state", peer, state: s });
+  const turn = (id: number, peer: string): StampedEvent => ({ v: 1, at: at(), type: "turn_end", peer, turn: `${peer}#${id}`, ms: 1, task: id, attribution: "delivery" });
+  const windows: StampedEvent[] = [
+    state("pi", "idle"), task(6, "proposed", "proposed", null), task(6, "assigned", "in_progress", "codex", null), turn(6, "pi"), task(6, "done", "approved", "codex", null),
+    state("pi", "offline"), state("pi", "idle"), { v: 1, at: at(), type: "tooling", peer: "pi", addons: [{ name: "ripwire", version: null }] },
+    task(7, "proposed", "proposed", null), task(7, "assigned", "in_progress", "codex", null), turn(7, "pi"),
+    state("pi", "offline"), state("pi", "busy"), turn(7, "pi"), { v: 1, at: at(), type: "tooling", peer: "pi", addons: [] }, task(7, "done", "approved", "codex", null),
+  ];
+  const [six, seven] = taskRecords(windows, "proj", writer);
+  expect(six!.tooling).toBeUndefined(); // worked before any fingerprint of its attachment existed
+  expect(seven!.tooling).toEqual({ pi: [] }); // its last work was in the later attachment
   // Events from before #248 give records without the field: unknown, never "off".
   expect(taskRecords(events.filter((e) => e.type !== "tooling"), "proj", writer)[0]!.tooling).toBeUndefined();
   expect(addonState("ripwire", [undefined])).toBe("unknown");

@@ -67,14 +67,14 @@ export const researchFile = (projectId: string, home = hubHome()): string => joi
 export const recordKey = (r: { project: string; task: number; createdAt: string | null; approvedAt?: string }): string => `${r.project}#${r.task}@${r.createdAt ?? r.approvedAt ?? ""}`;
 
 type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers"> & {
-  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Set<string>;
+  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>;
 };
 /** Keyed by peer ids, model names and reasons, any of which may be `constructor` or `__proto__`: no prototype to inherit from. */
 const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
   tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
-  approvedAt: null, lastState: null, tooling: keyed(), peers: new Set() });
+  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map() });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
 
@@ -87,14 +87,27 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const tasks = new Map<number, Acc>(), earlier: Acc[] = [];
   const acc = (id: number) => { let a = tasks.get(id); if (!a) tasks.set(id, a = blank(id)); return a; };
   const seenUsage = new Set<string>();
-  const tooling = new Map<string, Addon[]>();
-  /** A peer that worked on the task carries its latest fingerprint into the record. */
-  const involve = (a: Acc, peer: string | null | undefined) => { if (!peer) return; a.peers.add(peer); const f = tooling.get(peer); if (f) a.tooling[peer] = f; };
+  // A fingerprint belongs to one attachment of its peer: from a state event that brings it online to the next offline.
+  // Detection settles in the background, so it can arrive after the peer's first work in that attachment.
+  const attach = new Map<string, number>(), online = new Set<string>();
+  const tooling = new Map<string, { attach: number; addons: Addon[] }>();
+  /** A peer that worked on the task carries the fingerprint of the attachment it worked in. */
+  const involve = (a: Acc, peer: string | null | undefined) => {
+    if (!peer) return;
+    const now = attach.get(peer) ?? 0, f = tooling.get(peer);
+    a.peers.set(peer, now);
+    if (f?.attach === now) a.tooling[peer] = f.addons;
+  };
   for (const e of events) {
+    if (e.type === "state") {
+      if (e.state === "offline") online.delete(e.peer);
+      else if (!online.has(e.peer)) { online.add(e.peer); attach.set(e.peer, (attach.get(e.peer) ?? 0) + 1); }
+      continue;
+    }
     if (e.type === "tooling") {
-      tooling.set(e.peer, e.addons);
-      // Detection settles in the background, so a peer may have worked on a task before its fingerprint was written.
-      for (const a of tasks.values()) if (a.peers.has(e.peer) && !Object.hasOwn(a.tooling, e.peer)) a.tooling[e.peer] = e.addons;
+      const now = attach.get(e.peer) ?? 0;
+      tooling.set(e.peer, { attach: now, addons: e.addons });
+      for (const a of tasks.values()) if (a.peers.get(e.peer) === now) a.tooling[e.peer] = e.addons;
       continue;
     }
     if (e.type === "task") {
@@ -155,7 +168,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     out.push({ schema: RESEARCH_SCHEMA, kind: "task", project: projectKey(projectId), ...rest, outcome: "approved", approvedAt,
       wallMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null,
       firstPass: a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer,
-      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers].sort() } : {}) });
+      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers.keys()].sort() } : {}) });
   }
   return out.sort((x, y) => x.approvedAt.localeCompare(y.approvedAt) || x.task - y.task);
 }
