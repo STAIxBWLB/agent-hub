@@ -2020,10 +2020,26 @@
     {
       "id": "split-person-prerequisite-order",
       "file": "src/hub/tasks.ts",
-      "search": " && !this.prerequisiteOf(other, task.id)",
-      "replacement": " && true",
+      "search": "this.prerequisiteOf(other, task.id) ||",
+      "replacement": "false ||",
       "testFile": "test/planner-split.test.ts",
       "testName": "person P0 integration order allows its split prerequisites first (#263)"
+    },
+    {
+      "id": "split-plan-pii-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join(\"\\n\") })",
+      "replacement": "this.signalsFor(part)",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split plans containing PII are private before any observer or public response (#263)"
+    },
+    {
+      "id": "split-prerequisite-effective-rank",
+      "file": "src/hub/tasks.ts",
+      "search": "...ancestors.map(goal => ({ rank: goal.rank!, id: goal.id }))",
+      "replacement": "...[]",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split prerequisites inherit the higher-ranked P0 goal ahead of unrelated work (#263)"
     }
   ]
 }
