@@ -21,6 +21,7 @@ export interface PeerUsage { input: number | null; output: number | null; cacheR
 export interface TaskRecord {
   schema: typeof RESEARCH_SCHEMA; kind: "task"; project: string; task: number;
   profile?: string; profileClass?: string;
+  release?: number | null; priority?: number | null; plannedStart?: number | null; due?: number | null;
   role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string };
   /** Native preamble preparations frozen at each attributed turn's start, never proof of model consumption. */
   sessionRoles?: { peer: string; turn: string; roles: RoleIdentity[] | null }[];
@@ -123,6 +124,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.
       if ((e.event === "proposed" && tasks.has(e.id)) || (e.event === "backlogged" && tasks.has(e.id))) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
       const a = acc(e.id);
+      for (const field of ["release", "priority", "plannedStart", "due"] as const) if (Object.hasOwn(e, field)) a[field] = e[field];
       a.class = e.class; if (e.role && a.role === undefined) { a.role = e.role; if (e.event === "proposed" && e.roleIdentity) a.roleIdentity = e.roleIdentity; } if (e.profile) { a.profile = e.profile; a.profileClass = e.profileClass; } if (e.pii) a.pii = true;
       if (proposed && e.role === a.role && e.roleIdentity && a.roleIdentity === undefined) a.roleIdentity = e.roleIdentity;
       if (e.owner && e.owner !== a.owners.at(-1)) {

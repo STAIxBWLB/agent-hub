@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
+
 - Add five-column dashboard task cards, ready/waiting split, shared peer colors, agent legend/lanes and scoped drag/button assignment and Backlog staging controls (#263).
 
 - Add the Isometric projection to the dashboard Office view: the same model through the same code path with projected grid coordinates, upright labels, identical focus order and accessible names, and jump-on-switch — plus an art polish pass (outline glyphs, drawn raised hand, per-desk avatars, extruded iso desks with legs and name plates, wireframe iso rooms, Done-shelf cabinet/stacks, two-column room cards with dividers, arc arrowheads) guided by generated reference concepts kept outside the repo (#264, phase 4 of 4).

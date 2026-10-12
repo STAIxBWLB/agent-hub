@@ -2650,6 +2650,36 @@ public stub; legend entries contain ids/counts, never task prose. Editable
 planning priority/rank, releases, dates, planner grooming/undo and GitHub import
 remain subsequent #263 slices. This source slice is not a native planner cycle.
 
+
+## Planning and phased releases (#263, source verification pending)
+
+Use `ahub backlog list` to read public staged work, then `ahub backlog plan <id>
+<revision> <fields-json> <reason>` to set rank, priority (0-3), release id, planned
+start/due UTC milliseconds or pin. `pin` accepts true/false; `undo` needs the
+current revision and latest eligible edit. The dashboard provides local-time
+date fields, task/release filters and lanes, and Reload current values when an
+edit is stale. A person's order, pins and frozen scopes protect planner changes.
+
+Create a phase with `ahub release new <name> <goal> <order>`, inspect `list` or
+`show`, and set planned start/cut/ship with `plan <name> <revision> <dates-json>`.
+`activate`, `freeze`, `ship` and `drop` need its current revision. Only a person
+freezes, ships, drops or edits frozen scope. Ship records the first ship time
+only after every member is approved or moved out; it runs no tag or publish.
+The dashboard shows phase progress, blocking dependencies, dates and remaining
+work. Actual task dates come from execution/review/approval history, never input.
+
+Configured planners read `hub_backlog_list` and `hub_release_list`, edit with
+`hub_backlog_plan`, and undo their own latest eligible change with
+`hub_backlog_undo`. Catalog guidance or a caller-supplied role grants no authority.
+PII cards stay stubs, reasons are screened/withheld in public history, and planning
+telemetry records ids/changed fields without prose. #247 task records carry
+optional release, priority, plannedStart and due, retaining unknown legacy data.
+
+Dependency/reservation planning, split/pull WIP limits, batched incoming notices
+and optional one-way GitHub import remain subsequent implementation. Current
+source checks and desktop/phone visual validation are pending; native planner
+work across two releases remains unverified. No installed/live behavior claimed.
+
 Office merge corrections retain the header's view selector when Off hides the
 scene. Activating a card reveals its task if a state filter excluded it; Work
 includes rework. Stable desk slots determine bounds after peers disconnect.
@@ -2657,3 +2687,17 @@ Reduced motion removes departures immediately and the existing snapshot poll
 prunes transient deadlines without new timers. Explicit unattributed turns have
 no guessed task bubble. Warning caps retain conflicts first and parallel warning
 kinds have separate segments/labels. Physical visual validation remains pending.
+
+
+Release date editors invalidate stale revisions and offer Reload current release
+without overwriting unsaved dates. Project changes clear release creation drafts.
+Dashboard release actions use public numeric ids even when labels are withheld;
+`ahub release show <name>` looks up the stored identity on the console and returns
+the screened public projection. Source verification remains pending.
+
+
+Planned-date editors preserve loaded UTC milliseconds until their displayed
+value changes, including repeated local wall times during a clock change. Local
+inputs retain seconds/milliseconds and support HTML date years without truncating
+fields; see https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#local-dates-and-times.
+Current exact-head date-editor proof is pending.

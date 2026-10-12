@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import type { PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -41,8 +42,10 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
+  planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields };
 }
-export interface Task {
+export interface Task extends PlanningFields {
+  planningRevision?: number;
   id: number;
   title: string;
   detail: string;
@@ -127,6 +130,17 @@ export class Board {
     if (!have.has("sdlc")) this.db.run("ALTER TABLE tasks ADD COLUMN sdlc TEXT");
     if (!have.has("task_role")) this.db.run("ALTER TABLE tasks ADD COLUMN task_role TEXT");
     if (!have.has("project_profile")) this.db.run("ALTER TABLE tasks ADD COLUMN project_profile TEXT");
+    for (const col of ["rank", "priority", "release", "planned_start", "due"]) {
+      if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN "${col}" INTEGER`);
+    }
+    if (!have.has("pinned")) this.db.run("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    if (!have.has("planning_revision")) this.db.run("ALTER TABLE tasks ADD COLUMN planning_revision INTEGER NOT NULL DEFAULT 0");
+    this.db.run(`CREATE TABLE IF NOT EXISTS releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, goal TEXT NOT NULL,
+      release_order INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'planning', planned_start INTEGER, cut INTEGER, ship INTEGER,
+      activated_at INTEGER, frozen_at INTEGER, shipped_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 0)`);
+
   }
 
   propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean }): Task {
@@ -177,6 +191,48 @@ export class Board {
     return updated;
   }
 
+  /** Internal persistence; caller authority and frozen scope are owned by Tasks. */
+  plan(id: number, by: PeerId, input: PlanningFields, revision: number, note?: string, withheld = false): Task {
+    const patch = planningPatch(input);
+    const task = this.get(id);
+    if (!task || (task.planningRevision ?? 0) !== revision) throw new Error("planning revision changed");
+    const next = { ...task, ...patch };
+    if (next.plannedStart != null && next.due != null && next.plannedStart > next.due) throw new Error("planned start must not follow due");
+    if (next.release != null && !this.release(next.release)) throw new Error("no such release");
+    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, task[key] ?? (key === "pinned" ? false : null)])) as PlanningFields;
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
+    const result = this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
+      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify([...task.history, entry]), now, id, revision);
+    if (result.changes !== 1) throw new Error("planning revision changed");
+    const updated = this.get(id)!; this.changed(updated, entry); return updated;
+  }
+
+  newRelease(name: string, goal: string, order: number): Release {
+    const now = Date.now();
+    const result = this.db.query("INSERT INTO releases(name,goal,release_order,created,updated) VALUES(?,?,?,?,?)").run(name, goal, order, now, now);
+    return this.release(Number(result.lastInsertRowid))!;
+  }
+  release(id: number): Release | undefined {
+    const row = this.db.query("SELECT * FROM releases WHERE id=?").get(id) as Record<string, unknown> | null;
+    return row ? parseRelease(row) : undefined;
+  }
+  releases(): Release[] {
+    return (this.db.query("SELECT * FROM releases ORDER BY release_order,id").all() as Record<string, unknown>[]).map(parseRelease);
+  }
+  updateRelease(id: number, patch: Partial<Pick<Release, "state" | "plannedStart" | "cut" | "ship">>, revision: number): Release {
+    const release = this.release(id);
+    if (!release || release.revision !== revision) throw new Error("release revision changed");
+    const next = { ...release, ...patch }, now = Date.now();
+    const moves: Record<ReleaseState, ReleaseState[]> = { planning: ["active", "dropped"], active: ["frozen", "dropped"], frozen: ["shipped", "dropped"], shipped: [], dropped: [] };
+    if (next.state !== release.state && !moves[release.state].includes(next.state)) throw new Error("invalid release transition");
+    const dates = [next.plannedStart, next.cut, next.ship].filter((date): date is number => date !== null);
+    if (dates.some(date => !Number.isSafeInteger(date) || date <= 0 || date > 8_640_000_000_000_000) || dates.some((date, i) => i > 0 && dates[i-1]! > date)) throw new Error("invalid release planned dates");
+    const result = this.db.query("UPDATE releases SET state=?,planned_start=?,cut=?,ship=?,activated_at=?,frozen_at=?,shipped_at=?,updated=?,revision=revision+1 WHERE id=? AND revision=?")
+      .run(next.state, next.plannedStart, next.cut, next.ship, release.activatedAt ?? (next.state === "active" ? now : null), release.frozenAt ?? (next.state === "frozen" ? now : null), release.shippedAt ?? (next.state === "shipped" ? now : null), now, id, revision);
+    if (result.changes !== 1) throw new Error("release revision changed");
+    return this.release(id)!;
+  }
+
   recordOutcome(peer: PeerId, cls: TaskClass, ok: boolean, at = Date.now()): void {
     this.db.query("INSERT INTO outcomes (peer, class, ok, at) VALUES (?, ?, ?, ?)").run(peer, cls, ok ? 1 : 0, at);
     this.db.query("DELETE FROM outcomes WHERE at < ?").run(at - OUTCOMES_KEPT_MS); // nothing older is read
@@ -222,5 +278,18 @@ function parse(row: Record<string, unknown>): Task {
   delete out.project_profile;
   if (out.task_role != null) out.role = out.task_role;
   delete out.task_role;
+  if (out.planned_start != null) out.plannedStart = out.planned_start;
+  delete out.planned_start;
+  if (out.planning_revision) out.planningRevision = out.planning_revision;
+  delete out.planning_revision;
+  if (out.pinned) out.pinned = true; else delete out.pinned;
+  for (const key of ["rank", "priority", "release", "due"]) if (out[key] == null) delete out[key];
   return out as unknown as Task;
+}
+
+function parseRelease(row: Record<string, unknown>): Release {
+  return { id: Number(row.id), name: String(row.name), goal: String(row.goal), order: Number(row.release_order), state: row.state as ReleaseState,
+    plannedStart: row.planned_start as number | null, cut: row.cut as number | null, ship: row.ship as number | null,
+    activatedAt: row.activated_at as number | null, frozenAt: row.frozen_at as number | null, shippedAt: row.shipped_at as number | null,
+    created: Number(row.created), updated: Number(row.updated), revision: Number(row.revision) };
 }

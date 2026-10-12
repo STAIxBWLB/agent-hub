@@ -36,7 +36,7 @@
     {
       "id": "pii-public-view",
       "file": "src/hub/tasks.ts",
-      "search": "if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? \"unknown\" } } : {}), title: \"[pii]\", detail: \"[pii]\" };",
+      "search": "if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? \"unknown\" } } : {}), title: \"[pii]\", detail: \"[pii]\" };",
       "replacement": "if (false) return { ...rest, refs: {}, plan: {}, title: \"[pii]\", detail: \"[pii]\" };",
       "testFile": "test/tasks.test.ts",
       "testName": "a PII task stays on-prem: local only, private envelopes, console review, redacted views, nothing to claude-mem"
@@ -1698,12 +1698,148 @@
       "testName": "board return controls refuse started and unknown-history ownerless proposals (#263)"
     },
     {
+      "id": "planning-configured-role",
+      "file": "src/hub/tasks.ts",
+      "search": "if (by !== USER && !this.d.roles?.[by]?.includes(\"planner\"))",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planning validates the whole patch and persists revision dates priority and release (#263)"
+    },
+    {
+      "id": "planning-pinned-floor",
+      "file": "src/hub/tasks.ts",
+      "search": " || task.pinned || Object.hasOwn(patch, \"pinned\")",
+      "replacement": " || Object.hasOwn(patch, \"pinned\")",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "planning-person-order",
+      "file": "src/hub/tasks.ts",
+      "search": "task.history.some(entry => entry.by === USER && entry.planning?.fields.includes(\"rank\"))",
+      "replacement": "false",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "planning-frozen-scope",
+      "file": "src/hub/tasks.ts",
+      "search": "if (by !== USER && release.state === \"frozen\")",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "release-approval-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "input.state === \"shipped\" && this.d.board.list().some(task => task.release === release.id && task.state !== \"approved\")",
+      "replacement": "false",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "planning-actual-approval",
+      "file": "src/hub/planning.ts",
+      "search": "doneAt: approved ?? reviewerlessDone",
+      "replacement": "doneAt: first([\"done\"])",
+      "testFile": "test/planning.test.ts",
+      "testName": "actual task dates use execution review and approval evidence rather than typed plans or notes (#263)"
+    },
+    {
+      "id": "research-planning-metadata",
+      "file": "src/hub/research.ts",
+      "search": "if (Object.hasOwn(e, field)) a[field] = e[field];",
+      "replacement": "if (false) a[field] = e[field];",
+      "testFile": "test/planning-surfaces.test.ts",
+      "testName": "research planning metadata preserves unknown legacy values and reset generations (#263)"
+    },
+    {
       "id": "board-recovered-owner-hold",
       "file": "src/ui/task-board.ts",
       "search": " || peer.heldBy",
       "replacement": " || false",
       "testFile": "test/task-board.test.ts",
       "testName": "recovered owner delivery holds stay waiting until settlement (#263)"
+    },
+    {
+      "id": "planning-saved-event-priority",
+      "file": "src/hub/daemon.ts",
+      "search": "priority: t.priority ?? null",
+      "replacement": "priority: t.signals.includes(\"urgent\") ? 0 : t.priority ?? null",
+      "testFile": "test/planning-surfaces.test.ts",
+      "testName": "planning events retain saved priority and unknown urgent metadata (#263)"
+    },
+    {
+      "id": "planning-priority-precedence",
+      "file": "src/ui/task-board.ts",
+      "search": "const priority = Number.isInteger(task.priority) && task.priority! >= 0 && task.priority! <= 3 ? task.priority! : task.urgent === true ? 0 : 2;",
+      "replacement": "const priority = task.urgent === true ? 0 : Number.isInteger(task.priority) && task.priority! >= 0 && task.priority! <= 3 ? task.priority! : 2;",
+      "testFile": "test/task-board.test.ts",
+      "testName": "planned priorities override urgent fallback and backlog ranks order cards (#263)"
+    },
+    {
+      "id": "planning-board-rank",
+      "file": "src/ui/task-board.ts",
+      "search": "columns[0]!.ready.sort((a, b) => ranks.get(a.id)! - ranks.get(b.id)! || a.id - b.id);",
+      "replacement": "columns[0]!.ready.sort((a, b) => a.id - b.id);",
+      "testFile": "test/task-board.test.ts",
+      "testName": "planned priorities override urgent fallback and backlog ranks order cards (#263)"
+    },
+    {
+      "id": "planning-list-rank",
+      "file": "src/hub/tasks.ts",
+      "search": ".sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id)",
+      "replacement": ".sort((a, b) => a.id - b.id)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner backlog reads follow saved rank with stable unknown order (#263)"
+    },
+    {
+      "id": "release-stale-edit-invalidation",
+      "file": "src/ui/index.html",
+      "search": "if(releaseEdit && (!sameBoardContext(releaseEdit.context) || releases.find(release=>release.id===releaseEdit.id)?.revision!==releaseEdit.revision))",
+      "replacement": "if(false)",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "release UI keeps public ids and invalidates stale date edits until reload (#263)"
+    },
+    {
+      "id": "release-draft-project-reset",
+      "file": "src/ui/index.html",
+      "search": "$('release-name').value='';$('release-goal').value='';$('release-order').value='0';",
+      "replacement": "$('release-order').value='0';",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "project reset clears release creation draft before switching projects (#263)"
+    },
+    {
+      "id": "release-public-id-mutation",
+      "file": "src/hub/daemon.ts",
+      "search": "case \"release_change\": {\n        const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);",
+      "replacement": "case \"release_change\": {\n        const release = board.releases().find(release => release.name === a.name);",
+      "testFile": "test/planning-surfaces.test.ts",
+      "testName": "redacted release labels retain stable mutation and console lookup identity (#263)"
+    },
+    {
+      "id": "dashboard-release-id-forwarding",
+      "file": "src/hub/daemon.ts",
+      "search": "await taskOp(USER, \"release_change\", { id: a.id, name: a.name, revision: a.revision, fields: a.fields });",
+      "replacement": "await taskOp(USER, \"release_change\", { name: a.name, revision: a.revision, fields: a.fields });",
+      "testFile": "test/task-board-surfaces.test.ts",
+      "testName": "dashboard release actions forward public ids through the authenticated HTTP path (#263)"
+    },
+    {
+      "id": "planning-original-utc-precision",
+      "file": "src/ui/index.html",
+      "search": "if(loaded && loaded.text===value)return loaded.utc;",
+      "replacement": "if(false)return loaded.utc;",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "planning date editors retain original UTC precision and parse changed local values (#263)"
+    },
+    {
+      "id": "release-label-public-identity",
+      "file": "src/ui/index.html",
+      "search": "label:'#'+release.id+' '+release.name",
+      "replacement": "label:release.name",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "redacted release options retain distinguishable public ids (#263)"
     }
   ]
 }
