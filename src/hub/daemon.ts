@@ -2957,7 +2957,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const turnView = (peer: PeerId) => {
       const turn = turns.get(peer);
       if (!turn) return {};
-      const pii = turn.private === true || turn.attribution.pii === true;
+      const task = turn.attribution.task === undefined ? undefined : board.get(turn.attribution.task);
+      const pii = turn.private === true || turn.attribution.pii === true || (turn.attribution.task !== undefined && (!task || tasks.isPii(task)));
       return { turn: { since: turn.start, attribution: turn.attribution.attribution, ...(!pii && turn.attribution.task !== undefined ? { task: turn.attribution.task } : {}) } };
     };
     const links = [

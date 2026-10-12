@@ -1584,6 +1584,22 @@
       "replacement": "const members = [...cohort.members.values()];",
       "testFile": "test/tasks.test.ts",
       "testName": "dashboard cohort links revalidate tasks that become private after cohort creation (#264 merge)"
+    },
+    {
+      "id": "office-live-turn-privacy",
+      "file": "src/hub/daemon.ts",
+      "search": " || (turn.attribution.task !== undefined && (!task || tasks.isPii(task)))",
+      "replacement": " || false",
+      "testFile": "test/daemon.test.ts",
+      "testName": "office turn task privacy is revalidated after a live routing policy change (#264 merge)"
+    },
+    {
+      "id": "office-backlog-assign-floor",
+      "file": "src/ui/index.html",
+      "search": "task.state !== 'approved' && task.state !== 'backlog' && ids.length",
+      "replacement": "task.state !== 'approved' && ids.length",
+      "testFile": "test/office-view.test.ts",
+      "testName": "backlog rows show no assignment action before they are pulled (#264 merge)"
     }
   ]
 }

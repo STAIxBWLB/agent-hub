@@ -2023,3 +2023,32 @@ test("ui_snapshot carries turn, checking and overlap/cohort links, ids only and 
   expect(JSON.stringify(shot)).not.toContain("900101-1234567");
   slow.release();
 });
+
+
+test("office turn task privacy is revalidated after a live routing policy change (#264 merge)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-ui264-policy-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const init = Bun.spawn(["git", "-C", dir, "init", "-q"], { stdout: "ignore", stderr: "ignore" });
+  expect(await init.exited).toBe(0);
+  mkdirSync(join(dir, ".agenthub"));
+  const routing = join(dir, ".agenthub/routing.toml");
+  writeFileSync(routing, '[constraints]\npii = "off"\n');
+  const { daemon, console_ } = await hub({ cwd: dir });
+  class PolicyPeer extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() { this.setState("busy"); }
+    async stop() { this.setState("offline"); }
+  }
+  const peer = new PolicyPeer("slow"); daemon.bus.add(peer); await peer.start();
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "secret 900101-1234567", class: "implement", owner: "slow" } })).ok).toBe(true);
+  const snapshot = () => console_.request({ t: "ui_snapshot", after: 0 });
+  let shot: any = {};
+  for(let i=0;i<300 && shot.status?.peers?.slow?.turn?.task!==1;i++){shot=await snapshot();await Bun.sleep(10)}
+  expect(shot.status.peers.slow.turn.task).toBe(1);
+  writeFileSync(routing, '[constraints]\npii = "local_only"\n');
+  const changed = new Date(Date.now()+1000);utimesSync(routing,changed,changed);
+  shot=await snapshot();
+  expect(shot.tasks.find((task: any)=>task.id===1).title).toBe("[pii]");
+  expect(shot.status.peers.slow.turn.task).toBeUndefined();
+  expect(shot.status.peers.slow.turn.attribution).toBe("delivery");
+});

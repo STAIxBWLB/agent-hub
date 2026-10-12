@@ -442,7 +442,7 @@ function render(snapshot) {
       if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + (task.lifecycle.workflow ? ' (' + task.lifecycle.workflow + ')' : '') + ' / ' + task.lifecycle.stage + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
       if (task.lifecycle?.definition) row.append(el('p', 'Stage base: ' + task.lifecycle.definition.base + ' / entry: ' + (task.lifecycle.entry?.length ? task.lifecycle.entry.join('; ') : 'ready') + ' / exit: ' + (task.lifecycle.exit?.length ? task.lifecycle.exit.join('; ') : 'ready'), 'meta'));
       if (task.detail) row.append(el('p', task.detail, 'body'));
-      if (task.state !== 'approved' && ids.length) {
+      if (task.state !== 'approved' && task.state !== 'backlog' && ids.length) {
         const actions = el('div', undefined, 'actions'), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;
         const assign = el('button', 'Assign'); assign.type = 'button'; assign.dataset.mutation = 'project'; assign.disabled = managerMode && !snapshotValid; assign.addEventListener('click', () => { if (select.value) void action({action:'assign', id:task.id, peer:select.value}, assign); else notice('Select a peer before assigning this task.', true); });
         actions.append(select, assign); row.append(actions);

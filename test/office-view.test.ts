@@ -517,3 +517,11 @@ test("parallel warning kinds draw distinguishable coordinates (#264 merge)", () 
   const lines=get("office").findAll(node=>node.attrs.class==="office-link-line");
   expect(lines).toHaveLength(3);expect(new Set(lines.map(line=>line.attrs.y1)).size).toBe(3);
 });
+
+
+test("backlog rows show no assignment action before they are pulled (#264 merge)", () => {
+  const {api,get}=startOfficeRuntime(()=>"off");
+  api.draw({...snapshot,tasks:[{id:90,title:"staged",class:"implement",state:"backlog"}]});
+  expect(get("tasks").text()).toContain("staged");
+  expect(get("tasks").findAll(node=>node.tag==="button" && node.textContent==="Assign")).toHaveLength(0);
+});
