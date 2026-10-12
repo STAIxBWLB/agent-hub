@@ -153,4 +153,6 @@ The predecessor is the newest non-draft entry from GitHub's descending release l
 
 The all-project manager forwards both delivery reads through the same scoped console connection with a 30-second cap, beyond their shared 20-second read budget. Stale/unknown project or instance identities and unknown operations remain refused.
 
+After dashboard authentication, those two delivery operations get a 35-second HTTP idle limit so Bun's ordinary 10-second limit cannot cut the report early. Other actions keep the ordinary limit.
+
 - Runtime doc checker ships explicitly in the npm tarball and package verification asserts its presence. Merge queue phase readiness derives each holder's current board phase view under gsd-lite; absent or blocked phases remain unknown/blocked.

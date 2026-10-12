@@ -53,7 +53,7 @@ export function startDashboard(options: DashboardOptions) {
     hostname: "127.0.0.1",
     port: 0,
     maxRequestBodySize: 32 * 1024,
-    async fetch(req): Promise<Response> {
+    async fetch(req, server): Promise<Response> {
       if (req.headers.get("host") !== host) return reject(403, "forbidden host");
       const requestOrigin = req.headers.get("origin");
       if (requestOrigin !== null && requestOrigin !== origin) return reject(403, "forbidden origin");
@@ -121,6 +121,7 @@ export function startDashboard(options: DashboardOptions) {
         }
       }
       try {
+        if (input.action === "sdlc_queue" || input.action === "sdlc_release") server.timeout(req, 35);
         return json(await options.action(input, sessionOf(cookie)));
       } catch {
         // Exceptions may quote private task text or backend details. Never echo them to the page.

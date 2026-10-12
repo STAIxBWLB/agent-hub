@@ -1304,6 +1304,14 @@
       "replacement": "else if (deliveryRead) nominalMs = 10_000;",
       "testFile": "test/manager.test.ts",
       "testName": "manager forwards scoped delivery evidence reads beyond ordinary deadlines and rejects stale targets (#257)"
+    },
+    {
+      "id": "delivery-http-idle-limit",
+      "file": "src/hub/ui.ts",
+      "search": "server.timeout(req, 35);",
+      "replacement": "server.timeout(req, 10);",
+      "testFile": "test/ui.test.ts",
+      "testName": "authenticated delivery HTTP reads outwait the default idle limit without extending ordinary actions (#257)"
     }
   ]
 }

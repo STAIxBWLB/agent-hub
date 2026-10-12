@@ -41,6 +41,29 @@ function setup() {
   return { ui, post, session, snapshots, actions, advance: (ms: number) => { time += ms; } };
 }
 
+test("authenticated delivery HTTP reads outwait the default idle limit without extending ordinary actions (#257)", async () => {
+  let release!: () => void, entered!: () => void, count = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const observed = new Promise<void>(resolve => { entered = resolve; });
+  const ui = startDashboard({ snapshot: () => ({}), action: async () => { if (++count === 3) entered(); await held; return { ok: true, report: { native: "unverified" } }; } });
+  cleanup.push(ui.stop);
+  const headers = { origin: ui.origin, "content-type": "application/json" };
+  try {
+    const ticket = new URL(ui.issue()).hash.slice(1);
+    const session = await fetch(`${ui.origin}/session`, { method: "POST", headers, body: JSON.stringify({ ticket }) });
+    expect(session.status).toBe(200);
+    const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+    const read = (action: string) => fetch(`${ui.origin}/action`, { method: "POST", headers: { ...headers, cookie }, body: JSON.stringify({ action, repo: "owner/repo" }) }).then(response => response.json()).catch(() => ({ ok: false }));
+    const queue = read("sdlc_queue"), checklist = read("sdlc_release"), ordinary = read("pause");
+    await observed;
+    await Bun.sleep(11_500);
+    release();
+    expect(await queue).toEqual({ ok: true, report: { native: "unverified" } });
+    expect(await checklist).toEqual({ ok: true, report: { native: "unverified" } });
+    expect(await ordinary).toEqual({ ok: false });
+  } finally { release(); }
+}, 20_000);
+
 test("dashboard shell is static, data-free and protected by browser response headers", async () => {
   const { ui, snapshots, actions } = setup();
   const url = new URL(ui.issue());
