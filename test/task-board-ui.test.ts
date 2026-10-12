@@ -25,7 +25,7 @@ function page() {
   const scope = { projectId: "project", instanceId: "instance", generation: 1 }, calls: any[] = [];
   const el = (tag: string, text?: unknown, cls = "") => { const node = new Node(tag); if (text !== undefined) node.textContent = String(text); node.className = cls; return node; };
   const elSource = html.match(/const el = [^\n]+/)![0];
-  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true; ${elSource} ${source}; ({draw:renderBoard,draggedCard})`, {
+  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true;const taskRows=new Map(),officeCards=new Map(); ${elSource} ${source}; ({draw:renderBoard,draggedCard})`, {
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
     document: { createElement: (tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string) => el("span", text),
     renderTaskProgress: () => {}, renderTaskStage: (stage: { label: string }) => el("p", stage.label),

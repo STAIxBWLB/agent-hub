@@ -179,6 +179,8 @@ async function daemonWith(research: boolean, home: string) {
   // Attached as peers too, so the board can give them tasks; the tools connections act for them.
   for (const peer of ["worker", "claude"]) { const c = await ControlClient.connect(stateDir, { role: "peer", peer }); cleanup.push(() => c.close()); }
   await until(() => daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle", "research worker and reviewer attached");
+  // #248: add-on detection settles in the background after each attach; work starts once both fingerprints are written.
+  await until(() => readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "tooling").length >= 2, "both peers' tooling fingerprints", 300);
   const codex = await as("worker"), claude = await as("claude");
   const op = async (c: ControlClient, name: string, args: Record<string, unknown>) => {
     const reply = await c.request({ t: "task", op: name, args });
@@ -212,6 +214,10 @@ test("the live writer records each approved task, holds no text, and backfill re
   const stored = readStore(file) as TaskRecord[];
   expect(stored).toHaveLength(1);
   expect(stored[0]).toMatchObject({ task: 1, owners: ["worker"], firstPass: true, dones: 1, writer: { source: "live" } });
+  // #248: one tooling fingerprint per attach, carried into the record for each peer that worked on the task.
+  const tooling = readEvents(join(f.stateDir, "events.jsonl")).filter((e) => e.type === "tooling");
+  expect(tooling.map((e) => e.type === "tooling" && e.peer).sort()).toEqual(["claude", "worker"]);
+  expect(Object.keys(stored[0]!.tooling ?? {}).sort()).toEqual(["claude", "worker"]);
   const raw = readFileSync(file, "utf8");
   // Nothing of the text in the store, the report or either export.
   const outputs = [raw, formatResearch(researchReport(stored)).join("\n"), JSON.stringify(researchReport(stored)), toCsv(stored)];
@@ -326,4 +332,18 @@ test("backlog pull initializes research identity once and label lookup follows r
   const both = taskRecords(events, "alpha", writer);
   expect(both).toHaveLength(2); expect(both.map(r => r.createdAt)).toEqual([pulled.at, next.at]);
   expect(labelTarget(both, events, 7)).toBe(both[1]!);
+});
+
+
+test("unpulled backlog generations cannot contaminate a reused normal proposal (#264 merge)", () => {
+  const taskEvent = (...args: Parameters<typeof task>) => { const event = task(...args); if (event.type !== "task") throw new Error("expected task event"); return event; };
+  const events: StampedEvent[] = [{...taskEvent(7,"backlogged","backlog",{pii:true,owner:"local"}),role:"old-role"},
+    {v:1,at:at(),type:"turn_end",peer:"local",turn:"old",task:7,pii:true,ms:20},
+    {...taskEvent(7,"proposed","proposed",{owner:"codex"}),role:"new-role"},
+    task(7,"accepted","in_progress",{owner:"codex"}),task(7,"approved","approved",{owner:"codex"})];
+  const records=taskRecords(events,"alpha",writer);
+  expect(records).toHaveLength(1);
+  expect(records[0]!.pii).toBe(false);expect(records[0]!.role).toBe("new-role");
+  expect(records[0]!.activeMs).toBe(0);expect(records[0]!.owners).not.toContain("local");
+  expect(records[0]!.createdAt).toBe(events[2]!.at);
 });

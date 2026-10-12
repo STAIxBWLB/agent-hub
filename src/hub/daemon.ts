@@ -87,6 +87,7 @@ import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
+import { detectTooling } from "./tooling.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -637,6 +638,9 @@ export async function startDaemon(opts: DaemonOptions) {
       },
     },
   });
+  // Written once this run owns the port, before any connection can attach a peer: a daemon that fails to bind (another
+  // is running) never marks a run boundary in the live one's events.
+  event({ type: "hub_start", instance: instanceId });
   startupCleanup.push(() => server.stop(true));
 
 
@@ -1874,6 +1878,16 @@ export async function startDaemon(opts: DaemonOptions) {
   // Early conflict detection (issue #32): the files a turn changed, against what other owners' open tasks changed
   // before it. Warns both owners once per file and task; never blocks a write.
   const conflictSeen = new Set<string>();
+  // #264 (phase 3): recent conflicts as dashboard warning links. A conflict is a moment at a turn's end, so the
+  // daemon keeps a short in-memory list; ids only, and the snapshot drops a link once a task of it is no longer open.
+  const recentConflicts: { tasks: [number, number]; peers: string[] }[] = [];
+  const recordConflictLink = (a: number, b: number, peers: string[]) => {
+    const pair = [a, b].sort((x, y) => x - y).join(":");
+    const stale = recentConflicts.findIndex((c) => [...c.tasks].sort((x, y) => x - y).join(":") === pair);
+    if (stale >= 0) recentConflicts.splice(stale, 1);
+    recentConflicts.push({ tasks: [a, b], peers: [...new Set(peers)].sort() });
+    if (recentConflicts.length > 12) recentConflicts.shift();
+  };
   const turnTasks = new Map<string, number[]>();
   /** Work a conflict notice is about: open tasks and tasks in review (#91); a notice for anything else is dropped (#106). */
   const CONFLICT_STATES: Task["state"][] = ["proposed", "in_progress", "changes_requested", "in_review"];
@@ -1895,6 +1909,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. ${together}`;
         notify(`conflict: ${text}`);
         event({ type: "conflict", peer: record.peer, task: ours.id, other: theirs.id, owner: otherTurn.peer, paths: named, concurrent: true, turns: [record.id, otherTurn.id] });
+        recordConflictLink(ours.id, theirs.id, [record.peer, otherTurn.peer]);
         // Each owner hears it while its own task is open; once that task is closed the notice is dropped (issue #106).
         for (const [owner, task] of [[record.peer, ours.id], [otherTurn.peer, theirs.id]] as const) if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task, text, CONFLICT_STATES);
       }
@@ -1931,6 +1946,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const files = [...named, ...(hidden ? [`${hidden} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
       notify(`conflict: ${peer}${ours} changed ${files}, which #${task.id} (owner ${owner}) changed before${others.length ? ` (concurrent: ${others.join(", ")})` : ""}`);
       event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths: named, concurrent: others.length > 0 });
+      if (mine[0]) recordConflictLink(mine[0].id, task.id, [peer, owner]);
       // Both notices are about an open task of their recipient: dropped at delivery once it is closed (issue #106).
       const settle = mine[0] && tasks.silentFor(mine[0].id) && tasks.silentFor(task.id) ? `; do not message ${owner} (you are in one turn-free cohort): the hub shows you its changes` : `, and settle it with ${owner} via hub_send`;
       const toPeer = `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work${settle}.${concurrent}`;
@@ -1985,6 +2001,10 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
   };
 
+  const tooled = new Map<string, number>(), attachedNow = new Set<string>();
+  /** Detections still running (each bounded by its probe deadline): settled before shutdown writes research records. */
+  const detecting = new Set<Promise<void>>();
+  let attachments = 0;
   bus.tap((e) => {
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
@@ -1992,6 +2012,17 @@ export async function startDaemon(opts: DaemonOptions) {
     if (e.t === "state") {
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
+      // #248: the add-ons it works with, once per attach (names and versions only).
+      // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
+      // still did its work under that attachment.
+      if (e.state === "offline") attachedNow.delete(e.peer);
+      else if (!attachedNow.has(e.peer)) {
+        attachedNow.add(e.peer);
+        const peer = e.peer, attachment = ++attachments;
+        tooled.set(peer, attachment);
+        const detection = detectTooling(peer, { cwd: opts.cwd }).then((addons) => { if (tooled.get(peer) === attachment) event({ type: "tooling", peer, addons }); }, () => undefined);
+        detecting.add(detection); void detection.finally(() => detecting.delete(detection));
+      }
       const open = turns.get(e.peer);
       // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";
@@ -2940,7 +2971,25 @@ export async function startDaemon(opts: DaemonOptions) {
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
-    const peerView = status().peers, boardTasks = board.list();
+    // #264 (phase 3): turn, checking and links are additive optional fields that older pages ignore,
+    // so PROTOCOL and EVENTS_SCHEMA stay unchanged. They carry ids and enums only.
+    const turnView = (peer: PeerId) => {
+      const turn = turns.get(peer);
+      if (!turn) return {};
+      const task = turn.attribution.task === undefined ? undefined : board.get(turn.attribution.task);
+      const pii = turn.private === true || turn.attribution.pii === true || (turn.attribution.task !== undefined && (!task || tasks.isPii(task)));
+      return { turn: { since: turn.start, attribution: turn.attribution.attribution, ...(!pii && turn.attribution.task !== undefined ? { task: turn.attribution.task } : {}) } };
+    };
+    const links = [
+      ...tasks.overlapLinks().map((link) => ({ kind: "overlap" as const, ...link })),
+      ...tasks.cohortLinks().map((link) => ({ kind: "cohort" as const, ...link })),
+      ...recentConflicts.flatMap((conflict) => {
+        const [a, b] = conflict.tasks;
+        const ta = board.get(a), tb = board.get(b);
+        return ta && tb && CONFLICT_STATES.includes(ta.state) && CONFLICT_STATES.includes(tb.state) ? [{ kind: "conflict" as const, tasks: conflict.tasks, peers: conflict.peers }] : [];
+      }),
+    ];
+    const peerView = Object.fromEntries(Object.entries(status().peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
     return {
       ok: true,
       projectId,
@@ -2958,6 +3007,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Refs and history can themselves quote private text. The dashboard needs neither.
         return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
+      links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
         const req = JSON.parse(push);
@@ -3893,7 +3943,7 @@ export async function startDaemon(opts: DaemonOptions) {
           try { return void reply({ ok: true, export: tasks.workflowExport(msg.id) }); } catch { return void reply({ ok: false, error: "workflow export unavailable" }); }
         }
         if (msg.op !== "status" && msg.op !== "explain") return void reply({ ok: false, error: "unknown SDLC operation" });
-        const selected = msg.id === undefined ? board.list().filter(task => task.sdlc || lifecycleConfig.mode !== "off" || lifecycleConfig.workflow === "gsd-lite") : [board.get(Number(msg.id))].filter((task): task is Task => !!task);
+        const selected = msg.id === undefined ? board.list().filter(task => task.state !== "backlog" && (task.sdlc || lifecycleConfig.mode !== "off" || lifecycleConfig.workflow === "gsd-lite")) : [board.get(Number(msg.id))].filter((task): task is Task => !!task);
         if (msg.id !== undefined && (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !selected.length)) return void reply({ ok: false, error: "invalid lifecycle task id" });
         void (async () => {
           const rows = [];
@@ -4061,6 +4111,9 @@ export async function startDaemon(opts: DaemonOptions) {
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
       await Promise.allSettled([...starting.values()]);
+      // A fingerprint still being detected belongs in the research records written below; its peer must still be
+      // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).
+      await Promise.allSettled([...detecting]);
       const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()).concat(sidecar ? [sidecar.stop()] : []));
       // A peer whose stop rejects must not strand the daemon (issue #56): its failure is
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
