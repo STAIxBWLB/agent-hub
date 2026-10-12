@@ -104,9 +104,9 @@ test("notes on an open task are short-term; approval promotes decisions, contrac
   expect((await h.console.request({ t: "ui_snapshot", after: 0, memory: { tier: 7, kind: ["x"], hops: "x" } })).memory).toMatchObject({ tier: "long" });
 
   // The CLI reads the same store; changing it is a person's.
-  expect(memoryCommand(["list", "--tier", "long"], h.root, { store })).toContain("long-term");
-  expect(memoryCommand(["search", "quoted"], h.root, { store })).toContain("regex split fails");
-  expect(() => memoryCommand(["list", "--since", "yesterday-ish"], h.root, { store })).toThrow("--since");
+  expect(await memoryCommand(["list", "--tier", "long"], h.root, { store })).toContain("long-term");
+  expect(await memoryCommand(["search", "quoted"], h.root, { store })).toContain("regex split fails");
+  await expect(memoryCommand(["list", "--since", "yesterday-ish"], h.root, { store })).rejects.toThrow("--since");
   expect(classifyPeerCommand("memory", ["search", "x"])).toBe("allowed");
   expect(classifyPeerCommand("memory", ["--json"])).toBe("allowed");
   for (const sub of ["forget", "promote", "demote", "supersede", "rebuild", "graph"]) expect(classifyPeerCommand("memory", [sub, "x"])).toBe("console");
