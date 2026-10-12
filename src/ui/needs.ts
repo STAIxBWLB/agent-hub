@@ -7,6 +7,7 @@ export interface NeedsInput {
   storageBlocked?: boolean;
   recovery?: { id?: string; running?: boolean; since?: number };
   tasks?: readonly { id: number; state: string; owner?: string | null; reviewer?: string | null }[];
+  facts?: readonly { kind: "review" | "offline"; id: number; peer?: string }[];
   messages?: readonly { id?: string; peer?: string; important: boolean; since?: number }[];
   budget?: Readonly<Record<string, { paused?: { since?: number; resetsAt?: number } }>>;
 }
@@ -35,6 +36,10 @@ export function needs(input: NeedsInput, now: number): Needs {
       offline.add(task.owner); add("offline", "watch", task.owner, task.id);
     }
   }
+  for (const fact of input.facts ?? []) if (Number.isSafeInteger(fact.id) && fact.id > 0) {
+    if (fact.kind === "review") add("review", "act", undefined, fact.id);
+    else if (fact.kind === "offline" && id(fact.peer) && !offline.has(fact.peer)) { offline.add(fact.peer); add("offline", "watch", fact.peer, fact.id); }
+  }
   for (const [peer, budget] of Object.entries(input.budget ?? {})) if (budget.paused) add("budget", "watch", peer, undefined, budget.paused.resetsAt, budget.paused.since);
   const order: Record<NeedKind, number> = { approval: 0, default: 1, storage: 2, recovery: 3, delivery: 4, review: 5, message: 6, budget: 7, offline: 8 };
   items.sort((a,b) => (a.level === "act" ? 0 : 1) - (b.level === "act" ? 0 : 1) || order[a.kind] - order[b.kind] || (a.kind === "approval" ? (a.until ?? Infinity) - (b.until ?? Infinity) : 0) || (a.since ?? 0) - (b.since ?? 0));
@@ -47,6 +52,6 @@ export function needs(input: NeedsInput, now: number): Needs {
 /** Global status never reads console-local unread messages or source text. */
 export function summarizeNeeds(input: Omit<NeedsInput, "messages">, now: number): NeedsSummary {
   const value = needs({ approvals: input.approvals, defaults: input.defaults, peers: input.peers,
-    storageBlocked: input.storageBlocked, recovery: input.recovery, tasks: input.tasks, budget: input.budget }, now);
+    storageBlocked: input.storageBlocked, recovery: input.recovery, tasks: input.tasks, facts: input.facts, budget: input.budget }, now);
   return { act: value.act, watch: value.watch, state: value.state, ...(value.items[0] ? { first: value.items[0] } : {}) };
 }

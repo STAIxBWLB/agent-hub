@@ -2541,3 +2541,10 @@ an unreadable/unknown runner remains watch. This phase is independent of the
 owner-held larger artwork/variant selection. Daemon/status.json, existing
 console input and CLI pet/status wiring and full verification remain pending.
 No protocol/event schema, authority, mutation, timer or account scope is added.
+
+The authenticated console-role reply to the existing status request also carries
+attentionItems, the complete structural global item list, so stream-mode next
+navigation can reach review/offline ids without a new task-list request. This
+optional read-only projection contains only the NeedItem allowlist; it is not
+written to status.json, returned to peer/tools status callers, or sent to memory.
+The persisted needs field remains counts/state/first, excluding console messages.

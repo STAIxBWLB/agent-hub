@@ -1,4 +1,5 @@
 import { projectedDiff } from "./projected-diff.ts";
+import { needs } from "../ui/needs.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
@@ -1805,7 +1806,8 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
     return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
-  const status = () => ({
+  const status = (includeAttentionItems = false) => {
+    const view = {
     ...(crashReport.length ? { crash: crashReport } : {}),
     projectId,
     instanceId,
@@ -1828,7 +1830,19 @@ export async function startDaemon(opts: DaemonOptions) {
     tasks: board.counts(),
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
-  });
+    };
+    const attention = needs({
+      approvals: [...permissions].map(([id, row]) => ({ id, peer: row.peer, expiresAt: row.expiresAt, since: row.createdAt })),
+      defaults: [...pendingPermissionDefaults.keys()].map(peer => ({ peer })),
+      peers: Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }])),
+      storageBlocked: !!bus.storageError,
+      recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
+      tasks: board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer })),
+      budget: Object.fromEntries(Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}])),
+    }, Date.now());
+    return { ...view, needs: { act: attention.act, watch: attention.watch, state: attention.state, ...(attention.items[0] ? { first: attention.items[0] } : {}) },
+      ...(includeAttentionItems ? { attentionItems: attention.items } : {}) };
+  };
   // #226: who owns this manifest, beyond a pid that a reboot can hand to another process. Only the file carries it
   // (the status reply is unchanged); readers without it judge the pid alone, as 0.12.20 did.
   const pidSignature = processSignature(process.pid);
@@ -3990,7 +4004,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "status":
-        return void reply({ t: "status", status: status() });
+        return void reply({ t: "status", status: status(c.role === "console") });
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });

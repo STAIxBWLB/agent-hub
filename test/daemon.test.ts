@@ -26,6 +26,22 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
+test("global attention summary persists while full items stay console-role only (#280)", async () => {
+  const { stateDir, console_ } = await hub();
+  const person = (await console_.request({ t: "status" })).status;
+  expect(person.needs).toEqual({ act: 0, watch: 0, state: "sleeping" });
+  expect(person.attentionItems).toEqual([]);
+  expect(person.protocol).toBe(PROTOCOL);
+  const persisted = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8"));
+  expect(persisted.needs).toEqual(person.needs);
+  expect(persisted.attentionItems).toBeUndefined();
+  const reader = await ControlClient.connect(stateDir, { role: "tools", peer: "codex" });
+  cleanup.push(() => reader.close());
+  const ordinary = (await reader.request({ t: "status" })).status;
+  expect(ordinary.needs).toEqual(person.needs);
+  expect(ordinary.attentionItems).toBeUndefined();
+});
+
 async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles } = {}) {
   const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));

@@ -7,7 +7,7 @@ import { renderTailEvent } from "./tail-render.ts";
 import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
-import { consoleNeeds, attentionLine } from "./attention.ts";
+import { consoleNeeds, attentionLine, attentionFacts } from "./attention.ts";
 import { loadPetConfig } from "./pet-config.ts";
 
 export interface ConsoleTerminal {
@@ -151,6 +151,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (status.status && status.ok !== false) {
+        state.attentionFacts = attentionFacts(status.status.attentionItems);
         state.storageBlocked = !!status.status.deliveryError;
         state.recoveryNeed = status.status.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
       }
