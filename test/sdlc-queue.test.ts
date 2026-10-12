@@ -15,7 +15,7 @@ function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?:
     }
     const finalQuery = args.find(arg => arg.startsWith("query=") && arg.includes("queue_p"));
     if (finalQuery) {
-      const repository = Object.fromEntries([...finalQuery.matchAll(/queue_p([0-9]+):/g)].map(match => {
+      const repository: Record<string, unknown> = Object.fromEntries([...finalQuery.matchAll(/queue_p([0-9]+):/g)].map(match => {
         const number = Number(match[1]), paths = options.paths?.[number] ?? ["src/shared.ts"];
         const gates = {
           headRefOid: options.heads?.[number] ?? A, state: "OPEN", isDraft: false,
@@ -26,6 +26,7 @@ function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?:
         };
         return [`queue_p${number}`, gates];
       }));
+      repository.pullRequests = { nodes: ids.map(number => ({ number, headRefOid: options.heads?.[number] ?? A, baseRefName: "main", baseRefOid: M })), pageInfo: { hasNextPage: false } };
       return { code: 0, stdout: JSON.stringify({ data: { repository } }) };
     }
     const number = Number(args.at(-1)?.split("=")[1]);
@@ -98,7 +99,13 @@ test("touching PRs and their dependents stay unordered until a person supplies d
 });
 test("open PR identity readback fence invalidates added removed or unavailable sets (#257)", async () => {
  for(const final of [{code:0,stdout:"[]"},{code:0,stdout:JSON.stringify([{number:1,headRefOid:A,baseRefName:"main",baseRefOid:M},{number:2,headRefOid:A,baseRefName:"main",baseRefOid:M}])},{code:1,stdout:"PRIVATE_LIST_ERROR_MARKER"},{code:0,stdout:JSON.stringify([{number:1,headRefOid:A,baseRefName:"main",baseRefOid:M},{number:1,headRefOid:A,baseRefName:"main",baseRefOid:M}])}]){
-  let lists=0;const f=fake({ids:[1]}),run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve(final):f.run(args);
+  const f=fake({ids:[1]}),run:SdlcGh=async args=>{
+   const reply=await f.run(args);
+   if(!args.some(arg=>arg.startsWith("query=")&&arg.includes("queue_p")))return reply;
+   if(final.code!==0)return final;
+   const data=JSON.parse(reply.stdout);data.data.repository.pullRequests.nodes=JSON.parse(final.stdout);
+   return{code:0,stdout:JSON.stringify(data)};
+  };
   const report=await readMergeQueue("owner/repo",config,[task(1,1)],run);
   expect(report.complete).toBe(false);expect(report.rows[0]?.ready).toBe(false);expect(report.order).toEqual([]);expect(report.unordered).toEqual([1]);expect(report.rows[0]?.blockers).toContain("open PR set changed or could not be reverified");expect(JSON.stringify(report)).not.toContain("PRIVATE_LIST_ERROR_MARKER");
  }
@@ -114,15 +121,23 @@ test("case-insensitive repository identities retain linked holders and merged de
  expect((await readMergeQueue("owner/repo",config,[predecessor,holder],fake({ids:[2],merged:[1]}).run)).rows[0]?.ready).toBe(false);
 });
 test("final queue snapshot refuses changed heads even when open PR identities stay the same (#257)", async () => {
- const f=fake({paths:{1:["src/one.ts"],2:["src/two.ts"]}});let lists=0;
- const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:1,headRefOid:B,baseRefName:"main",baseRefOid:M},{number:2,headRefOid:A,baseRefName:"main",baseRefOid:M}])}):f.run(args);
+ const f=fake({paths:{1:["src/one.ts"],2:["src/two.ts"]}});
+ const run:SdlcGh=async args=>{
+  const reply=await f.run(args);if(!args.some(arg=>arg.startsWith("query=")&&arg.includes("queue_p")))return reply;
+  const data=JSON.parse(reply.stdout);data.data.repository.pullRequests.nodes[0].headRefOid=B;data.data.repository.queue_p1.headRefOid=B;
+  return{code:0,stdout:JSON.stringify(data)};
+ };
  const report=await readMergeQueue("owner/repo",config,[task(1,1),task(2,2)],run);
  expect(report.complete).toBe(false);expect(report.order).toEqual([]);expect(report.rows.every(row=>!row.ready)).toBe(true);expect(report.unordered).toEqual([1,2]);
 });
 test("final queue snapshot rejects retargets and advancing bases without a head change (#257)", async () => {
  for(const target of [{baseRefName:"release",baseRefOid:M},{baseRefName:"main",baseRefOid:B}]){
-  const f=fake({ids:[1]});let lists=0;
-  const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:1,headRefOid:A,...target}])}):f.run(args);
+  const f=fake({ids:[1]});
+  const run:SdlcGh=async args=>{
+   const reply=await f.run(args);if(!args.some(arg=>arg.startsWith("query=")&&arg.includes("queue_p")))return reply;
+   const data=JSON.parse(reply.stdout);Object.assign(data.data.repository.pullRequests.nodes[0],target);Object.assign(data.data.repository.queue_p1,target);
+   return{code:0,stdout:JSON.stringify(data)};
+  };
   const report=await readMergeQueue("owner/repo",config,[task(1,1)],run);
   expect(report.complete).toBe(false);expect(report.order).toEqual([]);expect(report.rows[0]?.ready).toBe(false);
  }
@@ -163,4 +178,25 @@ test("final queue gate snapshot rejects changed checks reviews requests and thre
     expect(report.complete).toBe(false); expect(report.order).toEqual([]);
     expect(report.rows.every(row => !row.ready)).toBe(true); expect(report.unordered).toEqual([1, 2]);
   }
+});
+
+
+test("last remote queue read combines identities and gates without an intervening identity-only window (#257)", async () => {
+  const f = fake({ ids: [1] }); let lists = 0, gateFailed = false;
+  const run: SdlcGh = async args => {
+    if (args[0] === "pr" && args[1] === "list" && ++lists > 1) gateFailed = true;
+    const reply = await f.run(args);
+    if (args.some(arg => arg.startsWith("query=") && arg.includes("queue_p"))) {
+      const data = JSON.parse(reply.stdout);
+      data.data.repository.queue_p1.statusCheckRollup.contexts.nodes[0].conclusion = gateFailed ? "FAILURE" : "SUCCESS";
+      return { code: 0, stdout: JSON.stringify(data) };
+    }
+    return reply;
+  };
+  const report = await readMergeQueue("owner/repo", config, [task(1, 1)], run);
+  expect(report.rows[0]?.ready).toBe(!gateFailed);
+  expect(f.calls.at(-1)?.slice(0, 2)).toEqual(["api", "graphql"]);
+  const query = f.calls.at(-1)?.find(arg => arg.startsWith("query=")) || "";
+  expect(query).toContain("pullRequests(first:17,states:OPEN)");
+  expect(query).toContain("queue_p1:pullRequest");
 });

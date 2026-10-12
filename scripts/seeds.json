@@ -1404,10 +1404,18 @@
     {
       "id": "queue-mutable-gate-snapshot",
       "file": "src/hub/sdlc-queue.ts",
-      "search": "const gatesStable = await stableGates(repo, evidence, bounded);",
+      "search": "const gatesStable = finalRead.gatesStable;",
       "replacement": "const gatesStable = true;",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "final queue gate snapshot rejects changed checks reviews requests and threads on the same head (#257)"
+    },
+    {
+      "id": "queue-final-combined-snapshot",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "const finalPrs = finalRead.prs;",
+      "replacement": "const finalPrs = finalRead.prs; await bounded(listArgs);",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "last remote queue read combines identities and gates without an intervening identity-only window (#257)"
     }
   ]
 }

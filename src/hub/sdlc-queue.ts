@@ -6,27 +6,34 @@ export interface MergeConflict { left: number; right: number; files: number; ord
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
 const validId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+const parseSnapshot = (reply: { code: number; stdout: string }): { number: number; head: string; base: string; baseHead: string }[] | undefined => {
+  try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number) || typeof p.headRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.headRefOid) || typeof p.baseRefName !== "string" || !p.baseRefName || p.baseRefName.length > 200 || /[\x00-\x1f\x7f]/.test(p.baseRefName) || typeof p.baseRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.baseRefOid)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => ({ number: p.number, head: p.headRefOid, base: p.baseRefName, baseHead: p.baseRefOid })).sort((a, b) => a.number - b.number); }
+  catch { return; }
+};
 const gateIdentity = (p: PrEvidence) => JSON.stringify({ head: p.head, state: p.state, checks: [...p.checks].sort((a, b) => a.name.localeCompare(b.name) || a.state.localeCompare(b.state)), review: p.review, pending: p.pendingReviews, unresolved: p.unresolved, draft: p.draft, base: p.base, baseHead: p.baseHead, pathsComplete: p.pathsComplete });
-/** One batched remote read fences mutable gates without a second sequential per-PR scan. */
-async function stableGates(repo: string, evidence: Map<number, PrEvidence>, run: SdlcGh): Promise<boolean> {
+/** The last remote read gathers both open identities and mutable gates in one bounded request. */
+async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, run: SdlcGh): Promise<{ gatesStable: boolean; prs?: ReturnType<typeof parseSnapshot> }> {
   const [owner, name] = repo.split("/");
   const fields = "headRefOid state isDraft baseRefName baseRefOid changedFiles reviewDecision reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage}}}";
   const entries = [...evidence.entries()];
-  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){${entries.map(([id]) => `queue_p${id}:pullRequest(number:${id}){${fields}}`).join(" ")}}}`;
+  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(first:17,states:OPEN){nodes{number headRefOid baseRefName baseRefOid} pageInfo{hasNextPage}} ${entries.map(([id]) => `queue_p${id}:pullRequest(number:${id}){${fields}}`).join(" ")}}}`;
   try {
     const reply = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`]);
-    if (reply.code !== 0) return false;
+    if (reply.code !== 0) return { gatesStable: false };
     const data = JSON.parse(reply.stdout);
-    if (data.errors || !data.data?.repository) return false;
+    if (data.errors || !data.data?.repository) return { gatesStable: false };
+    const open = data.data.repository.pullRequests;
+    const prs = parseSnapshot({ code: 0, stdout: JSON.stringify(open?.nodes) });
+    if (!prs || open?.pageInfo?.hasNextPage !== false) return { gatesStable: false, prs };
     for (const [id, before] of entries) {
       const p = data.data.repository[`queue_p${id}`];
       const threads = p?.reviewThreads, reviews = p?.reviewRequests, checks = p?.statusCheckRollup === null ? { nodes: [], pageInfo: { hasNextPage: false } } : p?.statusCheckRollup?.contexts;
-      if (threads?.pageInfo?.hasNextPage !== false || reviews?.pageInfo?.hasNextPage !== false || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100 || threads.nodes.some((n: { isResolved?: unknown }) => typeof n?.isResolved !== "boolean") || !Array.isArray(reviews.nodes) || !Array.isArray(checks.nodes) || checks.nodes.length > 100) return false;
+      if (threads?.pageInfo?.hasNextPage !== false || reviews?.pageInfo?.hasNextPage !== false || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100 || threads.nodes.some((n: { isResolved?: unknown }) => typeof n?.isResolved !== "boolean") || !Array.isArray(reviews.nodes) || !Array.isArray(checks.nodes) || checks.nodes.length > 100) return { gatesStable: false, prs };
       const after = parsePrEvidence({ ...p, files: before.paths.map(path => ({ path })), statusCheckRollup: checks.nodes, reviewRequests: reviews.nodes, unresolvedThreads: threads.nodes.filter((n: { isResolved: boolean }) => !n.isResolved).length });
-      if (gateIdentity(before) !== gateIdentity(after)) return false;
+      if (gateIdentity(before) !== gateIdentity(after)) return { gatesStable: false, prs };
     }
-    return true;
-  } catch { return false; }
+    return { gatesStable: true, prs };
+  } catch { return { gatesStable: false }; }
 }
 /** Fixed metadata-only reads; local claims and unknown dependency evidence never become merge approval. */
 export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: DeliveryTask[], run: SdlcGh = sdlcGh): Promise<MergeQueue> {
@@ -35,10 +42,6 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   const deadline = performance.now() + 20_000;
   const bounded: SdlcGh = args => { const remaining = deadline - performance.now(); return remaining > 0 ? run(args, Math.min(10_000, remaining)) : Promise.resolve({ code: 1, stdout: "" }); };
   const listArgs = ["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number,headRefOid,baseRefName,baseRefOid"];
-  const parseSnapshot = (reply: { code: number; stdout: string }): { number: number; head: string; base: string; baseHead: string }[] | undefined => {
-    try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number) || typeof p.headRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.headRefOid) || typeof p.baseRefName !== "string" || !p.baseRefName || p.baseRefName.length > 200 || /[\x00-\x1f\x7f]/.test(p.baseRefName) || typeof p.baseRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.baseRefOid)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => ({ number: p.number, head: p.headRefOid, base: p.baseRefName, baseHead: p.baseRefOid })).sort((a, b) => a.number - b.number); }
-    catch { return; }
-  };
   const initialPrs = parseSnapshot(await bounded(listArgs)); if (!initialPrs) return result;
   result.truncated = initialPrs.length > 16; const ids = initialPrs.slice(0, 16).map(pr => pr.number);
   const sameRepo = (value: unknown) => typeof value === "string" && value.toLowerCase() === repo.toLowerCase();
@@ -97,8 +100,9 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   result.complete = !result.truncated && !remaining.size && !touchingCoverageUnknown && !personOrder.size;
   // Empty/private-only snapshots have no intervening remote reads and offer no private PR evidence.
   if (evidence.size) {
-    const gatesStable = await stableGates(repo, evidence, bounded);
-    const finalPrs = parseSnapshot(await bounded(listArgs));
+    const finalRead = await finalSnapshot(repo, evidence, bounded);
+    const gatesStable = finalRead.gatesStable;
+    const finalPrs = finalRead.prs;
     if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead))) {
       result.complete = false; result.order = []; result.unordered = ids;
       for (const row of result.rows) { row.ready = false; row.blockers.push("open PR set changed or could not be reverified"); }

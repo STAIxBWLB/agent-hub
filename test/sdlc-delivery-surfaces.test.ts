@@ -45,7 +45,7 @@ test("board revision fence removes a previously ordered nonempty delivery result
       reviewRequests:{nodes:[],pageInfo:{hasNextPage:false}},reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}},
       statusCheckRollup:{contexts:{nodes:[{name:"gate",conclusion:"SUCCESS"}],pageInfo:{hasNextPage:false}}},
     };
-    return {code:0,stdout:JSON.stringify({data:{repository:{queue_p1:gates}}})};
+    return {code:0,stdout:JSON.stringify({data:{repository:{queue_p1:gates,pullRequests:{nodes:[{number:1,headRefOid:head,baseRefName:"main",baseRefOid:head}],pageInfo:{hasNextPage:false}}}}})};
   }
   return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{headRefOid:head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}}}}})};
  };
