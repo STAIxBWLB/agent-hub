@@ -12,13 +12,13 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   const result: MergeQueue = { repo, rows: [], order: [], conflicts: [], complete: false, truncated: false };
   const deadline = performance.now() + 20_000;
   const bounded: SdlcGh = args => { const remaining = deadline - performance.now(); return remaining > 0 ? run(args, Math.min(10_000, remaining)) : Promise.resolve({ code: 1, stdout: "" }); };
-  const listArgs = ["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number"];
-  const parseIds = (reply: { code: number; stdout: string }): number[] | undefined => {
-    try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => p.number).sort((a, b) => a - b); }
+  const listArgs = ["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number,headRefOid"];
+  const parseSnapshot = (reply: { code: number; stdout: string }): { number: number; head: string }[] | undefined => {
+    try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number) || typeof p.headRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.headRefOid)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => ({ number: p.number, head: p.headRefOid })).sort((a, b) => a.number - b.number); }
     catch { return; }
   };
-  const initialIds = parseIds(await bounded(listArgs)); if (!initialIds) return result;
-  result.truncated = initialIds.length > 16; const ids = initialIds.slice(0, 16);
+  const initialPrs = parseSnapshot(await bounded(listArgs)); if (!initialPrs) return result;
+  result.truncated = initialPrs.length > 16; const ids = initialPrs.slice(0, 16).map(pr => pr.number);
   const sameRepo = (value: unknown) => typeof value === "string" && value.toLowerCase() === repo.toLowerCase();
   const evidence = new Map<number, PrEvidence>(), links = new Map<number, DeliveryTask[]>();
   for (const pr of ids) {
@@ -75,8 +75,8 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   result.complete = !result.truncated && !remaining.size && !touchingCoverageUnknown && !personOrder.size;
   // Empty/private-only snapshots have no intervening remote reads and offer no private PR evidence.
   if (evidence.size) {
-    const finalIds = parseIds(await bounded(listArgs));
-    if (!finalIds || JSON.stringify(finalIds) !== JSON.stringify(initialIds)) {
+    const finalPrs = parseSnapshot(await bounded(listArgs));
+    if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && evidence.get(pr.number)?.head !== pr.head)) {
       result.complete = false; result.order = []; result.unordered = ids;
       for (const row of result.rows) { row.ready = false; row.blockers.push("open PR set changed or could not be reverified"); }
     }

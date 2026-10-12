@@ -1340,7 +1340,7 @@
     {
       "id": "queue-open-set-readback-fence",
       "file": "src/hub/sdlc-queue.ts",
-      "search": "if (!finalIds || JSON.stringify(finalIds) !== JSON.stringify(initialIds))",
+      "search": "if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && evidence.get(pr.number)?.head !== pr.head))",
       "replacement": "if (false)",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "open PR identity readback fence invalidates added removed or unavailable sets (#257)"
@@ -1352,6 +1352,22 @@
       "replacement": "value === repo",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "case-insensitive repository identities retain linked holders and merged dependencies (#257)"
+    },
+    {
+      "id": "docs-clean-filter-execution",
+      "file": "scripts/check-docs.mjs",
+      "search": "const dirty = dirtiness(entry.paths);",
+      "replacement": "const dirty = git(\"status\", \"--porcelain\", \"--untracked-files=all\", \"--\", ...entry.paths);",
+      "testFile": "test/check-docs.test.ts",
+      "testName": "documentation drift checks never execute configured clean or process filters (#257)"
+    },
+    {
+      "id": "queue-head-snapshot-readback",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && evidence.get(pr.number)?.head !== pr.head)",
+      "replacement": "JSON.stringify(finalPrs?.map(pr => pr.number)) !== JSON.stringify(initialPrs.map(pr => pr.number))",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "final queue snapshot refuses changed heads even when open PR identities stay the same (#257)"
     }
   ]
 }

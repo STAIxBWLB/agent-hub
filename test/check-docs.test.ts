@@ -139,6 +139,19 @@ test("documentation readbacks never execute the repository fsmonitor helper (#25
   const marker = join(root, "monitor-ran"), script = join(root, "monitor.sh"); writeFileSync(script, '#!/bin/sh\nprintf marker > "' + marker + '"\n'); chmodSync(script, 0o755); git("config", "core.fsmonitor", script);
   const result = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" }); expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(true); expect(existsSync(marker)).toBe(false);
 }));
+test("documentation drift checks never execute configured clean or process filters (#257)", () => fixture((root, _stamp, git) => {
+  writeFileSync(join(root, ".gitattributes"), "src/covered.ts filter=metadata-trap\n");
+  git("add", ".gitattributes"); git("commit", "-qm", "Declare fixture filter attribute");
+  const marker = join(root, "filter-ran"), script = join(root, "filter.sh");
+  writeFileSync(script, '#!/bin/sh\nprintf marker > "' + marker + '"\ncat\n'); chmodSync(script, 0o755);
+  for (const helper of ["clean", "process"]) {
+    git("config", `filter.metadata-trap.${helper}`, script);
+    writeFileSync(join(root, "src/covered.ts"), `unfiltered ${helper} source bytes\n`);
+    const result = spawnSync("node", [checker, root, "--json"], { encoding: "utf8", timeout: 15_000 });
+    expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+  }
+}));
 
 test("installed-layout release reader finds the explicitly published checker and runs structured evidence (#257)", () => fixture(root => {
   const target = mkdtempSync(join(tmpdir(), "ahub-installed-doc-reader-"));

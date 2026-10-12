@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync, lstatSync, readlinkSync } from "node:fs";
+import { join, resolve, dirname, relative } from "node:path";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -24,13 +25,48 @@ const read = (path) => {
   return result.stdout;
 };
 const safePath = (path) => typeof path === "string" && path.length > 0 && !path.startsWith("/") && !path.startsWith("-") && !path.split("/").includes("..") && !path.includes("\\") && !path.includes(":");
+/** Never refresh the index through git status: it can run configured clean/process filters. */
+const dirtiness = (paths) => {
+  const unknown = { status: 1, stdout: "" }, dirty = { status: 0, stdout: "dirty" };
+  const staged = git("diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--", ...paths);
+  if (staged.status === 1) return dirty;
+  if (staged.status !== 0) return unknown;
+  const untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", ...paths);
+  if (untracked.status !== 0) return unknown;
+  if (untracked.stdout) return dirty;
+  const tracked = git("ls-files", "--stage", "-z", "--", ...paths);
+  if (tracked.status !== 0) return unknown;
+  const entries = tracked.stdout.split("\0").filter(Boolean);
+  if (entries.length > 4096) return unknown;
+  try {
+    for (const entry of entries) {
+      const match = /^([0-7]{6}) ([0-9a-f]{40}) ([0-3])\t([\s\S]+)$/.exec(entry);
+      if (!match) return unknown;
+      const [, mode, oid, stage, path] = match;
+      if (stage !== "0") return dirty;
+      // ponytail: gitlinks/large or transformed files stay unverified; never invoke a filter to establish equivalence.
+      if (!["100644", "100755", "120000"].includes(mode)) return unknown;
+      const file = resolve(root, path), within = relative(root, file);
+      if (!within || within.startsWith("../") || within === "..") return unknown;
+      for (let parent = dirname(file); parent !== root; parent = dirname(parent)) if (!lstatSync(parent).isDirectory() || lstatSync(parent).isSymbolicLink()) return unknown;
+      if (!existsSync(file) && mode !== "120000") return dirty;
+      const info = lstatSync(file);
+      let bytes;
+      if (mode === "120000") { if (!info.isSymbolicLink()) return dirty; bytes = readlinkSync(file, { encoding: "buffer" }); }
+      else { if (!info.isFile() || info.isSymbolicLink()) return dirty; if (info.size > 4 * 1024 * 1024) return unknown; bytes = readFileSync(file); }
+      const hash = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+      if (hash !== oid || mode !== "120000" && !!(info.mode & 0o111) !== (mode === "100755")) return dirty;
+    }
+    return { status: 0, stdout: "" };
+  } catch { return unknown; }
+};
 
 try {
   if (committed) {
     const head = git("rev-parse", "--verify", "HEAD");
     if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(head.stdout.trim())) throw new Error("HEAD does not resolve");
     headId = head.stdout.trim();
-    const dirty = git("status", "--porcelain", "--untracked-files=all", "--", "docs", "README.md", "package.json");
+    const dirty = dirtiness(["docs", "README.md", "package.json"]);
     if (dirty.status !== 0 || dirty.stdout) errors.push("documentation evidence files are dirty or unavailable");
   }
   const manifest = JSON.parse(read("docs/verified.json"));
@@ -63,7 +99,7 @@ try {
     }
     if (!valid) continue;
     const count = git("rev-list", "--count", `${stamp}..HEAD`, "--", ...entry.paths);
-    const dirty = git("status", "--porcelain", "--untracked-files=all", "--", ...entry.paths);
+    const dirty = dirtiness(entry.paths);
     if (count.status !== 0 || dirty.status !== 0) { errors.push(`${doc}: cannot compute source drift`); continue; }
     const commits = Number(count.stdout.trim());
     if (!Number.isSafeInteger(commits) || commits < 0) { errors.push(`${doc}: invalid source commit count`); continue; }

@@ -37,7 +37,7 @@ test("board revision fence removes a previously ordered nonempty delivery result
  const dir=root(),board=new Board(join(dir,"hub.db"));cleanup.push(()=>board.close());const t=board.propose(USER,{title:"fixture",class:"implement"}),head="a".repeat(40);
  board.update(t.id,USER,"lifecycle",{sdlc:{repo:"owner/repo",issue:273,pr:1,stage:"implement",reviewedHead:head,localHead:head,localResult:"passed"}});
  const gh:SdlcGh=async args=>{
-  if(args[0]==="pr"&&args[1]==="list")return{code:0,stdout:JSON.stringify([{number:1}])};
+  if(args[0]==="pr"&&args[1]==="list")return{code:0,stdout:JSON.stringify([{number:1,headRefOid:head}])};
   if(args[0]==="pr"){board.update(t.id,USER,"changed",{owner:"codex"});return{code:0,stdout:JSON.stringify({headRefOid:head,state:"OPEN",isDraft:false,baseRefName:"main",changedFiles:1,files:[{path:"src/one.ts"}],statusCheckRollup:[{name:"gate",conclusion:"SUCCESS"}],reviewDecision:"APPROVED",reviewRequests:[]})}};
   return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{headRefOid:head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}}}}})};
  };

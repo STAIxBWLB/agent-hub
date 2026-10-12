@@ -144,6 +144,8 @@ Touching PRs without explicit task dependency order, and their dependent PRs, ap
 
 After intervening remote PR reads, a final bounded identity-list read must match the initial open set; changes or unavailable readback invalidate readiness and order. Empty/private-only snapshots perform no intervening remote evidence reads. Repository identity matching is case-insensitive for both holders and dependencies.
 
+Those snapshots include every PR head, which must remain unchanged and match its observed evidence. Documentation dirtiness uses staged-tree metadata, untracked names and raw blob hashing rather than git status, so clean/process filters are never invoked. Gitlinks, large files or unsupported filesystem evidence remain unverified; transformed bytes are not declared equivalent by executing a configured helper.
+
 # Read-only release report contract (#257)
 
 Report reads bind the observed local head, committed package version, published release tag and matching local/remote commit identity. Only a verified tag ancestor defines the bounded first-parent commit list. The package-owned JSON doc checker must report freshness at that same head; open/unknown native issue metadata remains a blocker. Source readiness never certifies native acceptance or permits publication, and a changed head invalidates the report. No body, issue title, task text, version bump, restamp, tag or release mutation is included.
