@@ -122,3 +122,12 @@ after = ["approve"]
 ```
 
 These ids are guidance/receipt destinations. Publish neither merges nor releases. Full release readiness, bidirectional GSD import and research measurements remain separate slices.
+
+
+# Structured documentation readiness evidence (#257)
+
+The package-owned scripts/check-docs.mjs accepts --json with the same normal/--require-fresh verdict as its human output. Metadata includes the observed head, validated package version and sorted document identities with fresh/stale/nonancestor/unknown state, stamp, covered commit count and dirty flag when known. Invalid/error payload text is excluded from machine output; an error count and fresh=false retain uncertainty. Git readbacks disable repository-configured helpers and bound subprocess time/output. No stamp, version, tag or release is written. This evidence is a release-readiness input, not proof of prose review or native acceptance.
+
+# Read-only merge queue contract (#257)
+
+Queue reads fetch PR numbers and bounded head/check/review/thread/file-count metadata, never remote titles or bodies. Up to16 open PRs and8 external dependency reads share a20second budget. Every linked local receipt must satisfy the existing approval floor on that current head; draft/unknown status, missing file coverage and unlinked/private work remain blocked. Same-target path intersections return counts without names. Task after edges provide the only dependency order; open predecessor PRs block current readiness, unresolved touching order asks the person, cycles/truncation remain incomplete. A board approval never substitutes for a merged-commit receipt. No queue operation changes dependencies, owns work, merges or writes GitHub.

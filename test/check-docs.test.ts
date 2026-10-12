@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -98,3 +98,26 @@ describe("documentation source verification gate", () => {
     expect(result.stderr).toContain("covered path no longer exists: src/covered.ts");
   }));
 });
+
+
+test("structured docs evidence reports fresh stale and dirty states without changing release refusal (#257)", () => fixture((root, stamp, git) => {
+  const machine = (strict = false) => spawnSync("node", [checker, "--json", root, ...(strict ? ["--require-fresh"] : [])], { encoding: "utf8" });
+  const fresh = machine(); expect(fresh.status).toBe(0); expect(fresh.stderr).toBe("");
+  const data = JSON.parse(fresh.stdout); expect(data).toMatchObject({ schemaVersion: 1, head: git("rev-parse", "HEAD"), version: "1.2.3", fresh: true, errors: 0 });
+  expect(data.documents).toHaveLength(5); expect(data.documents.every((d: any) => d.state === "fresh" && d.verifiedAgainst === stamp && d.commits === 0 && d.dirty === false)).toBe(true);
+  writeFileSync(join(root, "src/covered.ts"), "changed\n"); git("add", "."); git("commit", "-qm", "Covered edit");
+  const stale = JSON.parse(machine().stdout); expect(stale.fresh).toBe(false); expect(stale.documents.every((d: any) => d.state === "stale" && d.commits === 1)).toBe(true);
+  writeFileSync(join(root, "src/covered.ts"), "dirty\n"); expect(JSON.parse(machine().stdout).documents.every((d: any) => d.dirty)).toBe(true);
+  const strict = machine(true); expect(strict.status).toBe(1); expect(JSON.parse(strict.stdout).fresh).toBe(false);
+}));
+test("structured invalid stamp evidence preserves uncertainty and excludes raw error payloads (#257)", () => fixture((root, stamp, git) => {
+  alter(root, m => { m.documents["README.md"].verifiedAgainst = "PRIVATE_INVALID_STAMP_MARKER"; });
+  const invalid = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" }); expect(invalid.status).toBe(1); expect(invalid.stdout + invalid.stderr).not.toContain("PRIVATE_INVALID_STAMP_MARKER");
+  expect(JSON.parse(invalid.stdout).documents.find((d: any) => d.path === "README.md").state).toBe("unknown");
+  const sibling = git("commit-tree", `${stamp}^{tree}`, "-m", "Detached review"); alter(root, m => { m.documents["README.md"].verifiedAgainst = sibling; });
+  const rejected = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" }); expect(rejected.status).toBe(1); expect(JSON.parse(rejected.stdout).documents.find((d: any) => d.path === "README.md").state).toBe("nonancestor");
+}));
+test("documentation readbacks never execute the repository fsmonitor helper (#257)", () => fixture((root, _stamp, git) => {
+  const marker = join(root, "monitor-ran"), script = join(root, "monitor.sh"); writeFileSync(script, '#!/bin/sh\nprintf marker > "' + marker + '"\n'); chmodSync(script, 0o755); git("config", "core.fsmonitor", script);
+  const result = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" }); expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(true); expect(existsSync(marker)).toBe(false);
+}));

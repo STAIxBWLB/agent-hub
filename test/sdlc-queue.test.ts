@@ -1,0 +1,41 @@
+import { expect, test } from "bun:test";
+import { readMergeQueue, type DeliveryTask } from "../src/hub/sdlc-queue.ts";
+import { sdlcConfig, type SdlcGh } from "../src/hub/sdlc.ts";
+const A = "a".repeat(40), B = "b".repeat(40), M = "c".repeat(40);
+const config = sdlcConfig({ mode: "enforce", required_checks: ["gate"] });
+const task = (id: number, pr: number, after: number[] = [], privateTask = false): DeliveryTask => ({ id, after, private: privateTask, receipt: { repo: "owner/repo", issue: id, pr, stage: "implement", reviewedHead: A, localHead: A, localResult: "passed" } });
+function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?: Record<number,string[]>; merged?: number[]; incomplete?: boolean } = {}) {
+  const calls: string[][] = [], ids = options.ids ?? [1,2];
+  const run: SdlcGh = async args => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: JSON.stringify(ids.map(number => ({ number }))) };
+    if (args[0] === "pr") {
+      const pr = Number(args[2]), paths = options.paths?.[pr] ?? ["src/shared.ts"], head = options.heads?.[pr] ?? A;
+      return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
+    }
+    const number = Number(args.at(-1)?.split("=")[1]);
+    return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: options.heads?.[number] ?? A, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
+  };
+  return { run, calls };
+}
+test("merge queue uses explicit dependency order and never guesses precedence from touching paths (#257)", async () => {
+  const f = fake(), links = [task(1,1),task(2,2)];
+  const unknown = await readMergeQueue("owner/repo",config,links,f.run);
+  expect(unknown.conflicts).toEqual([{left:1,right:2,files:1,order:"person_required"}]); expect(unknown.rows.every(r => !r.ready)).toBe(true);
+  const ordered = await readMergeQueue("owner/repo",config,[task(1,1),task(2,2,[1])],f.run);
+  expect(ordered.order).toEqual([1,2]); expect(ordered.conflicts[0]?.order).toBe("dependency"); expect(ordered.rows[0]?.ready).toBe(true); expect(ordered.rows[1]?.ready).toBe(false); expect(ordered.rows[1]?.blockers).toContain("dependency PR is still open");
+  expect(JSON.stringify(ordered)).not.toContain("src/shared.ts"); expect(f.calls.flat().join(" ")).not.toContain("body"); expect(f.calls.flat().join(" ")).not.toContain("merge --");
+});
+test("queue stale heads incomplete files private and unlinked work remain blocked (#257)", async () => {
+  const old = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],heads:{1:B}}).run); expect(old.rows[0]?.ready).toBe(false); expect(old.rows[0]?.blockers).toContain("current head has not been reviewed");
+  const incomplete = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],incomplete:true}).run); expect(incomplete.complete).toBe(false); expect(incomplete.rows[0]?.ready).toBe(false);
+  const f = fake({ids:[1]}); const privateView = await readMergeQueue("owner/repo",config,[task(1,1,[],true)],f.run); expect(privateView.rows[0]?.private).toBe(true); expect(f.calls).toHaveLength(1); expect(privateView.rows[0]?.head).toBeUndefined();
+  const unlinked = await readMergeQueue("owner/repo",config,[],fake({ids:[1]}).run); expect(unlinked.rows[0]?.ready).toBe(false); expect(unlinked.rows[0]?.blockers).toContain("issue identity missing");
+});
+test("dependency merge proof cycles and truncation retain their uncertainty (#257)", async () => {
+  const merged = await readMergeQueue("owner/repo",config,[task(1,1),task(2,2,[1])],fake({ids:[2],merged:[1]}).run); expect(merged.rows[0]?.ready).toBe(true);
+  const missing = await readMergeQueue("owner/repo",config,[task(2,2,[99])],fake({ids:[2]}).run); expect(missing.rows[0]?.ready).toBe(false);
+  const cycle = await readMergeQueue("owner/repo",config,[task(1,1,[2]),task(2,2,[1])],fake().run); expect(cycle.complete).toBe(false); expect(cycle.order).toEqual([]);
+  const truncated = await readMergeQueue("owner/repo",config,[],fake({ids:Array.from({length:17},(_,i)=>i+1)}).run); expect(truncated.truncated).toBe(true); expect(truncated.complete).toBe(false); expect(truncated.rows).toHaveLength(16);
+  await expect(readMergeQueue("--bad/repo",config,[],fake().run)).rejects.toThrow("owner/repository");
+});
