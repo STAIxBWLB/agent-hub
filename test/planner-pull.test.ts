@@ -67,7 +67,7 @@ test("planner pull rechecks capacity pins and dependency approval after screenin
 test("WIP capacities are bounded numeric settings and retain prototype-safe peer ids (#263)", () => {
   expect(planningWipLimits(undefined)).toEqual({});
   const limits=planningWipLimits({ codex: 0, claude: 32, constructor: 2 });
-  expect(limits.codex).toBe(0);expect(limits.constructor).toBe(2);expect(Object.getPrototypeOf(limits)).toBeNull();
+  expect(limits.codex).toBe(0);expect(limits[String("constructor")]).toBe(2);expect(Object.getPrototypeOf(limits)).toBeNull();
   for(const input of [null, [], {codex:-1}, {codex:33}, {codex:1.5}, {codex:"1"}, {"bad peer":1}])expect(()=>planningWipLimits(input)).toThrow();
 });
 
