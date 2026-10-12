@@ -1240,6 +1240,46 @@
       "replacement": "!t.deps?.length",
       "testFile": "test/backlog.test.ts",
       "testName": "pulled ownerless backlog without dependencies is offered after peers attach (#263)"
+    },
+    {
+      "id": "board-flow-drag-floor",
+      "file": "src/ui/task-board.ts",
+      "search": "assignable: [\"proposed\", \"in_progress\", \"changes_requested\"].includes(task.state)",
+      "replacement": "assignable: task.state !== \"approved\"",
+      "testFile": "test/task-board.test.ts",
+      "testName": "board columns cover every task state and preserve unknown states without reading text (#263)"
+    },
+    {
+      "id": "board-unknown-owner-wait",
+      "file": "src/ui/task-board.ts",
+      "search": "if (!peer || ![\"idle\", \"busy\", \"paused\", \"offline\"].includes(peer.state ?? \"\")) waiting.push(\"owner status unknown\");",
+      "replacement": "if (false) waiting.push(\"owner status unknown\");",
+      "testFile": "test/task-board.test.ts",
+      "testName": "To Do separates dependency reservation hold offline and unknown waits from ready work (#263)"
+    },
+    {
+      "id": "board-foreign-drag-origin",
+      "file": "src/ui/index.html",
+      "search": "data.origin !== current.origin || data.projectId !== current.projectId",
+      "replacement": "data.projectId !== current.projectId",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "board drops reject stale project instance generation foreign origins and flow moves (#263)"
+    },
+    {
+      "id": "board-stale-control-context",
+      "file": "src/ui/index.html",
+      "search": "expected.generation===current.generation",
+      "replacement": "true",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "board drops reject stale project instance generation foreign origins and flow moves (#263)"
+    },
+    {
+      "id": "board-backlog-capability",
+      "file": "src/ui/index.html",
+      "search": "card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true",
+      "replacement": "card.pull",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "older snapshots cannot silently offer a requested backlog task or expose unsupported pull controls (#263)"
     }
   ]
 }
