@@ -1340,7 +1340,7 @@
     {
       "id": "queue-open-set-readback-fence",
       "file": "src/hub/sdlc-queue.ts",
-      "search": "if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
+      "search": "if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
       "replacement": "if (false)",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "open PR identity readback fence invalidates added removed or unavailable sets (#257)"
@@ -1364,7 +1364,7 @@
     {
       "id": "queue-head-snapshot-readback",
       "file": "src/hub/sdlc-queue.ts",
-      "search": "if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
+      "search": "if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
       "replacement": "if (!finalPrs || JSON.stringify(finalPrs.map(pr => ({ number: pr.number, base: pr.base, baseHead: pr.baseHead }))) !== JSON.stringify(initialPrs.map(pr => ({ number: pr.number, base: pr.base, baseHead: pr.baseHead }))))",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "final queue snapshot refuses changed heads even when open PR identities stay the same (#257)"
@@ -1372,7 +1372,7 @@
     {
       "id": "queue-base-snapshot-readback",
       "file": "src/hub/sdlc-queue.ts",
-      "search": "if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
+      "search": "if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead)))",
       "replacement": "if (!finalPrs || JSON.stringify(finalPrs.map(pr => ({ number: pr.number, head: pr.head }))) !== JSON.stringify(initialPrs.map(pr => ({ number: pr.number, head: pr.head }))))",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "final queue snapshot rejects retargets and advancing bases without a head change (#257)"
@@ -1400,6 +1400,14 @@
       "replacement": "committed ? existsSync(join(root, path))",
       "testFile": "test/check-docs.test.ts",
       "testName": "committed docs reject ignored document and coverage ghosts absent from HEAD (#257)"
+    },
+    {
+      "id": "queue-mutable-gate-snapshot",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "const gatesStable = await stableGates(repo, evidence, bounded);",
+      "replacement": "const gatesStable = true;",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "final queue gate snapshot rejects changed checks reviews requests and threads on the same head (#257)"
     }
   ]
 }
