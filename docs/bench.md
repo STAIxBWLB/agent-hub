@@ -97,9 +97,10 @@ record reads `interrupted`.
 machine. Schema `agent-hub.bench/v1`:
 
 - `run` header: suite name and SHA-256 of the suite file, arm, fingerprint (the peers attached at the start, with the requested model and
-  permission mode where the hub's status reports them: today the model for Pi only; the SHA-256 of `routing.toml`; the
-  hub version), task order, repeats, the runner's process.
-- `attempt`: task id, repeat, outcome, error reason, verify exit code, hub task id, start, end, duration, and, for an
+  permission mode where the hub's status reports them: today the model for Pi only, and each peer's add-ons by name and
+  version as `ahub research addons` detects them (docs/research.md); the SHA-256 of `routing.toml`; the
+  hub version), the declared add-on `condition` when the arm has one, task order, repeats, the runner's process.
+- `attempt`: arm, task id, repeat, outcome, error reason, verify exit code, hub task id, start, end, duration, and, for an
   approved task, its #247 measures (tokens, wall and active time, review rounds, changes requested, failed checks, first
   pass, turns, files changed, models). They are read once the turns started since the task's proposal have ended (the
   runner waits only while their peers are still busy or paused, at most 10 minutes), so the turn that approved the task is
@@ -129,6 +130,25 @@ ms, tokens, wallMs, activeMs, reviewRounds, changesRequested, checkFailed, first
 
 The dashboard's Benchmarks section shows the latest runs with their progress (the attempt in progress, elapsed time and
 attempts left while one runs) and, per suite with two or more arms, a bar per arm and measure with its number as text.
+
+## Add-on arms (#248)
+
+`--addon <name>=on|off` (repeatable; names: `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`,
+`dot-admit`) declares an arm's add-on state. Before anything is recorded or reset, the runner reads each attached peer's
+add-ons: an add-on declared `on` must be with at least one of them and one declared `off` with none; otherwise the run is
+refused and names the add-on. The header keeps the declaration as
+`condition.addons`, and every attempt names its arm. The study for one add-on is its arms with every add-on on, that one
+off, and all off, on the same suite, refs and peers, interleaved and with the task order randomized per run:
+
+```bash
+ahub bench run ../suites/s.json --arm all-on --addon claude-mem=on --addon ponytail=on --addon ripwire=on --repeat 5
+ahub bench run ../suites/s.json --arm ripwire-off --addon claude-mem=on --addon ponytail=on --addon ripwire=off --repeat 5
+ahub bench run ../suites/s.json --arm all-off --addon claude-mem=off --addon ponytail=off --addon ripwire=off --repeat 5
+ahub bench compare all-on ripwire-off all-off
+```
+
+Switching an add-on is the person's setup between runs (a plugin's `enabledPlugins` entry, PATH); the runner only
+checks it. CooperBench (`docs/cooperbench.md`) keeps every add-on off by design, so add-on arms run here.
 
 ## A fair comparison
 

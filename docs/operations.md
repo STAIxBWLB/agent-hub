@@ -148,6 +148,60 @@ OS color preference through CSS. Both inline scripts and the style retain CSP
 hashes; there are no external chart/theme assets. Live theme/readability inspection
 is tracked in `docs/smoke.md` and remains unverified until performed.
 
+The dashboard Office section (#264, phase 1 of 4) draws the same snapshot as a
+static flat office: one desk per peer in a stable slot (claude, codex, kimi, pi,
+local, then others by id; a peer going offline dims its desk and never moves
+another), rooms for the board columns in a fixed order (To Do, Work floor,
+Review, Done shelf as a count only), at most 8 cards per room with "+N more"
+filtering the task list to that state, and at most 12 desks with "+N peers".
+Work-floor cards sit at the owner's desk, marked for rework; a busy peer's task
+bubble names its task only when it has exactly one in progress. Every peer
+condition (idle, busy, offline, paused, waiting on approval) has a glyph and a
+text label, and the scene carries ids, classes, states, kinds, counts and public
+titles only: message bodies, task details and approval titles never enter it.
+The scene adds no timer, frame loop or request and re-renders only when its
+signature changes. A View control offers Off (the default), Flat and
+Isometric; the choice is stored in a second host-scoped loopback cookie `agent-hub-office` with the
+same attributes as the theme cookie, and blocked cookie access defaults to Off
+without preventing operation. Desks and cards are focusable buttons; activating
+one scrolls to and highlights the matching list row, and a list row highlights
+its desk or card on focus and hover. The scene performs no action: every control
+stays in the lists. The View control's third option, Isometric (phase 4),
+renders the same model through the same code path with the grid coordinates
+projected (x' = (x - y) cos 30, y' = (x + y) sin 30): tiles become
+parallelograms, cards and labels stay upright, and the DOM order and
+accessible names are identical to Flat. Switching the view jumps to the new
+projection without animating; the settle rule and reduced motion apply
+unchanged. The live browser look is tracked in `docs/smoke.md` and
+remains unverified until performed.
+
+Motion (phase 2): card moves between rooms and desks, message arcs between
+desks (from the hub or the console they start at an anchor point), delivery
+warning marks and the busy latch all follow the snapshot. Motion is CSS only:
+transitions on transform and opacity (at most one second), keyframe fades for
+the transient marks. Arcs and marks hold, then fade out ten seconds after the
+event, timed at render from the model's timestamps; expired nodes purge on the
+next changed render or their own animationend, never on a timer. Arcs expire on
+the snapshot's own envelope clock, so an unchanged snapshot re-renders
+identically and writes nothing to the DOM. The scene goes straight to final
+positions on the first snapshot, after a project switch, after a snapshot gap
+over three seconds, or when one snapshot brings more than six transitions.
+`prefers-reduced-motion: reduce` removes all scene transitions and animations.
+Event reasons and bodies never enter the scene; arcs carry from, to, kind,
+priority, the task ref and the dropped flag only.
+
+Snapshot fields (phase 3): three additive optional fields, so older pages and
+older daemons mix freely and `PROTOCOL`/`EVENTS_SCHEMA` stay unchanged. A peer's
+open turn (`since`, `task`, `attribution`) names the busy bubble's task exactly
+instead of the single-in-progress-task heuristic, and a turn still open while
+the peer is paused adds a "finishing a turn" line under the Break sign. A task's
+`checking` flag draws a check-running mark on its card, which stays at its
+owner's desk (rooms follow states only). Warning `links` (overlap from the
+board's overlap test, cohorts, and recent turn-end conflicts the daemon keeps in
+a bounded in-memory list) draw dashed lines between the desks they name, labeled
+with kind and task ids; all three carry task and peer ids only, and a PII task
+never joins a link.
+
 Console color policy is `--color=auto|always|never`, with `auto` as the default.
 Auto enables color only when both input and output are TTYs, `TERM` is not
 `dumb`, and `NO_COLOR` is empty or absent. Explicit `always` overrides these
@@ -2625,3 +2679,11 @@ Dependency/reservation planning, split/pull WIP limits, batched incoming notices
 and optional one-way GitHub import remain subsequent implementation. Current
 source checks and desktop/phone visual validation are pending; native planner
 work across two releases remains unverified. No installed/live behavior claimed.
+
+Office merge corrections retain the header's view selector when Off hides the
+scene. Activating a card reveals its task if a state filter excluded it; Work
+includes rework. Stable desk slots determine bounds after peers disconnect.
+Reduced motion removes departures immediately and the existing snapshot poll
+prunes transient deadlines without new timers. Explicit unattributed turns have
+no guessed task bubble. Warning caps retain conflicts first and parallel warning
+kinds have separate segments/labels. Physical visual validation remains pending.

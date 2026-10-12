@@ -1506,6 +1506,150 @@
       "testName": "backlog pull initializes research identity once and label lookup follows reset generations (#263)"
     },
     {
+      "id": "office-turn-omission",
+      "file": "src/ui/office-model.ts",
+      "search": "!Object.hasOwn(peer, \"turn\") && current.length === 1",
+      "replacement": "current.length === 1",
+      "testFile": "test/office-model.test.ts",
+      "testName": "explicit unattributed turns suppress bubbles while legacy snapshots retain fallback (#264 merge)"
+    },
+    {
+      "id": "office-sticky-bottom",
+      "file": "src/ui/office-model.ts",
+      "search": "Math.max(0, ...desks.map(desk => desk.y + desk.h))",
+      "replacement": "shownIds.length ? DESK_TOP + Math.ceil(shownIds.length / DESK_COLS) * DESK_DY - (DESK_DY - DESK_H) : 0",
+      "testFile": "test/office-model.test.ts",
+      "testName": "sticky desk bounds and work overflow remain correct after peers leave (#264 merge)"
+    },
+    {
+      "id": "office-sticky-width",
+      "file": "src/ui/office-model.ts",
+      "search": "Math.max(0, ...desks.map(desk => desk.x + desk.w))",
+      "replacement": "shownIds.length ? Math.min(shownIds.length, DESK_COLS) * DESK_DX - 2 : 0",
+      "testFile": "test/office-model.test.ts",
+      "testName": "a sparse rightmost sticky desk remains inside a narrow office view (#264 merge)"
+    },
+    {
+      "id": "office-conflict-cap",
+      "file": "src/ui/office-model.ts",
+      "search": "links.sort((a, b) => rank(a.kind) - rank(b.kind));",
+      "replacement": "links.sort(() => 0);",
+      "testFile": "test/office-model.test.ts",
+      "testName": "conflict and cohort warnings survive a large overlap cap without reordering small snapshots (#264 merge)"
+    },
+    {
+      "id": "office-reduced-removal",
+      "file": "src/ui/index.html",
+      "search": "if(officeReducedMotion() || scene.settled){entry.node.remove();return;}",
+      "replacement": "if(false){entry.node.remove();return;}",
+      "testFile": "test/office-view.test.ts",
+      "testName": "office settled paints and reduced motion do not retain departed or appearance nodes (#264 merge)"
+    },
+    {
+      "id": "office-expired-arc",
+      "file": "src/ui/index.html",
+      "search": "if(arc.until<=now)continue;",
+      "replacement": "if(false)continue;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "expired arcs are skipped and reduced motion marks expire without animationend (#264 merge)"
+    },
+    {
+      "id": "office-settled-appearance",
+      "file": "src/ui/index.html",
+      "search": "appear !== false && !scene.settled && !officeReducedMotion()",
+      "replacement": "appear !== false && !officeReducedMotion()",
+      "testFile": "test/office-view.test.ts",
+      "testName": "office settled paints and reduced motion do not retain departed or appearance nodes (#264 merge)"
+    },
+    {
+      "id": "office-warning-separation",
+      "file": "src/ui/index.html",
+      "search": "const offset = link.kind === 'overlap' ? -1.5 : link.kind === 'cohort' ? 1.5 : 0;",
+      "replacement": "const offset = 0;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "parallel warning kinds draw distinguishable coordinates (#264 merge)"
+    },
+    {
+      "id": "office-filter-reveal",
+      "file": "src/ui/index.html",
+      "search": "if (!taskRows.has(id)) officeFilter('');",
+      "replacement": "if (false) officeFilter('');",
+      "testFile": "test/office-view.test.ts",
+      "testName": "office task activation reveals filtered rows and card/desk handlers live in sibling layers (#264 merge)"
+    },
+    {
+      "id": "office-current-cohort-privacy",
+      "file": "src/hub/tasks.ts",
+      "search": "const members = [...cohort.members.values()].filter(member => { const task = this.d.board.get(member.task); return task && !this.isPii(task); });",
+      "replacement": "const members = [...cohort.members.values()];",
+      "testFile": "test/tasks.test.ts",
+      "testName": "dashboard cohort links revalidate tasks that become private after cohort creation (#264 merge)"
+    },
+    {
+      "id": "office-live-turn-privacy",
+      "file": "src/hub/daemon.ts",
+      "search": " || (turn.attribution.task !== undefined && (!task || tasks.isPii(task)))",
+      "replacement": " || false",
+      "testFile": "test/daemon.test.ts",
+      "testName": "office turn task privacy is revalidated after a live routing policy change (#264 merge)"
+    },
+    {
+      "id": "office-backlog-assign-floor",
+      "file": "src/ui/index.html",
+      "search": "if (card.assignable && ids.length) {",
+      "replacement": "if (task.state !== 'approved' && ids.length) {",
+      "testFile": "test/office-view.test.ts",
+      "testName": "backlog rows show no assignment action before they are pulled (#264 merge)"
+    },
+    {
+      "id": "office-backlog-count",
+      "file": "src/ui/office-model.ts",
+      "search": "if (state === \"backlog\") { counts.backlog = (counts.backlog ?? 0) + 1; waitingById.set(task.id, false); continue; }",
+      "replacement": "if (false) { counts.backlog = (counts.backlog ?? 0) + 1; waitingById.set(task.id, false); continue; }",
+      "testFile": "test/office-model.test.ts",
+      "testName": "office recognizes staged backlog and matches the shared progress counts (#264 merge)"
+    },
+    {
+      "id": "research-unpulled-reset",
+      "file": "src/hub/research.ts",
+      "search": "(e.event === \"proposed\" && tasks.has(e.id))",
+      "replacement": "(e.event === \"proposed\" && tasks.get(e.id)?.createdAt)",
+      "testFile": "test/research.test.ts",
+      "testName": "unpulled backlog generations cannot contaminate a reused normal proposal (#264 merge)"
+    },
+    {
+      "id": "sdlc-aggregate-backlog-floor",
+      "file": "src/hub/daemon.ts",
+      "search": "task.state !== \"backlog\" && (task.sdlc || lifecycleConfig.mode !== \"off\" || lifecycleConfig.workflow === \"gsd-lite\")",
+      "replacement": "(task.sdlc || lifecycleConfig.mode !== \"off\" || lifecycleConfig.workflow === \"gsd-lite\")",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "aggregate lifecycle status excludes staged backlog without hiding executable work (#264 merge)"
+    },
+    {
+      "id": "delivery-current-privacy-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "if (workflowHash(links.map(({ id, private: hidden }) => ({ id, private: hidden }))) !== workflowHash(currentPrivacy))",
+      "replacement": "if (false)",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "merge queue discards task associations when privacy policy changes during remote reads (#264 merge)"
+    },
+    {
+      "id": "office-project-reset-snapshot",
+      "file": "src/ui/index.html",
+      "search": "  lastSnapshot = null;",
+      "replacement": "  lastSnapshot = lastSnapshot;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "project reset removes old office SVG and prevents view changes replaying the old snapshot (#264 merge)"
+    },
+    {
+      "id": "office-project-reset-svg",
+      "file": "src/ui/index.html",
+      "search": "  $('office').replaceChildren(); $('office-section').hidden = true;",
+      "replacement": "  $('office-section').hidden = true;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "project reset removes old office SVG and prevents view changes replaying the old snapshot (#264 merge)"
+    },
+    {
       "id": "board-flow-drag-floor",
       "file": "src/ui/task-board.ts",
       "search": "assignable: [\"proposed\", \"in_progress\", \"changes_requested\"].includes(task.state)",

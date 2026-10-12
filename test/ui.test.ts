@@ -285,7 +285,7 @@ test("shared public progress executes in the hashed dashboard and matches consol
   const nodes = new Map<string, Node>(); const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get('task-progress').append(new Node());
   const reset = html.slice(html.indexOf('function resetView('), html.indexOf('function projectName('));
-  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false; const managerMode=true; const signatures=new Map(); const $=get; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
+  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null; const officeDesks=new Map(),officeCards=new Map(); const managerMode=true; const signatures=new Map(); const $=get; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
   expect(get('task-progress').children).toHaveLength(0); expect(get('task-progress').textContent).toBe('No project selected.');
   renderers.renderTaskProgress(browserModel([]));
   expect(target.children[0]?.textContent).toBe("0/0 approved (0%)");
@@ -392,6 +392,9 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
   const api = runInNewContext(`
     let stopped=false, timer, projectsTimer, managerMode=${manager}, selectedProjectId='p1',selectedInstanceId='i1',snapshotValid=true,viewGeneration=1,lastSnapshot=null,eventCount=0,cursor=0,draftChoicesPending=false;
     const pendingButtons=new WeakSet(),pendingStarts=new Map(),signatures=new Map();
+    const peerRows=new Map(),taskRows=new Map(),officeDesks=new Map(),officeCards=new Map();
+    let officePrev=null;
+    const renderOffice=()=>{};
     const PEER_START_RETRY_MS=retryMs;
     const $=get;
     const badge=text=>el('span',text),dot=()=>el('span'),peerDot={};

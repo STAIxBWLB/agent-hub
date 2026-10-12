@@ -7,6 +7,17 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
 
 - Add five-column dashboard task cards, ready/waiting split, shared peer colors, agent legend/lanes and scoped drag/button assignment and Backlog staging controls (#263).
+
+- Add the Isometric projection to the dashboard Office view: the same model through the same code path with projected grid coordinates, upright labels, identical focus order and accessible names, and jump-on-switch — plus an art polish pass (outline glyphs, drawn raised hand, per-desk avatars, extruded iso desks with legs and name plates, wireframe iso rooms, Done-shelf cabinet/stacks, two-column room cards with dividers, arc arrowheads) guided by generated reference concepts kept outside the repo (#264, phase 4 of 4).
+
+- Add optional turn/checking/links snapshot fields for the dashboard office view (exact task bubble, finishing-a-turn, check-running mark, overlap/conflict/cohort warning lines), ids-only and PII-safe with PROTOCOL and EVENTS_SCHEMA unchanged (#264, phase 3 of 4).
+
+- Add snapshot-driven motion to the dashboard Office view: card moves by CSS transform transition, message arcs, delivery warning marks and the busy latch from event rows with timer-free keyframe fades, and the settle rule, with reduced-motion support (#264, phase 2 of 4).
+
+- Add a static flat Office view to the dashboard: stable desks, state rooms, capped cards, an Off/Flat view control persisted in a second host-scoped cookie, and scene/list highlighting, with no daemon change (#264, phase 1 of 4).
+
+- Record each peer's add-ons (claude-mem, ponytail, ripwire, open-code-review, the Codex plugin, dot admission) by name and version in a `tooling` event and the research records, compare tasks with each on and off (`ahub research addons`), declare and check add-on arms in `ahub bench run --addon`, and record a decision per add-on in `docs/addons/` (#248).
+
 - Add person-only bounded merge-order and release-readiness evidence through CLI, console and both dashboard modes; retain unknown/native gates and never merge or publish from a report (#257).
 
 - Stage unoffered Backlog tasks, reserve suggested owners, and pull/return through person-owned Tasks transitions; hide backlog from ordinary agent and conductor task reads (#263).

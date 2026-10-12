@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { join } from "node:path";
 import { hubHome } from "./project.ts";
 import { processLiveness } from "../pi/process-signature.ts";
+import type { Addon, AddonName } from "./tooling.ts";
 
 /**
  * #251: benchmark suites, runs and their comparison. A run's records hold ids, outcomes, exit codes, counts, tokens
@@ -43,12 +44,14 @@ export function parseSuite(text: string): Suite {
 }
 export const suiteHash = (text: string): string => createHash("sha256").update(text).digest("hex");
 
-export interface Fingerprint { peers: { id: string; model?: string; permissionMode?: string }[]; routingHash: string | null; hubVersion: string }
+export interface Fingerprint { peers: { id: string; model?: string; permissionMode?: string; addons?: Addon[] }[]; routingHash: string | null; hubVersion: string }
 export interface RunHeader {
   schema: typeof BENCH_SCHEMA; kind: "run"; run: string; suite: string; suiteHash: string; arm: string; fingerprint: Fingerprint;
   version: string; startedAt: string; tasks: number; repeats: number; runner: { pid: number; signature: string | null };
   /** Task ids in run order, so a running run can name the attempt in progress. */
   order: string[];
+  /** #248: the add-on state the arm declared, checked against the attached peers before the run started. */
+  condition?: { addons: Partial<Record<AddonName, "on" | "off">> };
 }
 export type Outcome = "pass" | "fail" | "timeout" | "error";
 /** Closed list: a reason never quotes a command or its output. */
@@ -58,7 +61,7 @@ export interface AttemptMetrics {
   firstPass: boolean; turns: number; filesChanged: number; models: string[];
 }
 export interface Attempt {
-  schema: typeof BENCH_SCHEMA; kind: "attempt"; run: string; task: string; repeat: number; outcome: Outcome; error?: AttemptError;
+  schema: typeof BENCH_SCHEMA; kind: "attempt"; run: string; arm?: string; task: string; repeat: number; outcome: Outcome; error?: AttemptError;
   verifyExit: number | null; hubTask: number | null; startedAt: string; endedAt: string; ms: number; metrics: AttemptMetrics | null;
 }
 export interface RunEnd { schema: typeof BENCH_SCHEMA; kind: "end"; run: string; endedAt: string; stopped?: "timeout" | "interrupted" | "error" }
@@ -135,7 +138,7 @@ export function benchReport(runs: BenchRun[]): { overall: Measures; tasks: Recor
 }
 
 /** A seeded generator, so a comparison prints the same interval every time for the same records. */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }

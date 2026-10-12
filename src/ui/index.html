@@ -19,14 +19,20 @@ const dashboardTheme = (() => {
 /* PEER_PALETTE_CSS */
 .task-board-section{grid-column:1/-1}.board-columns{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:18px}.board-column{min-width:0;background:var(--panel-soft);border:1px solid var(--line);border-radius:6px;padding:10px}.board-column h3{font-size:14px;margin:0 0 12px}.board-column h4{font-size:12px;color:var(--muted);margin:12px 0 8px}.task-card{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:12px;margin:0 0 10px;overflow-wrap:anywhere}.task-card .row-head{align-items:flex-start}.task-card .label{font-size:14px}.task-card .actions{display:grid;gap:8px}.task-card .actions select{max-width:none;width:100%}.task-card button,.task-card select,.agent-legend button{min-height:44px}.task-card .body{font-size:13px}.task-card .task-stage{font-size:12px}.board-columns .empty{padding:8px 0}.board-lane{border-top:1px solid var(--line)}.board-lane>h3{padding:14px 18px 0;font-size:15px}.peer-mark{display:inline-flex;align-items:center;gap:6px}.peer-color-dot{width:9px;height:9px;display:inline-block;border-radius:50%;background:var(--peer-color);flex-shrink:0}.peer-color-dot.reviewer{background:transparent;border:2px solid var(--peer-color)}.agent-legend{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-bottom:1px solid var(--line)}.agent-legend .agent-slot{border:1px solid var(--line);border-radius:5px;padding:10px;flex:1 1 180px;min-width:0}.agent-legend .meta{overflow-wrap:anywhere}.board-drop-active{outline:2px solid var(--green);outline-offset:2px}.board-toolbar{padding:12px 18px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}.board-toolbar label{margin:0}.board-toolbar select{width:auto;max-width:220px}.board-unknown{padding:12px 18px;color:var(--amber)}.task-list{max-height:none;overflow:visible}.progress-backlog{fill:var(--dot)}
 @media(max-width:1100px){.board-columns{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.board-columns{grid-template-columns:1fr;padding:12px}.board-toolbar{align-items:stretch}.board-toolbar select{max-width:none;width:100%}.board-toolbar label{width:100%}}
+.office-scene{display:block;width:100%;height:auto}.office-scene text{font-family:system-ui,sans-serif}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--muted);font-size:1.8px;letter-spacing:.1px;text-transform:uppercase}.office-room-count{fill:var(--ink);font-size:1.8px;font-variant-numeric:tabular-nums}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed{opacity:.55}.office-name{fill:var(--ink);font-size:1.6px;font-weight:600}.office-state{fill:var(--muted);font-size:1.4px}.office-glyph{font-size:1.8px}.office-idle .office-glyph{fill:var(--dot-ok)}.office-busy .office-glyph{fill:var(--dot-warn)}.office-offline .office-glyph{fill:var(--dot)}.office-paused .office-glyph{fill:var(--dot-warn)}.office-waiting .office-glyph{fill:var(--dot-err)}.office-unknown .office-glyph{fill:var(--dot)}.office-meta{fill:var(--muted);font-size:1.2px}.office-hand{fill:var(--dot-err);font-size:1.6px}.office-bubble{fill:var(--blue-soft);stroke:var(--blue)}.office-bubble-text{fill:var(--blue);font-size:1.3px}.office-mode{fill:var(--amber);font-size:1.2px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1.3px;font-family:ui-monospace,monospace}.office-waiting-card .office-card{stroke:var(--waiting);stroke-dasharray:.5 .4}.office-rework-card .office-card{stroke:var(--red)}.office-more{fill:var(--blue);font-size:1.4px}.office-spotlight .office-desk-surface,.office-spotlight .office-card{stroke:var(--focus);stroke-width:.5}.row.spotlight{background:var(--hover)}
+.office-movable{transition:transform .8s ease}.office-arc .office-arc-path{fill:none;stroke:var(--blue);stroke-width:.35}.office-arc .office-arc-head{fill:var(--blue)}.office-arc-important .office-arc-path{stroke:var(--amber)}.office-arc-important .office-arc-head{fill:var(--amber)}.office-arc-dropped .office-arc-path{stroke:var(--red);stroke-dasharray:.6 .4}.office-arc-dropped .office-arc-head{fill:var(--red)}.office-arc-label{fill:var(--muted);font-size:1.2px}.office-alert{fill:var(--red);font-size:1.4px}.office-latch{fill:var(--dot-warn);font-size:1.4px}.office-link-line{fill:none;stroke-width:.45;stroke-dasharray:.8 .5}.office-link-overlap .office-link-line{stroke:var(--amber)}.office-link-conflict .office-link-line{stroke:var(--red)}.office-link-cohort .office-link-line{stroke:var(--blue)}.office-link-label{font-size:1.2px;fill:var(--muted)}.office-link-conflict .office-link-label{fill:var(--red)}.office-link-overlap .office-link-label{fill:var(--amber)}.office-link-cohort .office-link-label{fill:var(--blue)}.office-checking{fill:var(--blue);font-size:1.1px}.office-card-checking .office-card{stroke:var(--blue)}
+.office-avatar{fill:var(--muted)}.office-idle .office-avatar{fill:var(--dot-ok)}.office-busy .office-avatar{fill:var(--dot-warn)}.office-offline .office-avatar{fill:var(--dot)}.office-paused .office-avatar{fill:var(--dot-warn)}.office-waiting .office-avatar{fill:var(--amber)}.office-waiting .office-desk-surface{stroke:var(--amber);stroke-width:.6}.office-glyph-shape{fill:none;stroke-width:.32}.office-idle .office-glyph-shape{stroke:var(--dot-ok)}.office-busy .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-paused .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-offline .office-glyph-shape{stroke:var(--dot)}.office-handshape{fill:none;stroke:var(--dot-err);stroke-width:.28}.office-desk-leg{fill:var(--panel-soft);stroke:var(--line);stroke-width:.2}.office-nameplate{fill:var(--control);stroke:var(--control-border);stroke-width:.2}.office-room-wire{fill:none;stroke:var(--line);stroke-width:.25}.office-divider{fill:none;stroke:var(--line);stroke-width:.2}.office-shelf{fill:var(--panel-soft);stroke:var(--line);stroke-width:.3}.office-shelf-card{fill:var(--green-soft);stroke:var(--green);stroke-width:.25}.office-box-top{fill:var(--control);stroke:var(--control-border);stroke-width:.2}.office-box-left{fill:var(--panel-soft);stroke:var(--line);stroke-width:.2}.office-box-right{fill:var(--panel);stroke:var(--line);stroke-width:.2}.office-busy .office-glyph,.office-hand{animation:office-pulse 1.2s ease-in-out infinite}.office-appear{animation:office-appear .5s ease-out}.office-leaving{pointer-events:none;animation:office-fade .4s linear forwards}.office-fadeout{animation-name:office-fade;animation-duration:1s;animation-timing-function:linear;animation-fill-mode:forwards}.office-settle .office-movable{transition:none}.office-settle .office-appear{animation:none}
+@keyframes office-pulse{50%{opacity:.45}}@keyframes office-appear{from{opacity:0}}@keyframes office-fade{to{opacity:0}}
+@media(prefers-reduced-motion:reduce){.office-scene,.office-scene *{transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
-<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div></header>
+<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></header>
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
-<section class="task-board-section" aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div><details><summary>Plan a task</summary><form id="planning"><div class="field"><label for="planning-task">Task</label><select id="planning-task"><option value="">Select task</option></select></div><div class="split"><label>Priority<select id="planning-priority"><option value="">Default</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></label><label>Order<input id="planning-rank" type="number" min="0" step="1"></label><label>Release<select id="planning-release"><option value="">No release</option></select></label><label>Planned start<input id="planning-start" type="datetime-local"></label><label>Due<input id="planning-due" type="datetime-local"></label></div><label><input id="planning-pinned" type="checkbox">Pin against planner changes</label><label>Reason<input id="planning-reason" maxlength="1000" required></label><div class="actions"><button id="planning-save" type="submit" data-mutation="project">Save plan</button><button id="planning-undo" type="button" data-mutation="project">Undo latest plan</button><button id="planning-reload" type="button">Reload current values</button></div><p id="planning-version" class="meta"></p></form></details><details><summary>Releases</summary><div id="releases" class="content"></div><form id="release-new"><div class="split"><label>Name<input id="release-name" maxlength="64" required></label><label>Order<input id="release-order" type="number" min="0" value="0" step="1" required></label></div><label>Goal<input id="release-goal" maxlength="1000" required></label><button type="submit" data-mutation="project">Create release</button></form><form id="release-plan"><label>Release<select id="release-edit"><option value="">Select release</option></select></label><div class="split"><label>Planned start<input id="release-start" type="datetime-local"></label><label>Cut<input id="release-cut" type="datetime-local"></label><label>Ship<input id="release-ship" type="datetime-local"></label></div><button id="release-save" type="submit" data-mutation="project">Save dates</button></form></details><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
+<section class="task-board-section" aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div><details><summary>Plan a task</summary><form id="planning"><div class="field"><label for="planning-task">Task</label><select id="planning-task"><option value="">Select task</option></select></div><div class="split"><label>Priority<select id="planning-priority"><option value="">Default</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></label><label>Order<input id="planning-rank" type="number" min="0" step="1"></label><label>Release<select id="planning-release"><option value="">No release</option></select></label><label>Planned start<input id="planning-start" type="datetime-local"></label><label>Due<input id="planning-due" type="datetime-local"></label></div><label><input id="planning-pinned" type="checkbox">Pin against planner changes</label><label>Reason<input id="planning-reason" maxlength="1000" required></label><div class="actions"><button id="planning-save" type="submit" data-mutation="project">Save plan</button><button id="planning-undo" type="button" data-mutation="project">Undo latest plan</button><button id="planning-reload" type="button">Reload current values</button></div><p id="planning-version" class="meta"></p></form></details><details><summary>Releases</summary><div id="releases" class="content"></div><form id="release-new"><div class="split"><label>Name<input id="release-name" maxlength="64" required></label><label>Order<input id="release-order" type="number" min="0" value="0" step="1" required></label></div><label>Goal<input id="release-goal" maxlength="1000" required></label><button type="submit" data-mutation="project">Create release</button></form><form id="release-plan"><label>Release<select id="release-edit"><option value="">Select release</option></select></label><div class="split"><label>Planned start<input id="release-start" type="datetime-local"></label><label>Cut<input id="release-cut" type="datetime-local"></label><label>Ship<input id="release-ship" type="datetime-local"></label></div><button id="release-save" type="submit" data-mutation="project">Save dates</button></form></details><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <div class="stack">
+<section id="office-section" aria-labelledby="office-title" hidden><div class="section-head"><h2 id="office-title">Office</h2></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 
 <section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
@@ -46,7 +52,14 @@ const dashboardTheme = (() => {
 /* TASK_PROGRESS_MODEL */
 /* PEER_START_RETRY_MS */
 /* BOARD_MODEL */
+/* OFFICE_MODEL */
+const officeView = (() => {
+  let choice = 'off';
+  try { const saved = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('agent-hub-office='))?.slice('agent-hub-office='.length); if (['off','flat','isometric'].includes(saved)) choice = saved; } catch {}
+  return { get: () => choice, set: (value) => { choice = ['off','flat','isometric'].includes(value) ? value : 'off'; try { document.cookie = `agent-hub-office=${choice}; Path=/; Max-Age=31536000; SameSite=Strict`; } catch {} } };
+})();
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
+const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; });
 let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
@@ -54,6 +67,8 @@ const el = (tag, text, cls) => { const node = document.createElement(tag); if (t
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
 let managerMode = false, projectList = [], selectedProjectId = '', selectedInstanceId = '', snapshotValid = false, viewGeneration = 0, projectRequest = 0;
 let lastSnapshot = null;
+let officePrev = null;
+const peerRows = new Map(), taskRows = new Map(), officeDesks = new Map(), officeCards = new Map();
 const drafts = new Map();
 const pendingButtons = new WeakSet();
 const pendingStarts = new Map();
@@ -143,6 +158,9 @@ function syncMutationControls() { document.querySelectorAll('button[data-mutatio
 function resetView(id, instance) {
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
+  lastSnapshot = null;
+  officePrev = null; officeDesks.clear(); officeCards.clear(); officeScene = null;
+  $('office').replaceChildren(); $('office-section').hidden = true;
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
@@ -466,6 +484,11 @@ function dropTarget(node, accepted, payload) {
 }
 function taskCard(task, card, stage, ids) {
   const row = el('article', undefined, 'task-card'), head = el('div', undefined, 'row-head');
+  row.tabIndex = 0; taskRows.set(task.id,row);
+  const trackCard = on => { const sceneCard=officeCards.get(task.id);if(sceneCard)sceneCard.classList.toggle('office-spotlight',on); };
+  row.addEventListener('mouseenter',()=>trackCard(true));row.addEventListener('mouseleave',()=>trackCard(false));
+  row.addEventListener('focus',()=>trackCard(true));row.addEventListener('blur',()=>trackCard(false));
+
   row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
   head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), badge('P' + card.priority));
   if (card.starred) { const star = el('span', '★'); star.setAttribute('aria-hidden','true'); head.append(star); }
@@ -530,7 +553,8 @@ function renderBoard(snapshot, peers, ids) {
     if (!ids.length) empty(target,'No peer status available.');
   });
   update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone],target=>{
-    const visible=snapshot.tasks.filter(task=>(!taskFilter || task.state===taskFilter) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter) && (!releaseFilter || task.release===Number(releaseFilter)));
+    taskRows.clear();
+    const visible=snapshot.tasks.filter(task=>(!taskFilter || (taskFilter==='work' ? ['in_progress','changes_requested'].includes(task.state) : task.state===taskFilter)) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter) && (!releaseFilter || task.release===Number(releaseFilter)));
     const visibleIds=new Set(visible.map(task=>task.id));
     const owners=lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : lanes==='releases' ? [...new Set(visible.map(task=>task.release ?? 0))] : [null];
     if (!owners.length) owners.push(null);
@@ -569,6 +593,7 @@ function render(snapshot) {
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
   update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
+    peerRows.clear();
     if (!ids.length) { empty(target, 'No peers connected. Start one below, or from your terminal.'); return renderStarts(target, starts); }
     for (const [id, peer] of Object.entries(peers)) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
@@ -589,10 +614,15 @@ function render(snapshot) {
         if (backend.requestedModel) row.append(el('p', backend.kind.toUpperCase() + ': ' + (backend.actualModel || 'model not reported') + ' (' + backend.state + ')', 'meta'));
       }
       const paused = peer.state === 'paused' || peer.paused;
+      row.tabIndex = 0; peerRows.set(id, row);
+      const trackDesk = (on) => { const desk = officeDesks.get(id); if (desk) desk.classList.toggle('office-spotlight', on); };
+      row.addEventListener('mouseenter', () => trackDesk(true)); row.addEventListener('mouseleave', () => trackDesk(false));
+      row.addEventListener('focus', () => trackDesk(true)); row.addEventListener('blur', () => trackDesk(false));
       row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
     }
     renderStarts(target, starts);
   });
+  renderOffice(snapshot);
   const assignable = ids.filter((id) => peers[id].state !== 'offline' && peers[id].attached !== false);
   const peerSignature = JSON.stringify([ids, assignable]);
   if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), assignable, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
@@ -657,6 +687,343 @@ async function poll() {
   catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
+// office-scene-begin (issue 264): the office, drawn Flat or Isometric from the shared officeModel as inline
+// SVG, re-rendered only when its signature changed; no timer, no frame loop, no request and no action here.
+// Motion is CSS only: transform/opacity transitions for card moves, keyframe fades for arcs, alerts and the
+// busy latch, timed at render from the model's timestamps; expired nodes purge on the next changed render or
+// their own animationend. The projection (phase 4) maps grid coordinates only: x' = (x - y) cos 30, y' =
+// (x + y) sin 30; nodes are laid out upright in local coordinates, so text is never rotated and the DOM
+// order and accessible names do not depend on the projection.
+let officeProjection = 'flat';
+let officeLastProjection = '';
+const officeRound = (v) => Math.round(v * 100) / 100;
+function officeIsoLocal(x, y) { return [(x - y) * 0.8660254, (x + y) * 0.5]; }
+function officeProject(x, y) { return officeProjection === 'iso' ? officeIsoLocal(x, y) : [x, y]; }
+function officePlace(node, x, y) { const p = officeProject(x, y); node.style.transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)'; }
+function officePolygon(points, cls) { return officeNode('polygon', { points: points.map((p) => p.map(officeRound).join(',')).join(' '), class: cls }); }
+function officeTile(w, h, cls) {
+  if (officeProjection !== 'iso') return officeNode('rect', { x: 0, y: 0, width: w, height: h, rx: 1, class: cls });
+  return officePolygon([[0, 0], officeIsoLocal(w, 0), officeIsoLocal(w, h), officeIsoLocal(0, h)], cls);
+}
+function officeViewBox(w, h) {
+  if (officeProjection !== 'iso') return '0 0 ' + w + ' ' + h;
+  const corners = [officeProject(0, 0), officeProject(w, 0), officeProject(0, h), officeProject(w, h)];
+  const xs = corners.map((p) => p[0]), ys = corners.map((p) => p[1]), m = 3;
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  return (minX - m) + ' ' + (minY - m) + ' ' + (Math.max(...xs) - minX + 2 * m) + ' ' + (Math.max(...ys) - minY + 2 * m);
+}
+// A raised hand as outline shapes (palm and fingers), coloured by the desk's condition class.
+function officeHand(x, y) {
+  const g = officeNode('g', { class: 'office-handshape' });
+  g.append(officeNode('rect', { x: x + 0.05, y: y + 0.8, width: 1.5, height: 1.2, rx: 0.55 }));
+  for (let i = 0; i < 3; i++) g.append(officeNode('rect', { x: x + 0.24 + i * 0.42, y, width: 0.28, height: 1.05, rx: 0.14 }));
+  return g;
+}
+// The condition glyph as clean outline shapes; the label text next to it carries the state in words.
+function officeGlyphNode(desk, cx, cy) {
+  if (desk.condition === 'waiting') return officeHand(cx - 0.8, cy - 1.05);
+  const g = officeNode('g', { class: 'office-glyph-shape' });
+  if (desk.condition === 'busy' || desk.condition === 'idle') g.append(officeNode('circle', { cx, cy, r: 0.8 }));
+  else if (desk.condition === 'paused') g.append(officeNode('rect', { x: cx - 0.65, y: cy - 0.75, width: 0.45, height: 1.5, rx: 0.15 }), officeNode('rect', { x: cx + 0.2, y: cy - 0.75, width: 0.45, height: 1.5, rx: 0.15 }));
+  else if (desk.condition === 'offline') g.append(officeNode('line', { x1: cx - 0.55, y1: cy - 0.55, x2: cx + 0.55, y2: cy + 0.55 }), officeNode('line', { x1: cx - 0.55, y1: cy + 0.55, x2: cx + 0.55, y2: cy - 0.55 }));
+  else g.append(officeNode('text', { x: cx - 0.4, y: cy + 0.55, class: 'office-glyph' }, desk.glyph));
+  return g;
+}
+// A person: head over shoulders, upright in both projections. Isometric stands behind the desk.
+function officeAvatar() {
+  if (officeProjection === 'iso') return [
+    officeNode('circle', { cx: 1.5, cy: -3.7, r: 1.05, class: 'office-avatar' }),
+    officeNode('rect', { x: 0.55, y: -2.85, width: 1.9, height: 3.05, rx: 0.9, class: 'office-avatar' })];
+  return [
+    officeNode('circle', { cx: 2.2, cy: 3.1, r: 0.78, class: 'office-avatar' }),
+    officeNode('path', { d: 'M 1.2 4.6 A 1 1 0 0 1 3.2 4.6 Z', class: 'office-avatar' })];
+}
+// The Done shelf: a small cabinet of stacked card rows (flat) or boxes on a slab (iso); the count stays text.
+function officeShelf(iso) {
+  if (!iso) {
+    const nodes = [officeNode('rect', { x: 6.5, y: 4.4, width: 9, height: 10.4, rx: 1, class: 'office-shelf' })];
+    for (const sy of [7.8, 11.2]) nodes.push(officeNode('line', { x1: 6.5, y1: sy, x2: 15.5, y2: sy, class: 'office-divider' }));
+    for (const sy of [5.1, 8.5, 11.9]) for (const sx of [7.2, 11.4]) nodes.push(officeNode('rect', { x: sx, y: sy, width: 3.4, height: 2.1, rx: 0.5, class: 'office-shelf-card' }));
+    return nodes;
+  }
+  const nodes = [officePolygon([officeIsoLocal(6, 3), officeIsoLocal(16, 3), officeIsoLocal(16, 9), officeIsoLocal(6, 9)], 'office-shelf')];
+  for (const [bx, by] of [[7, 4], [11.5, 4], [9.2, 6.2]]) {
+    const s = 2.4, rise = 2.2;
+    const top = [officeIsoLocal(bx, by), officeIsoLocal(bx + s, by), officeIsoLocal(bx + s, by + s), officeIsoLocal(bx, by + s)];
+    const up = top.map(([x, y]) => [x, y - rise]);
+    nodes.push(officePolygon(up, 'office-box-top'), officePolygon([up[3], up[2], top[2], top[3]], 'office-box-left'), officePolygon([up[2], up[1], top[1], top[2]], 'office-box-right'));
+  }
+  return nodes;
+}
+function officeClip(text, max) { text = String(text); return text.length > max ? text.slice(0, max - 3) + '...' : text; }
+function officeNode(tag, attrs, text) { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const key in attrs) node.setAttribute(key, String(attrs[key])); if (text !== undefined) node.textContent = text; return node; }
+function officeKeys(event, activate) { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } }
+let spotlitRow = null;
+function spotlightRow(row) { if (spotlitRow && spotlitRow !== row) spotlitRow.classList.remove('spotlight'); spotlitRow = row; if (row) row.classList.add('spotlight'); }
+function activateOfficePeer(id) { const row = peerRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
+function activateOfficeTask(id) { if (!taskRows.has(id)) officeFilter(''); const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
+function officeFilter(state) { $('task-filter').value = state; $('task-peer-filter').value = ''; $('task-release-filter').value = ''; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); }
+// Fade timing for a transient mark: it holds, then fades over the final second so it is gone at `until`.
+// Applied once at creation; later renders leave the running animation alone.
+function officeFade(node, until, now) {
+  node.dataset.officeUntil = String(until);
+  const remaining = Math.max(0, until - now);
+  if (remaining <= 0) return false;
+  if (officeReducedMotion()) return true;
+  const duration = Math.min(1000, remaining);
+  node.setAttribute('class', ((node.getAttribute('class') || '') + ' office-fadeout').trim());
+  if (duration !== 1000) node.style.animationDuration = duration + 'ms';
+  node.style.animationDelay = (remaining - duration) + 'ms';
+  return true;
+}
+function officeCardPaint(node, card) {
+  node.setAttribute('class', 'office-card-node office-movable' + (card.waiting ? ' office-waiting-card' : '') + (card.rework ? ' office-rework-card' : '') + (card.checking ? ' office-card-checking' : ''));
+  node.setAttribute('aria-label', card.name);
+  const children = [
+    officeNode('rect', { x: 0, y: 0, width: card.w, height: card.h, rx: 0.6, class: 'office-card' }),
+    officeNode('text', { x: 0.8, y: card.h - 0.7, class: 'office-card-text' }, officeClip(card.label, card.w > 12 ? 22 : 10))];
+  if (card.checking) children.push(officeNode('text', { x: card.w - 0.6, y: card.h - 0.7, 'text-anchor': 'end', class: 'office-checking' }, '⟳'));
+  node.replaceChildren(...children);
+}
+function officeDeskPaint(node, desk) {
+  node.setAttribute('class', 'office-desk office-' + desk.condition + (desk.dimmed ? ' office-dimmed' : ''));
+  node.setAttribute('aria-label', desk.name);
+  officePlace(node, desk.x, desk.y);
+  const iso = officeProjection === 'iso';
+  const children = [];
+  if (iso) {
+    children.push(...officeAvatar());
+    // The desk is a light extrusion: the top tile plus two thin front legs.
+    const B = officeIsoLocal(desk.w, 0), C = officeIsoLocal(desk.w, desk.h), D = officeIsoLocal(0, desk.h);
+    for (const [from, to] of [[D, C], [B, C]]) {
+      const at = (t) => [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t];
+      const a = at(0.78), b = at(0.92);
+      children.push(officePolygon([a, b, [b[0], b[1] + 2.4], [a[0], a[1] + 2.4]], 'office-desk-leg'));
+    }
+  }
+  children.push(officeTile(desk.w, desk.h, 'office-desk-surface'));
+  if (iso) {
+    // The name plate is a small parallelogram on the desk's front edge; the name text stays upright.
+    const D = officeIsoLocal(0, desk.h), C = officeIsoLocal(desk.w, desk.h), off = officeIsoLocal(0, 1);
+    const c0 = [(D[0] + C[0]) / 2 + off[0], (D[1] + C[1]) / 2 + off[1]];
+    children.push(officePolygon([[-2.4, -0.75], [2.4, -0.75], [2.4, 0.75], [-2.4, 0.75]].map(([gx, gy]) => { const p = officeIsoLocal(gx, gy); return [c0[0] + p[0], c0[1] + p[1]]; }), 'office-nameplate'));
+    children.push(officeNode('text', { x: c0[0], y: c0[1] + 2.5, 'text-anchor': 'middle', class: 'office-name' }, desk.id));
+  } else {
+    children.push(officeNode('text', { x: 1, y: 2, class: 'office-name' }, desk.id));
+    children.push(...officeAvatar());
+  }
+  if (desk.bubble) {
+    const bx = iso ? 3.6 : 0.6; // clear of the standing avatar in iso
+    children.push(officeNode('rect', { x: bx, y: -2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
+    children.push(officeNode('text', { x: bx + (desk.w - 1.2) / 2, y: -0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
+  }
+  if (desk.mode) children.push(officeNode('text', { x: desk.w - 1, y: 2, 'text-anchor': 'end', class: 'office-mode' }, desk.mode));
+  children.push(officeGlyphNode(desk, iso ? 5.2 : 4.3, 3.65));
+  children.push(officeNode('text', { x: iso ? 6.3 : 5.3, y: 4, class: 'office-state' }, desk.label));
+  if (desk.approvals > 0) { children.push(officeHand(desk.w - 2.7, 2.5)); children.push(officeNode('text', { x: desk.w - 1, y: 4, 'text-anchor': 'end', class: 'office-hand' }, String(desk.approvals))); }
+  let line = 5.35;
+  if (desk.breakNote) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip('Break: ' + desk.breakNote + (desk.breakResetsAt ? ' / resets ' + rel(desk.breakResetsAt) : ''), 38))); line += 1.05; }
+  if (desk.finishing) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, 'finishing a turn')); line += 1.05; }
+  if (!desk.attached) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, 'disconnected; work retained')); line += 1.05; }
+  const tray = [];
+  if (desk.tray.queued) tray.push(desk.tray.queued + ' queued');
+  if (desk.tray.important) tray.push(desk.tray.important + ' important');
+  if (desk.tray.needsReview) tray.push(desk.tray.needsReview + ' to review');
+  if (desk.tray.heldBy) tray.push('held by ' + desk.tray.heldBy);
+  if (tray.length) children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
+  if (desk.extraCards > 0) children.push(officeNode('text', { x: 1, y: desk.h - 0.4, class: 'office-meta' }, '+' + desk.extraCards + ' more'));
+  node.replaceChildren(...children);
+}
+function officeRoomPaint(node, room) {
+  node.setAttribute('class', 'office-roombox office-roombox-' + room.id);
+  officePlace(node, room.x, room.y);
+  const iso = officeProjection === 'iso';
+  const children = [officeTile(room.w, room.h, 'office-room')];
+  let moreAt = { x: 1, y: room.h - 1, anchor: 'start' };
+  if (iso) {
+    // A faint wireframe floor box: the floor tile and the two back vertical edges; the label sits at the base.
+    const B = officeIsoLocal(room.w, 0), D = officeIsoLocal(0, room.h), C = officeIsoLocal(room.w, room.h);
+    for (const p of [B, D]) children.push(officeNode('line', { x1: p[0], y1: p[1], x2: p[0], y2: p[1] - 6, class: 'office-room-wire' }));
+    children.push(officeNode('text', { x: C[0], y: C[1] + 2.4, 'text-anchor': 'middle', class: 'office-room-title' }, room.label));
+    children.push(officeNode('text', { x: C[0], y: C[1] + 3.8, 'text-anchor': 'middle', class: 'office-room-count' }, String(room.count)));
+    moreAt = { x: D[0], y: D[1] + 2.4, anchor: 'middle' };
+  } else {
+    if (room.x > 0) children.push(officeNode('line', { x1: -1, y1: 0.6, x2: -1, y2: room.h - 0.6, class: 'office-divider' }));
+    children.push(officeNode('text', { x: 1, y: 2.2, class: 'office-room-title' }, room.label));
+    children.push(officeNode('text', { x: room.w - 1, y: 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
+  }
+  if (room.id === 'done') children.push(...officeShelf(iso));
+  node.replaceChildren(...children);
+  if (room.overflow > 0 && room.filterState) {
+    const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + room.overflow + ' more ' + room.filterState.replaceAll('_', ' ') + ' tasks in the task list' });
+    more.append(officeNode('text', { x: moreAt.x, y: moreAt.y, 'text-anchor': moreAt.anchor, class: 'office-more' }, '+' + room.overflow + ' more'));
+    const open = () => officeFilter(room.filterState);
+    more.addEventListener('click', open);
+    more.addEventListener('keydown', (event) => officeKeys(event, open));
+    node.append(more);
+  }
+}
+let officeScene = null;
+function officeEnsure(target) {
+  if (officeScene) return officeScene;
+  const svg = officeNode('svg', { class: 'office-scene', role: 'group', 'aria-label': 'Office: desks, rooms and task cards' });
+  const layers = {};
+  for (const name of ['rooms', 'desks', 'links', 'marks', 'arcs', 'cards']) { const layer = officeNode('g', { class: 'office-layer office-layer-' + name }); svg.append(layer); layers[name] = layer; }
+  officeScene = { svg, layers, els: new Map(), leaving: new Map(), settled: true };
+  target.replaceChildren(svg);
+  return officeScene;
+}
+function officeReducedMotion() { return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true; }
+function officePrune(scene, now) {
+  if(!scene)return;
+  for(const [node,until] of scene.leaving)if(officeReducedMotion() || until<=now){node.remove();scene.leaving.delete(node)}
+  for(const [key,entry] of scene.els){
+    if(officeReducedMotion())entry.node.classList.remove('office-appear');
+    if(entry.node.dataset.officeUntil && Number(entry.node.dataset.officeUntil)<=now){entry.node.remove();scene.els.delete(key)}
+  }
+}
+function officeLeave(scene, key) {
+  const entry = scene.els.get(key);
+  if (!entry) return;
+  scene.els.delete(key);
+  if(officeReducedMotion() || scene.settled){entry.node.remove();return;}
+  scene.leaving.set(entry.node,Date.now()+400);
+  entry.node.classList.add('office-leaving');
+  entry.node.addEventListener('animationend', () => {entry.node.remove();scene.leaving.delete(entry.node)});
+}
+function drawOffice(target, model) {
+  const scene = officeEnsure(target), els = scene.els, now = Date.now();
+  scene.svg.setAttribute('viewBox', officeViewBox(model.width, model.height));
+  const switched = officeLastProjection !== officeProjection; // a view switch jumps, never animates
+  officeLastProjection = officeProjection;
+  scene.settled = model.settle || switched;
+  officePrune(scene, now);
+  scene.svg.setAttribute('class', 'office-scene' + (model.settle || switched ? ' office-settle' : ''));
+  const seen = new Set();
+  const keep = (key, sig, layer, paint, appear) => {
+    seen.add(key);
+    sig = officeProjection + '|' + sig; // a projection switch repaints every node in place
+    const entry = els.get(key);
+    if (entry && entry.sig === sig) return { node: entry.node, fresh: false };
+    const node = entry ? entry.node : officeNode('g', {});
+    paint(node);
+    if (entry) entry.sig = sig;
+    else {
+      if (appear !== false && !scene.settled && !officeReducedMotion()) { node.classList.add('office-appear'); node.addEventListener('animationend', () => node.classList.remove('office-appear')); }
+      layer.append(node);
+      els.set(key, { node, sig });
+    }
+    return { node, fresh: true };
+  };
+  for (const room of model.rooms) {
+    keep('room:' + room.id, JSON.stringify({ ...room, cards: undefined }), scene.layers.rooms, (node) => officeRoomPaint(node, room), false);
+  }
+  for (const desk of model.desks) {
+    const { node, fresh } = keep('desk:' + desk.id, JSON.stringify({ ...desk, cards: undefined }), scene.layers.desks, (n) => officeDeskPaint(n, desk));
+    if (fresh && !node.getAttribute('tabindex')) {
+      node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
+      const open = () => activateOfficePeer(desk.id);
+      node.addEventListener('click', open);
+      node.addEventListener('keydown', (event) => officeKeys(event, open));
+    }
+  }
+  const cards = [];
+  for (const desk of model.desks) cards.push(...desk.cards);
+  for (const room of model.rooms) cards.push(...room.cards);
+  for (const card of cards) {
+    const key = 'card:' + card.id;
+    const { node, fresh } = keep(key, JSON.stringify([card.label, card.name, card.waiting, card.rework, card.checking, card.w, card.h]), scene.layers.cards, (n) => officeCardPaint(n, card));
+    if (fresh && !node.getAttribute('tabindex')) {
+      node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
+      const open = () => activateOfficeTask(card.id);
+      node.addEventListener('click', open);
+      node.addEventListener('keydown', (event) => officeKeys(event, open));
+    }
+    const p = officeProject(card.x, card.y), transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)';
+    if (node.style.transform !== transform) node.style.transform = transform; // the only animated property
+  }
+  if (model.extraPeers > 0) {
+    keep('extra:peers', String(model.extraPeers) + ':' + model.width, scene.layers.marks,
+      (node) => { officePlace(node, model.width, 0); node.replaceChildren(officeNode('text', { x: 0, y: 1.8, 'text-anchor': 'end', class: 'office-meta' }, '+' + model.extraPeers + ' peers')); }, false);
+  }
+  const deskById = new Map(model.desks.map((desk) => [desk.id, desk]));
+  // Warning lines between desks (phase 3): overlap, conflict and cohort links, ids only, state-driven (no fade).
+  for (const link of model.links) {
+    const offset = link.kind === 'overlap' ? -1.5 : link.kind === 'cohort' ? 1.5 : 0;
+    const points = [...new Set(link.peers)].map((id) => deskById.get(id)).filter(Boolean).map((d) => {const p=officeProject(d.x + d.w / 2,d.y + d.h / 2);return [p[0],p[1]+offset]});
+    if (points.length < 2) continue;
+    const segments = [];
+    for (let i = 0; i + 1 < points.length; i++) segments.push([points[i], points[i + 1]]);
+    const label = link.kind + ' ' + link.tasks.map((id) => '#' + id).join(' ');
+    keep('link:' + link.kind + ':' + link.tasks.join(','), JSON.stringify([link.kind, link.tasks, link.peers, points]), scene.layers.links,
+      (n) => {
+        n.setAttribute('class', 'office-link office-link-' + link.kind);
+        n.setAttribute('aria-hidden', 'true');
+        n.replaceChildren(...segments.map(([a, b]) => officeNode('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: 'office-link-line' })),
+          officeNode('text', { x: (segments[0][0][0] + segments[0][1][0]) / 2 + 1, y: (segments[0][0][1] + segments[0][1][1]) / 2 - 1, class: 'office-link-label' }, officeClip(label, 28)));
+      }, false);
+  }
+  for (const arc of model.arcs) {
+    if(arc.until<=now)continue;
+    const from = deskById.get(arc.from);
+    const label = arc.kind + (arc.task ? ' #' + arc.task : '');
+    for (const target of arc.to.length ? arc.to : model.desks.map((desk) => desk.id)) {
+      const to = deskById.get(target);
+      if (!to) continue;
+      const p1 = officeProject(from ? from.x + from.w / 2 : 1, from ? from.y : 1), p2 = officeProject(to.x + to.w / 2, to.y);
+      const mx = (p1[0] + p2[0]) / 2, my = Math.min(p1[1], p2[1]) - 4;
+      const angle = Math.atan2(p2[1] - my, p2[0] - mx);
+      const tip = (a) => [officeRound(p2[0] - 1.5 * Math.cos(a)), officeRound(p2[1] - 1.5 * Math.sin(a))];
+      const cls = 'office-arc' + (arc.priority === 'important' ? ' office-arc-important' : '') + (arc.dropped ? ' office-arc-dropped' : '');
+      const { node, fresh } = keep('arc:' + arc.seq + ':' + target, JSON.stringify([arc.seq, target, arc.kind, arc.task, arc.priority, arc.dropped, p1, p2]), scene.layers.arcs,
+        (n) => { n.setAttribute('class', cls); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(
+          officeNode('path', { d: 'M ' + officeRound(p1[0]) + ' ' + officeRound(p1[1]) + ' Q ' + officeRound(mx) + ' ' + officeRound(my) + ' ' + officeRound(p2[0]) + ' ' + officeRound(p2[1]), class: 'office-arc-path' }),
+          officePolygon([[officeRound(p2[0]), officeRound(p2[1])], tip(angle - 0.45), tip(angle + 0.45)], 'office-arc-head'),
+          officeNode('text', { x: mx, y: my - 0.8, 'text-anchor': 'middle', class: 'office-arc-label' }, label)); }, false);
+      if (fresh) officeFade(node, arc.until, now);
+    }
+  }
+  const latestAlert = new Map();
+  for (const alert of model.alerts) if (alert.until > now) latestAlert.set(alert.peer, alert);
+  for (const [peer, alert] of latestAlert) {
+    const desk = deskById.get(peer);
+    if (!desk) continue;
+    const { node, fresh } = keep('alert:' + peer, String(alert.seq), scene.layers.marks,
+      (n) => { officePlace(n, desk.x, desk.y); n.setAttribute('class', 'office-alertmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: desk.w - 1, y: 5.1, 'text-anchor': 'end', class: 'office-alert' }, '! ' + alert.kind)); }, false);
+    if (fresh) officeFade(node, alert.until, now);
+  }
+  for (const desk of model.desks) {
+    const latch = model.latched[desk.id];
+    if (desk.condition !== 'idle' || !latch || latch.until <= now) continue;
+    const { node, fresh } = keep('latch:' + desk.id, String(latch.seq), scene.layers.marks,
+      (n) => { officePlace(n, desk.x, desk.y); n.setAttribute('class', 'office-latchmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: 5.2, y: 3.9, class: 'office-latch' }, '● busy')); }, false);
+    if (fresh) officeFade(node, latch.until, now);
+  }
+  for (const key of [...els.keys()]) if (!seen.has(key)) officeLeave(scene, key);
+  officeDesks.clear(); officeCards.clear();
+  for (const [key, entry] of els) {
+    if (key.startsWith('desk:')) officeDesks.set(key.slice(5), entry.node);
+    else if (key.startsWith('card:')) officeCards.set(Number(key.slice(5)), entry.node);
+  }
+}
+function renderOffice(snapshot) {
+  const view = officeView.get(), section = $('office-section');
+  officeProjection = view === 'isometric' ? 'iso' : 'flat';
+  section.hidden = view === 'off';
+  if (view === 'off') {
+    if (signatures.has('office')) { signatures.delete('office'); $('office').replaceChildren(); officeScene = null; }
+    officePrev = null; officeDesks.clear(); officeCards.clear(); return;
+  }
+  const cols = (section.clientWidth || 0) >= 1000 ? 4 : (section.clientWidth || 0) >= 700 ? 2 : 1;
+  const model = officeModel(snapshot, officePrev, { cols, now: Date.now() });
+  officePrev = model;
+  const signature = JSON.stringify([view, cols, model]);
+  officePrune(officeScene,Date.now());
+  if (signatures.get('office') === signature) return;
+  signatures.set('office', signature);
+  drawOffice($('office'), model);
+}
+// office-scene-end
 const STREAM_KINDS = ['chat', 'task', 'review', 'status', 'budget', 'presence', 'state'];
 let streamFilter = '';
 function applyStreamFilter(node) { node.hidden = streamFilter !== '' && node.dataset.kind !== streamFilter; }
@@ -735,6 +1102,7 @@ for (const [id, operation] of [['delivery-queue','sdlc_queue'],['delivery-releas
   if (report) $('delivery-report').textContent = JSON.stringify(report, null, 2);
 });
 $('task-filter').addEventListener('change', () => { if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); });
+window.addEventListener('resize', () => { if (!stopped && officeView.get() !== 'off' && snapshotValid && lastSnapshot) renderOffice(lastSnapshot); });
 $('send').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter) && generation === viewGeneration) $('message').value = ''; });
 $('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if ($('backlog-proposal').checked) { if(boardViewState?.snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext())) return notice('Backlog is unavailable for this project snapshot.',true);payload.backlog=true; } if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
 (async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; renderStreamChips(); await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();

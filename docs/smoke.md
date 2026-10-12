@@ -2,6 +2,38 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Office view (#264, phases 1-4)
+
+Not run live yet (unverified). Phases 1-4 ship the office with its Off/Flat/
+Isometric control: snapshot-driven motion (card moves, message arcs, delivery
+marks, the busy latch, the settle rule), the optional turn/checking/links
+snapshot fields (exact task bubble, check-running mark, finishing-a-turn,
+warning lines), and the isometric projection of the same model.
+`test/office-model.test.ts`, `test/office-view.test.ts`,
+`test/tasks.test.ts` and `test/daemon.test.ts` cover the model, the daemon
+fields, the cookie, the CSP cleanliness, the motion wiring, the settle rule and
+the projection (same focus order and names as Flat) against fakes, but no
+browser was opened.
+The live leg: `ahub up` on a scratch project with two agents working, `ahub ui`,
+set the Office View control to Flat and to Isometric. Check the scene in both
+projections, in both themes and at phone
+width with the browser console open (no CSP violations), that cards glide between
+rooms and desks as tasks change state, that arcs and marks fade after about ten
+seconds, that desks and cards are focusable with sensible names in the same
+order under both projections, that activating
+one scrolls to and highlights the matching list row, that reduced motion gives
+static positions, and that the page weight stays within the 30 KB budget of the
+issue. Record the look here when performed.
+
+## Add-on arms and fingerprints (#248)
+
+Not run yet (2026-10-12). Source and fakes cover the fingerprint, the arm check and the report (`test/tooling.test.ts`, `test/bench.test.ts`, `test/research.test.ts`).
+
+- [ ] Live fingerprint: `ahub claude` and `ahub codex` attached on the development machine, `events.jsonl` shows one `tooling` event per attach with claude-mem, ponytail, ripwire and dot-admit as installed.
+- [ ] Arms on a bench project for each of claude-mem, ponytail and ripwire: `all-on`, `<tool>-off`, `all-off`, 5 repeats each, interleaved and with a randomized task order (docs/bench.md, Add-on arms); then `ahub bench compare`.
+- [ ] Field data: `research.enabled` on this repository for at least two weeks, then `ahub research addons`.
+- [ ] Update `docs/addons/*.md` from the results.
+
 ## Settings from the dashboard and the terminal (#269, part 1)
 
 Not run live yet (unverified). `test/settings.test.ts` drives a real daemon, its
@@ -1623,3 +1655,13 @@ actual task dates, CLI marker authority, public PII and research reset identitie
 All current platform/201-seed checks remain pending. Desktop/phone rendering and
 native planner grooming into two releases are unverified; no real account run,
 tag, publish, install or live activation was performed.
+
+## Office stack merge review (#355, #357, #358, #360)
+
+Current-main integration and review corrections are being verified on an owned
+merge worktree. Source regressions cover the visible Off selector, filtered-card
+activation, card/desk sibling layers, sparse sticky bounds, Work/rework overflow,
+reduced-motion/settled cleanup, expired arcs, explicit unattributed turn omission,
+conflict priority under the cap and distinct parallel warning coordinates.
+Platform/full206-guard proof is pending. Desktop/phone/real-peer visual readback
+remains unverified; no account, release, installation or live activation ran.

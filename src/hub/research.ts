@@ -3,6 +3,8 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { join } from "node:path";
 import type { RoleIdentity, StampedEvent } from "./events.ts";
 import { hubHome } from "./project.ts";
+import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
+import { MIN_ATTEMPTS, mulberry32 } from "./bench.ts";
 
 /**
  * #247: opt-in research records of how tasks went, built only from `events.jsonl` (ids, states, counts, tokens), so the
@@ -49,6 +51,10 @@ export interface TaskRecord {
   /** Model routes and served models seen for the task's attributed requests. */
   models: string[];
   writer: { version: string; source: "live" | "backfill" };
+  /** #248: the add-ons each peer that worked on the task had at its latest attach; a peer missing here is unknown. */
+  tooling?: Record<string, Addon[]>;
+  /** #248, with `tooling`: every peer with an event attributed to the task, fingerprinted or not. */
+  peers?: string[];
 }
 /** A person's later verdict on one task record: `createdAt` binds it to that task, not a later one with the same id. */
 export interface LabelRecord { schema: typeof RESEARCH_SCHEMA; kind: "label"; project: string; task: number; createdAt: string; label: Label; at: string }
@@ -61,15 +67,15 @@ export const researchFile = (projectId: string, home = hubHome()): string => joi
 /** One task across every record about it: a task id is reused after `ahub reset --all`, its proposal time is not. */
 export const recordKey = (r: { project: string; task: number; createdAt: string | null; approvedAt?: string }): string => `${r.project}#${r.task}@${r.createdAt ?? r.approvedAt ?? ""}`;
 
-type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models"> & {
-  models: Set<string>; approvedAt: string | null; lastState: string | null;
+type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers"> & {
+  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>;
 };
 /** Keyed by peer ids, model names and reasons, any of which may be `constructor` or `__proto__`: no prototype to inherit from. */
 const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
   tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
-  approvedAt: null, lastState: null });
+  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map() });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
 
@@ -82,11 +88,41 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const tasks = new Map<number, Acc>(), earlier: Acc[] = [];
   const acc = (id: number) => { let a = tasks.get(id); if (!a) tasks.set(id, a = blank(id)); return a; };
   const seenUsage = new Set<string>();
+  // A fingerprint belongs to one attachment of its peer: from a state event that brings it online to the next offline.
+  // Detection settles in the background, so it can arrive after the peer's first work in that attachment.
+  const attach = new Map<string, number>(), online = new Set<string>();
+  const tooling = new Map<string, { attach: number; addons: Addon[] }>();
+  /** A peer that worked on the task carries the fingerprint of the attachment it worked in. */
+  /**
+   * `acted`: the peer did something for the task (an attributed turn, tokens, the actor of a board move). A peer only
+   * named on a move (the owner or reviewer an approval lists) joins the task once and never moves to a later
+   * attachment, where it did no work.
+   */
+  const involve = (a: Acc, peer: string | null | undefined, acted = true) => {
+    if (!peer || peer === "hub" || peer === "user" || (!acted && a.peers.has(peer))) return;
+    const now = attach.get(peer) ?? 0, f = tooling.get(peer);
+    a.peers.set(peer, now);
+    if (f?.attach === now) a.tooling[peer] = f.addons;
+    else delete a.tooling[peer]; // a fingerprint of an earlier attachment does not describe this work: unknown until one comes
+  };
   for (const e of events) {
+    // A crash writes no offline: a new run is a new attachment, and no fingerprint from before it describes later work.
+    if (e.type === "hub_start") { online.clear(); tooling.clear(); continue; }
+    if (e.type === "state") {
+      if (e.state === "offline") online.delete(e.peer);
+      else if (!online.has(e.peer)) { online.add(e.peer); attach.set(e.peer, (attach.get(e.peer) ?? 0) + 1); }
+      continue;
+    }
+    if (e.type === "tooling") {
+      const now = attach.get(e.peer) ?? 0;
+      tooling.set(e.peer, { attach: now, addons: e.addons });
+      for (const a of tasks.values()) if (a.peers.get(e.peer) === now) a.tooling[e.peer] = e.addons;
+      continue;
+    }
     if (e.type === "task") {
       const proposed = e.event === "proposed" || e.event === "backlog pulled";
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.
-      if ((e.event === "proposed" && tasks.get(e.id)?.createdAt) || (e.event === "backlogged" && tasks.has(e.id))) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
+      if ((e.event === "proposed" && tasks.has(e.id)) || (e.event === "backlogged" && tasks.has(e.id))) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
       const a = acc(e.id);
       for (const field of ["release", "priority", "plannedStart", "due"] as const) if (Object.hasOwn(e, field)) a[field] = e[field];
       a.class = e.class; if (e.role && a.role === undefined) { a.role = e.role; if (e.event === "proposed" && e.roleIdentity) a.roleIdentity = e.roleIdentity; } if (e.profile) { a.profile = e.profile; a.profileClass = e.profileClass; } if (e.pii) a.pii = true;
@@ -105,12 +141,14 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       if (e.state === "changes_requested" && a.lastState !== "changes_requested") a.changesRequested++;
       if (e.state === "approved") a.approvedAt ??= e.at;
       a.lastState = e.state;
+      involve(a, e.by); involve(a, e.owner, false); involve(a, e.reviewer, false);
       continue;
     }
     const task = "task" in e && typeof e.task === "number" ? e.task : undefined;
     if (task === undefined) continue;
     const a = acc(task);
     if ("pii" in e && e.pii === true) a.pii = true;
+    if ("peer" in e && typeof e.peer === "string") involve(a, e.peer);
     if (e.type === "tokens") { a.tokens.total += e.n; bump(a.tokens.byPeer, e.peer, e.n); bump(a.tokens.byAttribution, e.attribution ?? "unknown", e.n); }
     else if (e.type === "turn_end") {
       a.turns++; a.activeMs += e.ms; a.filesChanged += e.files ?? 0;
@@ -135,11 +173,12 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const out: TaskRecord[] = [];
   for (const a of [...earlier, ...tasks.values()]) {
     if (!a.approvedAt) continue;
-    const { approvedAt, lastState: _state, models, ...rest } = a;
+    const { approvedAt, lastState: _state, models, tooling: fingerprints, peers, ...rest } = a;
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(approvedAt);
     out.push({ schema: RESEARCH_SCHEMA, kind: "task", project: projectKey(projectId), ...rest, outcome: "approved", approvedAt,
       wallMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null,
-      firstPass: a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer });
+      firstPass: a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer,
+      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers.keys()].sort() } : {}) });
   }
   return out.sort((x, y) => x.approvedAt.localeCompare(y.approvedAt) || x.task - y.task);
 }
@@ -228,13 +267,7 @@ export interface ResearchReport { overall: Measures; byClass: Record<string, Mea
  * decides whether an approved task later failed. Records older than `since` (ms epoch, by approval) are left out.
  */
 export function researchReport(records: ResearchRecord[], since = 0): ResearchReport {
-  const latest = new Map<string, TaskRecord>(), labels = new Map<string, Label>();
-  for (const r of records) {
-    const key = recordKey(r);
-    if (r.kind === "label") { labels.set(key, r.label); continue; }
-    if (Date.parse(r.approvedAt) >= since) latest.set(key, r);
-  }
-  const all = [...latest.values()];
+  const { all, labels } = latestRecords(records, since);
   const group = (keys: (r: TaskRecord) => string[]) => {
     // A Map: a peer or model may be named `constructor`, which a plain object answers with an inherited value.
     const out = new Map<string, TaskRecord[]>();
@@ -252,6 +285,75 @@ export function formatResearch(r: ResearchReport): string[] {
   const head = `${"".padEnd(24)} ${"tasks".padStart(5)}  ${"success".padStart(7)}  ${"first pass".padStart(10)}  ${"rework".padStart(6)}  ${"check fails".padStart(11)}  ${"tokens p50".padStart(10)}  ${"tokens p90".padStart(10)}  ${"wall p50".padStart(8)}`;
   const section = (title: string, groups: Record<string, Measures>) => Object.keys(groups).length ? [``, title, head, ...Object.entries(groups).map(([k, m]) => row(k, m))] : [];
   return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", r.byModel), ...section("by project", r.byProject)];
+}
+
+/** Each approved task once, its last record, and every task's latest label: what both reports count. */
+function latestRecords(records: ResearchRecord[], since: number): { all: TaskRecord[]; labels: Map<string, Label> } {
+  const latest = new Map<string, TaskRecord>(), labels = new Map<string, Label>();
+  for (const r of records) {
+    const key = recordKey(r);
+    if (r.kind === "label") { labels.set(key, r.label); continue; }
+    if (Date.parse(r.approvedAt) >= since) latest.set(key, r);
+  }
+  return { all: [...latest.values()], labels };
+}
+
+/** The peers that worked on a task: every peer with an attributed event, else (older records) owners, reviewer and token peers. */
+const involved = (r: TaskRecord): string[] => [...new Set([...(r.peers ?? []), ...r.owners, ...(r.reviewer ? [r.reviewer] : []), ...Object.keys(r.tokens.byPeer)])].filter((p) => p !== "user");
+/** Own properties only: a peer may be named `constructor`, and a parsed record's object would answer with an inherited one. */
+const fingerprintOf = (r: TaskRecord, peer: string): Addon[] | undefined => r.tooling && Object.hasOwn(r.tooling, peer) ? r.tooling[peer] : undefined;
+
+type AddonMeasure = "successRate" | "firstPassRate" | "reworkRate" | "checkFailureRate" | "tokensMedian" | "wallMsMedian" | "collisionRate";
+const ADDON_MEASURES: AddonMeasure[] = ["successRate", "firstPassRate", "reworkRate", "checkFailureRate", "tokensMedian", "wallMsMedian", "collisionRate"];
+/** Every add-on measure of one set of tasks, computed once (a bootstrap calls this per resample). */
+function addonValues(rs: TaskRecord[], labels: Map<string, Label>): Record<AddonMeasure, number | null> {
+  const x = measures(rs, labels);
+  return { successRate: x.successRate, firstPassRate: x.firstPassRate, reworkRate: x.reworkRate, checkFailureRate: x.checkFailureRate,
+    tokensMedian: x.tokensPerTask.median, wallMsMedian: x.wallMsPerTask.median, collisionRate: pct(rs.reduce((n, r) => n + r.overlaps + r.conflicts, 0), rs.length) };
+}
+export interface AddonComparison {
+  addon: AddonName;
+  /** Tasks where a peer that worked on it had the add-on, where every such peer is known not to, and the rest. */
+  on: number; off: number; unknown: number;
+  measures: { measure: AddonMeasure; on: number | null; off: number | null; diff: number | null; low: number | null; high: number | null; inconclusive: boolean }[];
+}
+/**
+ * #248, observational: approved tasks with each add-on on against those with it off, by the tooling fingerprint each
+ * record carries. The difference is on minus off with a 95% bootstrap interval (seeded, so the same records give the
+ * same interval); below MIN_ATTEMPTS tasks on either side it is inconclusive. Field data shows association only: the
+ * peers, task mix and time differ between the sides. The causal side is `ahub bench` arms (docs/bench.md).
+ */
+export function addonReport(records: ResearchRecord[], since = 0, resamples = 1000, seed = 248): AddonComparison[] {
+  const { all, labels } = latestRecords(records, since);
+  return ADDONS.map((addon) => {
+    const side = { on: [] as TaskRecord[], off: [] as TaskRecord[], unknown: [] as TaskRecord[] };
+    for (const r of all) side[addonState(addon, involved(r).map((p) => fingerprintOf(r, p)))].push(r);
+    const random = mulberry32(seed);
+    const pick = (xs: TaskRecord[]) => Array.from({ length: xs.length }, () => xs[Math.floor(random() * xs.length)]!);
+    const samples = new Map<AddonMeasure, number[]>(ADDON_MEASURES.map((m) => [m, []]));
+    if (side.on.length && side.off.length) for (let i = 0; i < resamples; i++) {
+      const a = addonValues(pick(side.on), labels), b = addonValues(pick(side.off), labels);
+      for (const m of ADDON_MEASURES) { const x = a[m], y = b[m]; if (x !== null && y !== null) samples.get(m)!.push(x - y); }
+    }
+    const onValues = addonValues(side.on, labels), offValues = addonValues(side.off, labels);
+    return { addon, on: side.on.length, off: side.off.length, unknown: side.unknown.length, measures: ADDON_MEASURES.map((measure) => {
+      const on = onValues[measure], off = offValues[measure];
+      const s = samples.get(measure)!.sort((x, y) => x - y);
+      const rank = (q: number) => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))]!;
+      const diff = on !== null && off !== null ? on - off : null;
+      return { measure, on, off, diff, low: s.length ? rank(0.025) : null, high: s.length ? rank(0.975) : null,
+        inconclusive: diff === null || side.on.length < MIN_ATTEMPTS || side.off.length < MIN_ATTEMPTS };
+    }) };
+  });
+}
+export function formatAddons(rows: AddonComparison[]): string[] {
+  const fmt = (m: AddonMeasure, v: number | null) => v === null ? "-" : m === "tokensMedian" ? String(Math.round(v)) : m === "wallMsMedian" ? `${Math.round(v / 60_000)}m` : m === "reworkRate" || m === "collisionRate" ? v.toFixed(2) : `${Math.round(v * 100)}%`;
+  const out = ["add-on tasks with it on / off / unknown; on minus off with a 95% bootstrap interval (association, not cause)"];
+  for (const r of rows) {
+    out.push("", `${r.addon}: ${r.on} on, ${r.off} off, ${r.unknown} unknown`);
+    for (const m of r.measures) out.push(`  ${m.measure.padEnd(16)} on ${fmt(m.measure, m.on).padStart(6)}  off ${fmt(m.measure, m.off).padStart(6)}  diff ${fmt(m.measure, m.diff).padStart(6)} (${fmt(m.measure, m.low)} to ${fmt(m.measure, m.high)})${m.inconclusive ? `  inconclusive (fewer than ${MIN_ATTEMPTS} tasks on a side)` : ""}`);
+  }
+  return out;
 }
 
 export const CSV_COLUMNS = ["project", "task", "class", "pii", "outcome", "createdAt", "startedAt", "approvedAt", "wallMs", "activeMs", "owners",
