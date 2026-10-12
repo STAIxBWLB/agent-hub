@@ -2581,3 +2581,14 @@ screening. Tasks screens imported content and stages unoffered backlog; links
 are shown only through the central public projection, with no source identity
 exposed for PII cards. No GitHub comment, label, assignment or close is written.
 Current source/native proof remains pending.
+
+
+## Remaining board projections (#263, in progress)
+
+Terminal `board --columns` uses the same state/ready/waiting model as the
+dashboard, retaining public rows and unknown states. `board --release <name|#id>`
+filters read-only through the existing task-list authority; it never exposes
+backlog to an unprivileged peer. Frozen/phase views flag ids of approved tasks
+outside the release whose structured approval time is after its planned cut.
+Missing cut or approval evidence stays unknown, not inferred from notes.
+Source/native/phone proof remains pending.

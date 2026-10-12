@@ -2088,6 +2088,22 @@
       "replacement": "if(false){const release=boardViewState?.snapshot.releases?.find",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "task cards show public release membership and accessible identity (#263)"
+    },
+    {
+      "id": "board-release-read-filter",
+      "file": "src/hub/daemon.ts",
+      "search": "(releaseId === undefined || t.release === releaseId)",
+      "replacement": "true",
+      "testFile": "test/board-followup-surfaces.test.ts",
+      "testName": "board release filters and columns are readonly and retain agent backlog floors (#263)"
+    },
+    {
+      "id": "release-cut-approval-evidence",
+      "file": "src/hub/tasks.ts",
+      "search": "actualTaskDates(task).doneAt !== null && actualTaskDates(task).doneAt! > release.cut!",
+      "replacement": "true",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release cut flags use structured approval and preserve missing cut evidence (#263)"
     }
   ]
 }

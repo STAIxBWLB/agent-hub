@@ -1531,8 +1531,16 @@ export async function startDaemon(opts: DaemonOptions) {
         pending.done(summary);
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }
-      case "hub_task_list":
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+      case "hub_task_list": {
+        let releaseId: number | undefined;
+        if (a.release !== undefined) {
+          if (typeof a.release !== "string" || !a.release || a.release.length > 100) throw new PreEffectToolRefusal("invalid release filter");
+          const release = /^#[1-9]\d*$/.test(a.release) ? board.release(Number(a.release.slice(1))) : board.releases().find(item => item.name === a.release);
+          if (!release) throw new PreEffectToolRefusal("no such release");
+          releaseId = release.id;
+        }
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+      }
     }
     if (op === "task_show" && by !== USER) {
       const task = board.get(Number(a.id));

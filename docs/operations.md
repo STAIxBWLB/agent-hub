@@ -2763,3 +2763,11 @@ staging is incomplete; repeat safely to reconcile the persisted identity.
 Public cards link to their source; PII cards expose no external identity.
 GitHub comments/labels/assignment/closure are never written. Current source and
 native verification remain pending; no live account import was performed.
+
+
+`ahub board --columns` groups the same state-derived columns and ready/waiting
+reasons as the dashboard; `--release <name|#id>` filters public rows on the hub.
+`--columns --json` returns filtered tasks and column metadata together. Ordinary
+peer reads retain the existing backlog prohibition. Phase views flag public ids
+approved after a known cut outside that release, and separately list unknown
+approval times without inventing dates. Source verification remains pending.

@@ -62,7 +62,7 @@ import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRef
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderRoster, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -1092,19 +1092,24 @@ const commands: Record<string, () => Promise<void> | void> = {
       return console.log(await taskOp("github_import", selection));
     }
     const options = outputOptions();
-    const ready = args.includes("--ready");
-    const state = args.find((a) => !a.startsWith("--"));
-    const tasks = JSON.parse(await taskOp("hub_task_list", ready ? { ready: true } : state ? { state } : {})) as any[];
-    if (options.json) return console.log(JSON.stringify(tasks, null, 2));
+    const { one, rest } = takeFlags(args, ["--release"], []);
+    const ready = rest.includes("--ready"), byColumn = rest.includes("--columns");
+    const state = rest.find((a) => !a.startsWith("--"));
+    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(one["--release"] ? { release: one["--release"] } : {}) })) as any[];
+    if (options.json && !byColumn) return console.log(JSON.stringify(tasks, null, 2));
     let allTasks: any[] | null = tasks;
-    if (ready || state) {
+    if (ready || state || one["--release"]) {
       try { allTasks = JSON.parse(await taskOp("hub_task_list", {}, true)) as any[]; }
       catch (error) {
         allTasks = null;
         console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\n\t]/g, " ")}` }], false));
       }
     }
-    printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
+    if (byColumn) {
+      const hub = await connect();
+      try { const reply = await hub.request({ t: "status" }); if (!reply.status?.peers) fail(reply.error ?? "peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, reply.status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, reply.status.peers, options.columns, Date.now(), options.full, allTasks), options.color); }
+      finally { hub.close(); }
+    } else printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
   },
 
   sdlc: async () => {

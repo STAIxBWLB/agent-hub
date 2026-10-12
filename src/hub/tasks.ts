@@ -614,6 +614,8 @@ export class Tasks {
       name: this.nameable(release.name) ? release.name : "[withheld]",
       goal: this.nameable(release.goal) ? release.goal : "[withheld]",
       tasks: tasks.filter(task => task.release === release.id).map(task => ({ id: task.id, state: task.state, deps: task.deps ?? [] })),
+      afterCutUnknown: tasks.filter(task => task.state === "approved" && task.release !== release.id && actualTaskDates(task).doneAt === null).map(task => task.id),
+      afterCut: release.cut === null ? null : tasks.filter(task => task.state === "approved" && task.release !== release.id && actualTaskDates(task).doneAt !== null && actualTaskDates(task).doneAt! > release.cut!).map(task => task.id),
     }));
   }
 
