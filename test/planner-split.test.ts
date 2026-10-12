@@ -64,3 +64,19 @@ test("person P0 integration order allows its split prerequisites first (#263)",a
   const part=split.children[0]!,pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"required first"}).catch(()=>null);expect(pulled).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
   expect(board.get(parent.id)?.state).toBe("backlog");
 });
+
+
+test("split plans containing PII are private before any observer or public response (#263)",async()=>{
+  const {board,tasks}=rig(),parent=await tasks.propose(USER,{title:"public parent",class:"implement",backlog:true}),seen:boolean[]=[];
+  board.onChange=(task)=>{if(task.id!==parent.id)seen.push(tasks.isPii(task));};
+  const split=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"first",plan:{signatures:["patient 900101-1234567"]}},{title:"second",plan:{symbols:["patient 900101-1234567"]}}],reason:"parts"});
+  expect(seen.every(Boolean)).toBe(true);for(const child of split.children){expect(tasks.isPii(child)).toBe(true);expect(JSON.stringify(tasks.publicView(child))).not.toContain("900101");}
+});
+test("split prerequisites inherit the higher-ranked P0 goal ahead of unrelated work (#263)",async()=>{
+  const {tasks,bus}=rig();class Peer extends BasePeer{async start(){this.setState("idle");}async stop(){}async deliver(_envs:Envelope[]){} }
+  for(const id of ["codex","claude"]){const peer=new Peer(id);bus.add(peer);await peer.start();}
+  const parent=await tasks.propose(USER,{title:"highest goal",class:"implement",backlog:true,urgent:true}),later=await tasks.propose(USER,{title:"lower goal",class:"implement",backlog:true,urgent:true});
+  await tasks.planBacklog(USER,{id:parent.id,revision:0,fields:{rank:1,priority:0},reason:"first"});await tasks.planBacklog(USER,{id:later.id,revision:0,fields:{rank:2,priority:0},reason:"later"});
+  const split=await tasks.splitBacklog("claude",{id:parent.id,revision:1,parts:[{title:"first"},{title:"second"}],reason:"parts"}),part=split.children[0]!;
+  const pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"highest goal prerequisite"}).catch(()=>null);expect(pulled).toMatchObject({owner:null,state:"proposed",reserved:"codex"});
+});

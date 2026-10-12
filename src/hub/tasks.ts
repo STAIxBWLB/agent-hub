@@ -573,7 +573,12 @@ export class Tasks {
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
       if (this.waitsFor(task).length) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
       const priority = task.priority ?? (task.signals.includes("urgent") ? 0 : 2);
-      if (priority === 0 && this.d.board.list("backlog").some(other => other.id !== task.id && !this.prerequisiteOf(other, task.id) && (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) === 0 && other.rank != null && other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")) && (other.rank < (task.rank ?? Number.MAX_SAFE_INTEGER) || other.rank === task.rank && other.id < task.id))) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
+      if (priority === 0 && this.d.board.list("backlog").some(other => {
+        if (other.id === task.id || this.prerequisiteOf(other, task.id) || (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) !== 0 || other.rank == null || !other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) return false;
+        const ancestors = this.d.board.list("backlog").filter(goal => this.prerequisiteOf(goal, task.id) && (goal.priority ?? (goal.signals.includes("urgent") ? 0 : 2)) === 0 && goal.rank != null && goal.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")));
+        const order = [{ rank: task.rank ?? Number.MAX_SAFE_INTEGER, id: task.id }, ...ancestors.map(goal => ({ rank: goal.rank!, id: goal.id }))].sort((a,b) => a.rank-b.rank || a.id-b.id)[0]!;
+        return other.rank < order.rank || other.rank === order.rank && other.id < order.id;
+      })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
       const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved")) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
@@ -733,7 +738,7 @@ export class Tasks {
     const initial = validate(), verdicts: (PiiVerdict | undefined)[] = [];
     for (const part of initial.drafts) verdicts.push(this.screenOn() && !this.isPii(initial.parent) ? await this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined);
     const withheld = await this.withholds("note", reason, initial.parent), current = validate();
-    const drafts = current.drafts.map((part, index) => ({ ...part, signals: [...new Set([...this.signalsFor(part), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
+    const drafts = current.drafts.map((part, index) => ({ ...part, signals: [...new Set([...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
     const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);
     for (const child of result.children) this.incomingBacklog.add(child.id);
     this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: result.parent.planningRevision! });
