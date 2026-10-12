@@ -67,3 +67,19 @@ test("console attention projects structural fields without reading private text"
   state.approvals = [row];
   expect(consoleNeeds(state, now).items).toEqual([{ kind: "approval", level: "act", peer: "codex", id: "request", until: 2000 }]);
 });
+
+test("attention navigation visits every held delivery and session toggle grants no authority", () => {
+  let state: ConsoleState = { ...initialConsoleState(true), petEnabled: true,
+    peers: { codex: { state: "idle", heldBy: "first", needsReview: 2 } },
+    queue: [{ id: "first", peer: "codex", state: "needs_review" }, { id: "second", peer: "codex", state: "needs_review" }] };
+  for (const selection of [0, 1, 0]) {
+    const next = reduceConsole(state, "n", now);
+    expect(next.effects).toEqual([]);
+    expect(next.state.selection).toBe(selection);
+    state = next.state;
+  }
+  const off = reduceConsole(state, "P", now);
+  expect(off.effects).toEqual([]);
+  expect(off.state.petEnabled).toBe(false);
+  expect(reduceConsole(off.state, "P", now).state.petEnabled).toBe(true);
+});

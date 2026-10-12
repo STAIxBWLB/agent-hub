@@ -150,8 +150,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const [status, budget, tasks, queue, ready] = replies;
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
-      state.storageBlocked = !!status.status?.deliveryError;
-      state.recoveryNeed = status.status?.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
+      if (status.status && status.ok !== false) {
+        state.storageBlocked = !!status.status.deliveryError;
+        state.recoveryNeed = status.status.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
+      }
       if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
       if (budget.budget) state.budget = budget.budget;
       if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
