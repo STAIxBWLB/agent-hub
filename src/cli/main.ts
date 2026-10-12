@@ -53,7 +53,8 @@ import { contextLine, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
 import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
-import { appendRecords, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
+import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
+import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
@@ -1323,18 +1324,25 @@ const commands: Record<string, () => Promise<void> | void> = {
     const json = args.includes("--json");
     const [sub, ...rest] = args.filter((a) => a !== "--json");
     if (sub === "run") {
-      const { one, rest: positional } = takeFlags(rest, ["--arm", "--repeat", "--tasks"], []);
+      const { one, many, rest: positional } = takeFlags(rest, ["--arm", "--repeat", "--tasks"], ["--addon"]);
+      // #248: `--addon ripwire=off` declares the arm's add-on state; the run refuses peers that do not match it.
+      const addons: Partial<Record<AddonName, "on" | "off">> = {};
+      for (const spec of many["--addon"] ?? []) {
+        const [name, state] = spec.split("=");
+        if (!name || !isAddon(name) || (state !== "on" && state !== "off") || addons[name]) fail(`--addon takes <name>=on|off once per add-on, name one of ${ADDONS.join(", ")}`);
+        addons[name] = state;
+      }
       const suite = positional[0];
       const repeat = one["--repeat"] === undefined ? 1 : Number(one["--repeat"]);
       if (!suite || positional.length !== 1 || !one["--arm"]?.trim() || !Number.isSafeInteger(repeat) || repeat < 1 || repeat > 100) {
-        fail("usage: ahub bench run <suite.json> --arm <label> [--repeat 1..100] [--tasks a,b]");
+        fail("usage: ahub bench run <suite.json> --arm <label> [--repeat 1..100] [--tasks a,b] [--addon <name>=on|off]...");
       }
       await benchPreflight(cwd, loadConfig(cwd).bench.enabled); // the suite's refs are checked once it is read
       let interrupted = false;
       const stop = () => { interrupted = true; console.log("stopping at the next check: the attempt in progress is recorded as interrupted (a task still open is named)"); };
       process.on("SIGINT", stop);
       try {
-        const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd));
+        const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, addons, only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd));
         return console.log(formatBenchReport(benchReport(readRuns().filter((r) => r.header.run === run))).join("\n"));
       } finally { process.off("SIGINT", stop); }
     }
@@ -1379,7 +1387,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [sub] = args;
     // Another project is `ahub --project <dir> research`; anything unknown is refused rather than ignored.
     const flags = new Set(["--all", "--json", "--since", "--format"]), valued = new Set(["--since", "--format"]);
-    for (let i = sub === "export" || sub === "backfill" ? 1 : 0; i < args.length; i++) {
+    for (let i = sub === "export" || sub === "backfill" || sub === "addons" ? 1 : 0; i < args.length; i++) {
       if (!flags.has(args[i]!)) fail(`ahub research: unknown argument ${args[i]} (another project: ahub --project <dir> research)`);
       if (valued.has(args[i]!)) i++;
     }
@@ -1397,7 +1405,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       const kept = records.filter((r) => r.kind === "label" || Date.parse(r.approvedAt) >= from);
       return void process.stdout.write(args.includes("--format") && format === "csv" ? toCsv(kept) : kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
     }
-    if (sub !== undefined && !sub.startsWith("--")) fail("usage: ahub research [--since 30d] [--all] [--json] | export [--format jsonl|csv] [--since] [--all] | backfill");
+    if (sub === "addons") {
+      // #248: approved tasks with each add-on on against off, by the tooling fingerprint in their records.
+      const rows = addonReport(records, from);
+      return console.log(args.includes("--json") ? JSON.stringify(rows, null, 2) : formatAddons(rows).join("\n"));
+    }
+    if (sub !== undefined && !sub.startsWith("--")) fail("usage: ahub research [--since 30d] [--all] [--json] | addons [--since] [--all] [--json] | export [--format jsonl|csv] [--since] [--all] | backfill");
     const r = researchReport(records, from);
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatResearch(r).join("\n"));
   },

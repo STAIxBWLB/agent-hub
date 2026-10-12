@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Record each peer's add-ons (claude-mem, ponytail, ripwire, open-code-review, the Codex plugin, dot admission) by name and version in a `tooling` event and the research records, compare tasks with each on and off (`ahub research addons`), declare and check add-on arms in `ahub bench run --addon`, and record a decision per add-on in `docs/addons/` (#248).
+
 - Add person-only bounded merge-order and release-readiness evidence through CLI, console and both dashboard modes; retain unknown/native gates and never merge or publish from a report (#257).
 
 - Stage unoffered Backlog tasks, reserve suggested owners, and pull/return through person-owned Tasks transitions; hide backlog from ordinary agent and conductor task reads (#263).

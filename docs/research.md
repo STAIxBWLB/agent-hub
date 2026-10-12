@@ -61,6 +61,7 @@ while the store keeps the older records.
 | `usageByModel` | provider-reported total tokens per served (else requested) model |
 | `models` | model routes and served models of the attributed requests |
 | `writer` | the release and `live` or `backfill` |
+| `tooling` | #248: for each peer that worked on the task (owner, reviewer, a peer with attributed turns or tokens), the add-ons from its latest `tooling` event: `{ name, version }` from the closed list `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`, `dot-admit`; version null when unknown. A peer missing here is unknown; records built from events written before #248 have no field |
 
 ## Label record (`kind: "label"`)
 
@@ -89,5 +90,24 @@ outcome, createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, r
 checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens, turns,
 filesChanged, models, label, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
 Another project's measures: `ahub --project <dir> research`.
+
+## Add-ons (#248)
+
+The hub writes a `tooling` event each time a peer attaches: the add-ons it works with, by name and version only, read
+from this machine's inventory. Claude Code: `enabledPlugins` in `~/.claude/settings.json` and the project's
+`.claude/settings.json` and `.claude/settings.local.json` (later wins), with the version from
+`~/.claude/plugins/installed_plugins.json` (a user install, or one for this project). Codex: `[plugins."<name>@..."]`
+sections in `~/.codex/config.toml` that are not `enabled = false`, and plugins whose hooks it trusts, with the version
+from its plugin cache when there is exactly one. Every peer: `ripwire` and `dot` (resource admission) on PATH, version
+unknown. Nothing else is read into the event: no plugin content, settings values, hook commands or paths. The inventory
+is the machine's, not the session's: a session started with its own settings or plugin flags can differ.
+
+`ahub research addons [--since 30d] [--all] [--json]` splits approved tasks per add-on: `on` when a peer that worked on
+the task had it, `off` when every such peer's fingerprint is known and none had it, `unknown` otherwise. For success,
+first-pass, rework and check-failure rates, tokens and wall time (medians) and collisions (overlaps plus conflicts per
+task) it gives on, off, the difference and a 95% bootstrap interval (1000 resamples, fixed seed); below 5 tasks on
+either side a difference is inconclusive. This is field data: the sides differ in peers, task mix and time, so it shows
+association, not cause. Controlled arms are `ahub bench run --addon <name>=on|off` (docs/bench.md), and the decisions
+taken from both are in `docs/addons/`.
 
 Agents may read the measures and export (ids and counts only); `backfill` and `task label` are a person's.

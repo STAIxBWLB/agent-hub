@@ -313,6 +313,29 @@ test("a run against a hub: only attached peers in the fingerprint, a hub that is
   expect(readRuns(home).find((r) => r.header.run === refused)).toMatchObject({ state: "finished", attempts: [{ error: "propose refused" }, { error: "propose refused" }] });
 }, 30_000);
 
+test("#248: an arm's declared add-on state is checked against the attached peers and recorded with every attempt", async () => {
+  const { root } = benchRepo();
+  const home = temp("addon-home"), suiteDir = temp("addon-suite");
+  const suitePath = join(suiteDir, "s.json");
+  writeFileSync(suitePath, JSON.stringify({ name: "addons", tasks: [{ id: "a", title: "t", ref: "HEAD", verify: "true", timeout_s: 60 }] }));
+  const hub = { close() {}, request: async (msg: { t: string; op?: string }) =>
+    msg.t === "status" ? { status: { projectId: "p", version: "t", peers: { claude: { state: "idle" }, codex: { state: "idle" }, kimi: { state: "offline" } } } }
+      : msg.op === "hub_task_propose" ? { ok: true, text: "task #1: in_progress" } : { ok: true, text: JSON.stringify([{ id: 1, state: "approved" }]) } };
+  const tooling = (peer: string) => peer === "codex" ? [{ name: "ripwire" as const, version: null }] : peer === "claude" ? [{ name: "claude-mem" as const, version: "13.29.0" }] : [];
+  const io: BenchIo = { ...defaultIo(root, root), connect: async () => hub as never, sleep: async () => {}, log: () => {}, tooling };
+  const opts = { cwd: root, stateDir: join(root, ".agenthub"), suitePath, repeat: 2, home, pollMs: 1 };
+  // A declaration the peers do not match is refused before anything is recorded or reset.
+  await expect(runBench({ ...opts, arm: "ripwire-off", addons: { ripwire: "off" } }, io)).rejects.toThrow("the arm declares ripwire off, but the attached peers have it on");
+  await expect(runBench({ ...opts, arm: "ponytail-on", addons: { ponytail: "on" } }, io)).rejects.toThrow("declares ponytail on, but the attached peers have it off");
+  expect(readRuns(home)).toEqual([]);
+  const id = await runBench({ ...opts, arm: "all-on", addons: { ripwire: "on", "claude-mem": "on", ponytail: "off" } }, io);
+  const run = readRuns(home).find((r) => r.header.run === id)!;
+  expect(run.header.condition).toEqual({ addons: { "claude-mem": "on", ponytail: "off", ripwire: "on" } });
+  // The offline peer is not part of the arm; each attached peer's add-ons are in the fingerprint.
+  expect(run.header.fingerprint.peers).toEqual([{ id: "claude", addons: [{ name: "claude-mem", version: "13.29.0" }] }, { id: "codex", addons: [{ name: "ripwire", version: null }] }]);
+  expect(run.attempts.map((a) => a.arm)).toEqual(["all-on", "all-on"]);
+}, 30_000);
+
 test("a branch that shares its name with a tag is returned to as the branch", async () => {
   const { root } = benchRepo();
   git(root, "checkout", "-q", "-b", "v1"); git(root, "tag", "v1");

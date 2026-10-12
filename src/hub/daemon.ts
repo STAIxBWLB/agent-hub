@@ -87,6 +87,7 @@ import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
+import { detectTooling } from "./tooling.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -1985,6 +1986,7 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
   };
 
+  const tooled = new Set<string>();
   bus.tap((e) => {
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
@@ -1992,6 +1994,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (e.t === "state") {
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
+      // #248: the add-ons it works with, once per attach (names and versions only).
+      if (e.state === "offline") tooled.delete(e.peer);
+      else if (!tooled.has(e.peer)) { tooled.add(e.peer); event({ type: "tooling", peer: e.peer, addons: detectTooling(e.peer, { cwd: opts.cwd }) }); }
       const open = turns.get(e.peer);
       // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";

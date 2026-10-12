@@ -212,6 +212,10 @@ test("the live writer records each approved task, holds no text, and backfill re
   const stored = readStore(file) as TaskRecord[];
   expect(stored).toHaveLength(1);
   expect(stored[0]).toMatchObject({ task: 1, owners: ["worker"], firstPass: true, dones: 1, writer: { source: "live" } });
+  // #248: one tooling fingerprint per attach, carried into the record for each peer that worked on the task.
+  const tooling = readEvents(join(f.stateDir, "events.jsonl")).filter((e) => e.type === "tooling");
+  expect(tooling.map((e) => e.type === "tooling" && e.peer).sort()).toEqual(["claude", "worker"]);
+  expect(Object.keys(stored[0]!.tooling ?? {}).sort()).toEqual(["claude", "worker"]);
   const raw = readFileSync(file, "utf8");
   // Nothing of the text in the store, the report or either export.
   const outputs = [raw, formatResearch(researchReport(stored)).join("\n"), JSON.stringify(researchReport(stored)), toCsv(stored)];

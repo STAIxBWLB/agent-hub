@@ -1,0 +1,93 @@
+import { accessSync, constants, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
+
+/**
+ * #248: which add-ons a peer works with, from a closed list. Names and versions only, read from the machine's plugin
+ * inventory and launch settings (Claude Code's installed plugins and `enabledPlugins`, Codex's `config.toml`) and from
+ * the executables on PATH; never a plugin's content, settings values, hooks or paths.
+ * ponytail: the inventory is the machine's, not the session's: a session started with its own `--settings` or plugin
+ * flags can differ. Reading the launch record of each `ahub claude` / `ahub codex` would make it exact.
+ */
+export const ADDONS = ["claude-mem", "ponytail", "ripwire", "open-code-review", "codex-plugin", "dot-admit"] as const;
+export type AddonName = (typeof ADDONS)[number];
+export interface Addon { name: AddonName; version: string | null }
+
+/** Plugin names (before the `@marketplace`) that stand for an add-on. */
+const PLUGINS: Record<string, AddonName> = { "claude-mem": "claude-mem", ponytail: "ponytail", "open-code-review": "open-code-review" };
+/** Claude Code only: the Codex plugin is a Claude plugin named `codex` from the `openai-codex` marketplace. */
+const CLAUDE_ONLY: Record<string, AddonName> = { "codex@openai-codex": "codex-plugin" };
+/** Executables any peer with a shell can run. */
+const BINARIES: Record<string, AddonName> = { ripwire: "ripwire", dot: "dot-admit" };
+
+export interface ToolingSources { home?: string; cwd?: string; path?: string }
+
+const json = (file: string): Record<string, unknown> | undefined => {
+  try { const v = JSON.parse(readFileSync(file, "utf8")); return v && typeof v === "object" ? v as Record<string, unknown> : undefined; } catch { return undefined; }
+};
+/** A version string as data, never anything longer or stranger. */
+const version = (v: unknown): string | null => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null;
+
+function claudePlugins(home: string, cwd: string | undefined): Addon[] {
+  const enabled = new Map<string, boolean>();
+  for (const file of [join(home, ".claude", "settings.json"), ...(cwd ? [join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")] : [])]) {
+    const map = json(file)?.enabledPlugins;
+    if (map && typeof map === "object") for (const [key, on] of Object.entries(map)) enabled.set(key, on === true);
+  }
+  const installed = (json(join(home, ".claude", "plugins", "installed_plugins.json"))?.plugins ?? {}) as Record<string, { scope?: string; projectPath?: string; version?: unknown }[]>;
+  const out: Addon[] = [];
+  for (const [key, on] of enabled) {
+    if (!on) continue;
+    const name = CLAUDE_ONLY[key] ?? PLUGINS[key.split("@")[0]!];
+    const entries = Array.isArray(installed[key]) ? installed[key]! : [];
+    // An install for another project is not this one's.
+    const entry = entries.find((e) => e?.scope === "user") ?? entries.find((e) => e?.projectPath === cwd);
+    if (name && entry) out.push({ name, version: version(entry.version) });
+  }
+  return out;
+}
+
+function codexPlugins(home: string): Addon[] {
+  let text: string;
+  try { text = readFileSync(join(home, ".codex", "config.toml"), "utf8"); } catch { return []; }
+  const found = new Map<string, string>(); // plugin name -> marketplace
+  // `[plugins."name@market"]` with no `enabled = false` below it, and plugins whose hooks Codex was told to trust.
+  for (const m of text.matchAll(/^\[plugins\."([^"@]+)@([^"]+)"\]\s*\n((?:(?!\[)[^\n]*\n?)*)/gm)) if (!/^\s*enabled\s*=\s*false\b/m.test(m[3] ?? "")) found.set(m[1]!, m[2]!);
+  for (const m of text.matchAll(/^\[hooks\.state\."([^"@]+)@([^":]+):/gm)) found.set(m[1]!, m[2]!);
+  const out: Addon[] = [];
+  for (const [plugin, market] of found) {
+    const name = PLUGINS[plugin];
+    if (!name) continue;
+    let versions: string[] = [];
+    try { versions = readdirSync(join(home, ".codex", "plugins", "cache", market, plugin)); } catch { /* no cache: version unknown */ }
+    out.push({ name, version: versions.length === 1 ? version(versions[0]) : null });
+  }
+  return out;
+}
+
+function onPath(name: string, path: string): boolean {
+  return path.split(delimiter).some((dir) => {
+    if (!dir) return false;
+    try { accessSync(join(dir, name), constants.X_OK); return true; } catch { return false; }
+  });
+}
+
+/** The add-ons a peer works with, sorted by name. Unreadable sources contribute nothing; they never throw. */
+export function detectTooling(peer: string, src: ToolingSources = {}): Addon[] {
+  const home = src.home ?? homedir();
+  const found = new Map<AddonName, Addon>();
+  const add = (a: Addon) => { if (!found.has(a.name) || (found.get(a.name)!.version === null && a.version !== null)) found.set(a.name, a); };
+  if (peer === "claude") claudePlugins(home, src.cwd).forEach(add);
+  if (peer === "codex") codexPlugins(home).forEach(add);
+  const path = src.path ?? process.env.PATH ?? "";
+  for (const [bin, name] of Object.entries(BINARIES)) if (onPath(bin, path)) add({ name, version: null });
+  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** `on` when any of the peers has the add-on, `off` when every peer's fingerprint is known and none has it, else unknown. */
+export function addonState(name: AddonName, fingerprints: (Addon[] | undefined)[]): "on" | "off" | "unknown" {
+  if (fingerprints.some((f) => f?.some((a) => a.name === name))) return "on";
+  return fingerprints.length && fingerprints.every((f) => f !== undefined) ? "off" : "unknown";
+}
+
+export const isAddon = (name: string): name is AddonName => (ADDONS as readonly string[]).includes(name);
