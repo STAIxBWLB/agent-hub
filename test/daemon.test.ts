@@ -2032,7 +2032,8 @@ test("office turn task privacy is revalidated after a live routing policy change
   expect(await init.exited).toBe(0);
   mkdirSync(join(dir, ".agenthub"));
   const routing = join(dir, ".agenthub/routing.toml");
-  writeFileSync(routing, '[constraints]\npii = "off"\n');
+  const fixtureRouting = readFileSync(join(ROOT, "templates/routing.toml"), "utf8");
+  writeFileSync(routing, fixtureRouting.replace(/^pii = "local_only"/m, 'pii = "off"'));
   const { daemon, console_ } = await hub({ cwd: dir });
   class PolicyPeer extends BasePeer {
     async start() { this.setState("idle"); }
@@ -2045,7 +2046,7 @@ test("office turn task privacy is revalidated after a live routing policy change
   let shot: any = {};
   for(let i=0;i<300 && shot.status?.peers?.slow?.turn?.task!==1;i++){shot=await snapshot();await Bun.sleep(10)}
   expect(shot.status.peers.slow.turn.task).toBe(1);
-  writeFileSync(routing, '[constraints]\npii = "local_only"\n');
+  writeFileSync(routing, fixtureRouting);
   const changed = new Date(Date.now()+1000);utimesSync(routing,changed,changed);
   shot=await snapshot();
   expect(shot.tasks.find((task: any)=>task.id===1).title).toBe("[pii]");
