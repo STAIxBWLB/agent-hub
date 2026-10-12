@@ -1,4 +1,4 @@
-import { consoleNeeds, attentionLine } from "./attention.ts";
+import { consoleNeeds, attentionLine, attentionCommand } from "./attention.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
@@ -12,6 +12,7 @@ export interface Approval {
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
+  attentionFacts?: { kind: "review" | "offline"; id: number; peer?: string }[];
   attentionFingerprint?: string;
   petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;
@@ -467,10 +468,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const rows = s.queue.filter(row => row.state === "needs_review" || row.state === "queued");
       const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);
       if (selected >= 0) { s.panel = 4; s.selection = selected; navigated = true; }
+    } else if (item.kind === "review" && s.mode === "panels") {
+      const rows = panelRows({ ...s, panel: 3 });
+      const selected = rows.findIndex(row => row.id === item.id);
+      if (selected >= 0) { s.panel = 3; s.selection = selected; navigated = true; }
     }
     if (navigated) { s.detail = undefined; s.requestDetail = undefined; }
     else {
-      const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : item.peer ? `ahub say @${item.peer} <message>` : "ahub console";
+      const command = attentionCommand(item);
       const text = `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`;
       if (s.mode === "panels") notify(s, text, now, "attention");
       effects.push({ type: "print", text, kind: "attention", tone: "attention" });

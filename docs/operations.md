@@ -2721,3 +2721,27 @@ value changes, including repeated local wall times during a clock change. Local
 inputs retain seconds/milliseconds and support HTML date years without truncating
 fields; see https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#local-dates-and-times.
 Current exact-head date-editor proof is pending.
+
+## Global attention and prompt output (#280, phase 3)
+
+`ahub pet` reads the selected project's status file without a control token or
+network connection. It accepts only structural counts/state/first metadata from
+a confirmed daemon owner. Missing, malformed, legacy or unconfirmed data is
+reported as unavailable; it is not an empty live hub. `ahub pet --short` writes
+`ahub!N` when a known action count is positive, otherwise no bytes, including no
+newline. Explicit `pet` reads remain available when the presentation is off;
+normal `ahub status` appends the line only while the project's pet is enabled.
+
+An open recovery lock is read without coordinating the operation. Only the
+shared runner check's observed absence adds an action; unknown remains watch and
+is labelled unknown. A matching daemon recovery watch is replaced once, without
+double counting. A missing hub status is labelled unavailable even when a known
+recovery action can be shown. The output never resumes, aborts or disposes a run.
+
+Person-reviewed tasks contribute review actions; an offline peer holding
+unfinished work contributes one watch item with its lowest task id. The console
+receives those structural facts through its existing authenticated status reply.
+`n` selects an exact visible review task, or prints the task/review guidance if
+that row is unavailable. Offline guidance names status/task reads and an explicit
+assignment command. No command is executed by navigation. There is no extra
+console poll, timer or task-list request for stream mode.

@@ -1,4 +1,5 @@
 import { projectedDiff } from "./projected-diff.ts";
+import { needs, type NeedsInput } from "../ui/needs.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
@@ -1805,7 +1806,8 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
     return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
-  const status = () => ({
+  const status = (includeAttentionItems = false) => {
+    const view = {
     ...(crashReport.length ? { crash: crashReport } : {}),
     projectId,
     instanceId,
@@ -1828,7 +1830,26 @@ export async function startDaemon(opts: DaemonOptions) {
     tasks: board.counts(),
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
-  });
+    };
+    const taskNeeds = board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer }));
+    const peerNeeds: Record<string, NonNullable<NeedsInput["peers"]>[string]> = Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }]));
+    // Lazy legacy peer lists need not contain a persisted owner that is now offline.
+    for (const task of taskNeeds) if (task.owner && !Object.hasOwn(peerNeeds, task.owner)) {
+      const state = bus.stateOf(task.owner);
+      peerNeeds[task.owner] = { state, attached: !!bus.peers.get(task.owner) && ["idle", "busy", "paused"].includes(state) };
+    }
+    const attention = needs({
+      approvals: [...permissions].map(([id, row]) => ({ id, peer: row.peer, expiresAt: row.expiresAt, since: row.createdAt })),
+      defaults: [...pendingPermissionDefaults.keys()].map(peer => ({ peer })),
+      peers: peerNeeds,
+      storageBlocked: !!bus.storageError,
+      recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
+      tasks: taskNeeds,
+      budget: Object.fromEntries(Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}])),
+    }, Date.now());
+    return { ...view, needs: { act: attention.act, watch: attention.watch, state: attention.state, ...(attention.items[0] ? { first: attention.items[0] } : {}) },
+      ...(includeAttentionItems ? { attentionItems: attention.items } : {}) };
+  };
   // #226: who owns this manifest, beyond a pid that a reboot can hand to another process. Only the file carries it
   // (the status reply is unchanged); readers without it judge the pid alone, as 0.12.20 did.
   const pidSignature = processSignature(process.pid);
@@ -1838,6 +1859,11 @@ export async function startDaemon(opts: DaemonOptions) {
       writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify({ ...status(), ...(pidSignature ? { pidSignature } : {}) }, null, 2)}\n`);
       renameSync(`${file}.${instanceId}.tmp`, file);
     } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
+  };
+  const taskChanged = board.onChange;
+  board.onChange = (task, entry) => {
+    try { taskChanged?.(task, entry); }
+    finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
   };
 
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
@@ -2204,6 +2230,7 @@ export async function startDaemon(opts: DaemonOptions) {
         clearTimeout(timer);
         signal?.removeEventListener("abort", aborted);
         permissions.delete(id); // withdrawal happens before any observer, resolution or late grant
+        writeStatus(); // token-free readers must observe withdrawal before settlement callbacks
         const outcome = option ? "answered" : reason;
         if (surface) permissionAnswerEpochs.set(req.peer, permissionAnswerEpoch(req.peer) + 1);
         observed(surface ? "person" : outcome === "expired" ? "expired" : "aborted");
@@ -2217,6 +2244,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return true;
       };
       permissions.set(id, { push, done, peer: req.peer, ...(publicTool ? { tool: publicTool } : {}), createdAt, expiresAt });
+      writeStatus(); // an approval can wait without any subsequent bus event
       timer = setTimeout(() => done(undefined, undefined, "expired"), timeoutMs);
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
@@ -3990,7 +4018,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "status":
-        return void reply({ t: "status", status: status() });
+        return void reply({ t: "status", status: status(c.role === "console") });
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });

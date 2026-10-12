@@ -18,6 +18,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],
     ["ahub console [--panels] [--color=auto|always|never]", "enter the human console, leaving the daemon running on exit"],
     ["ahub console --no-pet", "turn off attention for this session; combines with --panels and --color"],
+    ["ahub pet [--short]", "read attention without connecting; --short prints ahub!N only when action is needed"],
     ["ahub sdlc status [task] | explain <task> | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
     ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...]", "read-only merge and release evidence (person only)"],
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts"],

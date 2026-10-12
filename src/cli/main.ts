@@ -3,6 +3,8 @@ import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
 import { terminalText } from "./console-state.ts";
+import { petView, readPet, renderPet } from "./pet.ts";
+import { loadPetConfig } from "./pet-config.ts";
 import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
@@ -1330,6 +1332,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
   },
 
+  pet: () => {
+    if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short]");
+    const short = args.includes("--short");
+    const text = renderPet(readPet(stateDir), short);
+    process.stdout.write(short ? text : text + "\n");
+  },
+
   status: async () => {
     const options = outputOptions();
     if (args.includes("--all")) return printProjects(options);
@@ -1339,6 +1348,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (options.json) return console.log(JSON.stringify(status, null, 2));
       const quota = await hub.request({ t: "budget" });
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
+      if (status.needs && loadPetConfig(cwd).enabled) console.log(renderPet(petView(status)));
     } finally { hub.close(); }
   },
 

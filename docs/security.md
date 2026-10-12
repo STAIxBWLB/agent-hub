@@ -196,3 +196,21 @@ Jcode is optional, source/version-fenced and runs native tools without a hub san
 - Watch activity can contain file contents, thoughts and command output. It is console-role only, kept in a bounded in-memory ring and exposed only through the `watch` control request. Agent shells, conductor tools, dashboard snapshots, hub tools and memory observers cannot read it. Terminal bodies pass through the console's sanitization and wrapping helpers. Slow sockets close instead of accumulating unbounded output.
 - Private/PII turns show a single stub; the adapter latches privacy for that turn. The existing final-answer bus and native approval paths (console and dashboard) remain independent, with their existing privacy rules. Watch never adds activity to either path or any disk log.
 - There is no Qwen dual-output input file or TUI transport in this slice; Q2-Q6 are unverified and TUI mode stays refused.
+
+## Global attention metadata (#280, phase 3)
+
+The optional status `needs` projection contains act/watch counts, a known state
+and the first item (kind, level, peer/id and numeric times only). Status JSON has
+no console-local unread-message count and no full item list. The console-role
+reply to the existing status request additionally supplies `attentionItems`,
+using the same body-free allowlist so stream navigation needs no board-text read.
+Peer/tools status callers do not receive that full list. The summary and item
+projection never reads task title/detail, approval title/options, pause reason,
+error text or paths, and is never forwarded to memory. PROTOCOL remains 16 and
+EVENTS_SCHEMA remains 1; clients that ignore optional fields remain compatible.
+
+The file-reading pet command verifies the recorded process identity through the
+shared liveness contract and treats missing/unconfirmed evidence as unavailable.
+Recovery uses the existing lock/runner read path; unknown is never absent and
+navigation grants no permission or mutation authority. Larger artwork and web
+integration remain separate phases.
