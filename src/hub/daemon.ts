@@ -1860,6 +1860,11 @@ export async function startDaemon(opts: DaemonOptions) {
       renameSync(`${file}.${instanceId}.tmp`, file);
     } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
   };
+  const taskChanged = board.onChange;
+  board.onChange = (task, entry) => {
+    try { taskChanged?.(task, entry); }
+    finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
+  };
 
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
   // message and keeps a phantom `queued N` after the queue drains (measured on a live 0.6.3 hub).

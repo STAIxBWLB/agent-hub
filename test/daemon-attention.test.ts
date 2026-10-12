@@ -29,3 +29,29 @@ test("real daemon attention exposes private review/work ids without task text", 
     expect(JSON.stringify(persisted)).not.toContain("PRIVATE_");
   } finally { client.close(); await daemon.stop(); rmSync(root, { recursive: true }); }
 }, 20000);
+
+test("task review transitions refresh persisted attention without a native peer", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-attention-transition-")), stateDir = join(root, "state"); mkdirSync(stateDir);
+  const board = new Board(join(stateDir, "hub.db"));
+  const task = board.propose("user", { title: "review transition fixture", class: "plan" });
+  board.update(task.id, "user", "assigned", { owner: "local", reviewer: "user" });
+  board.update(task.id, "local", "accepted", { state: "in_progress" }); board.close();
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  const client = await ControlClient.connect(stateDir, { role: "console" });
+  const read = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).needs;
+  const op = async (name: string, args: Record<string, unknown>) => {
+    const result = await client.request({ t: "task", op: name, args: { id: task.id, ...args } });
+    expect(result.ok).toBe(true);
+  };
+  try {
+    expect(read().act).toBe(0);
+    await op("hub_task_done", {});
+    expect(read()).toMatchObject({ act: 1, watch: 0, state: "review", first: { kind: "review", id: task.id } });
+    await op("hub_review", { verdict: "changes_requested" });
+    expect(read().act).toBe(0); expect(read().watch).toBe(1);
+    await op("hub_task_done", {}); expect(read().act).toBe(1);
+    await op("hub_review", { verdict: "approved" });
+    expect(read().act).toBe(0); expect(read().watch).toBe(0);
+  } finally { client.close(); await daemon.stop(); rmSync(root, { recursive: true }); }
+}, 20000);

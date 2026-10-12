@@ -2008,6 +2008,14 @@
       "replacement": "/* seeded missing approval snapshot update */",
       "testFile": "test/daemon.test.ts",
       "testName": "approval registration and settlement refresh token-free attention immediately (#280)"
+    },
+    {
+      "id": "attention-task-transition-persist",
+      "file": "src/hub/daemon.ts",
+      "search": "finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity",
+      "replacement": "finally { /* seeded missing task snapshot update */ }",
+      "testFile": "test/daemon-attention.test.ts",
+      "testName": "task review transitions refresh persisted attention without a native peer"
     }
   ]
 }
