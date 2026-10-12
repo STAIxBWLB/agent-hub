@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,4 +64,31 @@ test("plain attention prints changed act counts and no-pet preserves the stream"
       expect(output).not.toContain("\x07");
     } finally { signal(); await running; rmSync(cwd, { recursive: true }); }
   }
+});
+
+test("paste acknowledges unread attention and optional bell observes edges and rate limit", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-pet-bell-"));
+  mkdirSync(join(cwd, ".agenthub"));
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ pet: { bell: true } }));
+  let output = "", key = (_text: string) => {}, signal = () => {};
+  const terminal: ConsoleTerminal = { columns: 70, rows: 20, isTTY: true, write: text => { output += text; }, raw: () => {}, onData: fn => { key = fn; return () => {}; }, onSignal: fn => { signal = fn; return () => {}; }, onResize: () => () => {} };
+  // Dynamic push callback is installed by the real console under test.
+  const client: any = { request: async () => ({}), send: () => {}, close: () => {}, onPush: undefined, onClose: undefined };
+  const start = Date.now(); setSystemTime(start);
+  const running = runConsole({ cwd, stateDir: cwd, client, terminal, color: false });
+  const bells = () => (output.match(/\x07/g) ?? []).length;
+  const request = (id: string) => client.onPush({ t: "permission", id, peer: "codex", title: "fixture", expiresAt: start + 300000, options: [] });
+  const close = (id: string) => client.onPush({ t: "permission_closed", id, peer: "codex", outcome: "allowed" });
+  try {
+    client.onPush({ t: "event", e: { t: "envelope", env: { id: "message", from: "codex", to: ["user"], priority: "important", kind: "chat", body: "fixture", ts: start, trace: "trace", hop: 0 } } });
+    expect(bells()).toBe(0);
+    key("pasted input");
+    expect(output).toContain("(O O) z asleep");
+    request("first"); expect(bells()).toBe(1);
+    request("second"); expect(bells()).toBe(1);
+    close("first"); close("second");
+    request("third"); expect(bells()).toBe(1);
+    close("third"); setSystemTime(start + 61000);
+    request("fourth"); expect(bells()).toBe(2);
+  } finally { signal(); await running; setSystemTime(); rmSync(cwd, { recursive: true }); }
 });

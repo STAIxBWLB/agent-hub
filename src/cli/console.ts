@@ -262,7 +262,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"].includes(text)) {
           if (/^(?:\x1b\[[ABCD])+$/.test(text)) { for (const key of text.match(/\x1b\[[ABCD]/g)!) handle(key); }
           else {
-            if (state.help && state.mode === "panels") return;
+            state.attentionMessages = []; state.attentionSelection = undefined;
+            if (state.help && state.mode === "panels") { draw(); return; }
             if (state.confirm?.type === "permission_default") { draw(); return; }
             state.confirm = undefined; state.optionChoice = undefined; state.editing = true;
             state.input += terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/\n/g, " "); draw();

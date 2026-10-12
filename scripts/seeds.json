@@ -1872,6 +1872,22 @@
       "replacement": "if (value === true) return",
       "testFile": "test/pet-config.test.ts",
       "testName": "pet config merges local presentation options and false disables all drawing"
+    },
+    {
+      "id": "attention-paste-ack",
+      "file": "src/cli/console.ts",
+      "search": "state.attentionMessages = []; state.attentionSelection = undefined;",
+      "replacement": "state.attentionSelection = undefined;",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "paste acknowledges unread attention and optional bell observes edges and rate limit"
+    },
+    {
+      "id": "attention-bell-rate-limit",
+      "file": "src/cli/console.ts",
+      "search": "Date.now() - lastBell >= 60000",
+      "replacement": "Date.now() - lastBell >= 0",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "paste acknowledges unread attention and optional bell observes edges and rate limit"
     }
   ]
 }
