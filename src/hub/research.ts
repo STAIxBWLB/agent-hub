@@ -121,7 +121,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     if (e.type === "task") {
       const proposed = e.event === "proposed" || e.event === "backlog pulled";
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.
-      if ((e.event === "proposed" && tasks.get(e.id)?.createdAt) || (e.event === "backlogged" && tasks.has(e.id))) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
+      if ((e.event === "proposed" && tasks.has(e.id)) || (e.event === "backlogged" && tasks.has(e.id))) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
       const a = acc(e.id);
       a.class = e.class; if (e.role && a.role === undefined) { a.role = e.role; if (e.event === "proposed" && e.roleIdentity) a.roleIdentity = e.roleIdentity; } if (e.profile) { a.profile = e.profile; a.profileClass = e.profileClass; } if (e.pii) a.pii = true;
       if (proposed && e.role === a.role && e.roleIdentity && a.roleIdentity === undefined) a.roleIdentity = e.roleIdentity;
