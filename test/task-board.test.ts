@@ -58,3 +58,18 @@ test("board return controls refuse started and unknown-history ownerless proposa
   const model = boardColumns([{ id: 1, state: "proposed", started: false }, { id: 2, state: "proposed", started: true }, { id: 3, state: "proposed" }], {});
   expect(model.columns[1]?.ready.map(card => card.returnable)).toEqual([true, false, false]);
 });
+
+
+test("recovered owner delivery holds stay waiting until settlement (#263)", () => {
+  const tasks = [{ id: 1, state: "proposed", owner: "codex" }];
+  for (const state of ["idle", "busy"]) {
+    for (const heldBy of ["recovered-dispatching", "recovered-accepted"]) {
+      const column = boardColumns(tasks, { codex: { state, attached: true, rostered: true, needsReview: 0, heldBy } }).columns[1]!;
+      expect(column.ready).toEqual([]);
+      expect(column.waiting[0]?.waiting).toEqual(["owner delivery held"]);
+    }
+  }
+  const settled = boardColumns(tasks, { codex: { state: "idle", attached: true, rostered: true, needsReview: 0 } }).columns[1]!;
+  expect(settled.ready.map(card => card.id)).toEqual([1]);
+  expect(settled.waiting).toEqual([]);
+});

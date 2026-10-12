@@ -1752,6 +1752,14 @@
       "replacement": "if (false) a[field] = e[field];",
       "testFile": "test/planning-surfaces.test.ts",
       "testName": "research planning metadata preserves unknown legacy values and reset generations (#263)"
+    },
+    {
+      "id": "board-recovered-owner-hold",
+      "file": "src/ui/task-board.ts",
+      "search": " || peer.heldBy",
+      "replacement": " || false",
+      "testFile": "test/task-board.test.ts",
+      "testName": "recovered owner delivery holds stay waiting until settlement (#263)"
     }
   ]
 }
