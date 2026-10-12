@@ -185,7 +185,7 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const custom = config.definitions && definition ? stageGates(definition, blockers, receipt, evidence, phase) : undefined;
   if (custom) for (const blocker of [...custom.entry, ...custom.exit]) if (!blockers.includes(blocker)) blockers.push(blocker);
   return { ...(config.workflow ? { workflow: config.workflow, ...(phase ? { phase } : {}) } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
-    actor: phase?.blockers.length ? "reviewer/person" : config.definitions && definition ? definition.actor : stage === "review" || stage === "verify" ? "reviewer" : stage === "merge" || stage === "release" ? "person" : "owner/planner",
+    actor: !definition ? "person" : phase?.blockers.length ? "reviewer/person" : config.definitions && definition ? definition.actor : stage === "review" || stage === "verify" ? "reviewer" : stage === "merge" || stage === "release" ? "person" : "owner/planner",
     next: blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
 }
 

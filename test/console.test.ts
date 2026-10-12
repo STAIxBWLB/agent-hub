@@ -1443,3 +1443,13 @@ test("tabbed Events headers and bodies stay within panel and stream widths (#319
     for (const line of wrapStreamTokens(text + "\n" + text, columns, "muted", "state")) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
   }
 });
+
+
+test("custom lifecycle board rows show base actor and entry exit readiness as text without changing default rows (#257)", () => {
+  const s = state(true); s.panel = 3;
+  const plain = { id: 1, title: "fixture", state: "in_progress", owner: "codex", class: "implement", lifecycle: { mode: "advise", stage: "draft", next: "review pending", actor: "owner" } };
+  s.tasks = [plain]; const before = renderConsole(s, 220, 30, NOW).join("\n"); expect(before).toContain("SDLC draft: review pending");
+  s.tasks = [{ ...plain, lifecycle: { ...plain.lifecycle, definition: { base: "implement" }, entry: [], exit: ["local gate missing"] } }];
+  const custom = renderConsole(s, 260, 30, NOW).join("\n"); expect(custom).toContain("base implement"); expect(custom).toContain("next: owner"); expect(custom).toContain("entry: ready / exit: blocked");
+  for (const width of [40, 80, 120]) for (const line of renderConsole(s, width, 30, NOW)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
+});
