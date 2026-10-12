@@ -44,8 +44,8 @@ const dashboardTheme = (() => {
 <script>
 'use strict';
 /* TASK_PROGRESS_MODEL */
-/* BOARD_MODEL */
 /* PEER_START_RETRY_MS */
+/* BOARD_MODEL */
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
 let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
