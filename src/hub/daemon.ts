@@ -1539,7 +1539,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!release) throw new PreEffectToolRefusal("no such release");
           releaseId = release.id;
         }
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => ({ ...(onPrem ? t : tasks.publicView(t)), ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) })).map(({ history: _h, ...t }) => t));
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => { const view: Record<string, unknown> = onPrem ? { ...t } : tasks.publicView(t); const { history: _h, ...rest } = view; return { ...rest, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; }));
       }
     }
     if (op === "task_show" && by !== USER) {
