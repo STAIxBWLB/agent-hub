@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StampedEvent } from "../src/hub/events.ts";
@@ -85,6 +85,21 @@ test("detection reads names and versions from the closed list, per runtime, and 
   mkdirSync(join(dirFirst, "ripwire")); exe(realBin, "ripwire");
   expect(await detectTooling("pi", { env: {}, home, path: dirFirst })).toEqual([]);
   expect(await detectTooling("pi", { env: {}, home, path: [dirFirst, realBin].join(":") })).toEqual([{ name: "ripwire", version: null }]);
+  // A `dot` inside the project is never executed to identify it (review of #351): it would run the checkout's code.
+  const trap = temp("trap"), ran = join(trap, "ran");
+  mkdirSync(join(trap, "bin"));
+  writeFileSync(join(trap, "bin", "dot"), `#!/bin/sh\ntouch ${ran}\necho 'dot version 1.0.0'\n`); chmodSync(join(trap, "bin", "dot"), 0o755);
+  expect(await detectTooling("pi", { env: {}, home, cwd: trap, path: "bin" })).toEqual([]);
+  expect(await detectTooling("pi", { env: {}, home, cwd: trap, path: join(trap, "bin") })).toEqual([]);
+  await Bun.sleep(100);
+  expect(existsSync(ran)).toBe(false);
+  // The probe sees none of the hub's environment.
+  const envProbe = temp("envprobe"), seen = join(envProbe, "seen");
+  writeFileSync(join(envProbe, "dot"), `#!/bin/sh\nenv > ${seen}\necho 'dot version 1.0.0'\n`); chmodSync(join(envProbe, "dot"), 0o755);
+  process.env.AHUB_TOOLING_SECRET = "must-not-leak";
+  try { expect(await detectTooling("pi", { env: {}, home, path: envProbe })).toEqual([{ name: "dot-admit", version: "1.0.0" }]); }
+  finally { delete process.env.AHUB_TOOLING_SECRET; }
+  expect(readFileSync(seen, "utf8")).not.toContain("must-not-leak");
   // A `dot` that floods its output is cut off at a few kilobytes, not read for the whole deadline (review of #351).
   const flood = temp("flood");
   writeFileSync(join(flood, "dot"), "#!/bin/sh\nexec yes 'dot version 9.9.9'\n"); chmodSync(join(flood, "dot"), 0o755);

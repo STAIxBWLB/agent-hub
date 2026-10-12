@@ -103,7 +103,8 @@ sections in its `config.toml` that are not `enabled = false`, and plugins whose 
 from its plugin cache when there is exactly one. Every peer: `ripwire` on PATH (version unknown), and the first `dot` on PATH
 when `dot --version` answers as the dotfiles CLI (`dot version X`, resource admission; Graphviz's `dot` does not count),
 asked once per binary per process, without input, in the background (the hub never waits on it), and killed if it
-has not answered within 2 s. Nothing else is read into the event: no plugin content, settings values, hook commands or paths. The inventory
+has not answered within 2 s. The probe runs with a minimal environment (no keys, tokens or agent markers), and a `dot`
+inside the project is never run: opening a checkout must not execute its files, so such a `dot` does not count. Nothing else is read into the event: no plugin content, settings values, hook commands or paths. The inventory
 is the machine's, not the session's: a session started with its own settings or plugin flags can differ.
 
 `ahub research addons [--since 30d] [--all] [--json]` splits approved tasks per add-on: `on` when a peer that worked on

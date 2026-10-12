@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, join, relative, resolve, isAbsolute } from "node:path";
+import { realPath } from "./project.ts";
 
 /**
  * #248: which add-ons a peer works with, from a closed list. Names and versions only, read from the machine's plugin
@@ -74,6 +75,10 @@ function codexPlugins(root: string): Addon[] {
   return out;
 }
 
+/** Never throws: a path that cannot be resolved (a project directory that went away) is compared as given. */
+const real = (path: string): string => { try { return realPath(path); } catch { return resolve(path); } };
+const within = (file: string, dir: string): boolean => { const r = relative(dir, file); return r === "" || (!r.startsWith("..") && !isAbsolute(r)); };
+
 /** The first executable of that name on PATH, relative and empty entries resolved from the peer's working directory. */
 function onPath(name: string, path: string, cwd: string): string | undefined {
   for (const dir of path.split(delimiter)) {
@@ -107,7 +112,8 @@ function identify(file: string, pattern: RegExp): Promise<string | null | false>
       };
       const timer = setTimeout(() => finish(false), PROBE_MS);
       try {
-        child = spawn(file, ["--version"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+        // Nothing of the hub's environment (gateway keys, Access values, agent markers) reaches the probed program.
+        child = spawn(file, ["--version"], { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", LC_ALL: "C" } });
         child.unref();
         // A version line is short: a program that keeps writing is not the one asked for, and is not read further.
         child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); if (out.length > PROBE_BYTES) finish(false); });
@@ -133,7 +139,10 @@ export async function detectTooling(peer: string, src: ToolingSources = {}): Pro
   for (const [bin, spec] of Object.entries(BINARIES)) {
     const file = onPath(bin, path, src.cwd ?? process.cwd());
     if (!file) continue;
-    const v = spec.version ? await identify(file, spec.version) : null;
+    // A program inside the project is the repository's, not an installed tool: it is never run to identify it (opening a
+    // checkout must not execute its files), so it does not count where its identity has to be checked.
+    const inProject = src.cwd !== undefined && within(real(file), real(src.cwd));
+    const v = spec.version ? (inProject ? false : await identify(file, spec.version)) : null;
     if (v !== false) add({ name: spec.name, version: v });
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
