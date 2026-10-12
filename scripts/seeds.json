@@ -1517,7 +1517,7 @@
       "id": "board-unknown-owner-wait",
       "file": "src/ui/task-board.ts",
       "search": "if (!peer || ![\"idle\", \"busy\", \"paused\", \"offline\"].includes(peer.state ?? \"\")) waiting.push(\"owner status unknown\");",
-      "replacement": "if (false) waiting.push(\"owner status unknown\");",
+      "replacement": "if (!peer || ![\"idle\", \"busy\", \"paused\", \"offline\"].includes(peer.state ?? \"\")) { /* seeded unknown-owner wait omitted */ }",
       "testFile": "test/task-board.test.ts",
       "testName": "To Do separates dependency reservation hold offline and unknown waits from ready work (#263)"
     },
