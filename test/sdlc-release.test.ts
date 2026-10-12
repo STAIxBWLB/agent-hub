@@ -16,6 +16,7 @@ function fake(options:{version?:string;remote?:string;ancestor?:boolean;stale?:b
   calls.push(args);
   if(args[0]==="release")return{code:0,stdout:JSON.stringify({tagName:"v1.2.3",isDraft:false,isPrerelease:false})};
   if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:1,mergeCommit:{oid:C}}])};
+  if(args.some(arg=>arg.includes("associatedPullRequests")))return{code:0,stdout:JSON.stringify({data:{repository:{c0:{oid:C,associatedPullRequests:{nodes:[{number:1,state:"MERGED",mergeCommit:{oid:C}}],pageInfo:{hasNextPage:false}}}}}})};
   if(args[0]==="issue")return{code:0,stdout:JSON.stringify({number:273,state:options.native??"CLOSED"})};
   return{code:0,stdout:JSON.stringify({data:{repository:{ref:{target:{target:{oid:options.remote??T}}}}}})};
  };
@@ -27,6 +28,17 @@ test("release source evidence binds local remote tag ancestry head doc freshness
  expect(r).toMatchObject({head:H,version:"1.2.4",tag:"v1.2.3",tagCommit:T,commits:[C],mergedPrs:[{pr:1,commit:C}],sourceReady:true,native:"unverified",ready:false});
  expect(r.blockers).toEqual(["native acceptance and person release decision unverified"]);expect(JSON.stringify(r)).not.toContain("PRIVATE_PACKAGE_MARKER");
  expect(f.calls.flat().join(" ")).not.toMatch(/body|title|publish|push|create|tag -/);
+});
+test("release merged PR coverage reads only post-tag commits despite over 100 historical PRs (#257)", async () => {
+ const f=fake(), original=f.readers.gh;
+ f.readers.gh=async args=>args[0]==="pr"?{code:0,stdout:JSON.stringify(Array.from({length:101},(_,i)=>({number:i+1,mergeCommit:{oid:T}})))}:original(args);
+ const r=await readReleaseReadiness("fixture","owner/repo",[273],f.readers);
+ expect(r.sourceReady).toBe(true);expect(r.mergedPrs).toEqual([{pr:1,commit:C}]);
+ const queries=f.calls.flat().filter(arg=>arg.includes("associatedPullRequests"));expect(queries).toHaveLength(1);expect(queries[0]).toContain(`object(oid:"${C}")`);expect(queries[0]).not.toContain(`object(oid:"${T}")`);
+ for(const malformed of [undefined,{oid:X,associatedPullRequests:{nodes:[],pageInfo:{hasNextPage:false}}},{oid:C,associatedPullRequests:{nodes:[],pageInfo:{hasNextPage:true}}}]){
+  const bad=fake(), gh=bad.readers.gh;bad.readers.gh=async args=>args.some(arg=>arg.includes("associatedPullRequests"))?{code:0,stdout:JSON.stringify({data:{repository:{c0:malformed}}})}:gh(args);
+  expect((await readReleaseReadiness("fixture","owner/repo",[273],bad.readers)).sourceReady).toBe(false);
+ }
 });
 test("release mismatched tags stale docs old version open native ledger and changing heads remain blocked (#257)",async()=>{
  for(const options of [{remote:X},{ancestor:false},{stale:true},{version:"1.2.3"},{native:"OPEN"},{race:true}]){

@@ -59,12 +59,22 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
     }
   }
   if (report.tagCommit) {
-    const pulls = await gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "101", "--json", "number,mergeCommit"]);
-    try {
-      const rows = JSON.parse(pulls.stdout);
-      if (pulls.code !== 0 || !Array.isArray(rows) || rows.length > 100 || rows.some(p => !Number.isSafeInteger(p.number) || p.number <= 0 || !SHA.test(p.mergeCommit?.oid))) report.blockers.push("merged PR coverage unknown or truncated");
-      else report.mergedPrs = rows.filter(p => report.commits.includes(p.mergeCommit.oid)).map(p => ({ pr: p.number, commit: p.mergeCommit.oid }));
-    } catch { report.blockers.push("merged PR coverage unknown or truncated"); }
+    // Resolve only commits since the verified tag, never the repository's lifetime PR list.
+    const [owner, name] = repo.split("/");
+    for (let start = 0; start < report.commits.length; start += 100) {
+      const batch = report.commits.slice(start, start + 100);
+      const objects = batch.map((commit, i) => `c${i}:object(oid:"${commit}"){... on Commit{oid associatedPullRequests(first:10){nodes{number state mergeCommit{oid}} pageInfo{hasNextPage}}}}`).join(" ");
+      const pulls = await gh(["api", "graphql", "-f", `query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){${objects}}}`, "-f", `owner=${owner}`, "-f", `name=${name}`]);
+      try {
+        const data = JSON.parse(pulls.stdout)?.data?.repository;
+        if (pulls.code !== 0 || !data) throw new Error("unavailable");
+        for (const [i, commit] of batch.entries()) {
+          const object = data[`c${i}`], connection = object?.associatedPullRequests, rows = connection?.nodes;
+          if (object?.oid !== commit || connection?.pageInfo?.hasNextPage !== false || !Array.isArray(rows) || rows.length > 10 || rows.some(p => !Number.isSafeInteger(p?.number) || p.number <= 0 || !["OPEN", "CLOSED", "MERGED"].includes(p.state) || (p.state === "MERGED" && !SHA.test(p.mergeCommit?.oid)))) throw new Error("incomplete");
+          for (const p of rows) if (p.state === "MERGED" && p.mergeCommit.oid === commit && !report.mergedPrs.some(r => r.pr === p.number)) report.mergedPrs.push({ pr: p.number, commit });
+        }
+      } catch { report.blockers.push("merged PR coverage unknown or truncated"); break; }
+    }
   }
   const left = deadline - performance.now(); report.documents = left > 0 ? await (readers.docs ?? readDocEvidence)(root,Math.min(10_000,left)) : undefined;
   if (!report.documents || report.documents.head !== head || !report.documents.fresh || report.documents.errors || report.documents.documents.some(d => d.state !== "fresh")) report.blockers.push("documentation freshness or ancestry is unknown or stale");

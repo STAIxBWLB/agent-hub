@@ -1240,6 +1240,14 @@
       "replacement": "sdlcStatus(config, holder?.receipt, read)",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "gsd-lite queue readiness uses current board phase views and keeps absent or failed views unknown (#257)"
+    },
+    {
+      "id": "release-post-tag-pr-coverage",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "const batch = report.commits.slice(start, start + 100);",
+      "replacement": "const batch = report.commits.slice(0, 0);",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release merged PR coverage reads only post-tag commits despite over 100 historical PRs (#257)"
     }
   ]
 }
