@@ -2949,7 +2949,7 @@ export async function startDaemon(opts: DaemonOptions) {
       boardCapabilities: { backlog: true },
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,
-        permissionMode: peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
+        permissionMode: "permissionNote" in peer && peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
         wip: boardTasks.filter(task => task.owner === id && task.state !== "approved" && task.state !== "backlog").length,
         activeTasks: boardTasks.filter(task => task.owner === id && ["in_progress", "changes_requested"].includes(task.state)).map(task => task.id),
       })),
