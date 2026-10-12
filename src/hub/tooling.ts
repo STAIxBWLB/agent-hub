@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -89,18 +90,28 @@ function identify(file: string, pattern: RegExp): Promise<string | null | false>
   try { key = `${file}:${statSync(file).mtimeMs}`; } catch { /* unreadable: ask anyway */ }
   let found = identities.get(key);
   if (!found) {
-    found = (async () => {
-      let p: ReturnType<typeof Bun.spawn> | undefined;
-      let timer: ReturnType<typeof setTimeout> | undefined;
+    found = new Promise<string | null | false>((resolve) => {
+      let out = "", settled = false, child: ChildProcess | undefined;
+      // Its own process group, killed as one when the answer is in or the deadline passes: a descendant that kept the
+      // pipe open would otherwise outlive the probe and hold up whoever waits on it.
+      const finish = (answer: string | null | false) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { if (child?.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ }
+        child?.stdout?.destroy();
+        resolve(answer);
+      };
+      const timer = setTimeout(() => finish(false), PROBE_MS);
       try {
-        p = Bun.spawn([file, "--version"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-        const out = await Promise.race([new Response(p.stdout as ReadableStream).text(), new Promise<undefined>((done) => { timer = setTimeout(() => done(undefined), PROBE_MS); })]);
-        if (out === undefined) return false;
-        const m = pattern.exec(out.trim());
-        return m ? version(m[1]) : false;
-      } catch { return false; }
-      finally { clearTimeout(timer); try { p?.kill("SIGKILL"); } catch { /* gone */ } }
-    })();
+        child = spawn(file, ["--version"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+        child.unref();
+        child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
+        child.on("error", () => finish(false));
+        // The version line is written before the program exits; a moment for the pipe to deliver it.
+        child.on("exit", () => setTimeout(() => { const m = pattern.exec(out.trim()); finish(m ? version(m[1]) : false); }, 50));
+      } catch { finish(false); }
+    });
     identities.set(key, found);
   }
   return found;

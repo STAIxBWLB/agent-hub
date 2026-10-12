@@ -62,6 +62,14 @@ test("detection reads names and versions from the closed list, per runtime, and 
   const started = Date.now();
   expect(await detectTooling("pi", { home, path: stuck })).toEqual([]);
   expect(Date.now() - started).toBeLessThan(5000);
+  // A `dot` that answers but leaves a descendant holding its output: the answer counts and the whole group is stopped.
+  const forks = temp("forks"), marker = `ahub-probe-${process.pid}-${Date.now()}`;
+  writeFileSync(join(forks, "dot"), `#!/bin/sh\nperl -e 'sleep 20' ${marker} &\necho 'dot version 3.0.1'\n`); chmodSync(join(forks, "dot"), 0o755);
+  const t0 = Date.now();
+  expect(await detectTooling("pi", { home, path: forks })).toEqual([{ name: "dot-admit", version: "3.0.1" }]);
+  expect(Date.now() - t0).toBeLessThan(5000);
+  await Bun.sleep(200);
+  expect(Bun.spawnSync(["pgrep", "-f", marker]).exitCode).not.toBe(0); // nothing of the probe is left
 }, 15_000);
 
 let clock = Date.parse("2026-10-10T00:00:00Z");
@@ -115,6 +123,10 @@ test("research records carry each working peer's latest fingerprint, and a peer 
     task(9, "done", "approved", "codex", null), { v: 1, at: at(), type: "hub_start", instance: "run-2" }, state("qwen", "idle"),
     { v: 1, at: at(), type: "tooling", peer: "qwen", addons: [{ name: "ripwire", version: null }] }];
   expect(taskRecords(crash, "proj", writer)[0]!.tooling).toBeUndefined();
+  // Work right after a restart, before the peer's first state event, does not take the pre-restart fingerprint.
+  const early: StampedEvent[] = [state("qwen", "idle"), { v: 1, at: at(), type: "tooling", peer: "qwen", addons: [{ name: "ripwire", version: null }] },
+    { v: 1, at: at(), type: "hub_start", instance: "run-3" }, task(10, "proposed", "proposed", null), task(10, "assigned", "in_progress", "qwen", null), task(10, "done", "approved", "qwen", null)];
+  expect(taskRecords(early, "proj", writer)[0]!.tooling).toBeUndefined();
   const [six, seven] = taskRecords(windows, "proj", writer);
   expect(six!.tooling).toBeUndefined(); // worked before any fingerprint of its attachment existed
   expect(seven!.tooling).toEqual({ pi: [] }); // its last work was in the later attachment

@@ -179,6 +179,8 @@ async function daemonWith(research: boolean, home: string) {
   // Attached as peers too, so the board can give them tasks; the tools connections act for them.
   for (const peer of ["worker", "claude"]) { const c = await ControlClient.connect(stateDir, { role: "peer", peer }); cleanup.push(() => c.close()); }
   await until(() => daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle", "research worker and reviewer attached");
+  // #248: add-on detection settles in the background after each attach; work starts once both fingerprints are written.
+  await until(() => readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "tooling").length >= 2, "both peers' tooling fingerprints", 300);
   const codex = await as("worker"), claude = await as("claude");
   const op = async (c: ControlClient, name: string, args: Record<string, unknown>) => {
     const reply = await c.request({ t: "task", op: name, args });
