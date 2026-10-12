@@ -1989,7 +1989,7 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
   };
 
-  const tooled = new Map<string, number>();
+  const tooled = new Map<string, number>(), attachedNow = new Set<string>();
   /** Detections still running (each bounded by its probe deadline): settled before shutdown writes research records. */
   const detecting = new Set<Promise<void>>();
   let attachments = 0;
@@ -2001,9 +2001,11 @@ export async function startDaemon(opts: DaemonOptions) {
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
       // #248: the add-ons it works with, once per attach (names and versions only).
-      if (e.state === "offline") tooled.delete(e.peer);
-      else if (!tooled.has(e.peer)) {
-        // A result is written only while the attachment that started its detection is still the current one.
+      // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
+      // still did its work under that attachment.
+      if (e.state === "offline") attachedNow.delete(e.peer);
+      else if (!attachedNow.has(e.peer)) {
+        attachedNow.add(e.peer);
         const peer = e.peer, attachment = ++attachments;
         tooled.set(peer, attachment);
         const detection = detectTooling(peer, { cwd: opts.cwd }).then((addons) => { if (tooled.get(peer) === attachment) event({ type: "tooling", peer, addons }); }, () => undefined);
