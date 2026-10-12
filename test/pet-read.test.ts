@@ -9,7 +9,7 @@ test("pet summary parsing excludes private fields and rejects unknown or inconsi
   const secret = () => { throw new Error("private source read"); };
   const raw = { act: 1, watch: 0, state: "review", first: { kind: "review", level: "act", id: 7, get title() { return secret(); } }, get body() { return secret(); } };
   expect(parseNeedsSummary(raw)).toEqual({ act: 1, watch: 0, state: "review", first: { kind: "review", level: "act", id: 7 } });
-  expect(parseNeedsSummary({ ...raw, state: { toString: secret } })).toBeUndefined();
+  expect(parseNeedsSummary({ act: raw.act, watch: raw.watch, first: raw.first, state: { toString: secret } })).toBeUndefined();
   expect(parseNeedsSummary({ act: 0, watch: 0, state: "waiting" })).toBeUndefined();
   expect(parseNeedsSummary({ act: 1, watch: 0, state: "idle", first: raw.first })).toBeUndefined();
   expect(parseNeedsSummary({ act: 1, watch: 0, state: "review", first: { kind: "message", level: "act", id: "message" } })).toBeUndefined();
