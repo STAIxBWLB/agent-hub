@@ -24,10 +24,10 @@ export function consoleNeeds(state: AttentionState, now: number): Needs {
   }
   return result;
 }
-export function attentionLine(value: Needs, now = 0, blink = false): string {
+export function attentionLine(value: Needs, now = 0, blink = false, next = true): string {
   const label = value.state === "waiting" ? `! ${value.act} need you` : value.state === "blocked" ? `! blocked (${value.act})` : value.state === "review" ? `? ${value.act} for review` : value.state === "working" ? "* working" : value.state === "idle" ? "idle" : "z asleep";
   const eyes = blink && value.items.some(item => item.kind === "approval") && Math.floor(now / 1000) % 2 ? "(- -)" : "(O O)";
-  return `${eyes} ${label}${value.watch ? ` +${value.watch}` : ""}${value.items.length ? "  n next" : ""}`;
+  return `${eyes} ${label}${value.watch ? ` +${value.watch}` : ""}${next && value.items.length ? "  n next" : ""}`;
 }
 
 /** Accept only body-free board facts from the authenticated status reply. */

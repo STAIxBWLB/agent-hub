@@ -1944,6 +1944,30 @@
       "replacement": "\"act\"",
       "testFile": "test/needs-status.test.ts",
       "testName": "only an observed absent recovery runner creates a blocked action"
+    },
+    {
+      "id": "pet-runner-unknown-not-absent",
+      "file": "src/cli/pet.ts",
+      "search": "const active = runner !== undefined;",
+      "replacement": "const active = typeof runner === \"number\";",
+      "testFile": "test/pet-read.test.ts",
+      "testName": "recovery overlay replaces a reported watch once and never treats unknown as absent"
+    },
+    {
+      "id": "pet-owner-unknown-not-live",
+      "file": "src/cli/pet.ts",
+      "search": "alive(row.pid, row.pidSignature) === \"live\"",
+      "replacement": "alive(row.pid, row.pidSignature) !== \"gone\"",
+      "testFile": "test/pet-read.test.ts",
+      "testName": "pet reads only a confirmed status owner and binds the process signature"
+    },
+    {
+      "id": "pet-short-no-newline",
+      "file": "src/cli/main.ts",
+      "search": "process.stdout.write(short ? text : text + \"\\n\");",
+      "replacement": "console.log(text);",
+      "testFile": "test/pet-cli.test.ts",
+      "testName": "pet CLI reads a signed status file without a control token or connection"
     }
   ]
 }

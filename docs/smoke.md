@@ -1674,3 +1674,11 @@ structural projection, configuration precedence, deadline-only blink and plain
 message acknowledgement. Platform/full seeded gates are pending. Light/dark
 terminal, tmux, colour-off and actual terminal glyph readbacks are unverified;
 this phase renders ASCII only. No native account or live hub was activated.
+
+## Global attention status and CLI (#280, phase 3 in progress)
+
+Source/fixture checks target person review, offline ownership, unknown/absent
+recovery runners, status privacy/role separation, signed file ownership and CLI
+output without a token or connection. Full immutable-head platform/seed/review
+gates remain pending. Native light/dark terminal, tmux, glyph and account readback
+is unverified; no release, installation or live hub activation ran.

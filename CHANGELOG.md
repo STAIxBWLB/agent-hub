@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add global body-free attention status, person review/offline facts, read-only recovery observation and token-free pet/prompt output (#280, phase 3 in progress). Native and full release gates remain unverified.
+
 - Add structural console attention counts, an ASCII STAI rule line, read-only `n` navigation, session `P`/`--no-pet`, presentation configuration and plain-mode updates (#280, phase 1). Larger characters, status/dashboard integration and native visual checks remain pending.
 
 - Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
