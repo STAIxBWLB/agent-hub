@@ -146,7 +146,13 @@ test("documentation drift checks never execute configured clean or process filte
   writeFileSync(script, '#!/bin/sh\nprintf marker > "' + marker + '"\ncat\n'); chmodSync(script, 0o755);
   for (const helper of ["clean", "process"]) {
     git("config", `filter.metadata-trap.${helper}`, script);
-    writeFileSync(join(root, "src/covered.ts"), `unfiltered ${helper} source bytes\n`);
+    // Match the indexed byte length so legacy git status must hash through its configured filter.
+    writeFileSync(join(root, "src/covered.ts"), helper === "clean" ? "changed\n" : "altered\n");
+    if (helper === "clean") {
+      git("status", "--porcelain", "--", "src/covered.ts");
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+    }
     const result = spawnSync("node", [checker, root, "--json"], { encoding: "utf8", timeout: 15_000 });
     expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(false);
     expect(existsSync(marker)).toBe(false);
