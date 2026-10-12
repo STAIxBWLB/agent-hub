@@ -1,5 +1,5 @@
 import { projectedDiff } from "./projected-diff.ts";
-import { needs } from "../ui/needs.ts";
+import { needs, type NeedsInput } from "../ui/needs.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
@@ -1831,13 +1831,20 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
     };
+    const taskNeeds = board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer }));
+    const peerNeeds: Record<string, NonNullable<NeedsInput["peers"]>[string]> = Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }]));
+    // Lazy legacy peer lists need not contain a persisted owner that is now offline.
+    for (const task of taskNeeds) if (task.owner && !Object.hasOwn(peerNeeds, task.owner)) {
+      const state = bus.stateOf(task.owner);
+      peerNeeds[task.owner] = { state, attached: !!bus.peers.get(task.owner) && ["idle", "busy", "paused"].includes(state) };
+    }
     const attention = needs({
       approvals: [...permissions].map(([id, row]) => ({ id, peer: row.peer, expiresAt: row.expiresAt, since: row.createdAt })),
       defaults: [...pendingPermissionDefaults.keys()].map(peer => ({ peer })),
-      peers: Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }])),
+      peers: peerNeeds,
       storageBlocked: !!bus.storageError,
       recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
-      tasks: board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer })),
+      tasks: taskNeeds,
       budget: Object.fromEntries(Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}])),
     }, Date.now());
     return { ...view, needs: { act: attention.act, watch: attention.watch, state: attention.state, ...(attention.items[0] ? { first: attention.items[0] } : {}) },

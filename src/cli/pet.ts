@@ -62,7 +62,9 @@ export function readPet(stateDir: string, reader: PetRecoveryReader = recoveryRe
   let status: unknown;
   try {
     const row = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8"));
-    if (Number.isSafeInteger(row.pid) && row.pid > 0 && alive(row.pid, row.pidSignature) === "live") status = row;
+    const summary = parseNeedsSummary(row.needs);
+    const expired = summary?.first?.kind === "approval" && summary.first.until !== undefined && summary.first.until <= Date.now();
+    if (!expired && Number.isSafeInteger(row.pid) && row.pid > 0 && alive(row.pid, row.pidSignature) === "live") status = row;
   } catch { /* Missing, malformed or unconfirmed owner data is unavailable, never an empty live hub. */ }
   return petView(status, reader);
 }

@@ -1968,6 +1968,22 @@
       "replacement": "console.log(text);",
       "testFile": "test/pet-cli.test.ts",
       "testName": "pet CLI reads a signed status file without a control token or connection"
+    },
+    {
+      "id": "pet-expired-snapshot-unknown",
+      "file": "src/cli/pet.ts",
+      "search": "!expired && Number.isSafeInteger(row.pid)",
+      "replacement": "Number.isSafeInteger(row.pid)",
+      "testFile": "test/pet-expiry.test.ts",
+      "testName": "expired first approval makes file counts unavailable rather than guessing a remaining count"
+    },
+    {
+      "id": "attention-console-items-not-persisted",
+      "file": "src/hub/daemon.ts",
+      "search": "includeAttentionItems ? { attentionItems: attention.items } : {}",
+      "replacement": "true ? { attentionItems: attention.items } : {}",
+      "testFile": "test/daemon.test.ts",
+      "testName": "global attention summary persists while full items stay console-role only (#280)"
     }
   ]
 }
