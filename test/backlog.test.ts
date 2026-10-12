@@ -23,7 +23,7 @@ const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 async function rig(ids = ["codex", "claude", "local"]) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-backlog-"));
-  const bus = new Bus({ batchMs: 0 });
+  const bus = new Bus({ batchMs: 0, rostered: peer => ["codex", "claude", "local"].includes(peer) });
   const board = new Board(join(dir, "hub.db"));
   const peers = ids.map(id => new Peer(id));
   for (const p of peers) { bus.add(p); await p.start(); }
