@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add structural console attention counts, an ASCII STAI rule line, read-only `n` navigation, session `P`/`--no-pet`, presentation configuration and plain-mode updates (#280, phase 1). Larger characters, status/dashboard integration and native visual checks remain pending.
+
 - Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
 
 - Add five-column dashboard task cards, ready/waiting split, shared peer colors, agent legend/lanes and scoped drag/button assignment and Backlog staging controls (#263).

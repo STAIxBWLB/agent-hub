@@ -63,6 +63,26 @@ a three-line footer, separated by ASCII `-` rules; the stream has one rule above
 its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
 without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
+
+The console attention companion (#280, phase 1) uses ASCII on the rule above
+the footer, leaving the three footer lines and cursor unchanged. It shows
+waiting, blocked, review, working, idle or asleep, with separate action/watch
+counts. `n` selects the next approval or held queue row, or prints an applicable
+command; it never answers a request or runs that command. Editing, choices,
+confirmation and the key table retain their keyboard controls. `P` toggles the
+STAI line and off for the session. Alternate characters and larger forms are
+later phases, pending artwork review.
+
+Configure `pet` in `.agenthub/config.json` or `config.local.json`; local options
+override shared ones. Defaults are `character: "stai"`, `size: "line"`,
+`glyphs: "auto"`, `blink: true`, `bell: false`. This phase always draws ASCII.
+`pet: false` or `ahub console --no-pet` preserves the prior console output.
+Unknown options produce one bounded notice and fall back. Only an open approval
+blinks, using the existing redraw; `blink: false` disables it. The optional bell
+sounds on an action-count transition from zero, at most once per minute, never
+for a message alone. Plain mode prints the line only when the action count
+changes. Messages addressed to `user` remain attention items until the next key.
+No new timer, network request, daemon field or writable settings path is added.
 Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
 ends), never while a command is being edited or a choice is open; under a
 confirmation an arrow dismisses it like any key but y, without moving a tab. A pasted

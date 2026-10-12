@@ -1840,6 +1840,94 @@
       "replacement": "label:release.name",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "redacted release options retain distinguishable public ids (#263)"
+    },
+    {
+      "id": "needs-approval-expiry",
+      "file": "src/ui/needs.ts",
+      "search": "request.expiresAt > now",
+      "replacement": "true",
+      "testFile": "test/needs.test.ts",
+      "testName": "attention model orders structural needs and watch facts never override state (#280)"
+    },
+    {
+      "id": "needs-watch-not-action",
+      "file": "src/ui/needs.ts",
+      "search": "message.important ? \"act\" : \"watch\"",
+      "replacement": "\"act\"",
+      "testFile": "test/needs.test.ts",
+      "testName": "attention model orders structural needs and watch facts never override state (#280)"
+    },
+    {
+      "id": "attention-choice-owns-key",
+      "file": "src/cli/console-state.ts",
+      "search": "if ((key === \"n\" || key === \"P\") && attentionKeyBlocked) return done();",
+      "replacement": "if (false) return done();",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "attention respects editing, choice, help and confirmation keyboard ownership"
+    },
+    {
+      "id": "pet-config-off",
+      "file": "src/cli/pet-config.ts",
+      "search": "if (value === false) return",
+      "replacement": "if (value === true) return",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "pet config merges local presentation options and false disables all drawing"
+    },
+    {
+      "id": "attention-paste-ack",
+      "file": "src/cli/console.ts",
+      "search": "state.attentionMessages = []; state.attentionSelection = undefined;",
+      "replacement": "state.attentionSelection = undefined;",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "paste acknowledges unread attention and optional bell observes edges and rate limit"
+    },
+    {
+      "id": "attention-bell-rate-limit",
+      "file": "src/cli/console.ts",
+      "search": "Date.now() - lastBell >= 60000",
+      "replacement": "Date.now() - lastBell >= 0",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "paste acknowledges unread attention and optional bell observes edges and rate limit"
+    },
+    {
+      "id": "attention-exact-secondary-row",
+      "file": "src/cli/console-state.ts",
+      "search": "const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);",
+      "replacement": "const selected = rows.findIndex(row => item.id === undefined ? row.peer === item.peer : row.id === item.id);",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "ID-less secondary delivery guidance never selects another queued row for that peer"
+    },
+    {
+      "id": "attention-list-change-cursor",
+      "file": "src/cli/console-state.ts",
+      "search": "const prior = s.attentionFingerprint === fingerprint ? s.attentionSelection ?? -1 : -1;",
+      "replacement": "const prior = s.attentionSelection ?? -1;",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "attention cursor restarts when needs are inserted removed or reordered"
+    },
+    {
+      "id": "attention-inflight-not-action",
+      "file": "src/ui/needs.ts",
+      "search": "const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? status.needsReview! : 0;",
+      "replacement": "const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? status.needsReview! : status.heldBy ? 1 : 0;",
+      "testFile": "test/needs.test.ts",
+      "testName": "an in-flight held id without review evidence never creates a person action (#280)"
+    },
+    {
+      "id": "attention-panel-config-warning",
+      "file": "src/cli/console.ts",
+      "search": "if (state.mode === \"panels\" && !plain) notify(state, pet.notice, Date.now(), \"attention\");",
+      "replacement": "if (state.mode === \"panels\") {}",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "unknown pet configuration is visible immediately in panels without switching modes"
+    },
+    {
+      "id": "attention-plain-config-warning",
+      "file": "src/cli/console.ts",
+      "search": "if (state.mode === \"panels\" && !plain) notify(state, pet.notice, Date.now(), \"attention\");",
+      "replacement": "if (state.mode === \"panels\") notify(state, pet.notice, Date.now(), \"attention\");",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "requested panels print unknown config warnings when the terminal falls back to plain"
     }
   ]
 }

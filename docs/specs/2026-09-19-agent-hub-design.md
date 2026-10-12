@@ -2512,3 +2512,19 @@ start/review/done. Old absent evidence remains unknown.
 CLI/dashboard/tools, batched planner notices, dependency edits/splitting, WIP
 pull, bounded undo surfaces, research metadata and optional GitHub import remain
 in progress. Source/fixture/platform/seed/visual/native proof is not yet complete.
+
+## Console attention foundation (#280, in progress)
+
+The self-contained needs(input,now) model receives structural console-owned
+approval/default/delivery/storage/message/budget/recovery facts. It copies only
+bounded ids, peers and known timestamps into sorted act/watch items. Approval
+expiry is checked against now; watch items never override state.
+Delivery action counts require positive `needsReview` evidence. A `heldBy` id
+alone also names dispatching/accepted holds, which cannot be resolved by the
+person, and does not create an action item. No title,
+message/error/option text, path, network call or timer enters the model. Phase1
+console line/keys/configuration now uses a read-only console-local config reader,
+the existing redraw/poll requests and body-free unread metadata. The line is
+ASCII only, with STAI/off session choices; alternate artwork remains gated.
+Review/offline/act-level recovery and
+artwork variants remain later explicit phases. Native/visual proof is unknown.

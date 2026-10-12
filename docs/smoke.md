@@ -1665,3 +1665,12 @@ reduced-motion/settled cleanup, expired arcs, explicit unattributed turn omissio
 conflict priority under the cap and distinct parallel warning coordinates.
 Platform/full206-guard proof is pending. Desktop/phone/real-peer visual readback
 remains unverified; no account, release, installation or live activation ran.
+
+## Console attention (#280, phase 1)
+
+Automated coverage targets request ordering, read-only navigation/modal ownership,
+fixed footer/cursor cells at 80/99/100/120 columns and 24/40 rows, allowlisted
+structural projection, configuration precedence, deadline-only blink and plain
+message acknowledgement. Platform/full seeded gates are pending. Light/dark
+terminal, tmux, colour-off and actual terminal glyph readbacks are unverified;
+this phase renders ASCII only. No native account or live hub was activated.

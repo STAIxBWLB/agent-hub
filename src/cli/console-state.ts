@@ -1,3 +1,4 @@
+import { consoleNeeds, attentionLine } from "./attention.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
@@ -11,6 +12,8 @@ export interface Approval {
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
+  attentionFingerprint?: string;
+  petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;
   /** The selected request, by id: a, d and v act on it alone, and it is cleared, never moved, when the request closes. */
   approvalId?: string;
@@ -317,9 +320,9 @@ const KEYS: [string, string[]][] = [
   ["Events", ["f peer filter", "g kind filter"]],
 ];
 /** The `?` key table: one group per panel, its keys kept whole and packed into the width after the group column. */
-export function keyTable(columns: number): Span[][] {
+export function keyTable(columns: number, attention = false): Span[][] {
   const lines: Span[][] = []; const pad = 12;
-  for (const [group, items] of KEYS) {
+  for (const [group, items] of [...KEYS, ...(attention ? [["Attention", ["n next need", "P STAI/off"]] as [string, string[]]] : [])]) {
     let text = ""; let head = group;
     const flush = () => { lines.push([span(head.padEnd(pad), head ? "info" : undefined), span(text)]); head = ""; text = ""; };
     for (const item of items) { if (text && pad + Bun.stringWidth(`${text}   ${item}`) > columns) flush(); text = text ? `${text}   ${item}` : item; }
@@ -381,6 +384,7 @@ export const selectedApproval = (s: ConsoleState) => s.approvals.find(a => a.id 
 /** The selected row: the Approvals panel's is the selected request (-1 when none is). */
 const selection = (s: ConsoleState) => s.panel === 2 ? s.approvals.findIndex(a => a.id === s.approvalId) : s.selection;
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
+  const attentionKeyBlocked = !!(state.confirm || state.optionChoice || state.modeChoice || state.help || state.editing || state.input);
   // A notice answers the key before this one; one that pruning raises now stays.
   let s = pruneApprovals({ ...state, notice: "" }, now); const effects: ConsoleEffect[] = [];
   const done = () => ({ state: bound(s), effects });
@@ -442,7 +446,37 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     } else if (!key.startsWith("\x1b")) s.input += terminalText(key).replace(/\n/g, "");
     return done();
   }
+  if ((key === "n" || key === "P") && attentionKeyBlocked) return done();
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
+  if (key === "P" && !s.optionChoice && !s.help) { s.petEnabled = !s.petEnabled; return done(); }
+  if (key === "n" && s.petEnabled && !s.optionChoice && !s.help) {
+    const items = consoleNeeds(s, now).items;
+    if (!items.length) return done();
+    const fingerprint = JSON.stringify(items);
+    const prior = s.attentionFingerprint === fingerprint ? s.attentionSelection ?? -1 : -1;
+    const index = (prior + 1) % items.length;
+    s.attentionFingerprint = fingerprint;
+    s.attentionSelection = index;
+    const item = items[index]!;
+    let navigated = false;
+    if (item.kind === "approval") {
+      s.approvalId = String(item.id);
+      if (s.mode === "panels") { s.panel = 2; s.selection = s.approvals.findIndex(row => row.id === item.id); }
+      navigated = true;
+    } else if (item.kind === "delivery" && s.mode === "panels") {
+      const rows = s.queue.filter(row => row.state === "needs_review" || row.state === "queued");
+      const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);
+      if (selected >= 0) { s.panel = 4; s.selection = selected; navigated = true; }
+    }
+    if (navigated) { s.detail = undefined; s.requestDetail = undefined; }
+    else {
+      const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : item.peer ? `ahub say @${item.peer} <message>` : "ahub console";
+      const text = `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`;
+      if (s.mode === "panels") notify(s, text, now, "attention");
+      effects.push({ type: "print", text, kind: "attention", tone: "attention" });
+    }
+    return done();
+  }
   if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
   const switchPanel = (panel: number) => { s.panel = panel; s.selection = 0; s.detail = undefined; s.requestDetail = undefined; return done(); };
@@ -652,6 +686,9 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
+  const attention = s.petEnabled ? consoleNeeds(s, now) : undefined;
+  const pet = attention ? attentionLine(attention, now, s.petBlink) : "";
+  const attentionRule = pet && Bun.stringWidth(pet) + 4 <= columns ? [span("-".repeat(columns - Bun.stringWidth(pet) - 2) + " ", "muted"), span(pet, attention!.state === "blocked" ? "failure" : attention!.act ? "attention" : "muted"), span("-", "muted")] : rule;
   if (s.mode === "stream") {
     const counts = s.taskCounts;
     const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
@@ -659,13 +696,13 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (!noticeShown && defaultSource === undefined && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
       footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
     }
-    return [rule, ...footer];
+    return [attentionRule, ...footer];
   }
   const progress = taskProgress(s.tasks);
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
   if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
-  else if (s.help) lines.push(...keyTable(columns));
+  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
@@ -706,5 +743,5 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     }
   }
   const body = lines.slice(0, height); while (body.length < height) body.push([]);
-  return [header(s, columns), rule, ...body, rule, ...footer];
+  return [header(s, columns), rule, ...body, attentionRule, ...footer];
 }
