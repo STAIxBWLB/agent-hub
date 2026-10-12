@@ -93,7 +93,7 @@ function onPath(name: string, path: string, cwd: string): string | undefined {
  * another program or does not answer within PROBE_MS. Asynchronous with a hard deadline: a program that ignores SIGTERM
  * is killed outright and never waited on, so it can never hold up the hub.
  */
-function identify(file: string, pattern: RegExp): Promise<string | null | false> {
+function identify(file: string, pattern: RegExp, env: Record<string, string>): Promise<string | null | false> {
   let key = file;
   try { key = `${file}:${statSync(file).mtimeMs}`; } catch { /* unreadable: ask anyway */ }
   let found = identities.get(key);
@@ -112,8 +112,9 @@ function identify(file: string, pattern: RegExp): Promise<string | null | false>
       };
       const timer = setTimeout(() => finish(false), PROBE_MS);
       try {
-        // Nothing of the hub's environment (gateway keys, Access values, agent markers) reaches the probed program.
-        child = spawn(file, ["--version"], { detached: true, stdio: ["ignore", "pipe", "ignore"], env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", LC_ALL: "C" } });
+        // Only PATH (its absolute entries outside the project, so an env-shebang interpreter still resolves), HOME and
+        // the C locale reach the probed program: no gateway keys, Access values or agent markers.
+        child = spawn(file, ["--version"], { detached: true, stdio: ["ignore", "pipe", "ignore"], env });
         child.unref();
         // A version line is short: a program that keeps writing is not the one asked for, and is not read further.
         child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); if (out.length > PROBE_BYTES) finish(false); });
@@ -142,7 +143,8 @@ export async function detectTooling(peer: string, src: ToolingSources = {}): Pro
     // A program inside the project is the repository's, not an installed tool: it is never run to identify it (opening a
     // checkout must not execute its files), so it does not count where its identity has to be checked.
     const inProject = src.cwd !== undefined && within(real(file), real(src.cwd));
-    const v = spec.version ? (inProject ? false : await identify(file, spec.version)) : null;
+    const probeEnv = { PATH: path.split(delimiter).filter((d) => isAbsolute(d) && !(src.cwd !== undefined && within(real(d), real(src.cwd)))).join(delimiter) || "/usr/bin:/bin", HOME: home, LANG: "C", LC_ALL: "C" };
+    const v = spec.version ? (inProject ? false : await identify(file, spec.version, probeEnv)) : null;
     if (v !== false) add({ name: spec.name, version: v });
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));

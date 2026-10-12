@@ -100,6 +100,11 @@ test("detection reads names and versions from the closed list, per runtime, and 
   try { expect(await detectTooling("pi", { env: {}, home, path: envProbe })).toEqual([{ name: "dot-admit", version: "1.0.0" }]); }
   finally { delete process.env.AHUB_TOOLING_SECRET; }
   expect(readFileSync(seen, "utf8")).not.toContain("must-not-leak");
+  // An env-shebang `dot` finds its interpreter on the launch PATH's absolute entries (review of #351).
+  const interp = temp("interp"), tool = temp("tool");
+  writeFileSync(join(interp, "fakeinterp"), "#!/bin/sh\necho 'dot version 7.1.0'\n"); chmodSync(join(interp, "fakeinterp"), 0o755);
+  writeFileSync(join(tool, "dot"), "#!/usr/bin/env fakeinterp\n"); chmodSync(join(tool, "dot"), 0o755);
+  expect(await detectTooling("pi", { env: {}, home, path: [tool, interp].join(":") })).toEqual([{ name: "dot-admit", version: "7.1.0" }]);
   // A `dot` that floods its output is cut off at a few kilobytes, not read for the whole deadline (review of #351).
   const flood = temp("flood");
   writeFileSync(join(flood, "dot"), "#!/bin/sh\nexec yes 'dot version 9.9.9'\n"); chmodSync(join(flood, "dot"), 0o755);
