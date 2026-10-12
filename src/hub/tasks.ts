@@ -356,7 +356,7 @@ export class Tasks {
       ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note", h.withheld) }),
       ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
       ...(h.owner === undefined ? {} : { owner: h.owner }),
-      ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields } } : {}),
+      ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
@@ -547,6 +547,11 @@ export class Tasks {
   wip(peer: PeerId, except?: number): number {
     return this.d.board.list().filter(task => task.id !== except && task.state !== "approved" && task.state !== "backlog" && (task.owner === peer || !task.owner && task.state === "proposed" && task.reserved === peer && this.plannerPullRecord(task)?.pull)).length;
   }
+  private prerequisiteOf(task: Task, prerequisite: number): boolean {
+    const pending = [...(task.deps ?? [])], seen = new Set<number>();
+    while (pending.length) { const id = pending.pop()!; if (id === prerequisite) return true; if (seen.has(id)) continue; seen.add(id); pending.push(...(this.d.board.get(id)?.deps ?? [])); }
+    return false;
+  }
   private plannerAssignment(task: Task, reservedOnly = false): Assignment {
     const states = this.states();
     const full = Object.keys(states).filter(peer => {
@@ -567,7 +572,7 @@ export class Tasks {
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
       if (this.waitsFor(task).length) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
       const priority = task.priority ?? (task.signals.includes("urgent") ? 0 : 2);
-      if (priority === 0 && this.d.board.list("backlog").some(other => other.id !== task.id && (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) === 0 && other.rank != null && other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")) && (other.rank < (task.rank ?? Number.MAX_SAFE_INTEGER) || other.rank === task.rank && other.id < task.id))) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
+      if (priority === 0 && this.d.board.list("backlog").some(other => other.id !== task.id && !this.prerequisiteOf(other, task.id) && (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) === 0 && other.rank != null && other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")) && (other.rank < (task.rank ?? Number.MAX_SAFE_INTEGER) || other.rank === task.rank && other.id < task.id))) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
       const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved")) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
@@ -654,6 +659,13 @@ export class Tasks {
     this.planningAuthority(by);
     const task = this.d.board.get(id), entry = task ? planningUndoEntry(task) : undefined;
     if (!task || !entry?.planning || entry.planning.revision !== revision || (task.planningRevision ?? 0) !== revision || by !== USER && entry.by !== by) throw new PreEffectToolRefusal("planning undo is stale or not owned");
+    if (entry.planning.split) {
+      const release = task.release == null ? undefined : this.d.board.release(task.release);
+      if (task.state !== "backlog" || task.owner || taskHasStarted(task) || by !== USER && (task.pinned || release && ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("split undo is no longer eligible");
+      const restored = this.d.board.undoBacklogSplit(id, by, revision);
+      this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: restored.planningRevision! });
+      return restored;
+    }
     if (entry.planning.pull) {
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.state !== "proposed" || task.owner || taskHasStarted(task) || by !== USER && (task.pinned || release && ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull undo is no longer eligible");
@@ -663,6 +675,48 @@ export class Tasks {
       return returned;
     }
     return this.planBacklog(by, { id, revision, fields: entry.planning.previous, reason: `undo planning revision ${revision}` });
+  }
+
+  async splitBacklog(by: PeerId, input: { id: number; revision: number; parts: unknown; reason: string }): Promise<{ parent: Task; children: Task[] }> {
+    this.planningAuthority(by);
+    const { id, revision } = input;
+    if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(revision) || revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("split needs an id, revision and bounded reason");
+    const reason = input.reason.trim();
+    let parts: unknown;
+    try { parts = structuredClone(input.parts); } catch { throw new PreEffectToolRefusal("split parts must be cloneable data"); }
+    if (!Array.isArray(parts) || parts.length < 2 || parts.length > 8) throw new PreEffectToolRefusal("split needs two to eight parts");
+    const rows = parts as Record<string, unknown>[];
+    const validate = () => {
+      const parent = this.d.board.get(id);
+      if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || by !== USER && parent.pinned) throw new PreEffectToolRefusal("split changed, pinned or already started");
+      const release = parent.release == null ? undefined : this.d.board.release(parent.release);
+      if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
+      const catalog = this.d.catalog ?? loadRoleCatalog(this.d.cwd), profile = parent.profile ?? this.d.profile ?? "dev";
+      const drafts = rows.map((part, index) => {
+        if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
+        const given = part.class ?? parent.profileClass ?? parent.class;
+        let cls: TaskClass;
+        try { cls = profileClass(given as string, this.d.profileData ?? profile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+        const after = part.after ?? [], afterParts = part.afterParts ?? [];
+        if (!Array.isArray(after) || after.length > 64 || after.some(dep => !Number.isSafeInteger(dep) || dep <= 0) || new Set(after).size !== after.length || !Array.isArray(afterParts) || afterParts.length > 8 || afterParts.some(dep => !Number.isSafeInteger(dep) || dep < 0 || dep >= index) || new Set(afterParts).size !== afterParts.length) throw new PreEffectToolRefusal("split dependencies must name existing tasks or earlier parts");
+        const deps = [...new Set([...(parent.deps ?? []), ...after as number[]])], pending = [...deps], seen = new Set<number>();
+        while (pending.length) { const dependency = pending.pop()!; if (dependency === id) throw new PreEffectToolRefusal("split dependency reaches its parent"); if (seen.has(dependency)) continue; seen.add(dependency); const task = this.d.board.get(dependency); if (!task) throw new PreEffectToolRefusal("split dependency is missing"); pending.push(...(task.deps ?? [])); }
+        const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, this.d.profileData ?? profile);
+        const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: taskRole(parent.role, cls, catalog)?.id } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string } : {}) };
+        const fields: PlanningFields = {};
+        for (const key of ["priority", "release", "plannedStart", "due"] as const) if (parent[key] !== undefined) fields[key] = parent[key];
+        return { ...draft, fields };
+      });
+      return { parent, drafts };
+    };
+    const initial = validate(), verdicts: (PiiVerdict | undefined)[] = [];
+    for (const part of initial.drafts) verdicts.push(this.screenOn() && !this.isPii(initial.parent) ? await this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined);
+    const withheld = await this.withholds("note", reason, initial.parent), current = validate();
+    const drafts = current.drafts.map((part, index) => ({ ...part, signals: [...new Set([...this.signalsFor(part), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
+    const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);
+    for (const child of result.children) this.incomingBacklog.add(child.id);
+    this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: result.parent.planningRevision! });
+    return result;
   }
 
   async newRelease(by: PeerId, input: { name: string; goal: string; order: number }): Promise<Release> {

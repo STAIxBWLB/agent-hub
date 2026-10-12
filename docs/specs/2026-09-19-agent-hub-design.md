@@ -2552,3 +2552,20 @@ reservations remain protected. Board saves the pull provenance and previous
 reservation in one CAS. The latest eligible pull can return to backlog only
 while unowned and unstarted, restoring its previous reservation; it never claims
 to cancel a dispatched native turn. Native/visual proof remains unverified.
+
+
+## Backlog split contract (#263, in progress)
+
+Splitting keeps the original card as integration/acceptance responsibility and
+adds two to eight unoffered child cards as prerequisites. Existing prerequisites
+and conservative privacy/phase planning are retained. Per-part dependencies may
+name existing tasks or earlier parts; no child may transitively depend on its
+parent. Tasks screens and revalidates the entire bounded request before writing.
+Board commits all children, parent edges and undo provenance in one transaction;
+change callbacks run only after commit.
+
+Latest eligible owned split undo restores original edges and deletes only unused
+unchanged unstarted backlog children, refusing later edits, owners, execution or
+external references. Role, revision, pin/person and frozen scope floors remain.
+Public projections expose child ids without private prior values. Source/native
+verification remains pending; no live operation or release process is implied.

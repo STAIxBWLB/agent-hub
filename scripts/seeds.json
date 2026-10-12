@@ -1984,6 +1984,30 @@
       "replacement": "...(false ? { namedOwner: task.reserved } : {})",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
+    },
+    {
+      "id": "split-parent-cycle",
+      "file": "src/hub/tasks.ts",
+      "search": "if (dependency === id) throw new PreEffectToolRefusal(\"split dependency reaches its parent\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"split dependency reaches its parent\");",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split rejects cyclic input and later child edits or external references (#263)"
+    },
+    {
+      "id": "split-after-commit-observation",
+      "file": "src/hub/board.ts",
+      "search": "if (this.pendingChanges) { this.pendingChanges.push({ task, entry }); return; }",
+      "replacement": "if (false) { this.pendingChanges!.push({ task, entry }); return; }",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "backlog split commits a child DAG and undo provenance without partial callbacks (#263)"
+    },
+    {
+      "id": "split-external-reference-floor",
+      "file": "src/hub/board.ts",
+      "search": "if (this.list().some(task => task.id !== id && !ids.has(task.id) && task.deps?.some(dep => ids.has(dep))))",
+      "replacement": "if (false)",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo refuses child references and invalid late writes stay atomic (#263)"
     }
   ]
 }
