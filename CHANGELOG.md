@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Restore dashboard peer role metadata and show bounded task guidance ids on board cards (#295).
+
 - Complete terminal board column/release projections and structured late-cut/unknown approval flags (#263).
 
 - Add bounded one-way GitHub issue intake into persistent deduplicated private-safe Backlog (#263).

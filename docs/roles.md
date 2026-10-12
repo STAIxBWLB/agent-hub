@@ -59,3 +59,9 @@ Example shared or machine-local config:
 - Each attributed completed turn records the role ids, layers and hashes prepared in its native preamble at turn start. Opt-in research JSONL records retain these as `sessionRoles` entries with the peer and turn id; live and backfill use the same events. Role bodies are excluded, including for PII tasks.
 - An explicit empty list means a native contract was prepared with no catalog role. `null` means no preparation receipt, as for an external plugin/TUI session. Older events without the field leave it absent; neither absence nor `null` means zero roles.
 - A pending setting change does not rewrite a running turn. A subsequent native start prepares the new selection. These records establish preparation, not model consumption or role effectiveness. The existing CSV summary columns are unchanged; JSONL includes the full metadata.
+
+
+Board cards show the stored task guidance id, including on private task stubs,
+without role text or extra authority. Dashboard snapshots retain separate peer
+role metadata so current flow/catalog and pending session guidance use the same
+source as status. Current source/native/visual verification remains pending.

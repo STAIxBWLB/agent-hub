@@ -201,3 +201,8 @@ test("native fallback preamble records explicit empty preparation for unavailabl
   const row=(await f.client.request({t:"settings_get"})).rows.find((r:any)=>r.key==="catalog_roles.kimi");
   expect(row.value).toEqual([]); expect(row.note).toContain("incompatible or unavailable");
 });
+
+
+test("dashboard role metadata retains separate current and pending catalog guidance (#295)",async()=>{
+ const f=await fixture(),status=(await f.client.request({t:"status"})).status;const snapshot=await f.client.request({t:"ui_action",instanceId:status.instanceId,action:{action:"snapshot"}});expect(snapshot.ok).toBe(true);expect(snapshot.status.roleInfo).toEqual(status.roleInfo);expect(snapshot.status.peers.codex).toEqual(status.peers.codex);
+});

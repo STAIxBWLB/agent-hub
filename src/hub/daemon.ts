@@ -3042,7 +3042,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ok: true,
       projectId,
       instanceId,
-      status: { peers: peerView, taskWip: daemonStatus.taskWip },
+      status: { peers: peerView, taskWip: daemonStatus.taskWip, roleInfo: daemonStatus.roleInfo },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),

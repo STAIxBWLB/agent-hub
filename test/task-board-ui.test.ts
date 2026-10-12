@@ -175,3 +175,9 @@ test("task cards show public release membership and accessible identity (#263)",
  api.draw({...snapshot,releases:[{id:2,name:"[withheld]"}],tasks:snapshot.tasks.map(task=>({...task,release:2}))},peers,Object.keys(peers));
  const card=all(get("tasks")).find(node=>node.tag==="article")!;expect(all(card).some(node=>node.textContent==="Release #2 [withheld]")).toBe(true);expect(card.attrs['aria-label']).toContain("Release #2 [withheld]");
 });
+
+
+test("board task guidance remains visible on a public PII stub without granting actions (#295)",()=>{
+ const {api,get,all,peers,snapshot}=page();api.draw({...snapshot,tasks:[{id:1,state:"backlog",title:"[pii]",detail:"[pii]",class:"implement",role:"backend-engineer"}]},peers,Object.keys(peers));
+ expect(all(get("tasks")).some(node=>node.textContent==="Task guidance: backend-engineer (grants no authority)")).toBe(true);expect(all(get("tasks")).filter(node=>node.tag==="button"&&node.textContent==="Assign")).toHaveLength(0);
+});
