@@ -17,6 +17,7 @@ import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
 
 export interface LocalOptions {
   profile?: import("../hub/profiles.ts").ProfileSelection;
+  sdlcStages?: readonly string[];
   cwd: string;
   omni: OmniRoute;
   /** Absent = always the fixed model on OmniRoute. */
@@ -107,7 +108,7 @@ export class LocalPeer extends BasePeer {
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
-        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
@@ -377,7 +378,7 @@ export class LocalPeer extends BasePeer {
     const route = policy?.route ?? this.opts.route;
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
     const task = policy?.task === undefined ? undefined : Number(policy.task);
-    const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+    const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);

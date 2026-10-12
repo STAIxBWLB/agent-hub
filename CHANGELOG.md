@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Support bounded custom lifecycle stage ids, actors and entry/exit gates across Tasks, projections and managed peer schemas, preserving the approval floor (#257).
+
 - Support bounded private/read-only data globs, real wildcard aliases and conservative discovery limits; withhold Claude scoped write grants on read-only data (#259).
 
 - Add isolated project profile data overrides across task aliases/plans, schemas, native guidance and init while preserving flow/check authority (#259).

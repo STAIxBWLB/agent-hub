@@ -36,7 +36,7 @@
     {
       "id": "pii-public-view",
       "file": "src/hub/tasks.ts",
-      "search": "if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: task.sdlc.stage } } : {}), title: \"[pii]\", detail: \"[pii]\" };",
+      "search": "if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? \"unknown\" } } : {}), title: \"[pii]\", detail: \"[pii]\" };",
       "replacement": "if (false) return { ...rest, refs: {}, plan: {}, title: \"[pii]\", detail: \"[pii]\" };",
       "testFile": "test/tasks.test.ts",
       "testName": "a PII task stays on-prem: local only, private envelopes, console review, redacted views, nothing to claude-mem"
@@ -1052,8 +1052,8 @@
     {
       "id": "override-local-schema",
       "file": "src/adapters/local-worker.ts",
-      "search": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile),",
-      "replacement": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(undefined),",
+      "search": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages),",
+      "replacement": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(undefined, this.opts.sdlcStages),",
       "testFile": "test/local-worker.test.ts",
       "testName": "local worker publishes resolved custom profile classes and selected plan fields to its actual provider (#259)"
     },
@@ -1112,6 +1112,54 @@
       "replacement": "[\"Edit\",",
       "testFile": "test/facts-hook.test.ts",
       "testName": "expensive scoped file policy is evaluated only for a usable PreToolUse write grant (#259)"
+    },
+    {
+      "id": "lifecycle-custom-stage-base",
+      "file": "src/hub/sdlc.ts",
+      "search": "if ((SDLC_STAGES as readonly string[]).includes(id) && id !== base)",
+      "replacement": "if (false)",
+      "testFile": "test/lifecycle-definitions.test.ts",
+      "testName": "bounded custom lifecycle data preserves defaults and rejects unknown actor gate base and dependency authority (#257)"
+    },
+    {
+      "id": "lifecycle-stage-receipt-config",
+      "file": "src/hub/sdlc.ts",
+      "search": "!stageDefinition(config, raw.stage)",
+      "replacement": "false",
+      "testFile": "test/lifecycle-definitions.test.ts",
+      "testName": "custom receipt identities and stage readiness never bypass the existing approval floor (#257)"
+    },
+    {
+      "id": "lifecycle-actor-holder",
+      "file": "src/hub/tasks.ts",
+      "search": "if (!acts) throw new PreEffectToolRefusal",
+      "replacement": "if (false) throw new PreEffectToolRefusal",
+      "testFile": "test/lifecycle-definitions.test.ts",
+      "testName": "custom stage actors restrict eligible holder claims and actual done review transitions retain configured ids (#257)"
+    },
+    {
+      "id": "lifecycle-done-stage-alias",
+      "file": "src/hub/tasks.ts",
+      "search": "lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? \"review\" : \"merge\")",
+      "replacement": "reviewer ? \"review\" : \"merge\"",
+      "testFile": "test/lifecycle-definitions.test.ts",
+      "testName": "custom stage actors restrict eligible holder claims and actual done review transitions retain configured ids (#257)"
+    },
+    {
+      "id": "lifecycle-native-schema",
+      "file": "src/adapters/claude-channel.ts",
+      "search": "profileTaskTools(profile, lifecycleStages)",
+      "replacement": "profileTaskTools(profile)",
+      "testFile": "test/lifecycle-native.test.ts",
+      "testName": "every managed MCP surface advertises the project lifecycle ids in its real tools response (#257)"
+    },
+    {
+      "id": "lifecycle-local-schema",
+      "file": "src/hub/daemon.ts",
+      "search": "sdlcStages: lifecycleConfig.stages,",
+      "replacement": "sdlcStages: undefined,",
+      "testFile": "test/lifecycle-native.test.ts",
+      "testName": "daemon forwards its active custom lifecycle schema to the actual LocalPeer provider request (#257)"
     }
   ]
 }
