@@ -1904,6 +1904,14 @@
       "replacement": "const prior = s.attentionSelection ?? -1;",
       "testFile": "test/console-attention.test.ts",
       "testName": "attention cursor restarts when needs are inserted removed or reordered"
+    },
+    {
+      "id": "attention-inflight-not-action",
+      "file": "src/ui/needs.ts",
+      "search": "const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? status.needsReview! : 0;",
+      "replacement": "const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? status.needsReview! : status.heldBy ? 1 : 0;",
+      "testFile": "test/needs.test.ts",
+      "testName": "an in-flight held id without review evidence never creates a person action (#280)"
     }
   ]
 }

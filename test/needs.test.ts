@@ -14,3 +14,9 @@ test("attention delivery count preserves the journal summary without a silent ce
  const result=needs({peers:{codex:{state:"idle",needsReview:300,heldBy:"first"}}},100);
  expect(result.act).toBe(300);expect(result.items).toHaveLength(300);expect(result.items[0]?.id).toBe("first");expect(result.state).toBe("blocked");
 });
+test("an in-flight held id without review evidence never creates a person action (#280)",()=>{
+ for(const needsReview of [undefined,0]){
+  const result=needs({peers:{codex:{state:"busy",heldBy:"accepted-delivery",needsReview}}},100);
+  expect(result.act).toBe(0);expect(result.items).toEqual([]);expect(result.state).toBe("working");
+ }
+});
