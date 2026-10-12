@@ -5,7 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Add person-only bounded merge-order and release-readiness evidence through CLI, console and both dashboard modes; retain unknown/native gates and never merge or publish from a report (#257).
-||||||| dca66ce8
+
 - Stage unoffered Backlog tasks, reserve suggested owners, and pull/return through person-owned Tasks transitions; hide backlog from ordinary agent and conductor task reads (#263).
 
 - Support bounded custom lifecycle stage ids, actors and entry/exit gates across Tasks, projections and managed peer schemas, preserving the approval floor (#257).
