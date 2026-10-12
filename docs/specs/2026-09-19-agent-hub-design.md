@@ -2490,3 +2490,25 @@ intent. CSP hashes include the injected model/palette, with no outside assets.
 Planner grooming, releases, editable planning data, dates and one-way import
 remain required source slices. Browser visual and the native planner/two-release
 cycle remain unverified until their independent checks run.
+
+
+## Planning and release persistence (#263, in progress)
+
+Tasks owns planning and release mutations. Optional rank, P0-P3 priority, release
+id, UTC planned start/due and pin metadata migrate without inventing a legacy
+plan. Planning revisions fence stale edits; history records screened reasons,
+changed fields and previous values. The configured planner role changes only
+unpinned backlog work outside frozen releases and preserves a person's rank.
+Undo refuses an intervening change or another planner's edit.
+
+Releases persist planning, active, frozen, shipped and dropped states and planned
+start/cut/ship. Only a person freezes, drops, ships or changes a frozen release.
+Shipping requires every scoped task approved or moved out, records its first
+ship time and runs no external release process. Public name/goal must pass the
+existing PII boundary. Actual task dates derive structured execution, review and
+approval history, including reviewerless completion; no input supplies actual
+start/review/done. Old absent evidence remains unknown.
+
+CLI/dashboard/tools, batched planner notices, dependency edits/splitting, WIP
+pull, bounded undo surfaces, research metadata and optional GitHub import remain
+in progress. Source/fixture/platform/seed/visual/native proof is not yet complete.

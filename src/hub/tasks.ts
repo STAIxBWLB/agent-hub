@@ -1,3 +1,4 @@
+import { actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
@@ -343,7 +344,7 @@ export class Tasks {
   /** A task as a cloud peer may see it. */
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
     const { title, detail, history, ...rest } = task;
-    if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
+    if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
@@ -353,7 +354,7 @@ export class Tasks {
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
-    return { ...rest, ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
+    return { ...rest, actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -519,6 +520,67 @@ export class Tasks {
       if (!same || this.d.board.reviews({ task: t.id }).some((r) => r.kind === "contradicted")) continue;
       this.d.board.recordReview({ implementer: t.owner, reviewer: approval.by, class: t.class, kind: "contradicted", task: t.id });
     }
+  }
+
+  private planningAuthority(by: PeerId): void {
+    if (by !== USER && !this.d.roles?.[by]?.includes("planner")) throw new PreEffectToolRefusal("planning requires a person or configured planner role");
+  }
+
+  async planBacklog(by: PeerId, input: { id: number; revision: number; fields: unknown; reason: string }): Promise<Task> {
+    this.planningAuthority(by);
+    if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0) throw new PreEffectToolRefusal("invalid planning identity or revision");
+    if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planning needs a bounded reason");
+    let patch: PlanningFields;
+    try { patch = planningPatch(input.fields); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    const validate = () => {
+      const task = this.d.board.get(input.id);
+      if (!task || (task.planningRevision ?? 0) !== input.revision) throw new PreEffectToolRefusal("planning revision changed");
+      if (task.state === "approved") throw new PreEffectToolRefusal("approved work is final");
+      if (by !== USER && (task.state !== "backlog" || taskHasStarted(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
+      if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
+      const target = patch.release === undefined ? task.release : patch.release;
+      if (target != null && !this.d.board.release(target)) throw new PreEffectToolRefusal("no such release");
+      for (const id of new Set([task.release, target])) {
+        if (id == null) continue;
+        const release = this.d.board.release(id)!;
+        if (["shipped", "dropped"].includes(release.state)) throw new PreEffectToolRefusal("settled release scope is final");
+        if (by !== USER && release.state === "frozen") throw new PreEffectToolRefusal("frozen release changes require a person");
+      }
+      return task;
+    };
+    const task = validate(), withheld = await this.withholds("note", input.reason, task);
+    validate(); // a person may have changed planning or frozen a release while the screen ran
+    try { return this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld); }
+    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+  }
+
+  async undoPlanning(by: PeerId, id: number, revision: number): Promise<Task> {
+    this.planningAuthority(by);
+    const task = this.d.board.get(id), entry = task?.history.at(-1);
+    if (!task || !entry?.planning || entry.planning.revision !== revision || (task.planningRevision ?? 0) !== revision || by !== USER && entry.by !== by) throw new PreEffectToolRefusal("planning undo is stale or not owned");
+    return this.planBacklog(by, { id, revision, fields: entry.planning.previous, reason: `undo planning revision ${revision}` });
+  }
+
+  async newRelease(by: PeerId, input: { name: string; goal: string; order: number }): Promise<Release> {
+    this.planningAuthority(by);
+    if (typeof input.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.name) || typeof input.goal !== "string" || !input.goal.trim() || input.goal.length > 1000 || !Number.isSafeInteger(input.order) || input.order < 0) throw new PreEffectToolRefusal("invalid release name, goal or order");
+    const text = input.name + "\n" + input.goal;
+    if (!this.nameable(text) || this.screenOn() && (await this.screenCall(text)).label !== "clear") throw new PreEffectToolRefusal("release text was not cleared for public planning");
+    if (this.d.board.releases().some(release => release.name === input.name)) throw new PreEffectToolRefusal("release name already exists");
+    return this.d.board.newRelease(input.name, input.goal.trim(), input.order);
+  }
+
+  changeRelease(by: PeerId, input: { id: number; revision: number; state?: ReleaseState; plannedStart?: number | null; cut?: number | null; ship?: number | null }): Release {
+    this.planningAuthority(by);
+    const release = this.d.board.release(input.id);
+    if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || !release || release.revision !== input.revision) throw new PreEffectToolRefusal("release revision changed");
+    if (["shipped", "dropped"].includes(release.state)) throw new PreEffectToolRefusal("settled release is final");
+    if (by !== USER && (release.state === "frozen" || input.state === "frozen" || input.state === "shipped" || input.state === "dropped")) throw new PreEffectToolRefusal("freeze, ship, drop and frozen changes require a person");
+    if (input.state === "shipped" && this.d.board.list().some(task => task.release === release.id && task.state !== "approved")) throw new PreEffectToolRefusal("every release task must be approved or moved out before ship");
+    const { id, revision, ...patch } = input;
+    if (!Object.keys(patch).length || Object.keys(patch).some(key => !["state", "plannedStart", "cut", "ship"].includes(key))) throw new PreEffectToolRefusal("unknown or empty release fields");
+    try { return this.d.board.updateRelease(id, patch, revision); }
+    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
   }
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown }): Promise<Task> {
