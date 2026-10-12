@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import type { PeerId } from "./envelope.ts";
+import { HUB, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import type { SdlcReceipt } from "./sdlc.ts";
@@ -81,6 +81,11 @@ export function taskHasStarted(task: Pick<Task, "history">): boolean {
 /** First offer boundary; staged work has none until it is pulled. */
 export function taskProposalAt(task: Pick<Task, "history">): number | undefined {
   return task.history.find(entry => entry.event === "proposed" || entry.event === "backlog pulled")?.at;
+}
+/** Readiness carries out a pending pull; ownership or other later changes still fence undo. */
+export function planningUndoEntry(task: Pick<Task, "history">): HistoryEntry | undefined {
+  const entry = task.history.findLast(item => item.by !== HUB || item.event !== "ready");
+  return entry?.planning?.pull ? entry : task.history.at(-1);
 }
 
 /** The moves the state machine allows. `accept` and `done` are transitions, not states: they carried no behaviour of their own. */
@@ -220,7 +225,7 @@ export class Board {
 
   /** No owner or execution evidence may be taken back by planning undo. */
   undoPlannedPull(id: number, by: PeerId, revision: number): Task {
-    const task = this.get(id), pull = task?.history.at(-1)?.planning;
+    const task = this.get(id), pull = task ? planningUndoEntry(task)?.planning : undefined;
     if (!task || task.state !== "proposed" || task.owner || taskHasStarted(task) || (task.planningRevision ?? 0) !== revision || !pull?.pull || pull.revision !== revision) throw new Error("planner pull undo changed or already offered");
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog returned", note: `undo planner pull revision ${revision}` };
     const result = this.db.query("UPDATE tasks SET state='backlog',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='proposed' AND owner IS NULL")

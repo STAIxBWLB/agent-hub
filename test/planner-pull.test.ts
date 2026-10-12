@@ -96,3 +96,12 @@ test("planner offers recheck reserved capacity and refuse another peer's slot (#
   board.onChange=previous;capacity.codex=1;
   await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("codex");
 });
+
+test("unoffered planner pull can undo after a hub readiness marker (#263)", async () => {
+  const {tasks,board,capacity}=await rig();
+  const task=await tasks.propose(USER,{title:"future",class:"implement",backlog:true});
+  await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});
+  board.onChange=(changed,entry)=>{if(changed.id===task.id&&entry.event==="ready")capacity.codex=0;};
+  await tasks.releaseReady();expect(board.get(task.id)?.owner).toBeNull();expect(board.get(task.id)?.history.at(-1)?.event).toBe("ready");
+  expect(await tasks.undoPlanning("claude",task.id,1)).toMatchObject({state:"backlog",owner:null,reserved:null,planningRevision:2});
+});
