@@ -207,24 +207,142 @@ test("MARKER: no body, detail, approval title or PII text enters the serialized 
     budget: { codex: { windows: [], paused: null } },
   } as unknown as OfficeSnapshotInput;
   expect(JSON.stringify(dirty)).toContain(MARKER); // the fixture itself carries the marker
-  const model = officeModel(dirty, null, { cols: 4 });
+  const model = officeModel(dirty, null, { cols: 4, now: 1000 });
   expect(JSON.stringify(model)).not.toContain(MARKER);
-  const again = officeModel(dirty, model, { cols: 4 });
+  const again = officeModel(dirty, model, { cols: 4, now: 2000 });
   expect(JSON.stringify(again)).not.toContain(MARKER);
+  // A fresh envelope row with a marker body draws an arc that carries no marker either.
+  const flowing = officeModel({
+    ...dirty,
+    events: [{ seq: 9, event: { t: "envelope", env: { from: "codex", to: ["pi"], kind: "chat", priority: "status", ts: 1500, body: `${MARKER} new body`, refs: { task: "1" } } } }],
+  }, model, { cols: 4, now: 3000 });
+  expect(flowing.arcs).toHaveLength(1);
+  expect(JSON.stringify(flowing)).not.toContain(MARKER);
   // The PII stub is carried as the public title, nothing more.
   expect(model.desks[0]!.cards[0]!.name).toContain("[pii]");
 });
 
 test("cols reflows rooms: left to right when wide, stacked when narrow", () => {
-  const wide = officeModel(fixture(), null, { cols: 4 });
+  const wide = officeModel(fixture(), null, { cols: 4, now: 1000 });
   // Six desks take two rows, so the rooms row starts below the desk grid.
   expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 31], [24, 31], [48, 31], [72, 31]]);
   expect(wide.width).toBe(94);
-  const narrow = officeModel(fixture(), null, { cols: 1 });
+  const narrow = officeModel(fixture(), null, { cols: 1, now: 1000 });
   const ys = narrow.rooms.map((room) => room.y);
   expect(new Set(narrow.rooms.map((room) => room.x)).size).toBe(1);
   expect(ys).toEqual([...ys].sort((a, b) => a - b));
   expect(narrow.width).toBe(46); // the four desk columns are wider than one room
   // The model is deterministic: same inputs, same scene.
-  expect(officeModel(fixture(), null, { cols: 4 })).toEqual(wide);
+  expect(officeModel(fixture(), null, { cols: 4, now: 1000 })).toEqual(wide);
+});
+
+const envelope = (seq: number, over: Record<string, unknown> = {}) => ({
+  seq, event: { t: "envelope", env: { from: "codex", to: ["claude"], kind: "chat", priority: "status", ts: 10_000, ...over } },
+});
+
+test("message arcs come from envelope rows: from, to, kind, priority, task ref and dropped only", () => {
+  const first = officeModel(fixture(), null, { cols: 4, now: 10_000 });
+  expect(first.arcs).toEqual([]);
+  const snap = { ...fixture(), events: [
+    envelope(1, { refs: { task: "4" }, priority: "important" }),
+    envelope(2, { from: "user", to: undefined }),
+    envelope(3, { from: "hub", to: ["kimi", "pi"], kind: "task", ts: 10_500 }),
+    { seq: 4, event: { t: "envelope", dropped: "fyi", env: { from: "kimi", to: ["pi"], kind: "chat", priority: "fyi", ts: 10_600 } } },
+  ] };
+  const model = officeModel(snap, first, { cols: 4, now: 11_000 });
+  expect(model.arcs.map((arc) => [arc.seq, arc.from, arc.to, arc.kind, arc.priority, arc.task, arc.dropped])).toEqual([
+    [1, "codex", ["claude"], "chat", "important", "4", ""],
+    [2, "user", [], "chat", "status", "", ""],
+    [3, "hub", ["kimi", "pi"], "task", "status", "", ""],
+    [4, "kimi", ["pi"], "chat", "fyi", "", "fyi"],
+  ]);
+  expect(model.arcs[0]!.until).toBe(20_000); // env ts + 10 s fade horizon
+  expect(model.arcs[2]!.until).toBe(20_500);
+  expect(model.lastSeq).toBe(4);
+  expect(model.eventTime).toBe(10_600);
+  // Re-rendering the same snapshot is idempotent: seqs are consumed once, and an
+  // unchanged snapshot at a later wall time yields an identical model (no DOM write).
+  expect(officeModel(snap, model, { cols: 4, now: 99_000 })).toEqual(model);
+});
+
+test("no replay: the first snapshot after load or a project switch consumes events without drawing them", () => {
+  const snap = { ...fixture(), events: [
+    envelope(1), envelope(2, { ts: 9_000 }),
+    { seq: 3, event: { t: "overflow", peer: "kimi", env: { from: "claude", to: ["kimi"], kind: "chat", ts: 9_100 } } },
+    { seq: 4, event: { t: "state", peer: "claude", state: "busy" } },
+  ] };
+  const model = officeModel(snap, null, { cols: 4, now: 10_000 });
+  expect(model.arcs).toEqual([]);
+  expect(model.alerts).toEqual([]);
+  expect(model.latched).toEqual({});
+  expect(model.settle).toBe(true);
+  expect(model.lastSeq).toBe(4);
+  expect(model.eventTime).toBe(10_000); // the newest envelope ts wins, regardless of row order
+  // Only rows after that are drawn.
+  const next = officeModel({ ...fixture(), events: [envelope(5, { ts: 10_200 })] }, model, { cols: 4, now: 11_000 });
+  expect(next.arcs.map((arc) => arc.seq)).toEqual([5]);
+});
+
+test("delivery warning marks come from overflow, undeliverable, stale and quiet rows", () => {
+  const first = officeModel(fixture(), null, { cols: 4, now: 10_000 });
+  const model = officeModel({ ...fixture(), events: [
+    { seq: 1, event: { t: "overflow", peer: "kimi", env: { from: "claude", to: ["kimi"], kind: "chat", ts: 10_000 } } },
+    { seq: 2, event: { t: "undeliverable", peer: "pi", reason: "marker-free", env: { from: "claude", to: ["pi"], kind: "chat", ts: 10_000 } } },
+    { seq: 3, event: { t: "stale", peer: "pi", reason: "marker-free", env: { from: "claude", to: ["pi"], kind: "chat", ts: 10_000 } } },
+    { seq: 4, event: { t: "quiet", peers: ["codex", "qwen"], reason: "marker-free", env: { from: "claude", to: ["codex"], kind: "chat", ts: 10_000 } } },
+    { seq: 5, event: { t: "off_roster", peers: ["kimi"], env: { from: "claude", to: ["kimi"], kind: "chat", ts: 10_000 } } },
+  ] }, first, { cols: 4, now: 12_000 });
+  expect(model.alerts.map((alert) => [alert.peer, alert.kind])).toEqual([
+    ["kimi", "overflow"], ["pi", "undeliverable"], ["pi", "stale"], ["codex", "quiet"], ["qwen", "quiet"],
+  ]);
+  for (const alert of model.alerts) expect(alert.until).toBe(22_000);
+  expect(JSON.stringify(model.alerts)).not.toContain("marker-free"); // reasons never enter
+});
+
+test("the busy latch keeps a short turn visible for a few seconds, once per state row", () => {
+  const first = officeModel(fixture(), null, { cols: 4, now: 10_000 });
+  const snap = { ...fixture(), events: [{ seq: 1, event: { t: "state", peer: "qwen", state: "busy" } }] };
+  const model = officeModel(snap, first, { cols: 4, now: 10_400 });
+  expect(model.latched.qwen).toEqual({ seq: 1, until: 13_400 });
+  // qwen is idle in the status, so the latch is what keeps the turn visible; a busy peer needs none.
+  expect(model.desks.find((desk) => desk.id === "qwen")!.condition).toBe("idle");
+  const again = officeModel(snap, model, { cols: 4, now: 12_000 });
+  expect(again.latched.qwen).toEqual({ seq: 1, until: 13_400 }); // same row, same latch
+  expect(again).toEqual(model);
+});
+
+test("arcs expire on the snapshot's own envelope clock and purge on a later changed render", () => {
+  const first = officeModel(fixture(), null, { cols: 4, now: 10_000 });
+  const second = officeModel({ ...fixture(), events: [envelope(1, { ts: 10_000 })] }, first, { cols: 4, now: 10_100 });
+  expect(second.arcs).toHaveLength(1); // until 20_000
+  // New envelopes arrive before expiry: the old arc is still within its 10 s.
+  const third = officeModel({ ...fixture(), events: [envelope(2, { ts: 19_999 })] }, second, { cols: 4, now: 20_000 });
+  expect(third.arcs.map((arc) => arc.seq)).toEqual([1, 2]);
+  // The snapshot clock passes the expiry: the arc purges with that changed render.
+  const fourth = officeModel({ ...fixture(), events: [envelope(3, { ts: 20_001 })] }, third, { cols: 4, now: 20_100 });
+  expect(fourth.arcs.map((arc) => arc.seq)).toEqual([2, 3]);
+});
+
+test("the settle rule: gap over 3 s or more than 6 transitions jumps to final positions", () => {
+  const base = officeModel(fixture(), null, { cols: 4, now: 10_000 });
+  expect(base.settle).toBe(true); // first snapshot
+  const oneMove = fixture();
+  oneMove.tasks = oneMove.tasks!.map((task) => task.id === 2 ? { ...task, state: "in_progress", owner: "codex" } : task);
+  expect(officeModel(oneMove, base, { cols: 4, now: 10_800 }).settle).toBe(false); // 1 move, 0.8 s gap
+  expect(officeModel(oneMove, base, { cols: 4, now: 13_001 }).settle).toBe(true); // gap over 3 s
+  const storm = fixture();
+  storm.tasks = storm.tasks!.map((task) =>
+    task.id === 2 || task.id === 3 ? { ...task, state: "in_progress", owner: "codex" }
+    : task.id === 4 ? { ...task, owner: "claude" }
+    : task.id === 5 ? { ...task, state: "approved" }
+    : task.id === 6 ? { ...task, owner: "kimi" }
+    : task.id === 7 ? { ...task, state: "proposed", owner: "" } : task);
+  storm.status!.peers = Object.fromEntries(Object.entries(storm.status!.peers!).filter(([id]) => id !== "qwen"));
+  const stormy = officeModel(storm, base, { cols: 4, now: 10_500 });
+  expect(stormy.transitions.cardsMoved.length + stormy.transitions.desksRemoved.length).toBe(7);
+  expect(stormy.settle).toBe(true);
+  // The settle flag itself is stable: carrying it must not churn an unchanged snapshot.
+  const after = officeModel(storm, stormy, { cols: 4, now: 11_000 });
+  expect(after.settle).toBe(true);
+  expect(officeModel(storm, after, { cols: 4, now: 12_000 })).toEqual(after);
 });

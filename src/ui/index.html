@@ -17,6 +17,9 @@ const dashboardTheme = (() => {
 :root{color-scheme:light;--waiting:#795399;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--panel:#ffffff;--panel-soft:#f4f6f2;--control:#ffffff;--control-border:#bbc4bb;--hover:#f0f4ef;--green:#245f45;--green-soft:#e4efe9;--amber:#8a5b12;--amber-soft:#f8eed6;--blue:#245a93;--blue-soft:#e6eef8;--red:#a2392f;--red-soft:#f6e5e2;--dot:#98a29b;--dot-ok:#2f7a52;--dot-warn:#b07a16;--dot-err:#b24539;--focus:#245f45;--on-accent:#ffffff}:root[data-theme="dark"]{color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:12px}.section-head .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.peername{display:flex;align-items:center;gap:8px;min-width:0}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:2px 7px;background:var(--panel-soft);color:var(--muted);border-radius:4px;white-space:nowrap}.badge.ok{background:var(--green-soft);color:var(--green)}.badge.warn{color:var(--amber);background:var(--amber-soft)}.badge.info{color:var(--blue);background:var(--blue-soft)}.badge.err{color:var(--red);background:var(--red-soft)}.dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--dot)}.dot.ok{background:var(--dot-ok)}.dot.warn{background:var(--dot-warn)}.dot.err{background:var(--dot-err)}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{background:var(--control);color:var(--muted);border:1px solid var(--control-border);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;line-height:1.2}.chip:hover{background:var(--hover)}.chip[aria-pressed="true"]{background:var(--green);color:var(--on-accent);border-color:var(--green);font-weight:600}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:var(--control);color:var(--ink);border:1px solid var(--control-border);border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:var(--hover)}button.primary{background:var(--green);color:var(--on-accent);border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--focus);outline-offset:3px}input,select,textarea{width:100%;border:1px solid var(--control-border);border-radius:5px;padding:8px;background:var(--control);color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.section-head .filters select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event[hidden]{display:none}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:var(--red)}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}progress.warn{accent-color:var(--amber)}progress.warn::-webkit-progress-value{background:var(--amber)}progress.critical{accent-color:var(--red)}progress.critical::-webkit-progress-value{background:var(--red)}progress::-moz-progress-bar{background:var(--green)}progress.warn::-moz-progress-bar{background:var(--amber)}progress.critical::-moz-progress-bar{background:var(--red)}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 .task-progress{padding:12px 18px;border-bottom:1px solid var(--line)}.task-progress svg{display:block;width:100%;height:12px;margin:8px 0}.progress-proposed{fill:var(--dot)}.progress-unknown{fill:var(--dot)}.progress-waiting{fill:var(--waiting)}.progress-in_progress{fill:var(--blue)}.progress-in_review{fill:var(--amber)}.progress-changes_requested{fill:var(--red)}.progress-approved{fill:var(--green)}.task-stage{font:12px ui-monospace,monospace;margin:8px 0;color:var(--muted)}.task-stage .reached{color:var(--green)}.task-stage.changes{color:var(--red)}.theme-choice{width:auto}.actions input[type="text"]{width:auto;flex:1 1 160px;max-width:320px}details.settings-group>summary{padding:12px 18px;cursor:pointer;border-bottom:1px solid var(--line);font-weight:600}details.settings-group:last-child:not([open])>summary{border-bottom:0}.preview{margin-top:8px;padding:8px 10px;background:var(--panel-soft);border-radius:5px;font:12px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.preview:empty{display:none}
 .office-scene{display:block;width:100%;height:auto}.office-scene text{font-family:system-ui,sans-serif}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--muted);font-size:1.8px;letter-spacing:.1px;text-transform:uppercase}.office-room-count{fill:var(--ink);font-size:1.8px;font-variant-numeric:tabular-nums}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed{opacity:.55}.office-name{fill:var(--ink);font-size:1.6px;font-weight:600}.office-state{fill:var(--muted);font-size:1.4px}.office-glyph{font-size:1.8px}.office-idle .office-glyph{fill:var(--dot-ok)}.office-busy .office-glyph{fill:var(--dot-warn)}.office-offline .office-glyph{fill:var(--dot)}.office-paused .office-glyph{fill:var(--dot-warn)}.office-waiting .office-glyph{fill:var(--dot-err)}.office-unknown .office-glyph{fill:var(--dot)}.office-meta{fill:var(--muted);font-size:1.2px}.office-hand{fill:var(--dot-err);font-size:1.6px}.office-bubble{fill:var(--blue-soft);stroke:var(--blue)}.office-bubble-text{fill:var(--blue);font-size:1.3px}.office-mode{fill:var(--amber);font-size:1.2px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1.3px;font-family:ui-monospace,monospace}.office-waiting-card .office-card{stroke:var(--waiting);stroke-dasharray:.5 .4}.office-rework-card .office-card{stroke:var(--red)}.office-more{fill:var(--blue);font-size:1.4px}.office-spotlight .office-desk-surface,.office-spotlight .office-card{stroke:var(--focus);stroke-width:.5}.row.spotlight{background:var(--hover)}
+.office-movable{transition:transform .8s ease}.office-arc-path{fill:none;stroke:var(--blue);stroke-width:.35}.office-arc-important{stroke:var(--amber)}.office-arc-dropped{stroke:var(--red);stroke-dasharray:.6 .4}.office-arc-label{fill:var(--muted);font-size:1.2px}.office-alert{fill:var(--red);font-size:1.4px}.office-latch{fill:var(--dot-warn);font-size:1.4px}.office-busy .office-glyph,.office-hand{animation:office-pulse 1.2s ease-in-out infinite}.office-appear{animation:office-appear .5s ease-out}.office-leaving{pointer-events:none;animation:office-fade .4s linear forwards}.office-fadeout{animation-name:office-fade;animation-duration:1s;animation-timing-function:linear;animation-fill-mode:forwards}.office-settle .office-movable{transition:none}.office-settle .office-appear{animation:none}
+@keyframes office-pulse{50%{opacity:.45}}@keyframes office-appear{from{opacity:0}}@keyframes office-fade{to{opacity:0}}
+@media(prefers-reduced-motion:reduce){.office-scene,.office-scene *{transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
@@ -147,7 +150,7 @@ function syncMutationControls() { document.querySelectorAll('button[data-mutatio
 function resetView(id, instance) {
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
-  officePrev = null; officeDesks.clear(); officeCards.clear();
+  officePrev = null; officeDesks.clear(); officeCards.clear(); officeScene = null;
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
@@ -508,8 +511,11 @@ async function poll() {
   catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
-// office-scene-begin (issue 264): the static Flat office. Draws the shared officeModel as inline SVG from the
+// office-scene-begin (issue 264): the Flat office. Draws the shared officeModel as inline SVG from the
 // same render(snapshot) call as the lists; no timer, no frame loop, no request and no action lives here.
+// Motion is CSS only: transitions on transform/opacity for card moves, keyframe fades for arcs, alerts
+// and the busy latch. Fading uses animation-delay computed from the model's timestamps at render time;
+// expired nodes purge lazily on the next changed render or on their own animationend, never on a timer.
 function officeClip(text, max) { text = String(text); return text.length > max ? text.slice(0, max - 3) + '...' : text; }
 function officeNode(tag, attrs, text) { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const key in attrs) node.setAttribute(key, String(attrs[key])); if (text !== undefined) node.textContent = text; return node; }
 function officeKeys(event, activate) { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } }
@@ -518,79 +524,182 @@ function spotlightRow(row) { if (spotlitRow && spotlitRow !== row) spotlitRow.cl
 function activateOfficePeer(id) { const row = peerRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
 function activateOfficeTask(id) { const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
 function officeFilter(state) { $('task-filter').value = state; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); }
-function officeCardNode(card) {
-  const g = officeNode('g', { class: 'office-card-node' + (card.waiting ? ' office-waiting-card' : '') + (card.rework ? ' office-rework-card' : ''), tabindex: '0', role: 'button', 'aria-label': card.name });
-  g.append(officeNode('rect', { x: card.x, y: card.y, width: card.w, height: card.h, rx: 0.6, class: 'office-card' }));
-  g.append(officeNode('text', { x: card.x + 0.8, y: card.y + card.h - 0.7, class: 'office-card-text' }, officeClip(card.label, 22)));
-  officeCards.set(card.id, g);
-  const open = () => activateOfficeTask(card.id);
-  g.addEventListener('click', open);
-  g.addEventListener('keydown', (event) => officeKeys(event, open));
-  return g;
+// Fade timing for a transient mark: it holds, then fades over the final second so it is gone at `until`.
+// Applied once when the node is created; later renders leave the running animation alone.
+function officeFade(node, until, now) {
+  const remaining = Math.max(0, until - now);
+  if (remaining <= 0) return false;
+  const duration = Math.min(1000, remaining);
+  node.setAttribute('class', ((node.getAttribute('class') || '') + ' office-fadeout').trim());
+  if (duration !== 1000) node.style.animationDuration = duration + 'ms';
+  node.style.animationDelay = (remaining - duration) + 'ms';
+  return true;
 }
-function officeDeskNode(desk) {
-  const g = officeNode('g', { class: 'office-desk office-' + desk.condition + (desk.dimmed ? ' office-dimmed' : ''), tabindex: '0', role: 'button', 'aria-label': desk.name });
-  g.append(officeNode('rect', { x: desk.x, y: desk.y, width: desk.w, height: desk.h, rx: 1, class: 'office-desk-surface' }));
+function officeCardPaint(node, card) {
+  node.setAttribute('class', 'office-card-node office-movable' + (card.waiting ? ' office-waiting-card' : '') + (card.rework ? ' office-rework-card' : ''));
+  node.setAttribute('aria-label', card.name);
+  node.replaceChildren(
+    officeNode('rect', { x: 0, y: 0, width: card.w, height: card.h, rx: 0.6, class: 'office-card' }),
+    officeNode('text', { x: 0.8, y: card.h - 0.7, class: 'office-card-text' }, officeClip(card.label, 22)));
+}
+function officeDeskPaint(node, desk) {
+  node.setAttribute('class', 'office-desk office-' + desk.condition + (desk.dimmed ? ' office-dimmed' : ''));
+  node.setAttribute('aria-label', desk.name);
+  const children = [officeNode('rect', { x: desk.x, y: desk.y, width: desk.w, height: desk.h, rx: 1, class: 'office-desk-surface' })];
   if (desk.bubble) {
-    g.append(officeNode('rect', { x: desk.x + 0.6, y: desk.y - 2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
-    g.append(officeNode('text', { x: desk.x + desk.w / 2, y: desk.y - 0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
+    children.push(officeNode('rect', { x: desk.x + 0.6, y: desk.y - 2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
+    children.push(officeNode('text', { x: desk.x + desk.w / 2, y: desk.y - 0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
   }
-  g.append(officeNode('text', { x: desk.x + 1, y: desk.y + 2, class: 'office-name' }, desk.id));
-  if (desk.mode) g.append(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 2, 'text-anchor': 'end', class: 'office-mode' }, desk.mode));
-  g.append(officeNode('text', { x: desk.x + 1, y: desk.y + 3.9, class: 'office-glyph' }, desk.glyph));
-  g.append(officeNode('text', { x: desk.x + 2.6, y: desk.y + 3.9, class: 'office-state' }, desk.label));
-  if (desk.approvals > 0) g.append(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 3.9, 'text-anchor': 'end', class: 'office-hand' }, '⚑ ' + desk.approvals));
+  children.push(officeNode('text', { x: desk.x + 1, y: desk.y + 2, class: 'office-name' }, desk.id));
+  if (desk.mode) children.push(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 2, 'text-anchor': 'end', class: 'office-mode' }, desk.mode));
+  children.push(officeNode('text', { x: desk.x + 1, y: desk.y + 3.9, class: 'office-glyph' }, desk.glyph));
+  children.push(officeNode('text', { x: desk.x + 2.6, y: desk.y + 3.9, class: 'office-state' }, desk.label));
+  if (desk.approvals > 0) children.push(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 3.9, 'text-anchor': 'end', class: 'office-hand' }, '⚑ ' + desk.approvals));
   let line = 5.1;
-  if (desk.breakNote) { g.append(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip('Break: ' + desk.breakNote + (desk.breakResetsAt ? ' / resets ' + rel(desk.breakResetsAt) : ''), 38))); line += 1.05; }
-  if (!desk.attached) { g.append(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, 'disconnected; work retained')); line += 1.05; }
+  if (desk.breakNote) { children.push(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip('Break: ' + desk.breakNote + (desk.breakResetsAt ? ' / resets ' + rel(desk.breakResetsAt) : ''), 38))); line += 1.05; }
+  if (!desk.attached) { children.push(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, 'disconnected; work retained')); line += 1.05; }
   const tray = [];
   if (desk.tray.queued) tray.push(desk.tray.queued + ' queued');
   if (desk.tray.important) tray.push(desk.tray.important + ' important');
   if (desk.tray.needsReview) tray.push(desk.tray.needsReview + ' to review');
   if (desk.tray.heldBy) tray.push('held by ' + desk.tray.heldBy);
-  if (tray.length) g.append(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
-  for (const card of desk.cards) g.append(officeCardNode(card));
-  if (desk.extraCards > 0) g.append(officeNode('text', { x: desk.x + 1, y: desk.y + desk.h - 0.4, class: 'office-meta' }, '+' + desk.extraCards + ' more'));
-  officeDesks.set(desk.id, g);
-  const open = () => activateOfficePeer(desk.id);
-  g.addEventListener('click', open);
-  g.addEventListener('keydown', (event) => officeKeys(event, open));
-  return g;
+  if (tray.length) children.push(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
+  if (desk.extraCards > 0) children.push(officeNode('text', { x: desk.x + 1, y: desk.y + desk.h - 0.4, class: 'office-meta' }, '+' + desk.extraCards + ' more'));
+  node.replaceChildren(...children);
+}
+function officeRoomPaint(node, room) {
+  node.setAttribute('class', 'office-roombox office-roombox-' + room.id);
+  node.replaceChildren(
+    officeNode('rect', { x: room.x, y: room.y, width: room.w, height: room.h, rx: 1, class: 'office-room' }),
+    officeNode('text', { x: room.x + 1, y: room.y + 2.2, class: 'office-room-title' }, room.label),
+    officeNode('text', { x: room.x + room.w - 1, y: room.y + 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
+  if (room.overflow > 0 && room.filterState) {
+    const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + room.overflow + ' more ' + room.filterState.replaceAll('_', ' ') + ' tasks in the task list' });
+    more.append(officeNode('text', { x: room.x + 1, y: room.y + room.h - 1, class: 'office-more' }, '+' + room.overflow + ' more'));
+    const open = () => officeFilter(room.filterState);
+    more.addEventListener('click', open);
+    more.addEventListener('keydown', (event) => officeKeys(event, open));
+    node.append(more);
+  }
+}
+let officeScene = null;function officeEnsure(target) {
+  if (officeScene) return officeScene;
+  const svg = officeNode('svg', { class: 'office-scene', role: 'group', 'aria-label': 'Office: desks, rooms and task cards' });
+  const layers = {};
+  for (const name of ['rooms', 'desks', 'marks', 'arcs', 'cards']) { const layer = officeNode('g', { class: 'office-layer office-layer-' + name }); svg.append(layer); layers[name] = layer; }
+  officeScene = { svg, layers, els: new Map() };
+  target.replaceChildren(svg);
+  return officeScene;
+}
+function officeLeave(scene, key) {
+  const entry = scene.els.get(key);
+  if (!entry) return;
+  scene.els.delete(key);
+  entry.node.classList.add('office-leaving');
+  entry.node.addEventListener('animationend', () => entry.node.remove());
 }
 function drawOffice(target, model) {
-  officeDesks.clear(); officeCards.clear();
-  const svg = officeNode('svg', { viewBox: '0 0 ' + model.width + ' ' + model.height, class: 'office-scene', role: 'group', 'aria-label': 'Office: desks, rooms and task cards' });
-  for (const room of model.rooms) {
-    const box = officeNode('g', { class: 'office-roombox office-roombox-' + room.id });
-    box.append(officeNode('rect', { x: room.x, y: room.y, width: room.w, height: room.h, rx: 1, class: 'office-room' }));
-    box.append(officeNode('text', { x: room.x + 1, y: room.y + 2.2, class: 'office-room-title' }, room.label));
-    box.append(officeNode('text', { x: room.x + room.w - 1, y: room.y + 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
-    for (const card of room.cards) box.append(officeCardNode(card));
-    if (room.overflow > 0 && room.filterState) {
-      const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + room.overflow + ' more ' + room.filterState.replaceAll('_', ' ') + ' tasks in the task list' });
-      more.append(officeNode('text', { x: room.x + 1, y: room.y + room.h - 1, class: 'office-more' }, '+' + room.overflow + ' more'));
-      const open = () => officeFilter(room.filterState);
-      more.addEventListener('click', open);
-      more.addEventListener('keydown', (event) => officeKeys(event, open));
-      box.append(more);
+  const scene = officeEnsure(target), els = scene.els, now = Date.now();
+  scene.svg.setAttribute('viewBox', '0 0 ' + model.width + ' ' + model.height);
+  scene.svg.setAttribute('class', 'office-scene' + (model.settle ? ' office-settle' : ''));
+  const seen = new Set();
+  const keep = (key, sig, layer, paint, appear) => {
+    seen.add(key);
+    const entry = els.get(key);
+    if (entry && entry.sig === sig) return { node: entry.node, fresh: false };
+    const node = entry ? entry.node : officeNode('g', {});
+    paint(node);
+    if (entry) entry.sig = sig;
+    else {
+      if (appear !== false) { node.classList.add('office-appear'); node.addEventListener('animationend', () => node.classList.remove('office-appear')); }
+      layer.append(node);
+      els.set(key, { node, sig });
     }
-    svg.append(box);
+    return { node, fresh: true };
+  };
+  for (const room of model.rooms) {
+    keep('room:' + room.id, JSON.stringify({ ...room, cards: undefined }), scene.layers.rooms, (node) => officeRoomPaint(node, room), false);
   }
-  for (const desk of model.desks) svg.append(officeDeskNode(desk));
-  if (model.extraPeers > 0) svg.append(officeNode('text', { x: model.width, y: 1.8, 'text-anchor': 'end', class: 'office-meta' }, '+' + model.extraPeers + ' peers'));
-  target.append(svg);
+  for (const desk of model.desks) {
+    const { node, fresh } = keep('desk:' + desk.id, JSON.stringify({ ...desk, cards: undefined }), scene.layers.desks, (n) => officeDeskPaint(n, desk));
+    if (fresh && !node.getAttribute('tabindex')) {
+      node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
+      const open = () => activateOfficePeer(desk.id);
+      node.addEventListener('click', open);
+      node.addEventListener('keydown', (event) => officeKeys(event, open));
+    }
+  }
+  const cards = [];
+  for (const desk of model.desks) cards.push(...desk.cards);
+  for (const room of model.rooms) cards.push(...room.cards);
+  for (const card of cards) {
+    const key = 'card:' + card.id, transform = 'translate(' + card.x + 'px,' + card.y + 'px)';
+    const { node, fresh } = keep(key, JSON.stringify([card.label, card.name, card.waiting, card.rework, card.w, card.h]), scene.layers.cards, (n) => officeCardPaint(n, card));
+    if (fresh && !node.getAttribute('tabindex')) {
+      node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
+      const open = () => activateOfficeTask(card.id);
+      node.addEventListener('click', open);
+      node.addEventListener('keydown', (event) => officeKeys(event, open));
+    }
+    if (node.style.transform !== transform) node.style.transform = transform; // the only animated property
+  }
+  if (model.extraPeers > 0) {
+    keep('extra:peers', String(model.extraPeers) + ':' + model.width, scene.layers.marks,
+      (node) => node.replaceChildren(officeNode('text', { x: model.width, y: 1.8, 'text-anchor': 'end', class: 'office-meta' }, '+' + model.extraPeers + ' peers')), false);
+  }
+  const deskById = new Map(model.desks.map((desk) => [desk.id, desk]));
+  for (const arc of model.arcs) {
+    const from = deskById.get(arc.from);
+    const label = arc.kind + (arc.task ? ' #' + arc.task : '');
+    for (const target of arc.to.length ? arc.to : model.desks.map((desk) => desk.id)) {
+      const to = deskById.get(target);
+      if (!to) continue;
+      const x1 = from ? from.x + from.w / 2 : 1, y1 = from ? from.y : 1, x2 = to.x + to.w / 2, y2 = to.y;
+      const cls = 'office-arc-path' + (arc.priority === 'important' ? ' office-arc-important' : '') + (arc.dropped ? ' office-arc-dropped' : '');
+      const { node, fresh } = keep('arc:' + arc.seq + ':' + target, JSON.stringify([arc.seq, target, arc.kind, arc.task, arc.priority, arc.dropped, x1, y1, x2, y2]), scene.layers.arcs,
+        (n) => { n.setAttribute('class', 'office-arc'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(
+          officeNode('path', { d: 'M ' + x1 + ' ' + y1 + ' Q ' + (x1 + x2) / 2 + ' ' + (Math.min(y1, y2) - 4) + ' ' + x2 + ' ' + y2, class: cls }),
+          officeNode('text', { x: (x1 + x2) / 2, y: Math.min(y1, y2) - 4.8, 'text-anchor': 'middle', class: 'office-arc-label' }, label)); }, false);
+      if (fresh) officeFade(node, arc.until, now);
+    }
+  }
+  const latestAlert = new Map();
+  for (const alert of model.alerts) if (alert.until > now) latestAlert.set(alert.peer, alert);
+  for (const [peer, alert] of latestAlert) {
+    const desk = deskById.get(peer);
+    if (!desk) continue;
+    const { node, fresh } = keep('alert:' + peer, String(alert.seq), scene.layers.marks,
+      (n) => { n.setAttribute('class', 'office-alertmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 5.1, 'text-anchor': 'end', class: 'office-alert' }, '! ' + alert.kind)); }, false);
+    if (fresh) officeFade(node, alert.until, now);
+  }
+  for (const desk of model.desks) {
+    const latch = model.latched[desk.id];
+    if (desk.condition !== 'idle' || !latch || latch.until <= now) continue;
+    const { node, fresh } = keep('latch:' + desk.id, String(latch.seq), scene.layers.marks,
+      (n) => { n.setAttribute('class', 'office-latchmark'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(officeNode('text', { x: desk.x + 5.2, y: desk.y + 3.9, class: 'office-latch' }, '● busy')); }, false);
+    if (fresh) officeFade(node, latch.until, now);
+  }
+  for (const key of [...els.keys()]) if (!seen.has(key)) officeLeave(scene, key);
+  officeDesks.clear(); officeCards.clear();
+  for (const [key, entry] of els) {
+    if (key.startsWith('desk:')) officeDesks.set(key.slice(5), entry.node);
+    else if (key.startsWith('card:')) officeCards.set(Number(key.slice(5)), entry.node);
+  }
 }
 function renderOffice(snapshot) {
   const view = officeView.get(), section = $('office-section');
   section.hidden = view === 'off';
   if (view === 'off') {
-    if (signatures.has('office')) { signatures.delete('office'); $('office').replaceChildren(); }
+    if (signatures.has('office')) { signatures.delete('office'); $('office').replaceChildren(); officeScene = null; }
     officePrev = null; officeDesks.clear(); officeCards.clear(); return;
   }
   const cols = (section.clientWidth || 0) >= 1000 ? 4 : (section.clientWidth || 0) >= 700 ? 2 : 1;
-  const model = officeModel(snapshot, officePrev, { cols });
+  const model = officeModel(snapshot, officePrev, { cols, now: Date.now() });
   officePrev = model;
-  update('office', [view, cols, model], (target) => drawOffice(target, model));
+  const signature = JSON.stringify([view, cols, model]);
+  if (signatures.get('office') === signature) return;
+  signatures.set('office', signature);
+  drawOffice($('office'), model);
 }
 // office-scene-end
 const STREAM_KINDS = ['chat', 'task', 'review', 'status', 'budget', 'presence', 'state'];

@@ -169,6 +169,21 @@ its desk or card on focus and hover. The scene performs no action: every control
 stays in the lists. The live browser look is tracked in `docs/smoke.md` and
 remains unverified until performed.
 
+Motion (phase 2): card moves between rooms and desks, message arcs between
+desks (from the hub or the console they start at an anchor point), delivery
+warning marks and the busy latch all follow the snapshot. Motion is CSS only:
+transitions on transform and opacity (at most one second), keyframe fades for
+the transient marks. Arcs and marks hold, then fade out ten seconds after the
+event, timed at render from the model's timestamps; expired nodes purge on the
+next changed render or their own animationend, never on a timer. Arcs expire on
+the snapshot's own envelope clock, so an unchanged snapshot re-renders
+identically and writes nothing to the DOM. The scene goes straight to final
+positions on the first snapshot, after a project switch, after a snapshot gap
+over three seconds, or when one snapshot brings more than six transitions.
+`prefers-reduced-motion: reduce` removes all scene transitions and animations.
+Event reasons and bodies never enter the scene; arcs carry from, to, kind,
+priority, the task ref and the dropped flag only.
+
 Console color policy is `--color=auto|always|never`, with `auto` as the default.
 Auto enables color only when both input and output are TTYs, `TERM` is not
 `dumb`, and `NO_COLOR` is empty or absent. Explicit `always` overrides these

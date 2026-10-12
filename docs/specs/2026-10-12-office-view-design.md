@@ -2,7 +2,7 @@
 title: Office view of live agent work in the dashboard
 date: 2026-10-12
 project: agent-hub
-status: phase 1 implemented (static Flat office); phases 2-5 pending
+status: phases 1-2 implemented (static Flat office with snapshot-driven motion); phases 3-5 pending
 issue: 264
 ---
 
@@ -73,15 +73,52 @@ Phase 1 decisions within the spec:
 - Transitions are computed as data in phase 1 (desks added/removed, cards
   moved); they drive motion only from phase 2.
 
+Phase 2 decisions within the spec:
+
+- Motion is CSS only. Cards are persistent keyed SVG nodes positioned by CSSOM
+  `transform`, so a changed placement animates through a `transform` transition
+  (0.8 s); desks never move and are rebuilt in place when their content
+  changes. The busy glyph and the raised hand pulse (`opacity` keyframes); an
+  idle desk has no animation class. `prefers-reduced-motion: reduce` removes
+  all scene transitions and animations.
+- Arcs, delivery marks and the busy latch are transient marks with an absolute
+  expiry timestamp in the model. The renderer draws them once with a keyframe
+  fade whose delay is computed at render time (hold, then fade over the final
+  second, `fill: forwards`), so "fade after 10 seconds" needs no timer; expired
+  nodes purge lazily on the next changed render or on their own animationend.
+- The model's clock for arc expiry is the snapshot's own newest envelope
+  timestamp (`eventTime`), not wall time: an unchanged snapshot yields an
+  identical model at any wall time, so the signature guard still writes
+  nothing. Wall time enters only as `options.now` at the moment an event row is
+  first consumed (alert/latch horizons) and in the settle gap.
+- Event rows are deduped by `seq` against `lastSeq`, so re-rendering the same
+  snapshot (for example after a task-filter change) draws nothing twice. The
+  first snapshot after load or a project switch consumes rows without drawing
+  them: no replay of history.
+- The settle flag is carried unchanged while nothing moves, and recomputed when
+  a snapshot brings changes: gap over 3 s since the last change, or more than
+  6 transitions (card moves, desk adds/removals, new marks) at once, jump
+  straight to final positions.
+- Arc fan-out: an envelope with no `to` draws an arc to every visible desk; a
+  `from` that is not a peer (hub, console) starts at a fixed anchor point.
+  Delivery marks from `quiet` rows land on every named peer; `off_roster` rows
+  are not drawn (the mapping table names only overflow, undeliverable, stale
+  and quiet). Event `reason` strings are never copied into the model.
+
 ## Verification
 
 - `test/office-model.test.ts`: mapping fixture, counts equality with
   `taskProgress`, slot stability, transitions, caps, glyph/label coverage, the
-  marker test (no body, detail, approval title or PII text in the model).
+  marker test (no body, detail, approval title or PII text in the model);
+  phase 2: arcs, delivery marks and the busy latch from event rows, no replay
+  on the first snapshot, seq dedupe, arc expiry on the snapshot clock, and the
+  settle rule (first snapshot, gap, transition storm, flag stability).
 - `test/office-view.test.ts`: injection and CSP cleanliness of the served page,
   the cookie (default Off, persistence, blocked-cookie fallback), no
-  timer/request/colour literal in the scene code, no DOM write on an unchanged
-  snapshot (counting fake document), focus and activation highlighting,
-  "+N more" filtering, `resetView` clearing.
+  timer/request/colour literal in the scene code, reduced-motion and motion CSS
+  scans, no DOM write on an unchanged snapshot (counting fake document), focus
+  and activation highlighting, "+N more" filtering, `resetView` clearing;
+  phase 2: card moves keep their node and animate by transform, arcs/marks/
+  latch draw once with fade timing, departure fade purges on animationend.
 - The live browser look (two agents working, both themes, console open) is
   recorded in `docs/smoke.md` as unverified for phase 1.

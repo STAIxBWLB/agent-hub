@@ -28,11 +28,25 @@ export interface OfficeTaskInput {
   reviewer?: string;
   deps?: readonly number[];
 }
+/** The event-row fields the scene reads from `events[]`. Bodies and reasons are never read. */
+export interface OfficeEventInput {
+  seq?: number;
+  event?: {
+    t?: string;
+    peer?: string;
+    peers?: readonly string[];
+    state?: string;
+    dropped?: string;
+    env?: { from?: string; to?: readonly string[]; kind?: string; priority?: string; ts?: number; refs?: { task?: string }; [key: string]: unknown };
+    [key: string]: unknown;
+  };
+}
 export interface OfficeSnapshotInput {
   status?: { peers?: Record<string, OfficePeerInput> };
   tasks?: readonly OfficeTaskInput[];
   permissions?: readonly { peer?: string }[];
   budget?: Record<string, { paused?: { reason?: string; resetsAt?: number | null } | null; [key: string]: unknown }>;
+  events?: readonly OfficeEventInput[];
 }
 export interface OfficeCounts {
   proposed: number; waiting: number; in_progress: number; in_review: number; changes_requested: number; approved: number;
@@ -91,6 +105,27 @@ export interface OfficeTransitions {
   desksRemoved: string[];
   cardsMoved: { id: number; from: string; to: string }[];
 }
+/** One message arc between desks (or from the hub/console anchor). Ids, kind and timing only. */
+export interface OfficeArc {
+  seq: number;
+  from: string;
+  /** Recipient peer ids; empty means a broadcast (the renderer fans out to every visible desk). */
+  to: string[];
+  kind: string;
+  priority: string;
+  /** refs.task, a numeric task id string; empty when the envelope names no task. */
+  task: string;
+  dropped: string;
+  /** Wall time (ms) after which the arc has faded out; the renderer fades with CSS, the model purges lazily. */
+  until: number;
+}
+/** A delivery warning mark at a desk, from an overflow / undeliverable / stale / quiet event row. */
+export interface OfficeAlert {
+  seq: number;
+  peer: string;
+  kind: string;
+  until: number;
+}
 export interface OfficeScene {
   cols: number;
   width: number;
@@ -104,9 +139,21 @@ export interface OfficeScene {
   slots: Record<string, number>;
   /** Task id -> placement ("room:todo" | "room:work" | "room:review" | "shelf:done" | "desk:<peer>" | "counted:unknown"). */
   placed: Record<string, string>;
+  arcs: OfficeArc[];
+  alerts: OfficeAlert[];
+  /** Peer -> last busy state row, so a short turn stays visible for a few seconds (the busy latch). */
+  latched: Record<string, { seq: number; until: number }>;
+  /** True = draw final positions with no motion: first snapshot, after a project switch, a snapshot gap over 3 s, or more than 6 transitions at once. */
+  settle: boolean;
+  /** Wall time of the last change; carried unchanged while nothing moves so an idle snapshot re-renders identically. */
+  at: number;
+  /** Newest envelope timestamp seen; expires arcs on the snapshot's own clock, never on wall time. */
+  eventTime: number;
+  /** Newest event seq consumed; dedupes rows when the same snapshot is rendered again. */
+  lastSeq: number;
 }
 
-export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene | null, options: { cols?: number }): OfficeScene {
+export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene | null, options: { cols?: number; now?: number }): OfficeScene {
   const FIXED = ["claude", "codex", "kimi", "pi", "local"];
   const KNOWN = ["proposed", "in_progress", "in_review", "changes_requested", "approved"];
   const GLYPHS: Record<string, string> = { idle: "○", busy: "●", offline: "×", paused: "‖", waiting: "⚑", unknown: "?" };
@@ -114,9 +161,11 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const DESK_CAP = 12, ROOM_CARDS = 8, DESK_CARDS = 3;
   const DESK_W = 10, DESK_H = 12, DESK_DX = 12, DESK_DY = 14, DESK_COLS = 4, DESK_TOP = 3;
   const ROOM_W = 22, ROOM_H = 25, ROOM_DX = 24, ROOM_DY = 27;
+  const ARC_MS = 10_000, LATCH_MS = 3_000, SETTLE_GAP_MS = 3_000, SETTLE_MAX_MOVES = 6, ARC_CAP = 12, ALERT_CAP = 12;
   const text = (value: unknown) => typeof value === "string" ? value : "";
   const num = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
   const cols = Math.max(1, Math.floor(num(options?.cols) || 1));
+  const now = num(options?.now) || Date.now();
   const peers = snapshot?.status?.peers && typeof snapshot.status.peers === "object" ? snapshot.status.peers : {};
   const tasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks.filter((task) => task && typeof task.id === "number") : [];
   const permissions = Array.isArray(snapshot?.permissions) ? snapshot.permissions : [];
@@ -277,6 +326,53 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     transitions.desksRemoved = [...prevDesks].filter((id) => !shownSet.has(id)).sort();
   }
 
+  // Phase 2 marks: message arcs, delivery warnings and the busy latch, from events[] rows.
+  // The first snapshot after load or a project switch (previous === null) consumes rows without
+  // drawing them: no replay of history. Rows are deduped by seq so re-rendering the same
+  // snapshot is idempotent. Arcs expire on the snapshot's own envelope clock (eventTime), so an
+  // unchanged snapshot yields an identical model and no DOM write; wall time enters only through
+  // `now` at the moment a row is first seen, and through the settle gap below.
+  const events = Array.isArray(snapshot?.events) ? snapshot.events : [];
+  let lastSeq = previous?.lastSeq ?? 0;
+  let eventTime = previous?.eventTime ?? 0;
+  const arcs = previous ? [...previous.arcs] : [];
+  const alerts = previous ? [...previous.alerts] : [];
+  const latched: Record<string, { seq: number; until: number }> = { ...(previous?.latched ?? {}) };
+  let newMarks = 0;
+  for (const row of events) {
+    const event = row?.event;
+    if (!event || typeof event !== "object") continue;
+    const env = event.env && typeof event.env === "object" ? event.env : undefined;
+    const envTs = num(env?.ts);
+    if (envTs > eventTime) eventTime = envTs;
+    const seq = num(row?.seq);
+    if (seq <= (previous?.lastSeq ?? 0)) continue;
+    if (seq > lastSeq) lastSeq = seq;
+    if (!previous) continue;
+    if (event.t === "envelope" && env) {
+      arcs.push({
+        seq, from: text(env.from) || "unknown",
+        to: Array.isArray(env.to) ? env.to.filter((id: unknown) => typeof id === "string") : [],
+        kind: text(env.kind) || "message", priority: text(env.priority), task: text(env.refs?.task), dropped: text(event.dropped),
+        until: (envTs || now) + ARC_MS,
+      });
+      newMarks++;
+    } else if (event.t === "overflow" || event.t === "undeliverable" || event.t === "stale" || event.t === "quiet") {
+      const targets = event.t === "quiet" ? (Array.isArray(event.peers) ? event.peers : []) : [text(event.peer)];
+      for (const peer of targets) if (typeof peer === "string" && peer) { alerts.push({ seq, peer, kind: event.t, until: now + ARC_MS }); newMarks++; }
+    } else if (event.t === "state" && text(event.state) === "busy") {
+      const peer = text(event.peer);
+      if (peer) { latched[peer] = { seq, until: now + LATCH_MS }; newMarks++; }
+    }
+  }
+  const keptArcs = arcs.filter((arc) => arc.until > eventTime).slice(-ARC_CAP);
+  const keptAlerts = alerts.slice(-ALERT_CAP);
+
+  const moves = transitions.cardsMoved.length + transitions.desksAdded.length + transitions.desksRemoved.length + newMarks;
+  // With nothing moving the flag is carried, so an unchanged snapshot yields an identical model.
+  const settle = !previous ? true : moves === 0 ? previous.settle : now - previous.at > SETTLE_GAP_MS || moves > SETTLE_MAX_MOVES;
+  const at = !previous || moves > 0 ? now : previous.at;
+
   const roomRows = Math.ceil(rooms.length / cols);
   const desksWidth = shownIds.length ? Math.min(shownIds.length, DESK_COLS) * DESK_DX - 2 : 0;
   return {
@@ -284,5 +380,6 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     width: Math.max(desksWidth, Math.min(rooms.length, cols) * ROOM_DX - 2, 1),
     height: roomsY + roomRows * ROOM_DY - 2,
     desks, extraPeers, rooms, counts, transitions, slots, placed,
+    arcs: keptArcs, alerts: keptAlerts, latched, settle, at, eventTime, lastSeq,
   };
 }

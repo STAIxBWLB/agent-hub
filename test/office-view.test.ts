@@ -17,8 +17,10 @@ class Node {
   className = "";
   tag = "";
   attrs: Record<string, string> = {};
+  style: Record<string, string> = {};
   listeners: Record<string, ((event?: unknown) => void)[]> = {};
   dataset: Record<string, string> = {};
+  parent: Node | null = null;
   hidden = false;
   value = "";
   checked = false;
@@ -35,13 +37,15 @@ class Node {
     toggle: (name: string, force?: boolean) => { const on = force ?? !this.classes.has(name); if (on) this.classes.add(name); else this.classes.delete(name); },
     contains: (name: string) => this.classes.has(name),
   };
-  append(...nodes: Node[]) { this.children.push(...nodes); }
-  replaceChildren(...nodes: Node[]) { this.children = nodes; this.replacements++; }
+  append(...nodes: Node[]) { for (const node of nodes) { node.parent = this; this.children.push(node); } }
+  replaceChildren(...nodes: Node[]) { this.children = []; this.replacements++; this.append(...nodes); }
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
+  getAttribute(key: string) { return this.attrs[key] ?? null; }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this); this.parent = null; }
   addEventListener(name: string, listener: (event?: unknown) => void) { (this.listeners[name] ??= []).push(listener); }
   fire(name: string, event: unknown = { preventDefault() {}, key: "" }) { for (const listener of this.listeners[name] ?? []) listener(event); }
   scrollIntoView() { this.scrolled++; }
-  walk(visit: (node: Node) => void): void { visit(this); for (const child of this.children) child.walk(visit); }
+  walk(visit: (node: Node) => void): void { visit(this); for (const child of [...this.children]) child.walk(visit); }
   findAll(predicate: (node: Node) => boolean): Node[] { const found: Node[] = []; this.walk((node) => { if (predicate(node)) found.push(node); }); return found; }
   text(): string { return [this.textContent, ...this.children.map((node) => node.text())].join(" "); }
 }
@@ -61,7 +65,7 @@ const snapshot = {
   ],
   permissions: [] as { peer: string }[],
   budget: {},
-  events: [] as unknown[],
+  events: [],
 };
 
 /** Runs the real scene block and the real render() against a counting fake document. */
@@ -105,8 +109,8 @@ test("the served page injects the shared office model and stays within the CSP r
   const model = served.match(/const officeModel = ([\s\S]*?);\nconst officeView/)?.[1];
   expect(model).toBeDefined();
   const browserModel = runInNewContext("(" + model + ")");
-  const scene = JSON.parse(JSON.stringify(browserModel(snapshot, null, { cols: 2 })));
-  expect(scene).toEqual(JSON.parse(JSON.stringify(officeModel(snapshot, null, { cols: 2 }))));
+  const scene = JSON.parse(JSON.stringify(browserModel(snapshot, null, { cols: 2, now: 1000 })));
+  expect(scene).toEqual(JSON.parse(JSON.stringify(officeModel(snapshot, null, { cols: 2, now: 1000 }))));
   // The shell stays free of anything the CSP forbids, with the scene included.
   expect(served).not.toMatch(/\sstyle="/);
   expect(served).not.toMatch(/\son[a-z]+="/i);
@@ -125,9 +129,22 @@ test("the served page injects the shared office model and stays within the CSP r
 
 test("the scene code has no timer, frame loop, request, action or colour literal", () => {
   expect(scene).toContain("createElementNS");
-  for (const forbidden of ["setInterval", "requestAnimationFrame", "post(", "action(", "fetch(", "innerHTML"]) expect(scene).not.toContain(forbidden);
+  for (const forbidden of ["setInterval", "setTimeout", "requestAnimationFrame", "post(", "action(", "fetch(", "innerHTML"]) expect(scene).not.toContain(forbidden);
   expect(scene).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   expect(scene).not.toMatch(/rgb\(|fill:|stroke:|style=/);
+});
+
+test("reduced motion removes every scene transition and animation", () => {
+  const reduce = html.match(/@media\(prefers-reduced-motion:reduce\)\{([^}]*)\}/g)!.join("\n");
+  expect(reduce).toContain(".office-scene");
+  expect(reduce).toContain("transition:none!important");
+  expect(reduce).toContain("animation:none!important");
+  // Motion is transitions on transform/opacity and keyframe fades, at most one second.
+  expect(html).toContain(".office-movable{transition:transform .8s ease}");
+  expect(html).toContain("@keyframes office-fade{to{opacity:0}}");
+  expect(html).toContain("@keyframes office-pulse{50%{opacity:.45}}");
+  expect(html).toContain(".office-settle .office-movable{transition:none}");
+  expect(html).not.toMatch(/office[^}]*transition:[^;}]*\d(\.\d)?\d{1,}s/); // no multi-second transitions
 });
 
 test("the office view choice persists in the agent-hub-office cookie with the theme cookie's terms", () => {
@@ -234,14 +251,81 @@ test("resetView clears the scene's previous snapshot", () => {
   const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   const context = { get };
   runInNewContext(`
-    let selectedProjectId='p1',selectedInstanceId='i1',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={slots:{codex:1}};
+    let selectedProjectId='p1',selectedInstanceId='i1',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={slots:{codex:1}},officeScene={els:new Map([['desk:codex',1]])};
     const officeDesks=new Map([['codex',1]]),officeCards=new Map([[4,1]]);
     const managerMode=true,signatures=new Map(),$=get;
     const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{};
     const empty=(node,text)=>{node.textContent=text};
     ${reset}
     resetView('p2','i2');
-    this.result = { officePrev, desks: officeDesks.size, cards: officeCards.size };
+    this.result = { officePrev, officeScene, desks: officeDesks.size, cards: officeCards.size };
   `, context) as unknown;
-  expect((context as Record<string, unknown>).result).toEqual({ officePrev: null, desks: 0, cards: 0 });
+  expect((context as Record<string, unknown>).result).toEqual({ officePrev: null, officeScene: null, desks: 0, cards: 0 });
+});
+
+test("a card move keeps its node and animates by transform; the first paint settles", () => {
+  const { api, get } = startOfficeRuntime(() => "flat");
+  api.draw(snapshot);
+  const svg = get("office").children[0]!;
+  expect(svg.attrs.class).toContain("office-settle"); // first snapshot: final positions, no motion
+  const card = api.maps.officeCards.get(4)!;
+  expect(card.attrs.class).toContain("office-movable");
+  const before = card.style.transform;
+  const moved = { ...snapshot, tasks: snapshot.tasks.map((task) => task.id === 4 ? { ...task, state: "proposed", owner: "" } : task) };
+  api.draw(moved);
+  expect(api.maps.officeCards.get(4)).toBe(card); // same node: the CSS transition animates it
+  expect(card.style.transform).not.toBe(before);
+  expect(card.style.transform).toBeTruthy();
+  expect(svg.attrs.class).not.toContain("office-settle"); // small change within the gap: motion allowed
+  // Approving the card removes it from the scene with a fade, and animationend purges it.
+  const done = { ...snapshot, tasks: snapshot.tasks.map((task) => task.id === 4 ? { ...task, state: "approved" } : task) };
+  api.draw(done);
+  expect(api.maps.officeCards.get(4)).toBeUndefined();
+  expect(card.classList.contains("office-leaving")).toBe(true);
+  card.fire("animationend");
+  expect(card.parent).toBeNull();
+});
+
+test("message arcs, delivery marks and the busy latch draw from event rows with fade timing, once", () => {
+  const { api, get } = startOfficeRuntime(() => "flat");
+  api.draw(snapshot);
+  const now = Date.now();
+  const withEvents = {
+    ...snapshot,
+    events: [
+      { seq: 1, event: { t: "envelope", env: { from: "codex", to: ["claude"], kind: "chat", priority: "important", ts: now, refs: { task: "4" } } } },
+      { seq: 2, event: { t: "overflow", peer: "kimi", env: { from: "claude", to: ["kimi"], kind: "chat", ts: now } } },
+      { seq: 3, event: { t: "state", peer: "claude", state: "busy" } },
+    ],
+  };
+  api.draw(withEvents);
+  const office = get("office");
+  const hasClass = (cls: string) => (node: Node) => (node.attrs.class ?? "").split(" ").includes(cls);
+  const arcs = office.findAll(hasClass("office-arc"));
+  expect(arcs).toHaveLength(1);
+  expect(arcs[0]!.text()).toContain("chat #4");
+  expect(arcs[0]!.attrs.class).toContain("office-fadeout");
+  expect(arcs[0]!.style.animationDelay).toMatch(/^\d+ms$/);
+  expect(arcs[0]!.findAll(hasClass("office-arc-important"))).toHaveLength(1);
+  expect(arcs[0]!.attrs["aria-hidden"]).toBe("true");
+  const alerts = office.findAll(hasClass("office-alertmark"));
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]!.text()).toContain("! overflow");
+  const latches = office.findAll(hasClass("office-latchmark"));
+  expect(latches).toHaveLength(1); // claude is idle in the status, so the busy latch badge shows
+  expect(latches[0]!.text()).toContain("busy");
+  // Re-rendering the same snapshot adds nothing and writes nothing.
+  const drawn = office.replacements;
+  api.draw(withEvents);
+  expect(office.findAll(hasClass("office-arc"))).toHaveLength(1);
+  expect(office.replacements).toBe(drawn);
+});
+
+test("no arc is drawn for history on the first snapshot (no replay)", () => {
+  const { api, get } = startOfficeRuntime(() => "flat");
+  api.draw({
+    ...snapshot,
+    events: [{ seq: 1, event: { t: "envelope", env: { from: "codex", to: ["claude"], kind: "chat", priority: "status", ts: Date.now() } } }],
+  });
+  expect(get("office").findAll((node) => (node.attrs.class ?? "").includes("office-arc"))).toHaveLength(0);
 });

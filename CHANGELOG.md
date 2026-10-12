@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add snapshot-driven motion to the dashboard Office view: card moves by CSS transform transition, message arcs, delivery warning marks and the busy latch from event rows with timer-free keyframe fades, and the settle rule, with reduced-motion support (#264, phase 2 of 4).
+
 - Add a static flat Office view to the dashboard: stable desks, state rooms, capped cards, an Off/Flat view control persisted in a second host-scoped cookie, and scene/list highlighting, with no daemon change (#264, phase 1 of 4).
 
 - Support bounded custom lifecycle stage ids, actors and entry/exit gates across Tasks, projections and managed peer schemas, preserving the approval floor (#257).

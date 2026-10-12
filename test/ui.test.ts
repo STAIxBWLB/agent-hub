@@ -260,7 +260,7 @@ test("shared public progress executes in the hashed dashboard and matches consol
   const nodes = new Map<string, Node>(); const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get('task-progress').append(new Node());
   const reset = html.slice(html.indexOf('function resetView('), html.indexOf('function projectName('));
-  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null; const officeDesks=new Map(),officeCards=new Map(); const managerMode=true; const signatures=new Map(); const $=get; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
+  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null; const officeDesks=new Map(),officeCards=new Map(); const managerMode=true; const signatures=new Map(); const $=get; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
   expect(get('task-progress').children).toHaveLength(0); expect(get('task-progress').textContent).toBe('No project selected.');
   renderers.renderTaskProgress(browserModel([]));
   expect(target.children[0]?.textContent).toBe("0/0 approved (0%)");

@@ -2,17 +2,21 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
-## Office view (#264, phase 1)
+## Office view (#264, phases 1-2)
 
-Not run live yet (unverified). Phase 1 ships the static Flat office and its Off/Flat
-control; `test/office-model.test.ts` and `test/office-view.test.ts` cover the model,
-the cookie, the CSP cleanliness and the focus/highlight wiring against fakes, but no
-browser was opened. The live leg: `ahub up` on a scratch project with two agents
-working, `ahub ui`, set the Office View control to Flat. Check the scene in both
-themes and at phone width with the browser console open (no CSP violations), that
-desks and cards are focusable with sensible names, that activating one scrolls to
-and highlights the matching list row, and that the page weight stays within the
-30 KB budget of the issue. Record the look here when performed.
+Not run live yet (unverified). Phases 1-2 ship the static Flat office with
+snapshot-driven motion (card moves, message arcs, delivery marks, the busy
+latch, the settle rule) and its Off/Flat control; `test/office-model.test.ts`
+and `test/office-view.test.ts` cover the model, the cookie, the CSP cleanliness,
+the motion wiring and the settle rule against fakes, but no browser was opened.
+The live leg: `ahub up` on a scratch project with two agents working, `ahub ui`,
+set the Office View control to Flat. Check the scene in both themes and at phone
+width with the browser console open (no CSP violations), that cards glide between
+rooms and desks as tasks change state, that arcs and marks fade after about ten
+seconds, that desks and cards are focusable with sensible names, that activating
+one scrolls to and highlights the matching list row, that reduced motion gives
+static positions, and that the page weight stays within the 30 KB budget of the
+issue. Record the look here when performed.
 
 ## Settings from the dashboard and the terminal (#269, part 1)
 
