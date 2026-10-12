@@ -1,3 +1,4 @@
+import { supportsBoardReleaseFilter } from "./board-read.ts";
 #!/usr/bin/env bun
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
@@ -1092,13 +1093,17 @@ const commands: Record<string, () => Promise<void> | void> = {
       return console.log(await taskOp("github_import", selection));
     }
     const options = outputOptions();
-    const { one, rest } = takeFlags(args, ["--release"], []);
+    const { one, rest } = takeFlags(args, ["--release", "--release-id"], []);
+    if (one["--release"] && one["--release-id"] || one["--release-id"] !== undefined && !/^[1-9]\d*$/.test(one["--release-id"])) fail("choose --release <name> or --release-id <positive id>");
+    const release = one["--release-id"] ? "#"+one["--release-id"] : one["--release"];
+    let boardStatus: any;
+    if (release) { const hub = await connect(); try { const reply = await hub.request({ t: "status" }); boardStatus = reply.status; if (!supportsBoardReleaseFilter(boardStatus)) fail("running hub does not support release filters; use a compatible daemon"); } finally { hub.close(); } }
     const ready = rest.includes("--ready"), byColumn = rest.includes("--columns");
     const state = rest.find((a) => !a.startsWith("--"));
-    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(one["--release"] ? { release: one["--release"] } : {}) })) as any[];
+    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}) })) as any[];
     if (options.json && !byColumn) return console.log(JSON.stringify(tasks, null, 2));
     let allTasks: any[] | null = tasks;
-    if (ready || state || one["--release"]) {
+    if (ready || state || release) {
       try { allTasks = JSON.parse(await taskOp("hub_task_list", {}, true)) as any[]; }
       catch (error) {
         allTasks = null;
@@ -1107,7 +1112,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (byColumn) {
       const hub = await connect();
-      try { const reply = await hub.request({ t: "status" }); if (!reply.status?.peers) fail(reply.error ?? "peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, reply.status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, reply.status.peers, options.columns, Date.now(), options.full, allTasks), options.color); }
+      try { const status = boardStatus ?? (await hub.request({ t: "status" })).status; if (!status?.peers) fail("peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, status.peers, options.columns, Date.now(), options.full, allTasks), options.color); }
       finally { hub.close(); }
     } else printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
   },

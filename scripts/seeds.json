@@ -2104,6 +2104,14 @@
       "replacement": "true",
       "testFile": "test/board-followup.test.ts",
       "testName": "release cut flags use structured approval and preserve missing cut evidence (#263)"
+    },
+    {
+      "id": "board-release-filter-capability",
+      "file": "src/cli/board-read.ts",
+      "search": "(capability as Record<string,unknown>).releaseFilter === true",
+      "replacement": "true",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release filtering requires an explicit compatible daemon capability (#263)"
     }
   ]
 }

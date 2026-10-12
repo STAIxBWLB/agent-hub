@@ -2,6 +2,7 @@ import {expect,test} from "bun:test";
 import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
+import {supportsBoardReleaseFilter} from "../src/cli/board-read.ts";
 import {renderBoardColumns} from "../src/cli/output.ts";
 import {Board} from "../src/hub/board.ts";
 import {Bus} from "../src/hub/bus.ts";
@@ -24,4 +25,9 @@ test("release cut flags use structured approval and preserve missing cut evidenc
   const unknown=board.propose(USER,{title:"unknown",class:"implement"});board.update(unknown.id,USER,"assigned",{state:"in_progress"});board.update(unknown.id,USER,"legacy completion",{state:"approved"});
   expect(tasks.releaseList(USER)[0]?.afterCut).toEqual([approved.id]);expect(tasks.releaseList(USER)[0]?.afterCutUnknown).toEqual([unknown.id]);
  }finally{bus.closeJournal();board.close();rmSync(root,{recursive:true,force:true});}
+});
+
+
+test("release filtering requires an explicit compatible daemon capability (#263)",()=>{
+ expect(supportsBoardReleaseFilter({peers:{},protocol:16})).toBe(false);expect(supportsBoardReleaseFilter({boardReadCapabilities:{releaseFilter:false}})).toBe(false);expect(supportsBoardReleaseFilter({boardReadCapabilities:{releaseFilter:"true"}})).toBe(false);expect(supportsBoardReleaseFilter({boardReadCapabilities:{releaseFilter:true}})).toBe(true);
 });
