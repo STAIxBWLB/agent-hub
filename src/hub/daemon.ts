@@ -1534,11 +1534,17 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "release_new":
         return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
+      case "release_show": {
+        const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);
+        if (!release) throw new PreEffectToolRefusal("no such release");
+        return JSON.stringify(tasks.releaseList(USER).find(row => row.id === release.id));
+      }
       case "release_change": {
-        const release = board.releases().find(release => release.name === a.name);
+        const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);
         if (!release) throw new PreEffectToolRefusal("no such release");
         if (!a.fields || typeof a.fields !== "object" || Array.isArray(a.fields) || Object.hasOwn(a.fields, "id") || Object.hasOwn(a.fields, "revision")) throw new PreEffectToolRefusal("invalid release fields");
-        return JSON.stringify(tasks.changeRelease(by, { ...a.fields, id: release.id, revision: a.revision }));
+        const updated = tasks.changeRelease(by, { ...a.fields, id: release.id, revision: a.revision });
+        return JSON.stringify(tasks.releaseList(USER).find(row => row.id === updated.id));
       }
       case "backlog_pull":
       case "backlog_return":

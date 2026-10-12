@@ -1792,6 +1792,30 @@
       "replacement": ".sort((a, b) => a.id - b.id)",
       "testFile": "test/planning.test.ts",
       "testName": "planner backlog reads follow saved rank with stable unknown order (#263)"
+    },
+    {
+      "id": "release-stale-edit-invalidation",
+      "file": "src/ui/index.html",
+      "search": "if(releaseEdit && (!sameBoardContext(releaseEdit.context) || releases.find(release=>release.id===releaseEdit.id)?.revision!==releaseEdit.revision))",
+      "replacement": "if(false)",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "release UI keeps public ids and invalidates stale date edits until reload (#263)"
+    },
+    {
+      "id": "release-draft-project-reset",
+      "file": "src/ui/index.html",
+      "search": "$('release-name').value='';$('release-goal').value='';$('release-order').value='0';",
+      "replacement": "$('release-order').value='0';",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "project reset clears release creation draft before switching projects (#263)"
+    },
+    {
+      "id": "release-public-id-mutation",
+      "file": "src/hub/daemon.ts",
+      "search": "case \"release_change\": {\n        const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);",
+      "replacement": "case \"release_change\": {\n        const release = board.releases().find(release => release.name === a.name);",
+      "testFile": "test/planning-surfaces.test.ts",
+      "testName": "redacted release labels retain stable mutation and console lookup identity (#263)"
     }
   ]
 }

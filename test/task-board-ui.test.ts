@@ -96,3 +96,33 @@ test("agent lane headings assign eligible tasks and retain the flow floor (#263)
   const unassigned = all(get("tasks")).find(node => node.tag === "h3" && node.textContent === "Unassigned")!;
   expect(unassigned.handlers.has("drop")).toBe(false);
 });
+
+
+test("release UI keeps public ids and invalidates stale date edits until reload (#263)", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const source = html.slice(html.indexOf("let planningEdit ="), html.indexOf("function peerMark("));
+  const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
+  const release = { id: 1, name: "[withheld]", goal: "safe", state: "planning", revision: 0 };
+  const state = { snapshot: { tasks: [], releases: [release], planningCapabilities: { enabled: true } } }, calls: Record<string, unknown>[] = [];
+  get("release-edit").value = "1";
+  const el = (_tag: string, text?: string) => { const node = new Node(); node.textContent = text ?? ""; return node; };
+  const api = runInNewContext(`const $=get;let boardViewState=state;${source};({load:loadReleasePlanning,render:renderPlanning,edit:()=>releaseEdit})`, {
+    get, state, el, badge: (text: string) => el("span", text), boardContext: () => ({ projectId: "a" }), sameBoardContext: () => true,
+    update: (id: string, _value: unknown, render: (node: Node) => void) => render(get(id)), empty: () => {},
+    boardButton: (_text: string, payload: Record<string, unknown>) => { calls.push(payload); return new Node(); },
+  });
+  api.load(); expect(api.edit()).toMatchObject({ id: 1, revision: 0 }); expect(api.edit()).not.toHaveProperty("name");
+  state.snapshot.releases = [{ ...release, revision: 1 }]; api.render(state.snapshot);
+  expect(api.edit()).toBeNull(); expect(get("release-version").textContent).toContain("Reload");
+  expect(calls).toEqual([{ action: "release_change", id: 1, revision: 1, fields: { state: "active" } }, { action: "release_change", id: 1, revision: 1, fields: { state: "dropped" } }]);
+  api.load(); expect(api.edit()).toMatchObject({ id: 1, revision: 1 });
+});
+
+test("project reset clears release creation draft before switching projects (#263)", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const source = html.slice(html.indexOf("function resetView("), html.indexOf("function projectName("));
+  const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
+  get("release-name").value="project-a";get("release-goal").value="old goal";get("release-order").value="7";
+  runInNewContext(`let selectedProjectId='a',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot={};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${source};resetView('b','next');`, { get });
+  expect(get("release-name").value).toBe("");expect(get("release-goal").value).toBe("");expect(get("release-order").value).toBe("0");
+});

@@ -2687,3 +2687,10 @@ Reduced motion removes departures immediately and the existing snapshot poll
 prunes transient deadlines without new timers. Explicit unattributed turns have
 no guessed task bubble. Warning caps retain conflicts first and parallel warning
 kinds have separate segments/labels. Physical visual validation remains pending.
+
+
+Release date editors invalidate stale revisions and offer Reload current release
+without overwriting unsaved dates. Project changes clear release creation drafts.
+Dashboard release actions use public numeric ids even when labels are withheld;
+`ahub release show <name>` looks up the stored identity on the console and returns
+the screened public projection. Source verification remains pending.
