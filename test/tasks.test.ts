@@ -3142,3 +3142,13 @@ test("dashboard links: overlap and cohort rows carry task and peer ids only", as
     expect(links.flatMap((link) => link.tasks)).not.toContain(pii.id);
   }
 });
+
+
+test("dashboard cohort links revalidate tasks that become private after cohort creation (#264 merge)", async () => {
+  const { tasks, board } = await setup(["claude", "codex", "kimi"]);
+  const first = await tasks.propose("kimi", { title: "one part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  await tasks.propose("codex", { title: "other part", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  expect(tasks.cohortLinks()).toHaveLength(1);
+  board.update(first.id, "hub", "screened", { signals: [...first.signals, "pii_path"] });
+  expect(tasks.cohortLinks()).toEqual([]);expect(tasks.overlapLinks()).toEqual([]);
+});

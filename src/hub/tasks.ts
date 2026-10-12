@@ -739,7 +739,7 @@ export class Tasks {
   cohortLinks(): { tasks: number[]; peers: string[] }[] {
     const links: { tasks: number[]; peers: string[] }[] = [];
     for (const cohort of this.cohorts.list()) {
-      const members = [...cohort.members.values()];
+      const members = [...cohort.members.values()].filter(member => { const task = this.d.board.get(member.task); return task && !this.isPii(task); });
       if (members.length < 2) continue;
       links.push({ tasks: members.map((m) => m.task).sort((a, b) => a - b), peers: [...new Set(members.map((m) => m.owner))].sort() });
     }

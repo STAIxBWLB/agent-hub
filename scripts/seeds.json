@@ -1576,6 +1576,14 @@
       "replacement": "if (false) officeFilter('');",
       "testFile": "test/office-view.test.ts",
       "testName": "office task activation reveals filtered rows and card/desk handlers live in sibling layers (#264 merge)"
+    },
+    {
+      "id": "office-current-cohort-privacy",
+      "file": "src/hub/tasks.ts",
+      "search": "const members = [...cohort.members.values()].filter(member => { const task = this.d.board.get(member.task); return task && !this.isPii(task); });",
+      "replacement": "const members = [...cohort.members.values()];",
+      "testFile": "test/tasks.test.ts",
+      "testName": "dashboard cohort links revalidate tasks that become private after cohort creation (#264 merge)"
     }
   ]
 }

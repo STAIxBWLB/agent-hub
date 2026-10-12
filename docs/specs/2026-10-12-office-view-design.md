@@ -29,7 +29,7 @@ asset is copied.
   No timer, no `requestAnimationFrame`, no request. Colours come from the
   page's theme tokens through CSS classes; every state also carries a glyph
   and a text label.
-- A View control in the section head offers Off (the default), Flat, and in
+- An always-visible View control in the page header offers Off (the default), Flat, and in
   phase 4 Isometric; the choice persists in the host-scoped `agent-hub-office`
   cookie with the `agent-hub-theme` attributes and try/catch fallback (#246).
 - Layout: stable desk slots (claude, codex, kimi, pi, local, then others by id;
@@ -197,3 +197,16 @@ Phase 4 decisions within the spec:
   non-local owner and joins no link.
 - The live browser look (two agents working, both themes, console open) is
   recorded in `docs/smoke.md` as unverified for phase 1.
+
+
+## Merge review corrections
+
+Current snapshot task privacy is checked again when warning links are built,
+including cohorts and conflicts created before a task became private. The Off
+selector stays visible outside the hidden scene. Filtered card activation reveals
+its task; Work overflow includes rework. Sticky desk coordinates set scene bounds.
+The existing snapshot poll prunes transient deadlines even when the model is
+unchanged; reduced-motion departures are immediate and settled paints receive no
+appearance class. Explicit unattributed turns never use the legacy task guess.
+Large warning caps prioritize conflicts; distinct kinds use parallel offsets.
+Original test assertions are retained. Physical visual readback remains pending.
