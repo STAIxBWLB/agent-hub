@@ -12,6 +12,7 @@ export interface Approval {
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
+  attentionFingerprint?: string;
   petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;
   /** The selected request, by id: a, d and v act on it alone, and it is cleared, never moved, when the request closes. */
@@ -451,7 +452,10 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (key === "n" && s.petEnabled && !s.optionChoice && !s.help) {
     const items = consoleNeeds(s, now).items;
     if (!items.length) return done();
-    const index = ((s.attentionSelection ?? -1) + 1) % items.length;
+    const fingerprint = JSON.stringify(items);
+    const prior = s.attentionFingerprint === fingerprint ? s.attentionSelection ?? -1 : -1;
+    const index = (prior + 1) % items.length;
+    s.attentionFingerprint = fingerprint;
     s.attentionSelection = index;
     const item = items[index]!;
     let navigated = false;
@@ -461,7 +465,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       navigated = true;
     } else if (item.kind === "delivery" && s.mode === "panels") {
       const rows = s.queue.filter(row => row.state === "needs_review" || row.state === "queued");
-      const selected = rows.findIndex(row => item.id !== undefined ? row.id === item.id : row.peer === item.peer);
+      const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);
       if (selected >= 0) { s.panel = 4; s.selection = selected; navigated = true; }
     }
     if (navigated) { s.detail = undefined; s.requestDetail = undefined; }

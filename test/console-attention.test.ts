@@ -105,3 +105,26 @@ test("attention message guidance names a directed CLI recipient without sending"
   expect(next.state.input).toBe("");
   expect(next.state.mode).toBe("stream");
 });
+
+test("ID-less secondary delivery guidance never selects another queued row for that peer", () => {
+  const state: ConsoleState = { ...initialConsoleState(true), petEnabled: true,
+    peers: { codex: { state: "idle", heldBy: "first", needsReview: 2 } },
+    queue: [{ id: "unrelated", peer: "codex", state: "queued" }, { id: "first", peer: "codex", state: "needs_review" }] };
+  const first = reduceConsole(state, "n", now);
+  expect(first.state.selection).toBe(1);
+  const next = reduceConsole(first.state, "n", now);
+  expect(next.state.selection).toBe(1);
+  expect(next.effects).toEqual([{ type: "print", text: "delivery codex: ahub queue list", kind: "attention", tone: "attention" }]);
+});
+
+test("attention cursor restarts when needs are inserted removed or reordered", () => {
+  const base: ConsoleState = { ...initialConsoleState(true), petEnabled: true, approvals: [approval("old", 3000), approval("last", 4000)] };
+  const chosen = reduceConsole(base, "n", now).state;
+  expect(chosen.approvalId).toBe("old");
+  for (const approvals of [[approval("urgent", 2000), ...base.approvals], [approval("last", 4000)], [approval("old", 5000), approval("last", 4000)]]) {
+    const next = reduceConsole({ ...chosen, approvals }, "n", now);
+    expect(next.state.attentionSelection).toBe(0);
+    expect(next.state.approvalId).toBe(approvals[0]!.id === "urgent" ? "urgent" : "last");
+    expect(next.effects).toEqual([]);
+  }
+});

@@ -1888,6 +1888,22 @@
       "replacement": "Date.now() - lastBell >= 0",
       "testFile": "test/pet-config.test.ts",
       "testName": "paste acknowledges unread attention and optional bell observes edges and rate limit"
+    },
+    {
+      "id": "attention-exact-secondary-row",
+      "file": "src/cli/console-state.ts",
+      "search": "const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);",
+      "replacement": "const selected = rows.findIndex(row => item.id === undefined ? row.peer === item.peer : row.id === item.id);",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "ID-less secondary delivery guidance never selects another queued row for that peer"
+    },
+    {
+      "id": "attention-list-change-cursor",
+      "file": "src/cli/console-state.ts",
+      "search": "const prior = s.attentionFingerprint === fingerprint ? s.attentionSelection ?? -1 : -1;",
+      "replacement": "const prior = s.attentionSelection ?? -1;",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "attention cursor restarts when needs are inserted removed or reordered"
     }
   ]
 }
