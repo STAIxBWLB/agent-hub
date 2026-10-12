@@ -2525,3 +2525,13 @@ Undo restores the same fields only when the latest eligible edit still applies.
 Public planning history excludes previous values. Suggested owners remain
 reservations; editing never offers or starts work. Native grooming remains
 unverified; split, WIP pull, batched notices and import are still required.
+
+
+Incoming backlog ids accumulate through Tasks and are flushed on the existing
+one-second daemon tick as one task-kind notice to attached rostered configured
+planners, at most 64 ids per notice. No task prose enters the notice. Pulled or
+removed ids are omitted, no planner means pending work is retained, and a new
+hub run regroups its currently staged backlog. This is advisory grooming; no
+ownership or execution state changes. Planned reservation edits participate in
+the conductor's latest ownership-decision check, preserving a person's decision
+when the hub later carries it out. Full proof remains pending.

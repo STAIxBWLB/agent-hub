@@ -1816,6 +1816,38 @@
       "replacement": ".sort((a, b) => a.id - b.id)",
       "testFile": "test/planning.test.ts",
       "testName": "planner backlog reads follow saved rank with stable unknown order (#263)"
+    },
+    {
+      "id": "planning-reservation-person-authority",
+      "file": "src/hub/conductor.ts",
+      "search": " || h.planning?.fields.includes(\"reserved\")",
+      "replacement": " || false",
+      "testFile": "test/conductor.test.ts",
+      "testName": "planned person reservations block proposer redirects after pull and hub assignment (#263)"
+    },
+    {
+      "id": "planner-notice-role",
+      "file": "src/hub/tasks.ts",
+      "search": "roles.includes(\"planner\") && this.d.bus.isRostered(peer)",
+      "replacement": "true && this.d.bus.isRostered(peer)",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "incoming backlog notices batch ids only for attached rostered planners (#263)"
+    },
+    {
+      "id": "planner-notice-ids-only",
+      "file": "src/hub/tasks.ts",
+      "search": "ids.map(id => `#${id}`).join(\", \")",
+      "replacement": "ids.map(id => this.d.board.get(id)!.title).join(\", \")",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "incoming backlog notices batch ids only for attached rostered planners (#263)"
+    },
+    {
+      "id": "planner-notice-bounded",
+      "file": "src/hub/tasks.ts",
+      "search": "[...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64)",
+      "replacement": "[...this.incomingBacklog].sort((a, b) => a - b)",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "planner notice batches are bounded and recover staged work on restart (#263)"
     }
   ]
 }

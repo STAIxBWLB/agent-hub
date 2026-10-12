@@ -185,12 +185,14 @@ const RESCREEN_MAX = 10;
  * PII handling, envelopes, briefs and memory notes are decided in one place.
  */
 export class Tasks {
+  private readonly incomingBacklog = new Set<number>();
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
   private readonly sweepConfig: TaskSweepConfig;
   private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
+    for (const task of d.board.list("backlog")) this.incomingBacklog.add(task.id);
     this.sweepConfig = taskSweepConfig(d.sweep);
     this.cohorts = new Cohorts({
       silence: (owners) => this.turnFree() && owners.every((p) => p !== USER && p !== HUB && (this.d.capable?.(p) ?? false)),
@@ -536,6 +538,17 @@ export class Tasks {
     this.planningAuthority(by);
     return this.d.board.list("backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id).map(task => this.publicView(task));
   }
+  /** One bounded ids-only notice on the daemon's existing periodic tick. */
+  flushPlannerNotices(): number {
+    const planners = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => roles.includes("planner") && this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline").map(([peer]) => peer);
+    if (!planners.length) return 0;
+    for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
+    const ids = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
+    if (!ids.length) return 0;
+    const queued = this.d.bus.publish(newEnvelope(HUB, `Backlog items ${ids.map(id => `#${id}`).join(", ")}. Read hub_backlog_list and plan the next work with a reason for each change.`, { to: planners, kind: "task" }));
+    if (planners.every(peer => queued.includes(peer))) for (const id of ids) this.incomingBacklog.delete(id);
+    return ids.length;
+  }
   releaseList(by: PeerId): Record<string, unknown>[] {
     this.planningAuthority(by);
     const tasks = this.d.board.list();
@@ -681,6 +694,7 @@ export class Tasks {
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     if (backlog) {
+      this.incomingBacklog.add(task.id);
       this.releaseNotice(`task ${this.publicTitle(task)} backlogged by ${by} [${profileTaskLabel(task)}]`);
       return task;
     }
