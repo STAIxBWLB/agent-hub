@@ -2008,6 +2008,14 @@
       "replacement": "if (false)",
       "testFile": "test/planner-split.test.ts",
       "testName": "split undo refuses child references and invalid late writes stay atomic (#263)"
+    },
+    {
+      "id": "release-label-public-identity",
+      "file": "src/ui/index.html",
+      "search": "label:'#'+release.id+' '+release.name",
+      "replacement": "label:release.name",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "redacted release options retain distinguishable public ids (#263)"
     }
   ]
 }

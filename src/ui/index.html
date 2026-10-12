@@ -442,7 +442,7 @@ function planningOptions(node, rows, label, selected) {
 function renderPlanning(snapshot) {
   const supported=snapshot.planningCapabilities?.enabled===true;
   for(const id of ['planning-save','planning-undo','release-save'])$(id).disabled=!supported || !sameBoardContext(boardContext());
-  const releases=Array.isArray(snapshot.releases)?snapshot.releases:[], releaseRows=releases.map(release=>({id:release.id,label:release.name}));
+  const releases=Array.isArray(snapshot.releases)?snapshot.releases:[], releaseRows=releases.map(release=>({id:release.id,label:'#'+release.id+' '+release.name}));
   for(const id of ['task-release-filter','planning-release','release-edit'])planningOptions($(id),releaseRows,id==='task-release-filter'?'All releases':'No release',$(id).value);
   if(releaseEdit && (!sameBoardContext(releaseEdit.context) || releases.find(release=>release.id===releaseEdit.id)?.revision!==releaseEdit.revision)){releaseEdit=null;$('release-version').textContent='Release changed. Reload before saving.';}
   const selection=$('planning-task').value;planningOptions($('planning-task'),snapshot.tasks.filter(task=>task.state!=='approved').map(task=>({id:task.id,label:'#'+task.id+' '+task.title})),'Select task',selection);
@@ -450,7 +450,7 @@ function renderPlanning(snapshot) {
   if(planningEdit && snapshot.tasks.find(task=>task.id===planningEdit.id)?.planningRevision!==planningEdit.revision)$('planning-version').textContent='Task changed. Reload before saving.';
   update('releases',releases,target=>{
     if(!releases.length)return empty(target,'No releases planned.');
-    for(const release of releases){const row=el('div',undefined,'row');row.append(el('strong',release.name),badge(release.state),el('p',release.goal));
+    for(const release of releases){const row=el('div',undefined,'row');row.append(el('strong','#'+release.id+' '+release.name),badge(release.state),el('p',release.goal));
       const scope=Array.isArray(release.tasks)?release.tasks:null, remaining=scope?.filter(task=>task.state!=='approved'), states=new Map(snapshot.tasks.map(task=>[task.id,task.state]));
       const blocking=remaining?.filter(task=>(task.deps || []).some(id=>states.get(id)!=='approved'));
       row.append(el('p',scope?remaining.length+' remaining of '+scope.length+' / '+blocking.length+' blocked':'Scope unknown','meta'));
@@ -582,7 +582,7 @@ function renderBoard(snapshot, peers, ids) {
     for (const [laneIndex, owner] of owners.entries()) {
       const lane=el('div',undefined,'board-lane');
       if(owner!==null) {
-        const heading=el('h3',lanes==='releases' ? (snapshot.releases?.find(release=>release.id===owner)?.name || 'No release') : owner || 'Unassigned');
+        const heading=el('h3',lanes==='releases' ? (snapshot.releases?.some(release=>release.id===owner) ? '#'+owner+' '+snapshot.releases.find(release=>release.id===owner).name : 'No release') : owner || 'Unassigned');
         if(lanes==='agents' && eligible.includes(owner)) dropTarget(heading,card=>card.assignable,{action:'assign',peer:owner});
         lane.append(heading);
       }
