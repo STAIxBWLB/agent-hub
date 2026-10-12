@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readReleaseReadiness, type DocEvidence, type ReleaseGit } from "../src/hub/sdlc-release.ts";
 import type { SdlcGh } from "../src/hub/sdlc.ts";
 const H="a".repeat(40),T="b".repeat(40),C="c".repeat(40),X="d".repeat(40);
-function fake(options:{version?:string;remote?:string;ancestor?:boolean;stale?:boolean;native?:string;race?:boolean}={}) {
+function fake(options:{version?:string;tag?:string;remote?:string;ancestor?:boolean;stale?:boolean;native?:string;race?:boolean}={}) {
  const calls:string[][]=[];let heads=0;
  const git:ReleaseGit=args=>{
   calls.push(args);
@@ -14,7 +14,7 @@ function fake(options:{version?:string;remote?:string;ancestor?:boolean;stale?:b
  };
  const gh:SdlcGh=async args=>{
   calls.push(args);
-  if(args[0]==="release")return{code:0,stdout:JSON.stringify({tagName:"v1.2.3",isDraft:false,isPrerelease:false})};
+  if(args[0]==="release")return{code:0,stdout:JSON.stringify({tagName:options.tag??"v1.2.3",isDraft:false,isPrerelease:false})};
   if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:1,mergeCommit:{oid:C}}])};
   if(args.some(arg=>arg.includes("associatedPullRequests")))return{code:0,stdout:JSON.stringify({data:{repository:{c0:{oid:C,associatedPullRequests:{nodes:[{number:1,state:"MERGED",mergeCommit:{oid:C}}],pageInfo:{hasNextPage:false}}}}}})};
   if(args[0]==="issue")return{code:0,stdout:JSON.stringify({number:273,state:options.native??"CLOSED"})};
@@ -28,6 +28,11 @@ test("release source evidence binds local remote tag ancestry head doc freshness
  expect(r).toMatchObject({head:H,version:"1.2.4",tag:"v1.2.3",tagCommit:T,commits:[C],mergedPrs:[{pr:1,commit:C}],sourceReady:true,native:"unverified",ready:false});
  expect(r.blockers).toEqual(["native acceptance and person release decision unverified"]);expect(JSON.stringify(r)).not.toContain("PRIVATE_PACKAGE_MARKER");
  expect(f.calls.flat().join(" ")).not.toMatch(/body|title|publish|push|create|tag -/);
+});
+test("release version advancement follows SemVer precedence including prereleases and build metadata (#257)", async () => {
+ for(const [version,tag,expected] of [["1.3.0-rc.1","v1.2.3",true],["1.3.0-rc.2","v1.3.0-rc.1",true],["1.3.0","v1.3.0-rc.2",true],["1.3.0-rc.1","v1.3.0",false],["1.2.3+build.2","v1.2.3+build.1",false]] as const){
+  expect((await readReleaseReadiness("fixture","owner/repo",[273],fake({version,tag}).readers)).sourceReady).toBe(expected);
+ }
 });
 test("release merged PR coverage reads only post-tag commits despite over 100 historical PRs (#257)", async () => {
  const f=fake(), original=f.readers.gh;

@@ -48,3 +48,11 @@ test("gsd-lite queue readiness uses current board phase views and keeps absent o
  t.phase=undefined;expect((await readMergeQueue("owner/repo",c,[t],fake({ids:[1]}).run)).rows[0]?.blockers).toContain("phase board evidence unknown");
  t.phase={workflow:"gsd-lite",ready:false,blockers:["phase child tasks not approved"]};expect((await readMergeQueue("owner/repo",c,[t],fake({ids:[1]}).run)).rows[0]?.ready).toBe(false);
 });
+test("truncated open PR coverage blocks every otherwise ready queue row (#257)", async () => {
+ const ids=Array.from({length:17},(_,i)=>i+1), paths=Object.fromEntries(ids.map(id=>[id,[`src/unique-${id}.ts`]]));
+ const report=await readMergeQueue("owner/repo",config,ids.map(id=>task(id,id)),fake({ids,paths}).run);
+ expect(report.truncated).toBe(true);expect(report.rows).toHaveLength(16);
+ expect(report.rows.every(row=>!row.ready)).toBe(true);
+ expect(report.rows.every(row=>row.blockers.includes("open PR coverage truncated; touching order unknown"))).toBe(true);
+ const complete=await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],paths}).run);expect(complete.rows[0]?.ready).toBe(true);
+});

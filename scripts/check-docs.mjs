@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 const args = process.argv.slice(2);
 const requireFresh = args.includes("--require-fresh");
 const jsonOutput = args.includes("--json");
-const root = resolve(args.find((arg) => arg !== "--require-fresh" && arg !== "--json") ?? fileURLToPath(new URL("..", import.meta.url)));
+const committed = args.includes("--committed");
+const root = resolve(args.find((arg) => !["--require-fresh", "--json", "--committed"].includes(arg)) ?? fileURLToPath(new URL("..", import.meta.url)));
 const errors = [];
 const reports = [];
 const documents = [];
@@ -16,10 +17,22 @@ let packageVersion;
 // Node-side equivalent of hub/git.ts: a readback must not execute repository-configured helpers.
 const safeGitConfig = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
 const git = (...args) => spawnSync("git", ["--no-pager", ...safeGitConfig.flatMap(value => ["-c", value]), ...args], { cwd: root, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 2000, maxBuffer: 256 * 1024 });
-const read = (path) => readFileSync(join(root, path), "utf8");
+const read = (path) => {
+  if (!committed) return readFileSync(join(root, path), "utf8");
+  const result = git("show", `${headId}:${path}`);
+  if (result.status !== 0) throw new Error("committed documentation evidence unavailable");
+  return result.stdout;
+};
 const safePath = (path) => typeof path === "string" && path.length > 0 && !path.startsWith("/") && !path.startsWith("-") && !path.split("/").includes("..") && !path.includes("\\") && !path.includes(":");
 
 try {
+  if (committed) {
+    const head = git("rev-parse", "--verify", "HEAD");
+    if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(head.stdout.trim())) throw new Error("HEAD does not resolve");
+    headId = head.stdout.trim();
+    const dirty = git("status", "--porcelain", "--untracked-files=all", "--", "docs", "README.md", "package.json");
+    if (dirty.status !== 0 || dirty.stdout) errors.push("documentation evidence files are dirty or unavailable");
+  }
   const manifest = JSON.parse(read("docs/verified.json"));
   if (manifest.schemaVersion !== 1 || !manifest.documents || typeof manifest.documents !== "object" || Array.isArray(manifest.documents)) throw new Error("invalid docs/verified.json schema");
   const required = ["README.md", "docs/security.md", "docs/operations.md", "docs/quickstart.md", ...readdirSync(join(root, "docs/agent-notes")).filter((name) => name.endsWith(".md")).map((name) => `docs/agent-notes/${name}`)];
@@ -30,6 +43,7 @@ try {
   if (version !== pkg.version) errors.push(`README status version ${version ?? "missing"} differs from package.json ${pkg.version}`);
   const head = git("rev-parse", "--verify", "HEAD");
   if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(head.stdout.trim())) throw new Error("HEAD does not resolve");
+  if (committed && headId !== head.stdout.trim()) throw new Error("HEAD changed during documentation readback");
   headId = head.stdout.trim();
   for (const [doc, entry] of Object.entries(manifest.documents).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     const record = { ...(safePath(doc) ? { path: doc } : {}), state: "unknown" }; documents.push(record);

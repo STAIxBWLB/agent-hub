@@ -13,7 +13,7 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 /** Package-owned checker only; no caller-supplied program or document text is executed. */
 export function readDocEvidence(root: string, timeoutMs = 10_000): Promise<DocEvidence | undefined> {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [fileURLToPath(new URL("../../scripts/check-docs.mjs", import.meta.url)), root, "--json"], { cwd: root, env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL("../../scripts/check-docs.mjs", import.meta.url)), root, "--json", "--committed"], { cwd: root, env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let output = "", invalid = false;
     const stop = () => { invalid = true; void stopOwnedProcess(child, { group: true }).catch(() => {}); };
     const timer = setTimeout(stop, Math.max(1, Math.min(10_000, timeoutMs)));
@@ -55,7 +55,9 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
       report.tagCommit = commit;
       const work = git(["rev-list","--first-parent","--max-count=1001",`${commit}..${head}`]); const commits = work.stdout.trim().split("\n").filter(Boolean);
       if (work.code !== 0 || commits.length > 1000 || commits.some(c => !SHA.test(c))) report.blockers.push("merged work coverage unknown or truncated"); else report.commits = commits;
-      if (!report.version || !Bun.semver.satisfies(report.version,`>${tag.slice(1)}`)) report.blockers.push("package version has not advanced past published release");
+      let advanced = false;
+      try { advanced = !!report.version && Bun.semver.order(report.version, tag.slice(1)) > 0; } catch { /* invalid version remains blocked */ }
+      if (!advanced) report.blockers.push("package version has not advanced past published release");
     }
   }
   if (report.tagCommit) {

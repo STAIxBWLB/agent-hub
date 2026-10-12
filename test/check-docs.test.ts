@@ -110,6 +110,24 @@ test("structured docs evidence reports fresh stale and dirty states without chan
   writeFileSync(join(root, "src/covered.ts"), "dirty\n"); expect(JSON.parse(machine().stdout).documents.every((d: any) => d.dirty)).toBe(true);
   const strict = machine(true); expect(strict.status).toBe(1); expect(JSON.parse(strict.stdout).fresh).toBe(false);
 }));
+test("release doc evidence rejects working-tree restamps and reads committed metadata (#257)", () => fixture((root, _stamp, git) => {
+  writeFileSync(join(root, "src/covered.ts"), "new source\n");
+  git("add", "."); git("commit", "-qm", "Change covered source");
+  const head = git("rev-parse", "HEAD");
+  alter(root, manifest => { for (const entry of Object.values(manifest.documents) as any[]) entry.verifiedAgainst = head; });
+  const ordinary = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" });
+  expect(JSON.parse(ordinary.stdout).fresh).toBe(true);
+  const committed = () => {
+    const code = `import {readDocEvidence} from ${JSON.stringify(resolve(import.meta.dir, "../src/hub/sdlc-release.ts"))}; console.log(JSON.stringify(await readDocEvidence(${JSON.stringify(root)})));`;
+    const result = spawnSync(process.execPath, ["-e", code], { encoding: "utf8", timeout: 20_000 });
+    expect(result.status).toBe(0); return JSON.parse(result.stdout);
+  };
+  expect(committed().fresh).toBe(false);
+  git("add", "docs/verified.json"); expect(committed().fresh).toBe(false);
+  git("commit", "-qm", "Commit reviewed stamps"); expect(committed().fresh).toBe(true);
+  writeFileSync(join(root, "package.json"), '{"version":"9.9.9"}\n');
+  const dirty = committed(); expect(dirty.version).toBe("1.2.3"); expect(dirty.fresh).toBe(false);
+}));
 test("structured invalid stamp evidence preserves uncertainty and excludes raw error payloads (#257)", () => fixture((root, stamp, git) => {
   alter(root, m => { m.documents["README.md"].verifiedAgainst = "PRIVATE_INVALID_STAMP_MARKER"; });
   const invalid = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" }); expect(invalid.status).toBe(1); expect(invalid.stdout + invalid.stderr).not.toContain("PRIVATE_INVALID_STAMP_MARKER");

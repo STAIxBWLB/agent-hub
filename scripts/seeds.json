@@ -1248,6 +1248,30 @@
       "replacement": "const batch = report.commits.slice(0, 0);",
       "testFile": "test/sdlc-release.test.ts",
       "testName": "release merged PR coverage reads only post-tag commits despite over 100 historical PRs (#257)"
+    },
+    {
+      "id": "release-committed-doc-metadata",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "root, \"--json\", \"--committed\"",
+      "replacement": "root, \"--json\"",
+      "testFile": "test/check-docs.test.ts",
+      "testName": "release doc evidence rejects working-tree restamps and reads committed metadata (#257)"
+    },
+    {
+      "id": "queue-truncated-row-readiness",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (result.truncated) row.blockers.push",
+      "replacement": "if (false) row.blockers.push",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "truncated open PR coverage blocks every otherwise ready queue row (#257)"
+    },
+    {
+      "id": "release-prerelease-precedence",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "Bun.semver.order(report.version, tag.slice(1)) > 0",
+      "replacement": "Bun.semver.satisfies(report.version, `>${tag.slice(1)}`)",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release version advancement follows SemVer precedence including prereleases and build metadata (#257)"
     }
   ]
 }
