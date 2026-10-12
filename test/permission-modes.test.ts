@@ -662,3 +662,23 @@ test("shared skills and Claude configuration filenames stay outside scoped grant
     expect(isAgentConfigPath(path)).toBe(true); expect(grantablePath(root, path)).toBe(false);
   }
 });
+
+test("Claude scoped permission replies withhold glob-readonly writes without leaking policy paths (#259)", async () => {
+  const rig = await fixture({ data: { readonly: ["data/**/*.csv"] } });
+  mkdirSync(join(rig.cwd, "data")); writeFileSync(join(rig.cwd, "data/input.csv"), "private input"); writeFileSync(join(rig.cwd, "output.txt"), "output");
+  const channel = await ControlClient.connect(rig.stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => channel.close());
+  await until(() => rig.daemon.bus.peers.get("claude")?.state === "idle");
+  const status = (await rig.client.request({ t: "status" })).status;
+  const hook = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "claude" }); cleanup.push(() => hook.close());
+  const launcher = { instanceId: status.instanceId, launchId: "glob-launch", permissionHook: true, hookPurpose: "permission", unattended: false };
+  writeFileSync(join(rig.stateDir, "claude-launch.json"), JSON.stringify(launcher));
+  const input = { t: "facts", phase: "pre", sessionId: "glob-session", nativeInstanceId: status.instanceId, nativeLaunchId: launcher.launchId, hookPurpose: "permission" };
+  expect((await hook.request({ ...input, tool: "Read", input: { file_path: "data/input.csv" } })).ok).toBe(true);
+  expect((await rig.mode("claude", "ask-when-needed")).permissionMode).toBe("ask-when-needed");
+  const denied = await hook.request({ ...input, tool: "Edit", input: { file_path: "data/input.csv" } });
+  expect(denied.permission).toBe("ask"); expect(JSON.stringify(denied)).not.toContain("data/**/*.csv");
+  expect((await hook.request({ ...input, tool: "Edit", input: { file_path: "output.txt" } })).permission).toBe("ask-when-needed");
+  expect((await hook.request({ ...input, tool: "Read", input: { file_path: "data/input.csv" } })).permission).toBe("ask-when-needed");
+  expect((await rig.mode("claude", "never-ask", true)).permissionMode).toBe("never-ask");
+  expect((await hook.request({ ...input, tool: "Edit", input: { file_path: "data/input.csv" } })).permission).toBe("never-ask");
+});

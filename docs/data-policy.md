@@ -1,6 +1,6 @@
 # Private and read-only data paths (#259)
 
-- Optional shared or machine-local config declares `pii.paths` and `data.readonly`, each at most 64 bounded project-relative paths. Entries name exact paths/subtrees, with no command execution. Empty or absent lists preserve existing behavior. These initial policies apply at daemon start; edit config deliberately and restart to refresh them.
+- Optional shared or machine-local config declares `pii.paths` and `data.readonly`, each at most 64 project-relative paths/patterns of at most 200 characters. Entries name exact paths/subtrees or bounded globs, with no command execution. Empty or absent lists preserve existing behavior. These initial policies apply at daemon start; edit config deliberately and restart to refresh them.
 - Example: `{ "pii": { "paths": ["data/private"] }, "data": { "readonly": ["data/raw"] } }`.
 - Matching compares declared spellings and real targets, including symlink aliases and case variants. Unknown resolution conservatively matches an active policy. Paths outside the project cannot be selected as policy entries; managed tools retain their existing project boundary.
 
@@ -22,3 +22,13 @@
 - Source tests cover bounded config/layers, real-path aliases, private flow before triage, public redaction, approval re-checks and managed hardlink refusal.
 - Native macOS command tests cover direct write, parent rename, existing/new hardlinks, temporary aliases and preserved reads. Linux runs the source guards and retains its existing no-sandbox/no-command behavior.
 - Real-account/model execution remains unverified; no live research study runs as part of this implementation. Profile converters and shadow repositories are later #259 slices.
+
+
+# Bounded glob policy
+
+- `*` matches any characters within one path segment, `?` matches one character, and a whole-segment `**` matches zero or more segments. Matching includes dot names and folds case consistently with the existing exact policy. A matched directory protects its subtree. Directory task scopes are private if they can contain a future matching descendant, even before a file exists.
+- Examples: `pii.paths = ["data/**/*.csv"]` and `data.readonly = ["data/raw-*/**"]`. Up to 16 wildcard characters per pattern. Absolute paths, parent traversal, bracket classes, braces, negation and mixed `**suffix` forms are refused. Backslashes remain literal in exact entries but are refused in glob entries; no escape syntax is interpreted.
+- Match both declared spelling and real target. Wildcard directory/file aliases are discovered from compatible prefixes, including symlink aliases to future targets. Discovery is refreshed per decision, with no stale cached expansion. It reads at most 4096 directory entries and traverses at most 32 levels. An unreadable/dangling/cyclic/out-of-project alias or an exhausted discovery bound conservatively protects rather than declaring a path public/writable. No discovered name or policy body is logged.
+- Managed local/Pi write/edit and private Tasks/facts use this same matcher. Existing hardlink refusal, post-approval recheck and filesystem-read-only command profile remain unchanged.
+- Claude's managed `ask-when-needed` hook receives `ask` for a write matching data.readonly. Reads and ordinary project writes retain their existing scoped decisions. The daemon evaluates policy locally only for the current managed PreToolUse ask-when-needed write grant and sends no pattern list to the hook. PostToolUse, unavailable/ask/never-ask modes and non-write tools perform no grant-policy discovery. Explicit native approval and `never-ask` remain the person's native authority; this is scoped auto-grant filtering, not a new Claude sandbox or containment claim.
+- The previous malformed-config fixture that refused every wildcard now refuses an unsupported bracket class; its rejection assertion is retained. New tests establish the deliberately added glob grammar, future paths, wildcard aliases/retargeting, private scopes, discovery failures and actual daemon hook replies. Native account/model consumption is unverified.

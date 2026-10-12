@@ -1064,6 +1064,54 @@
       "replacement": "false ||",
       "testFile": "test/profile-overrides-runtime.test.ts",
       "testName": "custom dev document sections on ordinary base tasks preserve profile semantics and do not falsely overlap (#259)"
+    },
+    {
+      "id": "glob-double-star-descent",
+      "file": "src/hub/path-policy.ts",
+      "search": "if (pattern[i] === \"**\") next.add(i);",
+      "replacement": "if (false) next.add(i);",
+      "testFile": "test/path-globs.test.ts",
+      "testName": "glob policies accept bounded grammar and match future descendants without widening sibling scopes (#259)"
+    },
+    {
+      "id": "glob-real-prefix-alias",
+      "file": "src/hub/path-policy.ts",
+      "search": "if (patternScope(pattern, states, relative(real, actual), includeParents)) return true;",
+      "replacement": "if (false) return true;",
+      "testFile": "test/path-globs.test.ts",
+      "testName": "wildcard directory and file aliases protect real future targets and refresh after retargeting (#259)"
+    },
+    {
+      "id": "glob-discovery-depth",
+      "file": "src/hub/path-policy.ts",
+      "search": "depth > 32 ||",
+      "replacement": "false ||",
+      "testFile": "test/path-globs.test.ts",
+      "testName": "unresolved or excessive glob discovery protects conservatively without scanning unbounded trees (#259)"
+    },
+    {
+      "id": "claude-readonly-glob-grant",
+      "file": "src/hub/daemon.ts",
+      "search": "projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files, config.data?.readonly)",
+      "replacement": "projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files)",
+      "testFile": "test/permission-modes.test.ts",
+      "testName": "Claude scoped permission replies withhold glob-readonly writes without leaking policy paths (#259)"
+    },
+    {
+      "id": "glob-discovery-entry-ceiling",
+      "file": "src/hub/path-policy.ts",
+      "search": "if (++budget.entries > 4096)",
+      "replacement": "if (++budget.entries > 100000)",
+      "testFile": "test/path-globs.test.ts",
+      "testName": "glob discovery entry ceiling protects rather than treating an incomplete expansion as public (#259)"
+    },
+    {
+      "id": "claude-glob-usable-pre-grant",
+      "file": "src/cli/facts-hook.ts",
+      "search": "phase === \"pre\" && permission === \"ask-when-needed\" && [\"Edit\",",
+      "replacement": "[\"Edit\",",
+      "testFile": "test/facts-hook.test.ts",
+      "testName": "expensive scoped file policy is evaluated only for a usable PreToolUse write grant (#259)"
     }
   ]
 }

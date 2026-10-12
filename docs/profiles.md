@@ -32,11 +32,11 @@
 
 - Peer guidance and profile-specific task schemas use existing MCP/native/local paths. Research defaults use the #295 dev/research catalog, with bases already held. Writing/general do not add catalog groups before measurement.
 - Board/public projections, route explain, terminal/dashboard cards and #247 events/records carry the profile alias and base. Native model ingestion and context retention remain unverified.
-- Bounded rich-document facts/review/undo projections and declared pii.paths/data.readonly policy are supported. Opt-in shadow git supports non-git folders; custom profile overrides/globs and deeper lifecycle integration remain open in #259. Native ingestion and research measurement remain unverified.
+- Bounded rich-document facts/review/undo projections and declared pii.paths/data.readonly policy are supported. Opt-in shadow git supports non-git folders; project profile overrides are supported; bounded glob policy and deeper lifecycle integration are tracked in #259. Native ingestion and research measurement remain unverified.
 
 - Accept schemas expose all supported plan fields because an open task keeps its stored profile across a project profile change. Tasks still normalizes by that stored profile; no new plan field changes authority.
 
-- Private and read-only data path policy is now a separate source slice: [data policy](data-policy.md). It applies to declared task paths and managed local/Pi tools. Custom/glob and native/live follow-ups remain open.
+- Private and read-only data path policy is now a separate source slice: [data policy](data-policy.md). It applies to declared task paths and managed local/Pi tools. Bounded globs share the same private/read-only matcher; native/live follow-ups remain open.
 
 - Optional machine-local [text projections](text-projection.md) supply bounded rich-document facts diffs. Converter output is presentation evidence and cannot prove raw-file attribution.
 
