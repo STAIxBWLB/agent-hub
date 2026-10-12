@@ -10,3 +10,7 @@ test("attention model never reads or copies body titles options errors or paths 
  const input={approvals:[{id:"request",peer:"codex",expiresAt:200,get title(){return secret();},get options(){return secret();}}],peers:{codex:{state:"idle",needsReview:1,heldBy:"delivery",get text(){return secret();}}},messages:[{id:"message",important:true,get body(){return secret();}}],storageBlocked:true,get error(){return secret();},get paths(){return secret();}};
  const result=needs(input,100);expect(result.act).toBe(4);for(const item of result.items)expect(Object.keys(item).every(key=>["kind","level","peer","id","until","since"].includes(key))).toBe(true);
 });
+test("attention delivery count preserves the journal summary without a silent ceiling (#280)",()=>{
+ const result=needs({peers:{codex:{state:"idle",needsReview:300,heldBy:"first"}}},100);
+ expect(result.act).toBe(300);expect(result.items).toHaveLength(300);expect(result.items[0]?.id).toBe("first");expect(result.state).toBe("blocked");
+});

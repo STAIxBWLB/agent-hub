@@ -21,7 +21,7 @@ export function needs(input: NeedsInput, now: number): Needs {
   if (input.storageBlocked === true) add("storage", "act");
   if (input.recovery) add("recovery", "watch", undefined, input.recovery.id, undefined, input.recovery.since);
   for (const [peer, status] of Object.entries(input.peers ?? {})) {
-    const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? Math.min(status.needsReview!, 256) : status.heldBy ? 1 : 0;
+    const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? status.needsReview! : status.heldBy ? 1 : 0;
     for (let index = 0; index < count; index++) add("delivery", "act", peer, index === 0 ? status.heldBy : undefined);
   }
   for (const message of input.messages ?? []) add("message", message.important ? "act" : "watch", message.peer, message.id, undefined, message.since);
