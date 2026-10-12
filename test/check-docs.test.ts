@@ -174,3 +174,30 @@ test("installed-layout release reader finds the explicitly published checker and
     expect(JSON.parse(result.stdout)).toMatchObject({ schemaVersion: 1, fresh: true, errors: 0, version: "1.2.3" });
   } finally { rmSync(target, { recursive: true, force: true }); }
 }));
+
+
+test("committed docs reject ignored document and coverage ghosts absent from HEAD (#257)", () => {
+  for (const kind of ["document", "coverage"] as const) fixture((root, stamp, git) => {
+    const path = kind === "document" ? "docs/ghost.md" : "src/ghost.ts";
+    writeFileSync(join(root, ".gitignore"), path + "\n");
+    alter(root, m => {
+      if (kind === "document") m.documents[path] = { verifiedAgainst: stamp, paths: ["src/covered.ts"] };
+      else m.documents["README.md"].paths = [path];
+    });
+    git("add", "."); git("commit", "-qm", "Record missing ignored evidence");
+    writeFileSync(join(root, path), "ignored local copy\n");
+    expect(git("ls-files", "--", path)).toBe("");
+    const result = spawnSync("node", [checker, root, "--json", "--committed"], { encoding: "utf8" });
+    expect(result.status).toBe(1); expect(JSON.parse(result.stdout).fresh).toBe(false);
+    expect(JSON.parse(result.stdout).errors).toBeGreaterThan(0);
+  });
+});
+
+test("committed coverage preserves tracked wildcards and ignores local note-name additions (#257)", () => fixture((root, _stamp, git) => {
+  alter(root, m => { for (const entry of Object.values(m.documents) as any[]) entry.paths = ["src/covered*.ts"]; });
+  writeFileSync(join(root, ".gitignore"), "docs/agent-notes/ignored.md\n");
+  git("add", "."); git("commit", "-qm", "Use wildcard source coverage");
+  writeFileSync(join(root, "docs/agent-notes/ignored.md"), "local only\n");
+  const result = spawnSync("node", [checker, root, "--json", "--committed"], { encoding: "utf8" });
+  expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(true);
+}));

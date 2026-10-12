@@ -23,7 +23,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   const evidence = new Map<number, PrEvidence>(), links = new Map<number, DeliveryTask[]>();
   for (const pr of ids) {
     const holders = tasks.filter(t => sameRepo(t.receipt?.repo) && t.receipt?.pr === pr); links.set(pr, holders);
-    const row: MergeQueueRow = { pr, tasks: holders.map(t => t.id), ready: false, blockers: [], after: [] }; result.rows.push(row);
+    const row: MergeQueueRow = { pr, tasks: holders.some(t => t.private) ? [] : holders.map(t => t.id), ready: false, blockers: [], after: [] }; result.rows.push(row);
     if (holders.some(t => t.private)) { row.private = true; row.blockers.push("private lifecycle evidence unavailable"); continue; }
     const read = await readSdlcPr(holders[0]?.receipt ?? { stage: config.stages[0] ?? "spec", repo, pr }, bounded);
     if (!read || read.state !== "OPEN") { row.blockers.push("current PR evidence unknown or no longer open"); continue; }

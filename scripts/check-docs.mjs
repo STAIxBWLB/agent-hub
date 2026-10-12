@@ -25,6 +25,12 @@ const read = (path) => {
   return result.stdout;
 };
 const safePath = (path) => typeof path === "string" && path.length > 0 && !path.startsWith("/") && !path.startsWith("-") && !path.split("/").includes("..") && !path.includes("\\") && !path.includes(":");
+const evidenceExists = (path) => committed ? git("cat-file", "-e", `${headId}:${path}`).status === 0 : existsSync(join(root, path));
+const documentExists = (path) => {
+  if (!committed) return existsSync(join(root, path)) && statSync(join(root, path)).isFile();
+  const type = git("cat-file", "-t", `${headId}:${path}`);
+  return type.status === 0 && type.stdout.trim() === "blob";
+};
 /** Never refresh the index through git status: it can run configured clean/process filters. */
 const dirtiness = (paths) => {
   const unknown = { status: 1, stdout: "" }, dirty = { status: 0, stdout: "dirty" };
@@ -71,7 +77,13 @@ try {
   }
   const manifest = JSON.parse(read("docs/verified.json"));
   if (manifest.schemaVersion !== 1 || !manifest.documents || typeof manifest.documents !== "object" || Array.isArray(manifest.documents)) throw new Error("invalid docs/verified.json schema");
-  const required = ["README.md", "docs/security.md", "docs/operations.md", "docs/quickstart.md", ...readdirSync(join(root, "docs/agent-notes")).filter((name) => name.endsWith(".md")).map((name) => `docs/agent-notes/${name}`)];
+  let noteNames;
+  if (committed) {
+    const notes = git("ls-tree", "-z", "--name-only", `${headId}:docs/agent-notes`);
+    if (notes.status !== 0) throw new Error("committed agent notes unavailable");
+    noteNames = notes.stdout.split("\0").filter(Boolean);
+  } else noteNames = readdirSync(join(root, "docs/agent-notes"));
+  const required = ["README.md", "docs/security.md", "docs/operations.md", "docs/quickstart.md", ...noteNames.filter((name) => name.endsWith(".md")).map((name) => `docs/agent-notes/${name}`)];
   for (const path of required.sort()) if (!Object.hasOwn(manifest.documents, path)) errors.push(`missing manifest entry: ${path}`);
   const pkg = JSON.parse(read("package.json"));
   if (typeof pkg.version === "string" && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:[+][0-9A-Za-z.-]+)?$/.test(pkg.version)) packageVersion = pkg.version;
@@ -83,7 +95,7 @@ try {
   headId = head.stdout.trim();
   for (const [doc, entry] of Object.entries(manifest.documents).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     const record = { ...(safePath(doc) ? { path: doc } : {}), state: "unknown" }; documents.push(record);
-    if (!safePath(doc) || !existsSync(join(root, doc)) || !statSync(join(root, doc)).isFile()) { errors.push(`missing or invalid document: ${doc}`); continue; }
+    if (!safePath(doc) || !documentExists(doc)) { errors.push(`missing or invalid document: ${doc}`); continue; }
     const stamp = entry?.verifiedAgainst;
     if (typeof stamp !== "string" || !/^[0-9a-f]{40}$/.test(stamp) || git("cat-file", "-e", `${stamp}^{commit}`).status !== 0) { errors.push(`${doc}: verified commit does not resolve: ${String(stamp)}`); continue; }
     record.verifiedAgainst = stamp;
@@ -92,10 +104,11 @@ try {
     let valid = true;
     for (const path of entry.paths) {
       // Git pathspecs let a scope cover a directory or an explicit wildcard (upgrade*.ts).
-      if (!/[?*\[]/.test(path) && existsSync(join(root, path))) continue;
-      const files = git("ls-files", "-z", "--", path);
+      if (!/[?*\[]/.test(path) && evidenceExists(path)) continue;
+      // Preserve Git pathspec matching; every selected entry must exist in the captured committed tree.
+      const files = git("ls-files", ...(committed ? [`--with-tree=${headId}`] : []), "-z", "--", path);
       const matches = files.stdout.split("\0").filter(Boolean);
-      if (files.status !== 0 || matches.length === 0 || matches.some((file) => !existsSync(join(root, file)))) { errors.push(`${doc}: covered path no longer exists: ${path}`); valid = false; }
+      if (files.status !== 0 || matches.length === 0 || matches.some((file) => !evidenceExists(file))) { errors.push(`${doc}: covered path no longer exists: ${path}`); valid = false; }
     }
     if (!valid) continue;
     const count = git("rev-list", "--count", `${stamp}..HEAD`, "--", ...entry.paths);

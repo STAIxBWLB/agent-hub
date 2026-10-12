@@ -112,3 +112,16 @@ test("final queue snapshot rejects retargets and advancing bases without a head 
   expect(report.complete).toBe(false);expect(report.order).toEqual([]);expect(report.rows[0]?.ready).toBe(false);
  }
 });
+
+
+test("private and mixed queue holders never expose board associations (#257)", async () => {
+  for (const holders of [[task(937, 1, [], true)], [task(938, 1), task(937, 1, [], true)]]) {
+    const f = fake({ ids: [1] });
+    const report = await readMergeQueue("owner/repo", config, holders, f.run);
+    expect(report.rows[0]).toMatchObject({ pr: 1, private: true, tasks: [], ready: false, after: [] });
+    expect(JSON.stringify(report)).not.toContain("937"); expect(JSON.stringify(report)).not.toContain("938");
+    expect(f.calls).toHaveLength(1);
+  }
+  const ordinary = await readMergeQueue("owner/repo", config, [task(938, 1)], fake({ ids: [1] }).run);
+  expect(ordinary.rows[0]?.tasks).toEqual([938]);
+});
