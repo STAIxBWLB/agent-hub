@@ -138,4 +138,12 @@ test("planning date editors retain original UTC precision and parse changed loca
   api.load("due",100);get("due").value="2026-10-12T12:30:45.123";expect(api.read("due")).toBe(new Date(get("due").value).getTime());
   get("due").value="";expect(api.read("due")).toBeNull();
   api.load("due",null);expect(api.read("due")).toBeNull();
+  // A simulated repeated wall hour parses to its first occurrence; the loaded second occurrence must survive.
+  class AmbiguousDate extends Date {
+    constructor(value:number|string){super(typeof value==="string" ? Date.parse(value+"Z")-3_600_000 : value);}
+    getFullYear(){return this.getUTCFullYear();}getMonth(){return this.getUTCMonth();}getDate(){return this.getUTCDate();}
+    getHours(){const hour=this.getUTCHours();return hour===5 ? 6 : hour;}getMinutes(){return this.getUTCMinutes();}getSeconds(){return this.getUTCSeconds();}
+  }
+  const repeated=runInNewContext(`const $=get;${source};({load:loadPlanningDate,read:plannedDateInput})`,{get,Date:AmbiguousDate});
+  const secondOccurrence=Date.UTC(2026,10,1,6,30,0,123);repeated.load("due",secondOccurrence);expect(repeated.read("due")).toBe(secondOccurrence);
 });
