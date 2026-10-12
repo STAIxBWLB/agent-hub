@@ -1100,8 +1100,8 @@
     {
       "id": "glob-discovery-entry-ceiling",
       "file": "src/hub/path-policy.ts",
-      "search": "if (++entries > 4096)",
-      "replacement": "if (++entries > 100000)",
+      "search": "if (++budget.entries > 4096)",
+      "replacement": "if (++budget.entries > 100000)",
       "testFile": "test/path-globs.test.ts",
       "testName": "glob discovery entry ceiling protects rather than treating an incomplete expansion as public (#259)"
     }

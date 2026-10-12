@@ -57,24 +57,24 @@ function patternScope(pattern: string[], states: Set<number>, path: string, incl
   return includeParents && states.size > 0; // this scope can contain a future protected descendant
 }
 /** Resolve wildcard directory aliases without trusting a cached expansion. Bound all filesystem discovery. */
-function globScope(root: string, lexical: string, actual: string, path: string, includeParents: boolean): boolean {
+function globScope(root: string, lexical: string, actual: string, path: string, includeParents: boolean, budget: { entries: number }): boolean {
   const pattern = path.split("/").filter(p => p && p !== ".");
   const start = closure(pattern, new Set([0]));
   if (patternScope(pattern, start, relative(root, lexical), includeParents) || patternScope(pattern, start, relative(root, actual), includeParents)) return true;
-  let entries = 0;
   const visit = (dir: string, states: Set<number>, depth: number, ancestors: Set<string>): boolean => {
     const real = policyRealPath(dir);
     if (states.has(pattern.length)) return beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual));
     if (patternScope(pattern, states, relative(real, actual), includeParents)) return true;
     if (!existing(dir)) return false;
+    if (!beneath(real, root)) throw new Error("policy glob discovery outside project");
     const info = statSync(dir);
     if (!info.isDirectory()) return false;
-    if (depth > 32 || ancestors.has(real) || entries > 4096) throw new Error("policy glob discovery unavailable");
+    if (depth > 32 || ancestors.has(real) || budget.entries > 4096) throw new Error("policy glob discovery unavailable");
     const chain = new Set(ancestors); chain.add(real);
     const handle = opendirSync(dir);
     try {
       for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
-        if (++entries > 4096) throw new Error("policy glob discovery unavailable");
+        if (++budget.entries > 4096) throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
         if (next.size && visit(join(dir, entry.name), next, depth + 1, chain)) return true;
       }
@@ -90,6 +90,7 @@ export function matchesPolicy(cwd: string, path: string, paths: string[], includ
     if (path.length > 4096) return true;
     const root = realPath(cwd), lexical = resolve(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync(lexical).isDirectory();
-    return paths.some(entry => /[?*]/.test(entry) ? globScope(root, lexical, actual, entry, includeParents) : policyTargets(root, [entry]).some(target => beneath(lexical, target) || beneath(actual, target) || (includeParents && (beneath(target, lexical) || beneath(target, actual)))));
+    const budget = { entries: 0 };
+    return paths.some(entry => /[?*]/.test(entry) ? globScope(root, lexical, actual, entry, includeParents, budget) : policyTargets(root, [entry]).some(target => beneath(lexical, target) || beneath(actual, target) || (includeParents && (beneath(target, lexical) || beneath(target, actual)))));
   } catch { return true; }
 }
