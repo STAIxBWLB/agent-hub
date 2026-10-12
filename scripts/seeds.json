@@ -1416,6 +1416,14 @@
       "replacement": "const finalPrs = finalRead.prs; await bounded(listArgs);",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "last remote queue read combines identities and gates without an intervening identity-only window (#257)"
+    },
+    {
+      "id": "release-predecessor-final-fence",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "if (!stable) report.blockers.push(\"published release or remote tag changed or could not be reverified\");",
+      "replacement": "if (false) report.blockers.push(\"published release or remote tag changed or could not be reverified\");",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release final snapshot refuses a new predecessor moved tag or unavailable evidence (#257)"
     }
   ]
 }

@@ -86,6 +86,20 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
     try { const p = JSON.parse(reply.stdout); if (reply.code === 0 && p.number === id && ["OPEN","CLOSED"].includes(p.state)) state = p.state.toLowerCase(); } catch { /* unknown */ }
     report.liveIssues.push({id,state}); if (state !== "closed") report.blockers.push("native verification ledger open or unknown");
   }
+  // The predecessor and tag can change while documents/issues are read. Recheck both in the last remote snapshot.
+  if (report.tag && report.tagCommit) {
+    const [owner, name] = repo.split("/");
+    const snapshot = await gh(["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$ref:String!){repository(owner:$owner,name:$name){releases(first:100,orderBy:{field:CREATED_AT,direction:DESC}){nodes{tagName isDraft} pageInfo{hasNextPage}} ref(qualifiedName:$ref){target{... on Commit{oid} ... on Tag{target{... on Commit{oid}}}}}}}", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `ref=refs/tags/${report.tag}`]);
+    let stable = false;
+    try {
+      const data = JSON.parse(snapshot.stdout), repository = data.data?.repository, rows = repository?.releases?.nodes;
+      if (snapshot.code === 0 && !data.errors && Array.isArray(rows) && rows.length <= 100 && typeof repository.releases.pageInfo?.hasNextPage === "boolean" && rows.every(p => typeof p?.tagName === "string" && typeof p.isDraft === "boolean")) {
+        const newest = rows.find(p => !p.isDraft), target = repository.ref?.target;
+        stable = newest?.tagName === report.tag && (target?.oid ?? target?.target?.oid) === report.tagCommit;
+      }
+    } catch { /* unavailable predecessor remains blocked */ }
+    if (!stable) report.blockers.push("published release or remote tag changed or could not be reverified");
+  }
   const last = git(["rev-parse","--verify","HEAD"]); if (last.code !== 0 || last.stdout.trim() !== head) report.blockers.push("local HEAD changed during release readback");
   report.blockers = [...new Set(report.blockers)]; report.sourceReady = report.blockers.length === 0;
   // Closed issue metadata is not a native receipt or permission to publish.

@@ -22,7 +22,7 @@ The repository uses feature branches and PRs. Release PRs require merge commits 
 
 ## Configuration and persistence contract
 
-.agenthub/sdlc.toml contains mode off|advise|enforce and a bounded ordered stage list, using the built-in stages above by default. The initial loader fixes the built-in stage, gate and actor mapping; custom stage/gate definitions remain pending. Unknown stages/gates, duplicate stages, cycles, unbounded lists and unknown keys are refused with a field-level reason. A project file may define guidance/gates, but it does not expand capabilities or permissions.
+.agenthub/sdlc.toml contains mode off|advise|enforce and a bounded ordered stage list, using the built-in stages above by default. The loader validates built-in mappings and bounded custom stage/gate/actor definitions; custom guidance does not grant authority. Unknown stages/gates, duplicate stages, cycles, unbounded lists and unknown keys are refused with a field-level reason. A project file may define guidance/gates, but it does not expand capabilities or permissions.
 
 Task lifecycle fields store stage, issue/PR identity, observed head, reviewed head, local-gate head/result and bounded check/readback metadata. Legacy rows read with no lifecycle metadata. Every change goes through Tasks and records its actor; adapters/tools/CLI never write Board directly. Readback timestamps identify observations, not a freshness promise. Persist no task text in lifecycle receipts; public output uses the existing PII stub and publicTitle/publicView.
 
@@ -40,7 +40,7 @@ The #252 gsd-lite option remains guidance, bounded predecessor edges and criteri
 
 ## Delivery and verification state
 
-The initial implementation adds built-in configuration validation, optional board receipts, fake-gh stale-head/required-check tests, Tasks transition gates and CLI/console/dashboard projections. Custom stage/gate definitions, full merge-queue and release-readiness presentation, a dependency-editing/import workflow and a live advise cycle remain pending. The bounded checklist guidance slice below is implemented separately. A native/account cycle must be recorded separately; no merge or release is implied by this document.
+The initial implementation adds built-in configuration validation, optional board receipts, fake-gh stale-head/required-check tests, Tasks transition gates and CLI/console/dashboard projections. Bounded custom stage/gate definitions and read-only merge-queue/release-source reports are implemented in the source slices below. Dependency editing/import and the actual native advise-through-merge/release cycle remain pending. The bounded checklist guidance slice below is implemented separately. A native/account cycle must be recorded separately; no merge or release is implied by this document.
 
 ## Initial commands
 
@@ -58,7 +58,7 @@ A person records ids and a claimed local receipt with `ahub sdlc record 12 '{"re
 - Each criterion has a bounded `id`, boolean `required`, `result` verified|failed|unverified and up to eight hashed refs. Accepted refs are `sha256:<64-hex>`, or `artifact|check|source:<ASCII-reference>@<64-hex>`. Whole phase JSON is at most 32 KiB. The hub never fetches those refs or treats a model's claim as a deterministic check. Verified outcomes are reviewer claims, separately labelled from fresh GitHub checks.
 - Required failed/unverified criteria, unfinished child tasks, changed/unavailable dependencies and missing/stale checklist heads make phase readiness false. In advise/off, board transitions retain their existing behavior; readiness can remain false after a historical approval. Enforce adds phase blockers only to the existing approval transition. Entering review remains possible while criteria are unverified, so the reviewer can inspect and record them.
 - `ahub sdlc status <id>` and `explain` expose the same workflow/phase projection used by the console and dashboard; `ahub route explain` names active workflow guidance. `ahub sdlc export <id>` emits sanitized ids, states, criteria/hashes and two SHA-256 values: `stateHash` hashes that exact projection, `sourceHash` hashes the normalized effective lifecycle configuration (not a code/build attestation). Private exports contain a stub and no phase refs. Exports are read-only derived views and cannot be imported as task authority.
-- Full GSD import, dependency editing, custom lifecycle gates, release readiness and the native advise cycle remain pending. No automatic advance, merge, release, permission change or experiment is included. The default versus gsd-lite #251 comparison is not run during the solo implementation.
+- Full GSD import, dependency editing, native acceptance and the actual advise-through-merge/release cycle remain pending. Bounded custom gates and the read-only release-source report are implemented below. No automatic advance, merge, release, permission change or experiment is included. The default versus gsd-lite #251 comparison is not run during the solo implementation.
 
 Example reviewer receipt (task 2 already depends on task 1):
 
@@ -121,7 +121,7 @@ actor = "person"
 after = ["approve"]
 ```
 
-These ids are guidance/receipt destinations. Publish neither merges nor releases. Full release readiness, bidirectional GSD import and research measurements remain separate slices.
+These ids are guidance/receipt destinations. Publish neither merges nor releases. The read-only source-readiness report is implemented below. Native acceptance/release permission, bidirectional GSD import and research measurements remain unverified or pending.
 
 
 # Structured documentation readiness evidence (#257)
