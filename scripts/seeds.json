@@ -1936,6 +1936,14 @@
       "replacement": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    void by;",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
+    },
+    {
+      "id": "planner-pull-explicit-capability",
+      "file": "src/ui/index.html",
+      "search": "boardViewState?.snapshot.planningCapabilities?.wipPull===true",
+      "replacement": "boardViewState?.snapshot.planningCapabilities?.enabled===true",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "WIP pull controls require an explicit capability and carry the task revision (#263)"
     }
   ]
 }

@@ -126,3 +126,12 @@ test("project reset clears release creation draft before switching projects (#26
   runInNewContext(`let selectedProjectId='a',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot={};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${source};resetView('b','next');`, { get });
   expect(get("release-name").value).toBe("");expect(get("release-goal").value).toBe("");expect(get("release-order").value).toBe("0");
 });
+
+test("WIP pull controls require an explicit capability and carry the task revision (#263)", () => {
+  const {api,get,all,calls,peers,snapshot}=page();
+  api.draw({...snapshot,planningCapabilities:{enabled:true}},peers,Object.keys(peers));
+  expect(all(get("tasks")).filter(node=>node.tag==="button"&&node.textContent==="Pull within WIP")).toHaveLength(0);
+  api.draw({...snapshot,planningCapabilities:{enabled:true,wipPull:true},tasks:snapshot.tasks.map(task=>({...task,planningRevision:7}))},peers,Object.keys(peers));
+  const button=all(get("tasks")).find(node=>node.tag==="button"&&node.textContent==="Pull within WIP");expect(button).toBeDefined();button!.emit("click");
+  expect(calls.at(-1)).toMatchObject({action:"planner_pull",id:1,revision:7});
+});
