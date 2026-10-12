@@ -1992,6 +1992,22 @@
       "replacement": "if (false) return;",
       "testFile": "test/pet-summary-validation.test.ts",
       "testName": "pet snapshot state and level require a consistent first structural item"
+    },
+    {
+      "id": "attention-approval-register-persist",
+      "file": "src/hub/daemon.ts",
+      "search": "writeStatus(); // an approval can wait without any subsequent bus event",
+      "replacement": "/* seeded missing approval snapshot update */",
+      "testFile": "test/daemon.test.ts",
+      "testName": "approval registration and settlement refresh token-free attention immediately (#280)"
+    },
+    {
+      "id": "attention-approval-settle-persist",
+      "file": "src/hub/daemon.ts",
+      "search": "writeStatus(); // token-free readers must observe withdrawal before settlement callbacks",
+      "replacement": "/* seeded missing approval snapshot update */",
+      "testFile": "test/daemon.test.ts",
+      "testName": "approval registration and settlement refresh token-free attention immediately (#280)"
     }
   ]
 }

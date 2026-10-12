@@ -1672,6 +1672,20 @@ test("hub_task_propose: an owner that is not a peer id is refused and creates no
   expect(await call("hub_task_propose", { title: "v", class: "implement", owner: "Claude" })).toMatch(/owner claude/); // peer ids are lowercase
 });
 
+test("approval registration and settlement refresh token-free attention immediately (#280)", async () => {
+  const { stateDir, console_, pushes } = await hub({ permissionTimeoutMs: 30_000 });
+  await console_.request({ t: "start", peer: "kimi" });
+  await console_.request({ t: "send", body: "PERMISSION", to: ["kimi"] });
+  await until(() => pushes.some((p) => p.t === "permission"), "approval registered");
+  const ask = pushes.find((p) => p.t === "permission");
+  const read = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).needs;
+  expect(read()).toMatchObject({ act: 1, state: "waiting", first: { kind: "approval", id: ask.id } });
+  console_.send({ t: "permit", id: ask.id, option: "yes" });
+  await until(() => pushes.some((p) => p.t === "permission_closed" && p.id === ask.id), "approval settled");
+  expect(read().act).toBe(0);
+  expect(read().first?.kind).not.toBe("approval");
+});
+
 test("a peer can never answer a permission request: not over the control link, not by message", async () => {
   // The console answers after a peer connects and two tool calls run: a loaded runner takes longer than the rig's 200 ms
   // permission timeout for that (macOS CI once cancelled the request), so this test gets a window of its own (#115).

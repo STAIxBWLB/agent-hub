@@ -2225,6 +2225,7 @@ export async function startDaemon(opts: DaemonOptions) {
         clearTimeout(timer);
         signal?.removeEventListener("abort", aborted);
         permissions.delete(id); // withdrawal happens before any observer, resolution or late grant
+        writeStatus(); // token-free readers must observe withdrawal before settlement callbacks
         const outcome = option ? "answered" : reason;
         if (surface) permissionAnswerEpochs.set(req.peer, permissionAnswerEpoch(req.peer) + 1);
         observed(surface ? "person" : outcome === "expired" ? "expired" : "aborted");
@@ -2238,6 +2239,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return true;
       };
       permissions.set(id, { push, done, peer: req.peer, ...(publicTool ? { tool: publicTool } : {}), createdAt, expiresAt });
+      writeStatus(); // an approval can wait without any subsequent bus event
       timer = setTimeout(() => done(undefined, undefined, "expired"), timeoutMs);
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
