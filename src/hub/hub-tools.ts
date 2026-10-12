@@ -1,4 +1,4 @@
-import { projectProfile, PROFILE_CLASS_NAMES, type ProfileName } from "./profiles.ts";
+import { projectProfile, profileData, PROFILE_CLASS_NAMES, type ProfileName, type ProfileSelection } from "./profiles.ts";
 import { catalogSection, type CatalogRole } from "./roles.ts";
 import { SUPPORTED_PEERS, defaultPeerRoles } from "./peer-catalog.ts";
 // The hub's task tools, defined once: the MCP server (Claude plugin, Kimi, Codex) and the local worker both read this.
@@ -77,21 +77,21 @@ export const ROLE_TEXT: Record<string, string> = {
 
 export const DEFAULT_ROLES: Record<string, string[]> = defaultPeerRoles(true);
 
-export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = [], profile: ProfileName = "dev"): string {
-  const data = projectProfile(profile);
+export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = [], profile: ProfileSelection = "dev"): string {
+  const data = profileData(profile);
   const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
   if (!mine.length) return "";
-  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...(profile !== "dev" ? [`Project profile ${profile}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : []), ...(catalog.length ? [catalogSection(catalog)] : []), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
+  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...(data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : []), ...(catalog.length ? [catalogSection(catalog)] : []), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
 }
 
 /** Profile schemas are data over the existing tools; dev retains the exact existing definitions. */
-export function profileTaskTools(profile: ProfileName = "dev"): HubTool[] {
-  if (profile === "dev") return TASK_TOOLS;
-  const data = projectProfile(profile);
+export function profileTaskTools(profile: ProfileSelection = "dev"): HubTool[] {
+  if (profile === "dev" || profileData(profile) === projectProfile("dev")) return TASK_TOOLS;
+  const data = profileData(profile);
   return TASK_TOOLS.map(tool => {
     const properties = { ...tool.inputSchema.properties };
     if (tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
-    if (properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: { paths: plan.properties.paths, sections: list("document heading anchors, such as report.md#methods"), sources: list("citation ids, DOI or source URL ids"), claims: list("short claim ids to verify") } };
-    return { ...tool, ...(tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${profile}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}), inputSchema: { ...tool.inputSchema, properties } };
+    if (properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+    return { ...tool, ...(tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}), inputSchema: { ...tool.inputSchema, properties } };
   });
 }

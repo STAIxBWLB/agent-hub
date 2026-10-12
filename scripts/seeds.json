@@ -660,7 +660,7 @@
     {
       "id": "profile-document-plan",
       "file": "src/hub/tasks.ts",
-      "search": "projectProfile(profile).plan_keys as (keyof TaskPlan)[]",
+      "search": "profileData(profile).plan_keys as (keyof TaskPlan)[]",
       "replacement": "projectProfile(\"dev\").plan_keys as (keyof TaskPlan)[]",
       "testFile": "test/profiles.test.ts",
       "testName": "document plans overlap only on declared shared anchors/sources and preserve all keys (#259)"
@@ -692,7 +692,7 @@
     {
       "id": "profile-cli-positional-alias",
       "file": "src/cli/main.ts",
-      "search": "Object.hasOwn(projectProfile(projectConfig().profile).classes, flags.rest[0] ?? \"\")",
+      "search": "Object.hasOwn((() => { const config = projectConfig(); return resolveProfile(config.profile, config.profile_overrides); })().classes, flags.rest[0] ?? \"\")",
       "replacement": "false",
       "testFile": "test/profiles.test.ts",
       "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
@@ -860,8 +860,8 @@
     {
       "id": "role-peer-scoped-apply",
       "file": "src/hub/daemon.ts",
-      "search": "roleAssignments[peer] = ids ?? projectProfile(config.profile).catalog_roles[peer] ?? [];",
-      "replacement": "roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(stored.catalog_roles) };",
+      "search": "roleAssignments[peer] = ids ?? resolvedProfile.catalog_roles[peer] ?? [];",
+      "replacement": "roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(stored.catalog_roles) };",
       "testFile": "test/role-settings.test.ts",
       "testName": "catalog role application is scoped to the named peer and leaves other hand edits pending (#295)"
     },
@@ -1016,6 +1016,54 @@
       "replacement": "if (st.isSymbolicLink()) return true;",
       "testFile": "test/shadow-repo.test.ts",
       "testName": "shadow object fan-out and packed-object links refuse discovery and cached writes outside the project (#259)"
+    },
+    {
+      "id": "override-base-meaning",
+      "file": "src/hub/profiles.ts",
+      "search": "CLASSES.includes(name as TaskClass) && name !== base",
+      "replacement": "false",
+      "testFile": "test/profile-overrides.test.ts",
+      "testName": "profile override data refuses new flow meanings unknown fields invalid plans and oversized guidance (#259)"
+    },
+    {
+      "id": "override-data-isolation",
+      "file": "src/hub/profiles.ts",
+      "search": "classes: { ...original.classes },",
+      "replacement": "classes: original.classes,",
+      "testFile": "test/profile-overrides.test.ts",
+      "testName": "profile override resolution is isolated bounded data and retains shipped defaults (#259)"
+    },
+    {
+      "id": "override-task-classification",
+      "file": "src/hub/tasks.ts",
+      "search": "profileClass(given, this.d.profileData ?? profile)",
+      "replacement": "profileClass(given, profile)",
+      "testFile": "test/profile-overrides-runtime.test.ts",
+      "testName": "project custom aliases reach real CLI Tasks routing and selected plan fields without executing examples (#259)"
+    },
+    {
+      "id": "override-native-guidance",
+      "file": "src/hub/daemon.ts",
+      "search": "roleContract(peer, config.roles, selected, resolvedProfile)",
+      "replacement": "roleContract(peer, config.roles, selected, config.profile)",
+      "testFile": "test/profile-overrides-runtime.test.ts",
+      "testName": "managed native preamble receives resolved guidance and catalog defaults once from project overrides (#259)"
+    },
+    {
+      "id": "override-local-schema",
+      "file": "src/adapters/local-worker.ts",
+      "search": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile),",
+      "replacement": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(undefined),",
+      "testFile": "test/local-worker.test.ts",
+      "testName": "local worker publishes resolved custom profile classes and selected plan fields to its actual provider (#259)"
+    },
+    {
+      "id": "override-dev-plan-metadata",
+      "file": "src/hub/board.ts",
+      "search": "t.customProfile ||",
+      "replacement": "false ||",
+      "testFile": "test/profile-overrides-runtime.test.ts",
+      "testName": "custom dev document sections on ordinary base tasks preserve profile semantics and do not falsely overlap (#259)"
     }
   ]
 }

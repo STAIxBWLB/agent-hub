@@ -3,7 +3,7 @@ import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
 import { terminalText } from "./console-state.ts";
-import { profileName, projectProfile } from "../hub/profiles.ts";
+import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
@@ -649,6 +649,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const changed = init(cwd, requestedProfile, args.includes("--shadow"));
     registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
+    const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
+    if (examples.length) console.log(terminalText("Example checks (advisory):\n" + examples.map(example => "- " + example).join("\n")));
   },
 
   // Internal: the detached daemon process started by ahub up or the manager.
@@ -1108,7 +1110,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
     const urgent = rest.includes("--urgent");
     const flags = takeFlags(rest.filter((a) => a !== "--urgent"), ["--owner", "--detail", "--class"], ["--path", "--after"]);
-    const positional = !flags.one["--class"] && ((CLASSES as readonly string[]).includes(flags.rest[0] ?? "") || Object.hasOwn(projectProfile(projectConfig().profile).classes, flags.rest[0] ?? "")) && flags.rest.length > 1;
+    const positional = !flags.one["--class"] && ((CLASSES as readonly string[]).includes(flags.rest[0] ?? "") || Object.hasOwn((() => { const config = projectConfig(); return resolveProfile(config.profile, config.profile_overrides); })().classes, flags.rest[0] ?? "")) && flags.rest.length > 1;
     const cls = flags.one["--class"] ?? (positional ? flags.rest[0] : undefined);
     const title = (positional ? flags.rest.slice(1) : flags.rest).join(" ");
     if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);

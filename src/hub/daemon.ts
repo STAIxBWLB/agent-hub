@@ -1,7 +1,7 @@
 import { projectedDiff } from "./projected-diff.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
-import { profileName, projectProfile, type ProfileName } from "./profiles.ts";
+import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
@@ -107,6 +107,7 @@ export interface HubConfig {
   roster: PeerRoster;
   roles: Record<string, string[]>;
   profile?: ProfileName;
+  profile_overrides?: Record<string, unknown>;
   pii?: { paths: string[] };
   data?: { readonly: string[] };
   text_projection?: ProjectionConfig;
@@ -250,6 +251,7 @@ export function loadConfig(cwd: string): HubConfig {
     peerRosterConfig(file.roster);
     catalogAssignments(file.catalog_roles);
     profileName(file.profile);
+    resolveProfile(file.profile, file.profile_overrides);
     projectionConfig(file.text_projection);
     for (const [block, key] of [["pii", "paths"], ["data", "readonly"]] as const) {
       const raw = file[block];
@@ -273,6 +275,9 @@ export function loadConfig(cwd: string): HubConfig {
   });
   if (!files.length) return DEFAULT_CONFIG;
   const file = files.reduce((a, b) => ({ ...a, ...b, ...Object.fromEntries(CONFIG_BLOCKS.filter((k) => a[k] !== undefined && b[k] !== undefined).map((k) => [k, { ...a[k], ...b[k] }])) }));
+  const overrides = files.reduce<unknown>((prior, layer) => mergeProfileOverrides(prior, layer.profile_overrides), undefined);
+  if (overrides !== undefined) file.profile_overrides = overrides;
+  resolveProfile(file.profile, file.profile_overrides);
   delete file.ignored; // the hub's own record, never a file's
   delete file.retired;
   // Escape hatches with a stated end (issue #83). A removed one is ignored, never an error: an old config.local.json
@@ -515,7 +520,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
   const catalog = loadRoleCatalog(opts.cwd);
   for (const error of catalog.errors) log(`catalog role ${error.id}: ${error.reason}`);
-  let roleAssignments = { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(config.catalog_roles) };
+  const resolvedProfile = resolveProfile(config.profile, config.profile_overrides);
+  let roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(config.catalog_roles) };
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
     if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
   });
@@ -536,7 +542,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function validateRoleSetting(scratch: string, peer: string) {
     const candidate = loadConfig(scratch);
-    selectedRoles(peer, config.roles, { ...projectProfile(config.profile).catalog_roles, ...catalogAssignments(candidate.catalog_roles) }, catalog);
+    selectedRoles(peer, config.roles, { ...resolvedProfile.catalog_roles, ...catalogAssignments(candidate.catalog_roles) }, catalog);
     return candidate;
   }
   function sessionRoleContract(peer: string): string {
@@ -545,12 +551,12 @@ export async function startDaemon(opts: DaemonOptions) {
       preparedSessionRoles.set(peer, selected.map(role => role.id));
       preparedSessionRoleIdentities.set(peer, selected.map(roleIdentity));
       if (selected.length) event({ type: "role", peer, actor: "config", stage: "prepared", roles: selected.map(roleIdentity) });
-      return dataRoleContract(peer, roleContract(peer, config.roles, selected, config.profile));
+      return dataRoleContract(peer, roleContract(peer, config.roles, selected, resolvedProfile));
     } catch (error) {
       preparedSessionRoles.delete(peer);
       preparedSessionRoleIdentities.delete(peer);
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
-      const fallback = dataRoleContract(peer, roleContract(peer, config.roles, [], config.profile));
+      const fallback = dataRoleContract(peer, roleContract(peer, config.roles, [], resolvedProfile));
       preparedSessionRoles.set(peer, []);
       preparedSessionRoleIdentities.set(peer, []);
       return fallback;
@@ -840,7 +846,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const executionBudget = new ExecutionBudget(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => executionBudget.close());
   // Completion checks (issue #7): only from a config file git does not track, one at a time, killed on stop.
-  const allowedChecks = new Set([...CLASSES, ...Object.keys(projectProfile(config.profile).classes)]);
+  const allowedChecks = new Set([...CLASSES, ...Object.keys(resolvedProfile.classes)]);
   const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => allowedChecks.has(k) && typeof v === "string" && v.trim())) as Record<string, string>;
   const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && !(k in checkCommands));
   if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
@@ -854,6 +860,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
   const tasks: Tasks = new Tasks({
     profile: profileName(config.profile),
+    profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
@@ -2596,7 +2603,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, "pi", unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(profileName(config.profile)), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
@@ -2762,7 +2769,7 @@ export async function startDaemon(opts: DaemonOptions) {
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit },
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
-        profile: profileName(config.profile),
+        profile: resolvedProfile,
         taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);
@@ -2971,7 +2978,7 @@ export async function startDaemon(opts: DaemonOptions) {
     config.catalog_roles = { ...config.catalog_roles };
     const ids = catalogAssignments(stored.catalog_roles)[peer];
     if (ids === undefined) delete config.catalog_roles[peer]; else config.catalog_roles[peer] = ids;
-    roleAssignments[peer] = ids ?? projectProfile(config.profile).catalog_roles[peer] ?? [];
+    roleAssignments[peer] = ids ?? resolvedProfile.catalog_roles[peer] ?? [];
   };
   const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
   const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
