@@ -1760,6 +1760,30 @@
       "replacement": " || false",
       "testFile": "test/task-board.test.ts",
       "testName": "recovered owner delivery holds stay waiting until settlement (#263)"
+    },
+    {
+      "id": "planning-dependency-cycle",
+      "file": "src/hub/tasks.ts",
+      "search": "if (id === task.id) throw new PreEffectToolRefusal(\"planning dependencies would form a cycle\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"planning dependencies would form a cycle\");",
+      "testFile": "test/planning.test.ts",
+      "testName": "backlog planning validates dependency cycles reservations and atomic undo (#263)"
+    },
+    {
+      "id": "planning-reservation-roster",
+      "file": "src/hub/tasks.ts",
+      "search": "if (patch.reserved && !this.d.bus.isRostered(patch.reserved))",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "backlog planning validates dependency cycles reservations and atomic undo (#263)"
+    },
+    {
+      "id": "planning-dependency-started-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task.state !== \"backlog\" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal(\"dependency and reservation changes require unstarted backlog work\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"dependency and reservation changes require unstarted backlog work\");",
+      "testFile": "test/planning.test.ts",
+      "testName": "backlog planning validates dependency cycles reservations and atomic undo (#263)"
     }
   ]
 }

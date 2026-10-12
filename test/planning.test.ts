@@ -80,3 +80,28 @@ test("planning dates refuse values outside UTC Date range before persistence (#2
   expect(() => tasks.changeRelease(USER, { id: release.id, revision: 0, ship: 8_640_000_000_000_001 })).toThrow("invalid release planned dates");
   expect(board.release(release.id)?.revision).toBe(0);
 });
+
+
+test("backlog planning validates dependency cycles reservations and atomic undo (#263)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-planning-graph-"));
+  const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0, rostered: peer => ["claude", "codex"].includes(peer) });
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "planning", roles: { claude: ["planner"] }, notify: () => {} });
+  cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
+  const first = await tasks.propose(USER, { title: "first", class: "implement", backlog: true });
+  const second = await tasks.propose(USER, { title: "second", class: "implement", backlog: true, after: [first.id] });
+  const third = await tasks.propose(USER, { title: "third", class: "implement", backlog: true, after: [second.id] });
+  for (const fields of [{ deps: [first.id] }, { deps: [third.id] }, { deps: [999] }, { deps: [second.id, second.id] }, { deps: [], reserved: "missing" }, { deps: null }, { deps: [1.5] }]) {
+    await expect(tasks.planBacklog("claude", { id: first.id, revision: 0, fields, reason: "invalid graph" })).rejects.toThrow();
+    expect(board.get(first.id)).toEqual(first);
+  }
+  const planned = await tasks.planBacklog("claude", { id: second.id, revision: 0, fields: { deps: [], reserved: "codex", priority: 1 }, reason: "ready prerequisite" });
+  expect(planned).toMatchObject({ deps: [], reserved: "codex", priority: 1, planningRevision: 1, state: "backlog", owner: null });
+  expect(tasks.publicView(planned, true)).not.toHaveProperty("history.1.planning.previous");
+  const undone = await tasks.undoPlanning("claude", second.id, 1);
+  expect(undone.deps).toEqual([first.id]);
+  expect(undone.reserved).toBeNull();
+  expect(undone.priority).toBeUndefined();
+  const executing = board.update(first.id, USER, "accepted", { state: "in_progress", owner: "codex" });
+  await expect(tasks.planBacklog(USER, { id: first.id, revision: 0, fields: { deps: [] }, reason: "too late" })).rejects.toThrow("unstarted backlog");
+  expect(board.get(first.id)).toEqual(executing);
+});

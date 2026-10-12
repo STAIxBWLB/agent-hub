@@ -558,6 +558,21 @@ export class Tasks {
       if (task.state === "approved") throw new PreEffectToolRefusal("approved work is final");
       if (by !== USER && (task.state !== "backlog" || taskHasStarted(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
+      if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
+        if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
+        if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
+        const rows = new Map(this.d.board.list().map(row => [row.id, row]));
+        const pending = [...(patch.deps ?? task.deps ?? [])], seen = new Set<number>();
+        while (pending.length) {
+          const id = pending.pop()!;
+          if (id === task.id) throw new PreEffectToolRefusal("planning dependencies would form a cycle");
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const dependency = rows.get(id);
+          if (!dependency) throw new PreEffectToolRefusal(`no dependency task #${id}`);
+          pending.push(...(dependency.deps ?? []));
+        }
+      }
       const target = patch.release === undefined ? task.release : patch.release;
       if (target != null && !this.d.board.release(target)) throw new PreEffectToolRefusal("no such release");
       for (const id of new Set([task.release, target])) {

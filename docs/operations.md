@@ -2687,3 +2687,10 @@ Reduced motion removes departures immediately and the existing snapshot poll
 prunes transient deadlines without new timers. Explicit unattributed turns have
 no guessed task bubble. Warning caps retain conflicts first and parallel warning
 kinds have separate segments/labels. Physical visual validation remains pending.
+
+
+Planner backlog plans also accept `deps` (at most 64 unique task ids) and
+`reserved` (rostered peer id or null). Dependency/reservation edits require
+unstarted, unowned backlog work even for the person; cycles and missing ids
+are refused before persistence. Planning undo restores previous dependency and
+reservation values at the same revision fence. Editing never routes work.

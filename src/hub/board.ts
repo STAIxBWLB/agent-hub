@@ -62,7 +62,7 @@ export interface Task extends PlanningFields {
   plan?: TaskPlan;
   /** Artifact identities and bounded evidence, owned by Tasks (#257). */
   sdlc?: SdlcReceipt;
-  /** Tasks that must be approved before this one is offered (issue #34); fixed when it is proposed. */
+  /** Tasks that must be approved before this one is offered; planning edits are limited to unstarted backlog. */
   deps?: number[];
   /** Who routing offers the task first once nothing is left to wait for (issue #207); null when nobody was named. */
   reserved?: PeerId | null;
@@ -199,10 +199,10 @@ export class Board {
     const next = { ...task, ...patch };
     if (next.plannedStart != null && next.due != null && next.plannedStart > next.due) throw new Error("planned start must not follow due");
     if (next.release != null && !this.release(next.release)) throw new Error("no such release");
-    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, task[key] ?? (key === "pinned" ? false : null)])) as PlanningFields;
+    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, task[key] ?? (key === "pinned" ? false : key === "deps" ? [] : null)])) as PlanningFields;
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
-    const result = this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
-      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify([...task.history, entry]), now, id, revision);
+    const result = this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
+      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
     if (result.changes !== 1) throw new Error("planning revision changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }

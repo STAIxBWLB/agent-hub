@@ -1652,7 +1652,7 @@ Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.
 Source/fixture coverage is in planning.test.ts and planning-surfaces.test.ts:
 legacy/restart persistence, revision/role/pin/person order/frozen scope/undo/ship,
 actual task dates, CLI marker authority, public PII and research reset identities.
-All current platform/201-seed checks remain pending. Desktop/phone rendering and
+All current platform and seeded checks remain pending. Desktop/phone rendering and
 native planner grooming into two releases are unverified; no real account run,
 tag, publish, install or live activation was performed.
 
@@ -1665,3 +1665,8 @@ reduced-motion/settled cleanup, expired arcs, explicit unattributed turn omissio
 conflict priority under the cap and distinct parallel warning coordinates.
 Platform/full206-guard proof is pending. Desktop/phone/real-peer visual readback
 remains unverified; no account, release, installation or live activation ran.
+
+
+Dependency/reservation grooming regression covers direct/transitive cycles,
+missing or duplicate ids, off-roster reservations, atomic rejection and undo,
+and started-task refusal. Current source/fixture proof remains pending.

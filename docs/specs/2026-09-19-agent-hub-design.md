@@ -2512,3 +2512,16 @@ start/review/done. Old absent evidence remains unknown.
 CLI/dashboard/tools, batched planner notices, dependency edits/splitting, WIP
 pull, bounded undo surfaces, research metadata and optional GitHub import remain
 in progress. Source/fixture/platform/seed/visual/native proof is not yet complete.
+
+
+## Planner dependency and reservation grooming (#263, in progress)
+
+Planning may replace at most 64 unique existing positive dependency ids and a
+rostered peer reservation (or clear it). Tasks checks transitive cycles, current
+unstarted backlog state, ownership and existing revision/pin/frozen/person-order
+floors before screening the reason and again afterwards. Board saves metadata,
+dependencies, reservation, revision and prior values in one compare-and-swap.
+Undo restores the same fields only when the latest eligible edit still applies.
+Public planning history excludes previous values. Suggested owners remain
+reservations; editing never offers or starts work. Native grooming remains
+unverified; split, WIP pull, batched notices and import are still required.
