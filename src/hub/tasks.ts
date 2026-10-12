@@ -554,7 +554,7 @@ export class Tasks {
       return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0;
     });
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: [...this.excluded(task), ...full], ...(reservedOnly ? { candidates: task.reserved ? [task.reserved] : [] } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
+    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: [...this.excluded(task), ...full], ...(reservedOnly ? { candidates: task.reserved ? [task.reserved] : [], ...(task.reserved ? { namedOwner: task.reserved } : {}) } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
@@ -570,7 +570,7 @@ export class Tasks {
       if (priority === 0 && this.d.board.list("backlog").some(other => other.id !== task.id && (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) === 0 && other.rank != null && other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")) && (other.rank < (task.rank ?? Number.MAX_SAFE_INTEGER) || other.rank === task.rank && other.id < task.id))) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
-      const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved"));
+      const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved")) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
       if (task.reserved && reservation?.by === USER && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
       return { task, owner: assignment.owner };
     };
@@ -1338,7 +1338,7 @@ export class Tasks {
       offering = true;
       const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
       this.releaseNotice(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
-      await this.assignOwner(ready, HUB, planned ? { candidates: [selected!], planner: true } : {});
+      await this.assignOwner(ready, HUB, planned ? { candidates: [selected!], namedOwner: selected!, planner: true } : {});
     } catch (e) {
       // A saved move whose delivery failed is not "could not be assigned" (#297); the console notice was printed
       // where the error was thrown. The offer stays consumed by the error's own evidence, without the readback.

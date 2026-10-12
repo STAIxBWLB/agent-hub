@@ -105,3 +105,17 @@ test("unoffered planner pull can undo after a hub readiness marker (#263)", asyn
   await tasks.releaseReady();expect(board.get(task.id)?.owner).toBeNull();expect(board.get(task.id)?.history.at(-1)?.event).toBe("ready");
   const undone=await tasks.undoPlanning("claude",task.id,1).catch(()=>null);expect(undone).toMatchObject({state:"backlog",owner:null,reserved:null,planningRevision:2});
 });
+
+
+test("planner pull honors original person backlog reservations and pull-only offers (#263)", async () => {
+  const {tasks,board,bus,capacity}=await rig();
+  const reserved=await tasks.propose(USER,{title:"person reservation",class:"implement",backlog:true,owner:"codex"});
+  capacity.codex=0;const alternative=new PullPeer("local");bus.add(alternative);await alternative.start();
+  const before=board.get(reserved.id);
+  await expect(tasks.pullPlanned("claude",{id:reserved.id,revision:0,reason:"try another owner"})).rejects.toThrow("person's reservation");expect(board.get(reserved.id)).toEqual(before);
+  class PullOnlyPeer extends PullPeer {readonly pullOnly=true;deliveries=0;async deliver(_envs:Envelope[]){this.deliveries++;}}
+  const kimi=new PullOnlyPeer("kimi");bus.add(kimi);await kimi.start();
+  const task=await tasks.propose(USER,{title:"named pull-only work",class:"implement",backlog:true,owner:"kimi"});
+  expect(await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"named peer has room"})).toMatchObject({owner:null,reserved:"kimi",state:"proposed"});
+  await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("kimi");expect(bus.queued("kimi")).toBeGreaterThan(0);expect(kimi.deliveries).toBe(0);
+});

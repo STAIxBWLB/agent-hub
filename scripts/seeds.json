@@ -1960,6 +1960,30 @@
       "replacement": "return task.history.at(-1);",
       "testFile": "test/planner-pull.test.ts",
       "testName": "unoffered planner pull can undo after a hub readiness marker (#263)"
+    },
+    {
+      "id": "planner-original-person-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": " ?? (task.history[0]?.event === \"backlogged\" ? task.history[0] : undefined)",
+      "replacement": " ?? undefined",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
+    },
+    {
+      "id": "planner-layered-wip-limits",
+      "file": "src/hub/daemon.ts",
+      "search": "if (wipLayers.length) file.tasks =",
+      "replacement": "if (false) file.tasks =",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "machine-local WIP settings retain every other shared peer capacity (#263)"
+    },
+    {
+      "id": "planner-pull-only-reservation-preview",
+      "file": "src/hub/tasks.ts",
+      "search": "...(task.reserved ? { namedOwner: task.reserved } : {})",
+      "replacement": "...(false ? { namedOwner: task.reserved } : {})",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
     }
   ]
 }

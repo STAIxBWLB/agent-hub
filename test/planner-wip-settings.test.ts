@@ -27,3 +27,12 @@ test("planner WIP settings use bounded integers and the existing local registry 
   expect(writeConfigSetting(root,join(root,"state"),def,null,loadConfig)).toBe(true);
   expect(loadConfig(root).tasks.wip_limits?.codex).toBeUndefined();
 });
+
+
+test("machine-local WIP settings retain every other shared peer capacity (#263)", () => {
+  const root=mkdtempSync(join(tmpdir(),"ahub-wip-layers-"));cleanup.push(()=>rmSync(root,{recursive:true,force:true}));mkdirSync(join(root,".agenthub"));
+  writeFileSync(join(root,".agenthub/config.json"),JSON.stringify({tasks:{wip_limits:{claude:3,codex:2}}}));
+  const def=settingDef("tasks.wip_limits.codex");if(typeof def==="string")throw new Error(def);
+  expect(writeConfigSetting(root,join(root,"state"),def,4,loadConfig)).toBe(true);expect(loadConfig(root).tasks.wip_limits).toEqual({claude:3,codex:4});
+  expect(writeConfigSetting(root,join(root,"state"),def,null,loadConfig)).toBe(true);expect(loadConfig(root).tasks.wip_limits).toEqual({claude:3,codex:2});
+});

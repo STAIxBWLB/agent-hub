@@ -277,6 +277,8 @@ export function loadConfig(cwd: string): HubConfig {
   });
   if (!files.length) return DEFAULT_CONFIG;
   const file = files.reduce((a, b) => ({ ...a, ...b, ...Object.fromEntries(CONFIG_BLOCKS.filter((k) => a[k] !== undefined && b[k] !== undefined).map((k) => [k, { ...a[k], ...b[k] }])) }));
+  const wipLayers = files.filter(layer => layer.tasks?.wip_limits !== undefined);
+  if (wipLayers.length) file.tasks = { ...file.tasks, wip_limits: wipLayers.reduce((prior, layer) => ({ ...prior, ...planningWipLimits(layer.tasks.wip_limits) }), {} as Record<string, number>) };
   const overrides = files.reduce<unknown>((prior, layer) => mergeProfileOverrides(prior, layer.profile_overrides), undefined);
   if (overrides !== undefined) file.profile_overrides = overrides;
   resolveProfile(file.profile, file.profile_overrides);
