@@ -7,6 +7,7 @@ import { realPath } from "../src/hub/project.ts";
 import { guardPath, runTool, type ToolContext } from "../src/local/tools.ts";
 import { projectFileTool } from "../src/cli/facts-hook.ts";
 import { Board } from "../src/hub/board.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { MemoryClient } from "../src/memory/client.ts";
@@ -20,6 +21,8 @@ test("glob policies accept bounded grammar and match future descendants without 
   for (const raw of [["data/[a]"], ["data/{a,b}"], ["!data/a"], ["data/**x"], ["data/a**"], ["data/../*"], ["data/\\*"], ["a/" + "?".repeat(17)]]) expect(() => policyPaths(raw, "pii.paths")).toThrow();
   for (const path of ["data/one.csv", "data/raw/deep/TWO.CSV", "DATA/future/new.csv"]) expect(matchesPolicy(dir, path, ["data/**/*.csv"])).toBe(true);
   expect(matchesPolicy(dir, "data/raw/deep/a.txt", ["data/**/*.csv"])).toBe(false);
+  writeFileSync(join(dir, "data/raw/deep/a.txt"), "public");
+  expect(matchesPolicy(dir, "data/raw/deep/a.txt", ["data/**/*.csv"], true)).toBe(false);
   expect(matchesPolicy(dir, "database/a.csv", ["data/**/*.csv"])).toBe(false);
   expect(matchesPolicy(dir, "data/a.csv/child", ["data/*.csv"])).toBe(true);
   expect(matchesPolicy(dir, "data/raw/deep", ["data/**/*.csv"], true)).toBe(true);
@@ -68,12 +71,21 @@ test("managed writes and Claude scoped grants honor glob policy while retaining 
 });
 test("glob-private task scopes stay private before triage and refuse public accept expansion (#259)", async () => {
   const dir = root(), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }); cleanup.push(() => board.close());
+  class Peer extends BasePeer { async start() { this.setState("idle"); } async stop() {} async deliver() {} }
+  for (const id of ["codex", "local"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
+  const notices: string[] = [];
   let calls = 0, saved = 0; const memory = new MemoryClient("http://127.0.0.1:1"); memory.save = async () => { saved++; return undefined; };
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", profile: "research", piiPaths: ["data/**/*.csv"], memory, routing: () => loadRouting(dir), triage: { onCampus: async () => false, classify: async () => { calls++; return "draft"; } } });
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", profile: "research", notify: line => notices.push(line), piiPaths: ["data/**/*.csv"], memory, routing: () => loadRouting(dir), triage: { onCampus: async () => false, classify: async () => { calls++; return "draft"; } } });
   const task = await tasks.propose("local", { title: "GLOB_PRIVATE_MARKER", owner: "local", plan: { paths: ["data/future/input.csv"] } });
   expect(tasks.isPii(task)).toBe(true); expect(calls).toBe(0); expect(saved).toBe(0);
-  expect(JSON.stringify(tasks.publicView(task))).not.toContain("GLOB_PRIVATE_MARKER");
+  expect(JSON.stringify(tasks.publicView(task))).not.toContain("GLOB_PRIVATE_MARKER"); expect(notices.join(" ")).not.toContain("GLOB_PRIVATE_MARKER");
   const parent = await tasks.propose("local", { title: "GLOB_PARENT_MARKER", class: "draft", owner: "local", refs: { paths: ["data/new"] } }); expect(tasks.isPii(parent)).toBe(true);
   const ordinary = await tasks.propose("codex", { title: "public", class: "draft", owner: "codex", refs: { paths: ["output"] } });
   expect(() => tasks.accept("codex", ordinary.id, { paths: ["data/input.csv"] })).toThrow("PII");
+});
+
+test("glob discovery entry ceiling protects rather than treating an incomplete expansion as public (#259)", () => {
+  const dir = root(); mkdirSync(join(dir, "data"));
+  for (let i = 0; i < 4097; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
+  expect(matchesPolicy(dir, "output.txt", ["data/**/*.csv"])).toBe(true);
 });

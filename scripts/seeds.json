@@ -1096,6 +1096,14 @@
       "replacement": "projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files)",
       "testFile": "test/permission-modes.test.ts",
       "testName": "Claude scoped permission replies withhold glob-readonly writes without leaking policy paths (#259)"
+    },
+    {
+      "id": "glob-discovery-entry-ceiling",
+      "file": "src/hub/path-policy.ts",
+      "search": "if (++entries > 4096)",
+      "replacement": "if (++entries > 100000)",
+      "testFile": "test/path-globs.test.ts",
+      "testName": "glob discovery entry ceiling protects rather than treating an incomplete expansion as public (#259)"
     }
   ]
 }

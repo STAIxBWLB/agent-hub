@@ -89,6 +89,7 @@ export function matchesPolicy(cwd: string, path: string, paths: string[], includ
   try {
     if (path.length > 4096) return true;
     const root = realPath(cwd), lexical = resolve(root, path), actual = policyRealPath(lexical);
+    includeParents &&= !existing(lexical) || statSync(lexical).isDirectory();
     return paths.some(entry => /[?*]/.test(entry) ? globScope(root, lexical, actual, entry, includeParents) : policyTargets(root, [entry]).some(target => beneath(lexical, target) || beneath(actual, target) || (includeParents && (beneath(target, lexical) || beneath(target, actual)))));
   } catch { return true; }
 }
