@@ -1,5 +1,5 @@
-import { supportsBoardReleaseFilter } from "./board-read.ts";
 #!/usr/bin/env bun
+import { supportsBoardReleaseFilter } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
