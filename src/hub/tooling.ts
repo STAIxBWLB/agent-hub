@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -24,7 +23,8 @@ const CLAUDE_ONLY: Record<string, AddonName> = { "codex@openai-codex": "codex-pl
  */
 const BINARIES: Record<string, { name: AddonName; version?: RegExp }> = { ripwire: { name: "ripwire" }, dot: { name: "dot-admit", version: /^dot version (\S+)/ } };
 /** By resolved path and modification time: one version call per binary per process. */
-const identities = new Map<string, string | null | false>();
+const identities = new Map<string, Promise<string | null | false>>();
+const PROBE_MS = 2000;
 
 export interface ToolingSources { home?: string; cwd?: string; path?: string }
 
@@ -79,20 +79,35 @@ function onPath(name: string, path: string): string | undefined {
   }
   return undefined;
 }
-/** The version an executable reports when it is the expected program, `null` when that is unknown, `false` when it is another program. */
-function identify(file: string, pattern: RegExp): string | null | false {
+/**
+ * The version an executable reports when it is the expected program, `null` when that is unknown, `false` when it is
+ * another program or does not answer within PROBE_MS. Asynchronous with a hard deadline: a program that ignores SIGTERM
+ * is killed outright and never waited on, so it can never hold up the hub.
+ */
+function identify(file: string, pattern: RegExp): Promise<string | null | false> {
   let key = file;
   try { key = `${file}:${statSync(file).mtimeMs}`; } catch { /* unreadable: ask anyway */ }
-  if (!identities.has(key)) {
-    const r = spawnSync(file, ["--version"], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "pipe"] });
-    const m = pattern.exec(`${r.stdout ?? ""}`.trim());
-    identities.set(key, m ? version(m[1]) : false);
+  let found = identities.get(key);
+  if (!found) {
+    found = (async () => {
+      let p: ReturnType<typeof Bun.spawn> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        p = Bun.spawn([file, "--version"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+        const out = await Promise.race([new Response(p.stdout as ReadableStream).text(), new Promise<undefined>((done) => { timer = setTimeout(() => done(undefined), PROBE_MS); })]);
+        if (out === undefined) return false;
+        const m = pattern.exec(out.trim());
+        return m ? version(m[1]) : false;
+      } catch { return false; }
+      finally { clearTimeout(timer); try { p?.kill("SIGKILL"); } catch { /* gone */ } }
+    })();
+    identities.set(key, found);
   }
-  return identities.get(key)!;
+  return found;
 }
 
 /** The add-ons a peer works with, sorted by name. Unreadable sources contribute nothing; they never throw. */
-export function detectTooling(peer: string, src: ToolingSources = {}): Addon[] {
+export async function detectTooling(peer: string, src: ToolingSources = {}): Promise<Addon[]> {
   const home = src.home ?? homedir();
   const found = new Map<AddonName, Addon>();
   const add = (a: Addon) => { if (!found.has(a.name) || (found.get(a.name)!.version === null && a.version !== null)) found.set(a.name, a); };
@@ -102,7 +117,7 @@ export function detectTooling(peer: string, src: ToolingSources = {}): Addon[] {
   for (const [bin, spec] of Object.entries(BINARIES)) {
     const file = onPath(bin, path);
     if (!file) continue;
-    const v = spec.version ? identify(file, spec.version) : null;
+    const v = spec.version ? await identify(file, spec.version) : null;
     if (v !== false) add({ name: spec.name, version: v });
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));

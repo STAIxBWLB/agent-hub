@@ -30,7 +30,7 @@ function inventory(opts: { claude?: Record<string, boolean>; codex?: string } = 
 }
 const exe = (dir: string, name: string) => { writeFileSync(join(dir, name), `#!/bin/sh\necho ${MARKER}\n`); chmodSync(join(dir, name), 0o755); };
 
-test("detection reads names and versions from the closed list, per runtime, and nothing else", () => {
+test("detection reads names and versions from the closed list, per runtime, and nothing else", async () => {
   const { home, bin } = inventory({ claude: { "claude-mem@thedotmack": true, "ponytail@ponytail": true, "codex@openai-codex": false, "open-code-review@open-code-review": true, "frontend-design@claude-plugins-official": true },
     codex: `[plugins."documents@x"]\nenabled = true\n\n[plugins."ponytail@ponytail"]\nenabled = false\n\n[hooks.state."claude-mem@claude-mem-local:hooks/codex-hooks.json:stop:0:0"]\ntrusted_hash = "${MARKER}"\n` });
   exe(bin, "ripwire");
@@ -39,24 +39,30 @@ test("detection reads names and versions from the closed list, per runtime, and 
   const graphviz = temp("graphviz"), admit = temp("admit");
   writeFileSync(join(graphviz, "dot"), "#!/bin/sh\necho 'dot - graphviz version 12.1.0' >&2\nexit 1\n"); chmodSync(join(graphviz, "dot"), 0o755);
   writeFileSync(join(admit, "dot"), "#!/bin/sh\necho 'dot version 2.70.38 (59a6cc7)'\n"); chmodSync(join(admit, "dot"), 0o755);
-  expect(detectTooling("pi", { home, path: graphviz })).toEqual([]);
-  expect(detectTooling("pi", { home, path: [admit, graphviz].join(":") })).toEqual([{ name: "dot-admit", version: "2.70.38" }]);
-  expect(detectTooling("pi", { home, path: [graphviz, admit].join(":") })).toEqual([]); // the first on PATH is the one a shell runs
+  expect(await detectTooling("pi", { home, path: graphviz })).toEqual([]);
+  expect(await detectTooling("pi", { home, path: [admit, graphviz].join(":") })).toEqual([{ name: "dot-admit", version: "2.70.38" }]);
+  expect(await detectTooling("pi", { home, path: [graphviz, admit].join(":") })).toEqual([]); // the first on PATH is the one a shell runs
   // A disabled plugin, a project-scoped install for another project and a plugin outside the list do not count.
-  expect(detectTooling("claude", { home, cwd: "/project", path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ponytail", version: null }, { name: "ripwire", version: null }]);
-  expect(detectTooling("codex", { home, path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ripwire", version: null }]);
+  expect(await detectTooling("claude", { home, cwd: "/project", path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ponytail", version: null }, { name: "ripwire", version: null }]);
+  expect(await detectTooling("codex", { home, path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ripwire", version: null }]);
   // Peers without a plugin inventory see only what is on PATH.
-  expect(detectTooling("kimi", { home, path: bin })).toEqual([{ name: "ripwire", version: null }]);
-  expect(detectTooling("pi", { home, path: "" })).toEqual([]);
+  expect(await detectTooling("kimi", { home, path: bin })).toEqual([{ name: "ripwire", version: null }]);
+  expect(await detectTooling("pi", { home, path: "" })).toEqual([]);
   // The project's own settings switch a plugin for this project.
   const project = temp("project");
   mkdirSync(join(project, ".claude"));
   writeFileSync(join(project, ".claude", "settings.local.json"), JSON.stringify({ enabledPlugins: { "claude-mem@thedotmack": false } }));
-  expect(detectTooling("claude", { home, cwd: project, path: "" }).map((a) => a.name)).toEqual(["ponytail"]);
+  expect((await detectTooling("claude", { home, cwd: project, path: "" })).map((a) => a.name)).toEqual(["ponytail"]);
   // No inventory at all is no add-on, never an error.
-  expect(detectTooling("claude", { home: temp("empty"), path: "" })).toEqual([]);
-  for (const peer of ["claude", "codex", "kimi"]) expect(JSON.stringify(detectTooling(peer, { home, cwd: "/project", path: bin }))).not.toContain(MARKER);
-});
+  expect(await detectTooling("claude", { home: temp("empty"), path: "" })).toEqual([]);
+  for (const peer of ["claude", "codex", "kimi"]) expect(JSON.stringify(await detectTooling(peer, { home, cwd: "/project", path: bin }))).not.toContain(MARKER);
+  // A `dot` that ignores SIGTERM and never answers is not admission, and the probe ends at its deadline (review of #351).
+  const stuck = temp("stuck");
+  writeFileSync(join(stuck, "dot"), "#!/bin/sh\ntrap '' TERM\nexec sleep 30\n"); chmodSync(join(stuck, "dot"), 0o755);
+  const started = Date.now();
+  expect(await detectTooling("pi", { home, path: stuck })).toEqual([]);
+  expect(Date.now() - started).toBeLessThan(5000);
+}, 15_000);
 
 let clock = Date.parse("2026-10-10T00:00:00Z");
 const at = () => new Date(clock += 60_000).toISOString();
@@ -64,16 +70,16 @@ const task = (id: number, event: string, state: string, owner: string | null, re
   ({ v: 1, at: at(), type: "task", id, event, by: "hub", state, owner, reviewer, class: "implement", pii: false });
 const writer = { version: "test", source: "backfill" as const };
 
-test("research records carry each working peer's latest fingerprint, and a peer without one stays unknown", () => {
+test("research records carry each working peer's latest fingerprint, and a peer without one stays unknown", async () => {
   const { home, bin } = inventory({ claude: { "claude-mem@thedotmack": true } });
   exe(bin, "ripwire");
   const events: StampedEvent[] = [
-    { v: 1, at: at(), type: "tooling", peer: "codex", addons: detectTooling("codex", { home, path: bin }) },
+    { v: 1, at: at(), type: "tooling", peer: "codex", addons: await detectTooling("codex", { home, path: bin }) },
     { v: 1, at: at(), type: "tooling", peer: "claude", addons: [] },
     task(1, "proposed", "proposed", null),
     task(1, "assigned", "in_progress", "codex"),
     // claude re-attaches with claude-mem on before it reviews: its latest fingerprint counts.
-    { v: 1, at: at(), type: "tooling", peer: "claude", addons: detectTooling("claude", { home, cwd: "/p", path: "" }) },
+    { v: 1, at: at(), type: "tooling", peer: "claude", addons: await detectTooling("claude", { home, cwd: "/p", path: "" }) },
     { v: 1, at: at(), type: "tokens", peer: "kimi", n: 5, task: 1, attribution: "delivery" }, // kimi has no fingerprint
     task(1, "approved", "approved", "codex"),
   ];

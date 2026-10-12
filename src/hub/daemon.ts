@@ -1996,7 +1996,7 @@ export async function startDaemon(opts: DaemonOptions) {
       event({ type: "state", peer: e.peer, state: e.state });
       // #248: the add-ons it works with, once per attach (names and versions only).
       if (e.state === "offline") tooled.delete(e.peer);
-      else if (!tooled.has(e.peer)) { tooled.add(e.peer); event({ type: "tooling", peer: e.peer, addons: detectTooling(e.peer, { cwd: opts.cwd }) }); }
+      else if (!tooled.has(e.peer)) { tooled.add(e.peer); const peer = e.peer; void detectTooling(peer, { cwd: opts.cwd }).then((addons) => event({ type: "tooling", peer, addons }), () => undefined); }
       const open = turns.get(e.peer);
       // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";

@@ -26,7 +26,7 @@ export interface BenchIo {
   sleep(ms: number): Promise<void>;
   log(line: string): void;
   /** #248: the add-ons a peer works with; `detectTooling` on this machine unless a test supplies its own. */
-  tooling?(peer: string): Addon[];
+  tooling?(peer: string): Addon[] | Promise<Addon[]>;
 }
 export interface BenchOptions { cwd: string; stateDir: string; suitePath: string; arm: string; repeat: number; addons?: Partial<Record<AddonName, "on" | "off">>; only?: string[]; home?: string; pollMs?: number; verifyTimeoutMs?: number; setupTimeoutMs?: number; settleMs?: number; stopped?: () => boolean }
 
@@ -195,9 +195,9 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
       // ponytail: the hub's status reports a requested model for Pi only and permission modes once #242 lands; the rest
       // are recorded as absent. Reading each peer's launch settings would fill them in.
       // The status lists every peer the hub has known; an arm is the ones attached now.
-      peers: Object.entries(status.peers ?? {}).filter(([, p]) => p.state !== "offline")
-        .map(([id, p]) => ({ id, ...(p.requestedModel ? { model: p.requestedModel } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}),
-          addons: (io.tooling ?? ((peer: string) => detectTooling(peer, { cwd: opts.cwd })))(id) })).sort((a, b) => a.id.localeCompare(b.id)),
+      peers: (await Promise.all(Object.entries(status.peers ?? {}).filter(([, p]) => p.state !== "offline")
+        .map(async ([id, p]) => ({ id, ...(p.requestedModel ? { model: p.requestedModel } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}),
+          addons: await (io.tooling ?? ((peer: string) => detectTooling(peer, { cwd: opts.cwd })))(id) })))).sort((a, b) => a.id.localeCompare(b.id)),
       routingHash: existsSync(routing) ? createHash("sha256").update(readFileSync(routing)).digest("hex") : null,
       hubVersion: status.version,
     };

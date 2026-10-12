@@ -101,7 +101,8 @@ from this machine's inventory. Claude Code: `enabledPlugins` in `~/.claude/setti
 sections in `~/.codex/config.toml` that are not `enabled = false`, and plugins whose hooks it trusts, with the version
 from its plugin cache when there is exactly one. Every peer: `ripwire` on PATH (version unknown), and the first `dot` on PATH
 when `dot --version` answers as the dotfiles CLI (`dot version X`, resource admission; Graphviz's `dot` does not count),
-asked once per binary per process with a 2 s bound and no input. Nothing else is read into the event: no plugin content, settings values, hook commands or paths. The inventory
+asked once per binary per process, without input, in the background (the hub never waits on it), and killed if it
+has not answered within 2 s. Nothing else is read into the event: no plugin content, settings values, hook commands or paths. The inventory
 is the machine's, not the session's: a session started with its own settings or plugin flags can differ.
 
 `ahub research addons [--since 30d] [--all] [--json]` splits approved tasks per add-on: `on` when a peer that worked on
