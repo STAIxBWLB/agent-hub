@@ -3,7 +3,7 @@ import { readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type 
 export interface DeliveryTask { id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: PhaseView; }
 export interface MergeQueueRow { pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
-export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
+export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
 const validId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 /** Fixed metadata-only reads; local claims and unknown dependency evidence never become merge approval. */
@@ -64,7 +64,11 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     for (const pr of next) { remaining.delete(pr); result.order.push(pr); }
   }
   const touchingCoverageUnknown = result.rows.some(row => evidence.get(row.pr)?.pathsComplete !== true || !evidence.get(row.pr)?.base);
+  const personOrder = new Set(result.conflicts.filter(conflict => conflict.order === "person_required").flatMap(conflict => [conflict.left, conflict.right]));
+  const unresolvedOrder = new Set([...remaining, ...personOrder]);
+  for (const row of result.rows) if (result.truncated || touchingCoverageUnknown || [...personOrder].some(pr => reaches(row.pr, pr))) unresolvedOrder.add(row.pr);
+  if (unresolvedOrder.size) { result.unordered = ids.filter(pr => unresolvedOrder.has(pr)); result.order = result.order.filter(pr => !unresolvedOrder.has(pr)); }
   for (const row of result.rows) { if (result.truncated) row.blockers.push("open PR coverage truncated; touching order unknown"); if (touchingCoverageUnknown) row.blockers.push("open PR file coverage incomplete; touching order unknown"); row.blockers = [...new Set(row.blockers)]; row.ready = !row.private && !row.blockers.length; }
-  result.complete = !result.truncated && !remaining.size && !touchingCoverageUnknown;
+  result.complete = !result.truncated && !remaining.size && !touchingCoverageUnknown && !personOrder.size;
   return result;
 }

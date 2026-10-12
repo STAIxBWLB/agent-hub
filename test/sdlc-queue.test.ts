@@ -73,3 +73,11 @@ test("queue completeness includes verified target branches beyond complete file 
  expect(unknown.complete).toBe(false);expect(unknown.rows[0]?.ready).toBe(false);
  const known=await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1]}).run);expect(known.complete).toBe(true);
 });
+test("touching PRs and their dependents stay unordered until a person supplies dependency order (#257)", async () => {
+ const paths={1:["src/shared.ts"],2:["src/shared.ts"],3:["src/child.ts"],4:["src/independent.ts"]};
+ const report=await readMergeQueue("owner/repo",config,[task(1,1),task(2,2),task(3,3,[1]),task(4,4)],fake({ids:[1,2,3,4],paths}).run);
+ expect(report.order).toEqual([4]);expect(report.unordered).toEqual([1,2,3]);expect(report.complete).toBe(false);expect(report.rows.find(row=>row.pr===4)?.ready).toBe(true);
+ const ordered=await readMergeQueue("owner/repo",config,[task(1,1),task(2,2,[1])],fake({paths}).run);
+ expect(ordered.order).toEqual([1,2]);expect(ordered.unordered).toBeUndefined();expect(ordered.complete).toBe(true);
+ const truncated=await readMergeQueue("owner/repo",config,[],fake({ids:Array.from({length:17},(_,i)=>i+1)}).run);expect(truncated.order).toEqual([]);
+});

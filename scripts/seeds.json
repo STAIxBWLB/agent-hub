@@ -1320,6 +1320,22 @@
       "replacement": "!remaining.size && result.rows.every(r => evidence.get(r.pr)?.pathsComplete === true)",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "queue completeness includes verified target branches beyond complete file pagination (#257)"
+    },
+    {
+      "id": "queue-person-order-result",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "result.order = result.order.filter(pr => !unresolvedOrder.has(pr));",
+      "replacement": "result.order = result.order;",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "touching PRs and their dependents stay unordered until a person supplies dependency order (#257)"
+    },
+    {
+      "id": "queue-board-order-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "report.complete = false; report.order = [];",
+      "replacement": "report.complete = false;",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "board revision fence removes a previously ordered nonempty delivery result (#257)"
     }
   ]
 }
