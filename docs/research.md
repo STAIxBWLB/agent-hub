@@ -99,8 +99,9 @@ from this machine's inventory. Claude Code: `enabledPlugins` in `~/.claude/setti
 `.claude/settings.json` and `.claude/settings.local.json` (later wins), with the version from
 `~/.claude/plugins/installed_plugins.json` (a user install, or one for this project). Codex: `[plugins."<name>@..."]`
 sections in `~/.codex/config.toml` that are not `enabled = false`, and plugins whose hooks it trusts, with the version
-from its plugin cache when there is exactly one. Every peer: `ripwire` and `dot` (resource admission) on PATH, version
-unknown. Nothing else is read into the event: no plugin content, settings values, hook commands or paths. The inventory
+from its plugin cache when there is exactly one. Every peer: `ripwire` on PATH (version unknown), and the first `dot` on PATH
+when `dot --version` answers as the dotfiles CLI (`dot version X`, resource admission; Graphviz's `dot` does not count),
+asked once per binary per process with a 2 s bound and no input. Nothing else is read into the event: no plugin content, settings values, hook commands or paths. The inventory
 is the machine's, not the session's: a session started with its own settings or plugin flags can differ.
 
 `ahub research addons [--since 30d] [--all] [--json]` splits approved tasks per add-on: `on` when a peer that worked on

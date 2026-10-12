@@ -35,6 +35,13 @@ test("detection reads names and versions from the closed list, per runtime, and 
     codex: `[plugins."documents@x"]\nenabled = true\n\n[plugins."ponytail@ponytail"]\nenabled = false\n\n[hooks.state."claude-mem@claude-mem-local:hooks/codex-hooks.json:stop:0:0"]\ntrusted_hash = "${MARKER}"\n` });
   exe(bin, "ripwire");
   writeFileSync(join(bin, "dot"), "not executable");
+  // Graphviz's `dot` is not resource admission; the dotfiles one reports its version (review of #351).
+  const graphviz = temp("graphviz"), admit = temp("admit");
+  writeFileSync(join(graphviz, "dot"), "#!/bin/sh\necho 'dot - graphviz version 12.1.0' >&2\nexit 1\n"); chmodSync(join(graphviz, "dot"), 0o755);
+  writeFileSync(join(admit, "dot"), "#!/bin/sh\necho 'dot version 2.70.38 (59a6cc7)'\n"); chmodSync(join(admit, "dot"), 0o755);
+  expect(detectTooling("pi", { home, path: graphviz })).toEqual([]);
+  expect(detectTooling("pi", { home, path: [admit, graphviz].join(":") })).toEqual([{ name: "dot-admit", version: "2.70.38" }]);
+  expect(detectTooling("pi", { home, path: [graphviz, admit].join(":") })).toEqual([]); // the first on PATH is the one a shell runs
   // A disabled plugin, a project-scoped install for another project and a plugin outside the list do not count.
   expect(detectTooling("claude", { home, cwd: "/project", path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ponytail", version: null }, { name: "ripwire", version: null }]);
   expect(detectTooling("codex", { home, path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ripwire", version: null }]);

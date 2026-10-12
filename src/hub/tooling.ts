@@ -1,4 +1,5 @@
-import { accessSync, constants, readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -17,8 +18,13 @@ export interface Addon { name: AddonName; version: string | null }
 const PLUGINS: Record<string, AddonName> = { "claude-mem": "claude-mem", ponytail: "ponytail", "open-code-review": "open-code-review" };
 /** Claude Code only: the Codex plugin is a Claude plugin named `codex` from the `openai-codex` marketplace. */
 const CLAUDE_ONLY: Record<string, AddonName> = { "codex@openai-codex": "codex-plugin" };
-/** Executables any peer with a shell can run. */
-const BINARIES: Record<string, AddonName> = { ripwire: "ripwire", dot: "dot-admit" };
+/**
+ * Executables any peer with a shell can run, and how each is told apart from another program of the same name: the
+ * first one on PATH is asked for its version (bounded, no stdin), so Graphviz's `dot` is never resource admission.
+ */
+const BINARIES: Record<string, { name: AddonName; version?: RegExp }> = { ripwire: { name: "ripwire" }, dot: { name: "dot-admit", version: /^dot version (\S+)/ } };
+/** By resolved path and modification time: one version call per binary per process. */
+const identities = new Map<string, string | null | false>();
 
 export interface ToolingSources { home?: string; cwd?: string; path?: string }
 
@@ -65,11 +71,24 @@ function codexPlugins(home: string): Addon[] {
   return out;
 }
 
-function onPath(name: string, path: string): boolean {
-  return path.split(delimiter).some((dir) => {
-    if (!dir) return false;
-    try { accessSync(join(dir, name), constants.X_OK); return true; } catch { return false; }
-  });
+/** The first executable of that name on PATH. */
+function onPath(name: string, path: string): string | undefined {
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    try { accessSync(join(dir, name), constants.X_OK); return join(dir, name); } catch { /* not here */ }
+  }
+  return undefined;
+}
+/** The version an executable reports when it is the expected program, `null` when that is unknown, `false` when it is another program. */
+function identify(file: string, pattern: RegExp): string | null | false {
+  let key = file;
+  try { key = `${file}:${statSync(file).mtimeMs}`; } catch { /* unreadable: ask anyway */ }
+  if (!identities.has(key)) {
+    const r = spawnSync(file, ["--version"], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "pipe"] });
+    const m = pattern.exec(`${r.stdout ?? ""}`.trim());
+    identities.set(key, m ? version(m[1]) : false);
+  }
+  return identities.get(key)!;
 }
 
 /** The add-ons a peer works with, sorted by name. Unreadable sources contribute nothing; they never throw. */
@@ -80,7 +99,12 @@ export function detectTooling(peer: string, src: ToolingSources = {}): Addon[] {
   if (peer === "claude") claudePlugins(home, src.cwd).forEach(add);
   if (peer === "codex") codexPlugins(home).forEach(add);
   const path = src.path ?? process.env.PATH ?? "";
-  for (const [bin, name] of Object.entries(BINARIES)) if (onPath(bin, path)) add({ name, version: null });
+  for (const [bin, spec] of Object.entries(BINARIES)) {
+    const file = onPath(bin, path);
+    if (!file) continue;
+    const v = spec.version ? identify(file, spec.version) : null;
+    if (v !== false) add({ name: spec.name, version: v });
+  }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
