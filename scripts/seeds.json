@@ -1336,6 +1336,22 @@
       "replacement": "report.complete = false;",
       "testFile": "test/sdlc-delivery-surfaces.test.ts",
       "testName": "board revision fence removes a previously ordered nonempty delivery result (#257)"
+    },
+    {
+      "id": "queue-open-set-readback-fence",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (!finalIds || JSON.stringify(finalIds) !== JSON.stringify(initialIds))",
+      "replacement": "if (false)",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "open PR identity readback fence invalidates added removed or unavailable sets (#257)"
+    },
+    {
+      "id": "queue-repository-identity-case",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "value.toLowerCase() === repo.toLowerCase()",
+      "replacement": "value === repo",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "case-insensitive repository identities retain linked holders and merged dependencies (#257)"
     }
   ]
 }

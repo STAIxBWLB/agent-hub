@@ -142,6 +142,8 @@ Queue completeness requires both full file coverage and verified target branches
 
 Touching PRs without explicit task dependency order, and their dependent PRs, appear in unordered rather than the ordered result until the person resolves them. Independent disjoint work can still be ordered. Truncated or unknown touching coverage supplies no order; a late board revision also discards the entire previously derived order.
 
+After intervening remote PR reads, a final bounded identity-list read must match the initial open set; changes or unavailable readback invalidate readiness and order. Empty/private-only snapshots perform no intervening remote evidence reads. Repository identity matching is case-insensitive for both holders and dependencies.
+
 # Read-only release report contract (#257)
 
 Report reads bind the observed local head, committed package version, published release tag and matching local/remote commit identity. Only a verified tag ancestor defines the bounded first-parent commit list. The package-owned JSON doc checker must report freshness at that same head; open/unknown native issue metadata remains a blocker. Source readiness never certifies native acceptance or permits publication, and a changed head invalidates the report. No body, issue title, task text, version bump, restamp, tag or release mutation is included.

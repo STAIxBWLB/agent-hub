@@ -12,14 +12,17 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   const result: MergeQueue = { repo, rows: [], order: [], conflicts: [], complete: false, truncated: false };
   const deadline = performance.now() + 20_000;
   const bounded: SdlcGh = args => { const remaining = deadline - performance.now(); return remaining > 0 ? run(args, Math.min(10_000, remaining)) : Promise.resolve({ code: 1, stdout: "" }); };
-  const list = await bounded(["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number"]);
-  let ids: number[];
-  try { const data = JSON.parse(list.stdout); if (list.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number)) || new Set(data.map(p => p.number)).size !== data.length) return result; ids = data.map(p => p.number).sort((a, b) => a - b); }
-  catch { return result; }
-  result.truncated = ids.length > 16; ids = ids.slice(0, 16);
+  const listArgs = ["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number"];
+  const parseIds = (reply: { code: number; stdout: string }): number[] | undefined => {
+    try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => p.number).sort((a, b) => a - b); }
+    catch { return; }
+  };
+  const initialIds = parseIds(await bounded(listArgs)); if (!initialIds) return result;
+  result.truncated = initialIds.length > 16; const ids = initialIds.slice(0, 16);
+  const sameRepo = (value: unknown) => typeof value === "string" && value.toLowerCase() === repo.toLowerCase();
   const evidence = new Map<number, PrEvidence>(), links = new Map<number, DeliveryTask[]>();
   for (const pr of ids) {
-    const holders = tasks.filter(t => t.receipt?.repo === repo && t.receipt.pr === pr); links.set(pr, holders);
+    const holders = tasks.filter(t => sameRepo(t.receipt?.repo) && t.receipt?.pr === pr); links.set(pr, holders);
     const row: MergeQueueRow = { pr, tasks: holders.map(t => t.id), ready: false, blockers: [], after: [] }; result.rows.push(row);
     if (holders.some(t => t.private)) { row.private = true; row.blockers.push("private lifecycle evidence unavailable"); continue; }
     const read = await readSdlcPr(holders[0]?.receipt ?? { stage: config.stages[0] ?? "spec", repo, pr }, bounded);
@@ -36,7 +39,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     if (row.private) continue;
     for (const holder of links.get(row.pr) ?? []) for (const id of holder.after) {
       const dependency = tasks.find(t => t.id === id);
-      if (!dependency || dependency.private || dependency.receipt?.repo !== repo || !validId(dependency.receipt.pr)) { row.blockers.push("dependency merge evidence unknown or private"); continue; }
+      if (!dependency || dependency.private || !dependency.receipt || !sameRepo(dependency.receipt.repo) || !validId(dependency.receipt.pr)) { row.blockers.push("dependency merge evidence unknown or private"); continue; }
       const pr = dependency.receipt.pr;
       if (pr === row.pr) continue; // task dependency within this same artifact
       if (ids.includes(pr)) { row.after.push(pr); row.blockers.push("dependency PR is still open"); continue; }
@@ -70,5 +73,13 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   if (unresolvedOrder.size) { result.unordered = ids.filter(pr => unresolvedOrder.has(pr)); result.order = result.order.filter(pr => !unresolvedOrder.has(pr)); }
   for (const row of result.rows) { if (result.truncated) row.blockers.push("open PR coverage truncated; touching order unknown"); if (touchingCoverageUnknown) row.blockers.push("open PR file coverage incomplete; touching order unknown"); row.blockers = [...new Set(row.blockers)]; row.ready = !row.private && !row.blockers.length; }
   result.complete = !result.truncated && !remaining.size && !touchingCoverageUnknown && !personOrder.size;
+  // Empty/private-only snapshots have no intervening remote reads and offer no private PR evidence.
+  if (evidence.size) {
+    const finalIds = parseIds(await bounded(listArgs));
+    if (!finalIds || JSON.stringify(finalIds) !== JSON.stringify(initialIds)) {
+      result.complete = false; result.order = []; result.unordered = ids;
+      for (const row of result.rows) { row.ready = false; row.blockers.push("open PR set changed or could not be reverified"); }
+    }
+  }
   return result;
 }

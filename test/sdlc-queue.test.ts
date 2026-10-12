@@ -81,3 +81,20 @@ test("touching PRs and their dependents stay unordered until a person supplies d
  expect(ordered.order).toEqual([1,2]);expect(ordered.unordered).toBeUndefined();expect(ordered.complete).toBe(true);
  const truncated=await readMergeQueue("owner/repo",config,[],fake({ids:Array.from({length:17},(_,i)=>i+1)}).run);expect(truncated.order).toEqual([]);
 });
+test("open PR identity readback fence invalidates added removed or unavailable sets (#257)", async () => {
+ for(const final of [{code:0,stdout:"[]"},{code:0,stdout:JSON.stringify([{number:1},{number:2}])},{code:1,stdout:"PRIVATE_LIST_ERROR_MARKER"},{code:0,stdout:JSON.stringify([{number:1},{number:1}])}]){
+  let lists=0;const f=fake({ids:[1]}),run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve(final):f.run(args);
+  const report=await readMergeQueue("owner/repo",config,[task(1,1)],run);
+  expect(report.complete).toBe(false);expect(report.rows[0]?.ready).toBe(false);expect(report.order).toEqual([]);expect(report.unordered).toEqual([1]);expect(report.rows[0]?.blockers).toContain("open PR set changed or could not be reverified");expect(JSON.stringify(report)).not.toContain("PRIVATE_LIST_ERROR_MARKER");
+ }
+ const paths={1:["src/one.ts"],2:["src/two.ts"]},f=fake({paths});let lists=0;
+ const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:2},{number:1}])}):f.run(args);
+ expect((await readMergeQueue("owner/repo",config,[task(1,1),task(2,2)],run)).complete).toBe(true);
+});
+test("case-insensitive repository identities retain linked holders and merged dependencies (#257)", async () => {
+ const predecessor=task(1,1),holder=task(2,2,[1]);predecessor.receipt!.repo="Owner/Repo";holder.receipt!.repo="OWNER/REPO";
+ const report=await readMergeQueue("owner/repo",config,[predecessor,holder],fake({ids:[2],merged:[1]}).run);
+ expect(report.rows[0]?.tasks).toEqual([2]);expect(report.rows[0]?.ready).toBe(true);expect(report.complete).toBe(true);
+ predecessor.receipt!.repo="Owner/Other";
+ expect((await readMergeQueue("owner/repo",config,[predecessor,holder],fake({ids:[2],merged:[1]}).run)).rows[0]?.ready).toBe(false);
+});
