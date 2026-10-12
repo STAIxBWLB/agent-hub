@@ -466,7 +466,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     }
     if (navigated) { s.detail = undefined; s.requestDetail = undefined; }
     else {
-      const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : item.peer ? `say ${item.peer} <message>` : "ahub console";
+      const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : item.peer ? `ahub say @${item.peer} <message>` : "ahub console";
       const text = `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`;
       if (s.mode === "panels") notify(s, text, now, "attention");
       effects.push({ type: "print", text, kind: "attention", tone: "attention" });

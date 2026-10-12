@@ -96,3 +96,12 @@ test("attention missing held rows print guidance without selecting unrelated que
     expect(next.state.notice).toContain("ahub queue show missing");
   }
 });
+
+test("attention message guidance names a directed CLI recipient without sending", () => {
+  const state: ConsoleState = { ...initialConsoleState(), petEnabled: true,
+    attentionMessages: [{ id: "message-1", peer: "codex", important: true }] };
+  const next = reduceConsole(state, "n", now);
+  expect(next.effects).toEqual([{ type: "print", text: "message codex message-1: ahub say @codex <message>", kind: "attention", tone: "attention" }]);
+  expect(next.state.input).toBe("");
+  expect(next.state.mode).toBe("stream");
+});
