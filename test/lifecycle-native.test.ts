@@ -33,7 +33,7 @@ test("every managed MCP surface advertises the project lifecycle ids in its real
 test("daemon forwards its active custom lifecycle schema to the actual LocalPeer provider request (#257)", async () => {
   const dir = root(), stateDir = join(dir, "state");
   const previous = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "fixture-key"; cleanup.push(() => { if (previous === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = previous; });
-  const model = startFakeModelServer({ key: "fixture-key", script: () => ({ content: "schema observed" }) }); cleanup.push(model.stop);
+  const model = startFakeModelServer({ key: "fixture-key", models: ["fixture"], script: () => ({ content: "schema observed" }) }); cleanup.push(model.stop);
   const daemon = await startDaemon({ cwd: dir, stateDir, unattended: true, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG,
     omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } }); cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
