@@ -1596,8 +1596,8 @@
     {
       "id": "office-backlog-assign-floor",
       "file": "src/ui/index.html",
-      "search": "task.state !== 'approved' && task.state !== 'backlog' && ids.length",
-      "replacement": "task.state !== 'approved' && ids.length",
+      "search": "if (card.assignable && ids.length) {",
+      "replacement": "if (task.state !== 'approved' && ids.length) {",
       "testFile": "test/office-view.test.ts",
       "testName": "backlog rows show no assignment action before they are pulled (#264 merge)"
     },
@@ -1648,6 +1648,62 @@
       "replacement": "  $('office-section').hidden = true;",
       "testFile": "test/office-view.test.ts",
       "testName": "project reset removes old office SVG and prevents view changes replaying the old snapshot (#264 merge)"
+    },
+    {
+      "id": "board-flow-drag-floor",
+      "file": "src/ui/task-board.ts",
+      "search": "assignable: [\"proposed\", \"in_progress\", \"changes_requested\"].includes(task.state)",
+      "replacement": "assignable: task.state !== \"approved\"",
+      "testFile": "test/task-board.test.ts",
+      "testName": "board columns cover every task state and preserve unknown states without reading text (#263)"
+    },
+    {
+      "id": "board-unknown-owner-wait",
+      "file": "src/ui/task-board.ts",
+      "search": "if (!peer || ![\"idle\", \"busy\", \"paused\", \"offline\"].includes(peer.state ?? \"\")) waiting.push(\"owner status unknown\");",
+      "replacement": "if (!peer || ![\"idle\", \"busy\", \"paused\", \"offline\"].includes(peer.state ?? \"\")) { /* seeded unknown-owner wait omitted */ }",
+      "testFile": "test/task-board.test.ts",
+      "testName": "To Do separates dependency reservation hold offline and unknown waits from ready work (#263)"
+    },
+    {
+      "id": "board-foreign-drag-origin",
+      "file": "src/ui/index.html",
+      "search": "data.origin !== current.origin || data.projectId !== current.projectId",
+      "replacement": "data.projectId !== current.projectId",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "board drops reject stale project instance generation foreign origins and flow moves (#263)"
+    },
+    {
+      "id": "board-stale-control-context",
+      "file": "src/ui/index.html",
+      "search": "expected.generation===current.generation",
+      "replacement": "true",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "board drops reject stale project instance generation foreign origins and flow moves (#263)"
+    },
+    {
+      "id": "board-backlog-capability",
+      "file": "src/ui/index.html",
+      "search": "card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true",
+      "replacement": "card.pull",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "older snapshots cannot silently offer a requested backlog task or expose unsupported pull controls (#263)"
+    },
+    {
+      "id": "board-started-return-floor",
+      "file": "src/ui/task-board.ts",
+      "search": "&& task.started === false",
+      "replacement": "&& true",
+      "testFile": "test/task-board.test.ts",
+      "testName": "board return controls refuse started and unknown-history ownerless proposals (#263)"
+    },
+    {
+      "id": "board-recovered-owner-hold",
+      "file": "src/ui/task-board.ts",
+      "search": " || peer.heldBy",
+      "replacement": " || false",
+      "testFile": "test/task-board.test.ts",
+      "testName": "recovered owner delivery holds stay waiting until settlement (#263)"
     }
   ]
 }

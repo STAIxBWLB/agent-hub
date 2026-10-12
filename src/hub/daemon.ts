@@ -42,7 +42,7 @@ import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
 import { Briefs } from "../memory/brief.ts";
-import { Board, taskProposalAt, CLASSES, type Task, type TaskClass } from "./board.ts";
+import { Board, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
@@ -2989,15 +2989,23 @@ export async function startDaemon(opts: DaemonOptions) {
         return ta && tb && CONFLICT_STATES.includes(ta.state) && CONFLICT_STATES.includes(tb.state) ? [{ kind: "conflict" as const, tasks: conflict.tasks, peers: conflict.peers }] : [];
       }),
     ];
+    const peerView = Object.fromEntries(Object.entries(status().peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
     return {
       ok: true,
       projectId,
       instanceId,
-      status: { peers: Object.fromEntries(Object.entries(status().peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])) },
-      tasks: board.list().map((task) => {
+      status: { peers: peerView },
+      boardCapabilities: { backlog: true },
+      boardLegend: Object.entries(peerView).map(([id, peer]) => ({
+        peer: id, state: peer.state,
+        permissionMode: "permissionNote" in peer && peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
+        wip: boardTasks.filter(task => task.owner === id && task.state !== "approved" && task.state !== "backlog").length,
+        activeTasks: boardTasks.filter(task => task.owner === id && ["in_progress", "changes_requested"].includes(task.state)).map(task => task.id),
+      })),
+      tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(tasks.isChecking(task.id) ? { checking: true } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
@@ -3303,10 +3311,13 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: true, ...(off.length ? { text: `retained off roster for ${off.join(", ")}` } : {}) };
       }
       case "propose": {
-        if (!text("title", 300) || (a.detail !== undefined && !text("detail", 8000)) || (a.class !== undefined && !text("class", 32)) || (a.owner !== undefined && !(typeof a.owner === "string" && PEER_ID.test(a.owner)))) return bad;
-        const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner });
+        if (!text("title", 300) || (a.detail !== undefined && !text("detail", 8000)) || (a.class !== undefined && !text("class", 32)) || (a.owner !== undefined && !(typeof a.owner === "string" && PEER_ID.test(a.owner))) || (a.backlog !== undefined && typeof a.backlog !== "boolean")) return bad;
+        const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner, ...(a.backlog === true ? { backlog: true } : {}) });
         return { ok: true, text: result };
       }
+      case "backlog_pull":
+      case "backlog_return":
+        return taskId() ? { ok: true, text: await taskOp(USER, a.action, { id: a.id }) } : bad;
       case "assign":
         return taskId() && peer() && (a.role === undefined || a.role === "owner" || a.role === "reviewer") ? { ok: true, text: await taskOp(USER, "task_assign", { id: a.id, peer: a.peer, role: a.role }) } : bad;
       case "start_peer": {

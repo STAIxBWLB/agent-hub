@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { officeModel } from "../src/ui/office-model.ts";
 import { taskProgress } from "../src/ui/task-progress.ts";
+import { boardColumns } from "../src/ui/task-board.ts";
+import { PEER_PALETTE } from "../src/ui/peer-palette.ts";
 import { startDashboard } from "../src/hub/ui.ts";
 
 const cleanup: (() => void)[] = [];
@@ -70,12 +72,14 @@ const snapshot = {
 
 /** Runs the real scene block and the real render() against a counting fake document. */
 function startOfficeRuntime(view: () => string) {
+  const board = html.slice(html.indexOf("let boardViewState ="),html.indexOf("function render(snapshot)"));
+  const scope = ["canMutate", "context"].map(name=>html.split("\n").find(line=>line.startsWith("function "+name+"("))!).join("\n");
   const renderSlice = html.slice(html.indexOf("function render(snapshot)"), html.indexOf("async function poll("));
   const nodes = new Map<string, Node>();
   const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   const el = (tag: string, text?: unknown, cls?: string) => { const node = new Node(); node.tag = tag; if (text !== undefined) node.textContent = String(text); node.className = cls ?? ""; return node; };
   const context = {
-    get, el, officeModel, taskProgress,
+    get, el, officeModel, taskProgress, boardColumns, peerPalette: PEER_PALETTE, location: {origin:"http://127.0.0.1:4000"},
     officeView: { get: view, set: () => {} },
     document: { createElement: (tag: string) => { const node = new Node(); node.tag = tag; return node; }, createElementNS: (_ns: string, tag: string) => { const node = new Node(); node.tag = tag; return node; } },
   };
@@ -91,6 +95,8 @@ function startOfficeRuntime(view: () => string) {
     const notice=()=>{},syncStarts=()=>{},renderStarts=()=>{},renderTaskProgress=()=>{},renderApprovals=()=>{},renderBench=()=>{},renderSettings=()=>{},renderTaskStage=()=>el('div'),peerOptions=()=>{},restoreDraft=()=>{},refreshRelativeTimes=()=>{},refreshStreamEmpty=()=>{},applyStreamFilter=()=>{},syncMutationControls=()=>{};
     const time=()=>'',rel=()=>'soon';
     const action=async()=>false;
+    ${scope}
+    ${board}
     ${scene}
     ${renderSlice}
     ({
@@ -539,4 +545,15 @@ test("project reset removes old office SVG and prevents view changes replaying t
   api.reset("stopped","next");expect(get("office").children).toHaveLength(0);expect(api.snapshot()).toBeNull();
   expect(get("office-section").hidden).toBe(true);control.fire("change");expect(rendered).toBe(0);
   expect(get("peers").text()).toContain("No project selected");
+});
+
+
+test("office task focus and combined Work filter follow five-column board cards (#263 integration)", () => {
+  const {api,get}=startOfficeRuntime(()=>"flat");
+  const current={...snapshot,tasks:[...snapshot.tasks,{id:6,title:"rework",class:"implement",state:"changes_requested",owner:"codex",deps:[]}]};
+  api.draw(current);api.filter("work");expect([...api.maps.taskRows.keys()].sort()).toEqual([4,6]);
+  const row=api.maps.taskRows.get(4)!;row.fire("focus");expect(api.maps.officeCards.get(4)!.classList.contains("office-spotlight")).toBe(true);
+  get("task-peer-filter").value="kimi";api.draw(current);expect(api.maps.taskRows.has(4)).toBe(false);
+  api.maps.officeCards.get(4)!.fire("click");expect(api.maps.taskRows.has(4)).toBe(true);
+  expect(api.maps.taskRows.get(4)!.scrolled).toBe(1);expect(get("task-peer-filter").value).toBe("");
 });

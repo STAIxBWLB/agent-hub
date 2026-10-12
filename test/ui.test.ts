@@ -4,6 +4,8 @@ import { runInNewContext } from "node:vm";
 import { connect } from "node:net";
 import { createHash } from "node:crypto";
 import { taskProgress } from "../src/ui/task-progress.ts";
+import { boardColumns } from "../src/ui/task-board.ts";
+import { PEER_PALETTE } from "../src/ui/peer-palette.ts";
 import { initialConsoleState, renderConsole } from "../src/cli/console-state.ts";
 import { startDashboard } from "../src/hub/ui.ts";
 import { PEER_START_RETRY_MS } from "../src/hub/start-mode.ts";
@@ -361,10 +363,13 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
   const starts = /function renderStarts\(target, starts\) \{[\s\S]*?\n\}/.exec(html)![0];
   const sync = /function syncStarts\(snapshot\) \{[\s\S]*?\n\}/.exec(html)![0];
   const controls = /function syncMutationControls\(\) \{[^\n]*\}/.exec(html)![0];
+  const board = html.slice(html.indexOf("let boardViewState ="), html.indexOf("function render(snapshot)"));
   const render = html.slice(html.indexOf("function render(snapshot)"), html.indexOf("async function poll("));
   class Node {
     textContent = ""; className = ""; type = ""; value = ""; checked = false; disabled = false; dataset: Record<string, string> = {}; children: Node[] = [];
     listeners: Record<string, () => void> = {}; error = false; replacements = 0;
+    attrs: Record<string, string> = {};
+    setAttribute(name: string, value: string) { this.attrs[name] = value; }
     classList = { toggle: (_name: string, value: boolean) => { this.error = value; } };
     append(...nodes: Node[]) { this.children.push(...nodes); }
     replaceChildren(...nodes: Node[]) { this.children = nodes; this.replacements++; }
@@ -399,6 +404,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
     ${controls}
     ${sync}
     ${starts}
+    ${board}
     ${render}
     ({post,action,
       draw(starts){lastSnapshot={status:{peers:{}},starts,tasks:[],permissions:[],budget:{},events:[]};render(lastSnapshot);return get('peers')},
@@ -406,7 +412,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
       valid(value){snapshotValid=value;syncMutationControls()},
       snapshot(value){lastSnapshot={tasks:[],permissions:[],budget:{},events:[],...value};render(lastSnapshot)},
       pending(){return Array.from(pendingStarts.entries())}
-    });`, { fetch: fetch_, get, el, retryMs: PEER_START_RETRY_MS, taskProgress, Date: class extends Date { static override now() { return now; } }, setTimeout: setTimer, clearTimeout: clearTimer, document: { querySelectorAll: () => buttons() } });
+    });`, { fetch: fetch_, get, el, retryMs: PEER_START_RETRY_MS, taskProgress, boardColumns, peerPalette: PEER_PALETTE, location: { origin: "http://127.0.0.1:4000" }, Date: class extends Date { static override now() { return now; } }, setTimeout: setTimer, clearTimeout: clearTimer, document: { querySelectorAll: () => buttons() } });
   const advance = (ms: number) => {
     now += ms;
     while (true) {

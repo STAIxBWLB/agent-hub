@@ -1,3 +1,4 @@
+import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
@@ -77,9 +78,9 @@ export function terminalText(value: unknown): string {
 export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted" | "peerClaude" | "peerCodex" | "taskKeyword" | "number" | "issueRef" | "taskRef";
 export interface Span { text: string; tone?: Tone }
 export const PALETTE: Readonly<Record<Tone, string>> = Object.freeze({
-  info: "\x1b[36m", strong: "\x1b[1;36m", success: "\x1b[32m", attention: "\x1b[33m", failure: "\x1b[31m", muted: "\x1b[90m",
-  peerClaude: "\x1b[94m", peerCodex: "\x1b[96m",
-  taskKeyword: "\x1b[35m", number: "\x1b[1m", issueRef: "\x1b[4m", taskRef: "\x1b[4;35m",
+  info: PEER_PALETTE.hub.ansi, strong: "\x1b[1;36m", success: PEER_PALETTE.local.ansi, attention: PEER_PALETTE.pi.ansi, failure: "\x1b[31m", muted: PEER_PALETTE.other.ansi,
+  peerClaude: PEER_PALETTE.claude.ansi, peerCodex: PEER_PALETTE.codex.ansi,
+  taskKeyword: PEER_PALETTE.kimi.ansi, number: "\x1b[1m", issueRef: "\x1b[4m", taskRef: "\x1b[4;35m",
 });
 export function paint(line: Span[], color: boolean): string {
   return line.map(span => {

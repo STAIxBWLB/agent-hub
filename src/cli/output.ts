@@ -1,3 +1,4 @@
+import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel } from "./status-lines.ts";
@@ -23,7 +24,7 @@ const flat = (value: unknown) => terminalText(value).replace(/[\n\t]/g, " ");
 const width = (value: string) => Bun.stringWidth(value);
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const characters = (value: string) => [...graphemes.segment(value)].map(unit => unit.segment);
-const peerTone = (id: string): Tone | undefined => id === "claude" ? "peerClaude" : id === "codex" ? "peerCodex" : undefined;
+const peerTone = (id: string): Tone => peerStyle(id).tone;
 const shortId = (id: unknown, columns?: number, full = false) => full || columns === undefined ? String(id) : String(id).slice(0, 8);
 function lines(text: string, columns?: number, tone?: Tone, indent = ""): Span[][] {
   return (columns === undefined ? [flat(indent + text)] : wrap(flat(indent + text), columns)).map(text => [span(text, tone)]);
