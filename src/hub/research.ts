@@ -273,10 +273,11 @@ const involved = (r: TaskRecord): string[] => [...new Set([...r.owners, ...(r.re
 
 type AddonMeasure = "successRate" | "firstPassRate" | "reworkRate" | "checkFailureRate" | "tokensMedian" | "wallMsMedian" | "collisionRate";
 const ADDON_MEASURES: AddonMeasure[] = ["successRate", "firstPassRate", "reworkRate", "checkFailureRate", "tokensMedian", "wallMsMedian", "collisionRate"];
-function addonValue(rs: TaskRecord[], labels: Map<string, Label>, m: AddonMeasure): number | null {
-  if (m === "collisionRate") return pct(rs.reduce((n, r) => n + r.overlaps + r.conflicts, 0), rs.length);
+/** Every add-on measure of one set of tasks, computed once (a bootstrap calls this per resample). */
+function addonValues(rs: TaskRecord[], labels: Map<string, Label>): Record<AddonMeasure, number | null> {
   const x = measures(rs, labels);
-  return m === "tokensMedian" ? x.tokensPerTask.median : m === "wallMsMedian" ? x.wallMsPerTask.median : x[m];
+  return { successRate: x.successRate, firstPassRate: x.firstPassRate, reworkRate: x.reworkRate, checkFailureRate: x.checkFailureRate,
+    tokensMedian: x.tokensPerTask.median, wallMsMedian: x.wallMsPerTask.median, collisionRate: pct(rs.reduce((n, r) => n + r.overlaps + r.conflicts, 0), rs.length) };
 }
 export interface AddonComparison {
   addon: AddonName;
@@ -299,11 +300,12 @@ export function addonReport(records: ResearchRecord[], since = 0, resamples = 10
     const pick = (xs: TaskRecord[]) => Array.from({ length: xs.length }, () => xs[Math.floor(random() * xs.length)]!);
     const samples = new Map<AddonMeasure, number[]>(ADDON_MEASURES.map((m) => [m, []]));
     if (side.on.length && side.off.length) for (let i = 0; i < resamples; i++) {
-      const a = pick(side.on), b = pick(side.off);
-      for (const m of ADDON_MEASURES) { const x = addonValue(a, labels, m), y = addonValue(b, labels, m); if (x !== null && y !== null) samples.get(m)!.push(x - y); }
+      const a = addonValues(pick(side.on), labels), b = addonValues(pick(side.off), labels);
+      for (const m of ADDON_MEASURES) { const x = a[m], y = b[m]; if (x !== null && y !== null) samples.get(m)!.push(x - y); }
     }
+    const onValues = addonValues(side.on, labels), offValues = addonValues(side.off, labels);
     return { addon, on: side.on.length, off: side.off.length, unknown: side.unknown.length, measures: ADDON_MEASURES.map((measure) => {
-      const on = addonValue(side.on, labels, measure), off = addonValue(side.off, labels, measure);
+      const on = onValues[measure], off = offValues[measure];
       const s = samples.get(measure)!.sort((x, y) => x - y);
       const rank = (q: number) => s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))]!;
       const diff = on !== null && off !== null ? on - off : null;
