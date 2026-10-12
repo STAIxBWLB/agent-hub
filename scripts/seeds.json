@@ -1816,6 +1816,14 @@
       "replacement": "case \"release_change\": {\n        const release = board.releases().find(release => release.name === a.name);",
       "testFile": "test/planning-surfaces.test.ts",
       "testName": "redacted release labels retain stable mutation and console lookup identity (#263)"
+    },
+    {
+      "id": "dashboard-release-id-forwarding",
+      "file": "src/hub/daemon.ts",
+      "search": "await taskOp(USER, \"release_change\", { id: a.id, name: a.name, revision: a.revision, fields: a.fields });",
+      "replacement": "await taskOp(USER, \"release_change\", { name: a.name, revision: a.revision, fields: a.fields });",
+      "testFile": "test/task-board-surfaces.test.ts",
+      "testName": "dashboard release actions forward public ids through the authenticated HTTP path (#263)"
     }
   ]
 }

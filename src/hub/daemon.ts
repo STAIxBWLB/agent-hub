@@ -3350,7 +3350,7 @@ export async function startDaemon(opts: DaemonOptions) {
         await taskOp(USER, "release_new", { name: a.name, goal: a.goal, order: a.order });
         return { ok: true, text: "Release created." };
       case "release_change":
-        await taskOp(USER, "release_change", { name: a.name, revision: a.revision, fields: a.fields });
+        await taskOp(USER, "release_change", { id: a.id, name: a.name, revision: a.revision, fields: a.fields });
         return { ok: true, text: "Release updated." };
       case "backlog_pull":
       case "backlog_return":
