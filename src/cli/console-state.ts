@@ -12,7 +12,7 @@ export interface Approval {
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
-  petEnabled?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
+  petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;
   /** The selected request, by id: a, d and v act on it alone, and it is cleared, never moved, when the request closes. */
   approvalId?: string;
@@ -445,6 +445,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
+  if (key === "P" && !s.optionChoice && !s.help) { s.petEnabled = !s.petEnabled; return done(); }
   if (key === "n" && s.petEnabled && !s.optionChoice && !s.help) {
     const items = consoleNeeds(s, now).items;
     if (!items.length) return done();
@@ -460,7 +461,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const rows = panelRows(s);
       s.selection = Math.max(0, rows.findIndex(row => item.id !== undefined ? row.id === item.id : row.peer === item.peer));
     } else {
-      const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : "ahub console";
+      const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : item.peer ? `say ${item.peer} <message>` : "ahub console";
       effects.push({ type: "print", text: `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`, kind: "attention", tone: "attention" });
     }
     return done();
@@ -675,7 +676,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
   const attention = s.petEnabled ? consoleNeeds(s, now) : undefined;
-  const pet = attention ? attentionLine(attention) : "";
+  const pet = attention ? attentionLine(attention, now, s.petBlink) : "";
   const attentionRule = pet && Bun.stringWidth(pet) + 4 <= columns ? [span("-".repeat(columns - Bun.stringWidth(pet) - 2) + " ", "muted"), span(pet, attention!.state === "blocked" ? "failure" : attention!.act ? "attention" : "muted"), span("-", "muted")] : rule;
   if (s.mode === "stream") {
     const counts = s.taskCounts;

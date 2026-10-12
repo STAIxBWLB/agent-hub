@@ -1856,6 +1856,22 @@
       "replacement": "\"act\"",
       "testFile": "test/needs.test.ts",
       "testName": "attention model orders structural needs and watch facts never override state (#280)"
+    },
+    {
+      "id": "attention-choice-owns-key",
+      "file": "src/cli/console-state.ts",
+      "search": "key === \"n\" && s.petEnabled && !s.optionChoice && !s.help",
+      "replacement": "key === \"n\" && s.petEnabled && !s.help",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "attention respects editing, choice, help and confirmation keyboard ownership"
+    },
+    {
+      "id": "pet-config-off",
+      "file": "src/cli/pet-config.ts",
+      "search": "if (value === false) return",
+      "replacement": "if (value === true) return",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "pet config merges local presentation options and false disables all drawing"
     }
   ]
 }

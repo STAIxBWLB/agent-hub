@@ -2520,5 +2520,8 @@ approval/default/delivery/storage/message/budget/recovery facts. It copies only
 bounded ids, peers and known timestamps into sorted act/watch items. Approval
 expiry is checked against now; watch items never override state. No title,
 message/error/option text, path, network call or timer enters the model. Phase1
-console line/keys/configuration follows; review/offline/act-level recovery and
+console line/keys/configuration now uses a read-only console-local config reader,
+the existing redraw/poll requests and body-free unread metadata. The line is
+ASCII only, with STAI/off session choices; alternate artwork remains gated.
+Review/offline/act-level recovery and
 artwork variants remain later explicit phases. Native/visual proof is unknown.

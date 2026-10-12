@@ -7,6 +7,8 @@ import { renderTailEvent } from "./tail-render.ts";
 import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
+import { consoleNeeds, attentionLine } from "./attention.ts";
+import { loadPetConfig } from "./pet-config.ts";
 
 export interface ConsoleTerminal {
   columns: number; rows: number; isTTY: boolean; isRaw?: boolean;
@@ -22,6 +24,7 @@ export interface ConsoleOptions {
   cwd: string; stateDir: string; panels?: boolean; columns?: number; rows?: number;
   terminal?: ConsoleTerminal;
   color?: boolean;
+  noPet?: boolean;
   /** Injected command runner must use argv, closed stdin, and return a cancellation handle. */
   runCommand?: (args: string[], output: (text: string) => void, done: () => void, columns?: number) => (() => void);
   pollMs?: number;
@@ -67,6 +70,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const { client } = options; const terminal = options.terminal ?? nativeTerminal();
   const color = options.color ?? resolveColor(undefined, { isTTY: terminal.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
   let state = initialConsoleState(!!options.panels); state.project = basename(options.cwd);
+  const pet = loadPetConfig(options.cwd);
+  state.petEnabled = pet.enabled && !options.noPet; state.petBlink = pet.blink;
+  let lastAct = 0; let lastBell = -Infinity;
   let columns = options.columns ?? terminal.columns; let rows = options.rows ?? terminal.rows;
   let active = true; let inAlternate = false; let plain = !terminal.isTTY || columns < 80 || rows < 24;
   let polling = false; let childRunning = false; let cancelChild: (() => void) | undefined;
@@ -97,7 +103,14 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     else { pendingStream.push(event); if (pendingStream.length > 1000) { pendingStream.shift(); droppedStream++; } }
   };
   const draw = () => {
-    if (!active || plain) return;
+    if (!active) return;
+    if (state.petEnabled) {
+      const attention = consoleNeeds(state, Date.now());
+      if (plain && attention.act !== lastAct) safeWrite(attentionLine(attention) + "\n");
+      if (pet.bell && !lastAct && attention.act && attention.items.some(item => item.level === "act" && item.kind !== "message") && Date.now() - lastBell >= 60000) { terminal.write("\x07"); lastBell = Date.now(); }
+      lastAct = attention.act;
+    }
+    if (plain) return;
     if (state.mode === "panels" && !inAlternate) { terminal.write("\x1b[r\x1b[?1049h\x1b[2J"); inAlternate = true; }
     else if (state.mode === "stream" && inAlternate) {
       terminal.write(`\x1b[?1049l\x1b[1;${rows - 4}r`); inAlternate = false;
@@ -137,6 +150,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const [status, budget, tasks, queue, ready] = replies;
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
+      state.storageBlocked = !!status.status?.deliveryError;
+      state.recoveryNeed = status.status?.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
       if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
       if (budget.budget) state.budget = budget.budget;
       if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
@@ -201,6 +216,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const handle = (key: string) => {
     if (!active) return;
     const result = reduceConsole(state, key); state = result.state;
+    state.attentionMessages = []; state.attentionSelection = key === "n" ? state.attentionSelection : undefined;
     if (state.mode === "panels" && (plain || columns < 80 || rows < 24)) { state.mode = "stream"; notice("panels need at least 80x24"); }
     for (const action of result.effects) void effect(action).catch(error => stop(`Console error: ${String(error.message)}`));
     draw();
@@ -209,7 +225,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   client.onPush = msg => {
     if (!active) return;
     try {
-      if (msg.t === "event") stream({ text: renderTailEvent(msg.e), peer: msg.e.peer ?? msg.e.env?.from, kind: msg.e.env?.kind ?? msg.e.t, tone: eventTone(msg.e) });
+      if (msg.t === "event") {
+        if (state.petEnabled && msg.e.t === "envelope" && !msg.e.dropped && msg.e.env.to?.includes("user")) state.attentionMessages = [...(state.attentionMessages ?? []), { id: msg.e.env.id, peer: msg.e.env.from, important: msg.e.env.priority === "important", since: msg.e.env.ts }].slice(-1000);
+        stream({ text: renderTailEvent(msg.e), peer: msg.e.peer ?? msg.e.env?.from, kind: msg.e.env?.kind ?? msg.e.t, tone: eventTone(msg.e) });
+      }
       else if (msg.t === "context") stream({ text: `  ${msg.peer}: ${contextLine(msg.reading, at => new Date(at).toLocaleTimeString())}`, peer: msg.peer, kind: "context" });
       else if (msg.t === "notice") stream({ text: `  * ${msg.line}`, kind: "notice" });
       else if (msg.t === "permission") {
@@ -230,6 +249,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   };
   client.onClose = (_code, reason) => stop(`Hub connection closed${reason ? `: ${reason}` : ""}`);
   try {
+    if (state.petEnabled && pet.notice) stream({ text: pet.notice, kind: "attention", tone: "attention" }, false);
     if (plain) { state.mode = "stream"; safeWrite("Console panels need a terminal of at least 80x24; showing the plain stream.\n"); }
     if (terminal.isTTY) {
       terminal.raw(true);

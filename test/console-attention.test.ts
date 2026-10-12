@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
 import { initialConsoleState, paint, reduceConsole, renderConsoleLines } from "../src/cli/console-state.ts";
 import { consoleNeeds } from "../src/cli/attention.ts";
+import type { ConsoleState } from "../src/cli/console-state.ts";
 
 const now = 1000;
 const approval = (id: string, expiresAt: number) => ({ id, expiresAt, peer: "codex", title: "PRIVATE_MARKER", options: [] });
 
 test("attention next selects requests by expiry, wraps, and never answers them", () => {
   for (const panels of [false, true]) {
-    let state = { ...initialConsoleState(panels), petEnabled: true, approvals: [approval("late", 3000), approval("early", 2000)] };
+    let state: ConsoleState = { ...initialConsoleState(panels), petEnabled: true, approvals: [approval("late", 3000), approval("early", 2000)] };
     for (const id of ["early", "late", "early"]) {
       const next = reduceConsole(state, "n", now);
       expect(next.effects).toEqual([]);

@@ -662,10 +662,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   console: async () => {
-    if (args.some(arg => arg !== "--panels" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--color=auto|always|never]");
+    if (args.some(arg => arg !== "--panels" && arg !== "--no-pet" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
-    if (color instanceof Error) return fail("usage: ahub console [--panels] [--color=auto|always|never]");
-    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels"), color });
+    if (color instanceof Error) return fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
+    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color });
   },
 
   up: async () => {
