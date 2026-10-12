@@ -7,6 +7,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { USER, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, loadRouting } from "../src/hub/routing.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { Tasks, AssignmentUndeliveredError } from "../src/hub/tasks.ts";
 import { DEFAULT_TASK_SWEEP, nextSweep } from "../src/hub/task-sweep.ts";
 import { taskProgress } from "../src/ui/task-progress.ts";
@@ -148,4 +149,17 @@ test("backlog pull keeps a saved assignment when its delivery is unconfirmed (#2
   const history = board.get(t.id)!.history;
   await tasks.releaseReady();
   expect(board.get(t.id)!.history).toEqual(history);
+});
+
+
+test("started work cannot return after decline leaves an ownerless proposed row (#263)", async () => {
+  const { tasks, board } = await rig(["codex"]);
+  const t = await tasks.propose(USER, { title: "partial work", class: "implement", owner: "codex" });
+  tasks.accept("codex", t.id);
+  await tasks.decline("codex", t.id, "cannot finish");
+  expect(board.get(t.id)).toMatchObject({ state: "proposed", owner: null });
+  const history = board.get(t.id)!.history;
+  await expect(tasks.moveBacklog(USER, t.id, false)).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(board.get(t.id)!.history).toEqual(history);
+  expect(() => board.update(t.id, USER, "backlog returned", { state: "backlog" })).toThrow(/started/);
 });

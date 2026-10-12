@@ -2450,3 +2450,18 @@ future explicit planner tools provide its agent read path. This foundation does
 not implement ranks, undoable planner grooming, release states, planned dates or
 dashboard drag/columns. Those remain required by #263. The live planner grooming
 cycle into two releases remains unverified.
+
+
+### Backlog execution boundary (#263)
+
+First `backlog pulled` is equivalent to the first offered proposal for snapshot
+initialization, projected-review baseline lookup, role provenance and research
+creation identity. Backlog itself has no execution baseline. Repeat unstarted
+staging preserves that first identity; reset-generation `backlogged` events
+separate old research records, and an unpulled current generation takes no label.
+
+Structured accepted/done/check/review/integration history is execution evidence.
+Tasks refuses an ownerless proposed row's return when that evidence exists; the
+Board shares the same floor before its write. Free-text history is never read
+to infer execution. Native projected-converter validation remains separate from
+the portable stored-tree regression.

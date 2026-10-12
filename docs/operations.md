@@ -2560,3 +2560,11 @@ is never claimed, accepted, completed, swept, escalated or relayed. PII cards an
 notices use the existing public stub. Planner grooming tools, the five-column
 view, releases and dates are later #263 slices; the native planner/two-release
 smoke remains unverified. No tag, publish or live activation occurs here.
+
+
+Pulling Backlog establishes its first execution-proposal boundary for projected
+review snapshots and research records. An initial Backlog row is not an offered
+proposal. Research uses the first pull time and preserves identity across later
+unstarted return/pull cycles; a new backlogged id after reset starts a new record
+generation. Partial work with acceptance/check/review evidence cannot return to
+Backlog even after decline or reassignment leaves it ownerless.
