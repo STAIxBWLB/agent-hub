@@ -19,6 +19,9 @@ test("board release filters and columns are readonly and retain agent backlog fl
   const columns=await cli(root,["board","--columns","--release",`#${release.id}`]);expect(columns.code).toBe(0);expect(columns.stdout).toContain("Backlog");expect(columns.stdout).toContain("in first release");expect(columns.stdout).not.toContain("outside release");
   const grouped=await cli(root,["board","--columns","--release","first","--json"]);expect(grouped.code).toBe(0);const data=JSON.parse(grouped.stdout);expect(data.tasks.map((task:{id:number})=>task.id)).toEqual([id]);expect(data.columns[0].ready.map((card:{id:number})=>card.id)).toEqual([id]);expect(data.columns.slice(1).every((column:{ready:unknown[];waiting:unknown[]})=>!column.ready.length&&!column.waiting.length)).toBe(true);
   const byId=await cli(root,["board","--release-id",String(release.id),"--json"]);expect(byId.code).toBe(0);expect(JSON.parse(byId.stdout).map((task:{id:number})=>task.id)).toEqual([id]);
+  expect(await request(person,"backlog_pull",{id})).toMatchObject({ok:true});
+  const pending=await cli(root,["board","--columns","--release-id",String(release.id),"--json"]);expect(pending.code).toBe(0);const pendingView=JSON.parse(pending.stdout),todo=pendingView.columns.find((column:{id:string})=>column.id==="todo");expect([...todo.ready,...todo.waiting].find((card:{id:number})=>card.id===id)).toMatchObject({returnable:true});
+  expect(await request(person,"backlog_return",{id})).toMatchObject({ok:true});
   const denied=await request(peer,"hub_task_list",{release:"first"});expect(denied.ok).toBe(true);expect(JSON.parse(denied.text)).toEqual([]);
  }finally{peer.close();person.close();await daemon.stop();rmSync(root,{recursive:true,force:true});}
 },20_000);
