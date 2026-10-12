@@ -306,8 +306,9 @@ test("message arcs, delivery marks and the busy latch draw from event rows with 
   expect(arcs[0]!.text()).toContain("chat #4");
   expect(arcs[0]!.attrs.class).toContain("office-fadeout");
   expect(arcs[0]!.style.animationDelay).toMatch(/^\d+ms$/);
-  expect(arcs[0]!.findAll(hasClass("office-arc-important"))).toHaveLength(1);
+  expect(arcs[0]!.attrs.class).toContain("office-arc-important"); // priority/dropped classes live on the arc group
   expect(arcs[0]!.attrs["aria-hidden"]).toBe("true");
+  expect(arcs[0]!.findAll((node) => node.attrs.class === "office-arc-head")).toHaveLength(1); // arrowhead at the target
   const alerts = office.findAll(hasClass("office-alertmark"));
   expect(alerts).toHaveLength(1);
   expect(alerts[0]!.text()).toContain("! overflow");
@@ -396,14 +397,23 @@ test("isometric renders the same model with the same focus order and accessible 
   // Geometry: codex is desk slot 1 at grid (12, 3); iso maps x' = (x - y) cos 30, y' = (x + y) sin 30.
   const flatDesk = flat.api.maps.officeDesks.get("codex")!;
   expect(flatDesk.style.transform).toBe("translate(12px,3px)");
-  expect(flatDesk.children[0]!.tag).toBe("rect");
+  const flatTile = flatDesk.findAll((node: Node) => node.attrs.class === "office-desk-surface")[0]!;
+  expect(flatTile.tag).toBe("rect");
+  expect(flatDesk.findAll((node: Node) => node.attrs.class === "office-avatar").length).toBeGreaterThan(0); // avatar inside the tile
   const isoDesk = iso.api.maps.officeDesks.get("codex")!;
   expect(isoDesk.style.transform).toBe(`translate(${(12 - 3) * 0.8660254}px,${(12 + 3) * 0.5}px)`);
-  const tile = isoDesk.children[0]!;
+  const tile = isoDesk.findAll((node: Node) => node.attrs.class === "office-desk-surface")[0]!;
   expect(tile.tag).toBe("polygon");
-  expect(tile.attrs.points).toBe("0,0 8.66,5 -1.73,11 -10.39,6"); // desk is 10 x 12 grid units
+  expect(tile.attrs.points).toBe("0,0 8.66,5 -1.73,11 -10.39,6"); // desk top is 10 x 12 grid units
+  // The extruded desk: two thin front legs, a standing avatar behind it, a name plate on the front edge.
+  expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-desk-leg")).toHaveLength(2);
+  expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-nameplate")).toHaveLength(1);
+  expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-avatar")[0]!.attrs.cy).toBe("-3.7");
+  // Rooms are faint wireframe floor boxes in iso, with a shelf of boxes for Done.
+  expect(iso.get("office").findAll((node: Node) => node.attrs.class === "office-room-wire").length).toBeGreaterThan(0);
+  expect(iso.get("office").findAll((node: Node) => node.attrs.class === "office-box-top")).toHaveLength(3);
   // The viewBox covers the projected extents with a margin.
-  const w = 94, h = 42; // flat viewBox of this fixture: four rooms in a row, one desk row
+  const w = 94, h = 33; // flat viewBox of this fixture: four rooms in a row, one desk row
   expect(flat.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox).toBe(`0 0 ${w} ${h}`);
   const isoBox = iso.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox!.split(" ").map(Number);
   expect(isoBox[0]).toBeCloseTo(-h * 0.8660254 - 3);
@@ -436,4 +446,19 @@ test("motion and the settle rule work under isometric, and a view switch jumps",
   view = "flat";
   api.draw(moved);
   expect(card.style.transform).not.toBe(isoAt);
+});
+
+test("the polished flat scene: avatar, outline glyphs, hand shape, shelf cabinet and dividers", () => {
+  const { api, get } = startOfficeRuntime(() => "flat");
+  api.draw({ ...snapshot, permissions: [{ peer: "claude" }] });
+  const claude = api.maps.officeDesks.get("claude")!;
+  expect(claude.findAll((node: Node) => node.attrs.class === "office-avatar")).toHaveLength(2); // head + shoulders
+  expect(claude.findAll((node: Node) => node.attrs.class === "office-handshape")).toHaveLength(2); // condition glyph + approval mark
+  expect(claude.text()).toContain("waiting on approval"); // the label still carries the state in words
+  expect(api.maps.officeDesks.get("kimi")!.findAll((node: Node) => node.attrs.class === "office-glyph-shape")).toHaveLength(1);
+  const office = get("office");
+  expect(office.findAll((node) => node.attrs.class === "office-shelf")).toHaveLength(1);
+  expect(office.findAll((node) => node.attrs.class === "office-shelf-card")).toHaveLength(6);
+  expect(office.findAll((node) => node.attrs.class === "office-divider").length).toBeGreaterThan(0); // between room columns
+  expect(office.text()).toContain("Done shelf");
 });

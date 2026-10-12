@@ -182,7 +182,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const LABELS: Record<string, string> = { idle: "idle", busy: "busy", offline: "offline", paused: "paused", waiting: "waiting on approval" };
   const DESK_CAP = 12, ROOM_CARDS = 8, DESK_CARDS = 3;
   const DESK_W = 10, DESK_H = 12, DESK_DX = 12, DESK_DY = 14, DESK_COLS = 4, DESK_TOP = 3;
-  const ROOM_W = 22, ROOM_H = 25, ROOM_DX = 24, ROOM_DY = 27;
+  const ROOM_W = 22, ROOM_H = 16, ROOM_DX = 24, ROOM_DY = 18;
   const ARC_MS = 10_000, LATCH_MS = 3_000, SETTLE_GAP_MS = 3_000, SETTLE_MAX_MOVES = 6, ARC_CAP = 12, ALERT_CAP = 12;
   const text = (value: unknown) => typeof value === "string" ? value : "";
   const num = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -306,6 +306,8 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     if (finishing) parts.push("finishing a turn");
     if (condition !== "waiting" && count > 0) parts.push(`${count} approval${count === 1 ? "" : "s"} waiting`);
     if (!attached) parts.push("disconnected, work retained");
+    // An over-full desk shows two chips and a "+N more" line in the third slot.
+    const shown = work.length > DESK_CARDS ? work.slice(0, DESK_CARDS - 1) : work;
     return {
       id, slot, x, y, w: DESK_W, h: DESK_H, state, condition,
       glyph: GLYPHS[condition] ?? "?", label, name: `${id}: ${parts.join(", ")}`,
@@ -313,8 +315,8 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       tray: { queued: num(peer.queued), important: num(peer.queuedImportant), heldBy: text(peer.heldBy), needsReview: num(peer.needsReview) },
       mode: text(peer.permissionMode), bubble, breakNote, breakResetsAt,
       finishing,
-      cards: work.slice(0, DESK_CARDS).map((task, index) => card(task, x + 0.8, y + 7.9 + index * 1.05, DESK_W - 1.6, 1)),
-      extraCards: Math.max(0, work.length - DESK_CARDS),
+      cards: shown.map((task, index) => card(task, x + 0.8, y + 9 + index * 1.05, DESK_W - 1.6, 0.95)),
+      extraCards: work.length - shown.length,
     };
   });
 
@@ -331,7 +333,8 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     const y = roomsY + Math.floor(index / cols) * ROOM_DY;
     return {
       id: def.id, label: def.label, filterState: def.filterState, count: def.count,
-      cards: def.list.slice(0, ROOM_CARDS).map((task, row) => card(task, x + 1, y + 3.4 + row * 2.5, ROOM_W - 2, 2.2)),
+      // Two tidy columns per room, eight cards at most; "+N more" is the overflow.
+      cards: def.list.slice(0, ROOM_CARDS).map((task, row) => card(task, x + 1 + (row % 2) * 10.5, y + 3.4 + Math.floor(row / 2) * 2.5, 9.5, 2.2)),
       overflow: Math.max(0, def.list.length - ROOM_CARDS),
       x, y, w: ROOM_W, h: ROOM_H,
     };

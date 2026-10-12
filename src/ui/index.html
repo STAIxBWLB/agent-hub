@@ -17,7 +17,8 @@ const dashboardTheme = (() => {
 :root{color-scheme:light;--waiting:#795399;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--panel:#ffffff;--panel-soft:#f4f6f2;--control:#ffffff;--control-border:#bbc4bb;--hover:#f0f4ef;--green:#245f45;--green-soft:#e4efe9;--amber:#8a5b12;--amber-soft:#f8eed6;--blue:#245a93;--blue-soft:#e6eef8;--red:#a2392f;--red-soft:#f6e5e2;--dot:#98a29b;--dot-ok:#2f7a52;--dot-warn:#b07a16;--dot-err:#b24539;--focus:#245f45;--on-accent:#ffffff}:root[data-theme="dark"]{color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:12px}.section-head .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.peername{display:flex;align-items:center;gap:8px;min-width:0}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:2px 7px;background:var(--panel-soft);color:var(--muted);border-radius:4px;white-space:nowrap}.badge.ok{background:var(--green-soft);color:var(--green)}.badge.warn{color:var(--amber);background:var(--amber-soft)}.badge.info{color:var(--blue);background:var(--blue-soft)}.badge.err{color:var(--red);background:var(--red-soft)}.dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--dot)}.dot.ok{background:var(--dot-ok)}.dot.warn{background:var(--dot-warn)}.dot.err{background:var(--dot-err)}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{background:var(--control);color:var(--muted);border:1px solid var(--control-border);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;line-height:1.2}.chip:hover{background:var(--hover)}.chip[aria-pressed="true"]{background:var(--green);color:var(--on-accent);border-color:var(--green);font-weight:600}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:var(--control);color:var(--ink);border:1px solid var(--control-border);border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:var(--hover)}button.primary{background:var(--green);color:var(--on-accent);border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--focus);outline-offset:3px}input,select,textarea{width:100%;border:1px solid var(--control-border);border-radius:5px;padding:8px;background:var(--control);color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.section-head .filters select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event[hidden]{display:none}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:var(--red)}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}progress.warn{accent-color:var(--amber)}progress.warn::-webkit-progress-value{background:var(--amber)}progress.critical{accent-color:var(--red)}progress.critical::-webkit-progress-value{background:var(--red)}progress::-moz-progress-bar{background:var(--green)}progress.warn::-moz-progress-bar{background:var(--amber)}progress.critical::-moz-progress-bar{background:var(--red)}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 .task-progress{padding:12px 18px;border-bottom:1px solid var(--line)}.task-progress svg{display:block;width:100%;height:12px;margin:8px 0}.progress-proposed{fill:var(--dot)}.progress-unknown{fill:var(--dot)}.progress-waiting{fill:var(--waiting)}.progress-in_progress{fill:var(--blue)}.progress-in_review{fill:var(--amber)}.progress-changes_requested{fill:var(--red)}.progress-approved{fill:var(--green)}.task-stage{font:12px ui-monospace,monospace;margin:8px 0;color:var(--muted)}.task-stage .reached{color:var(--green)}.task-stage.changes{color:var(--red)}.theme-choice{width:auto}.actions input[type="text"]{width:auto;flex:1 1 160px;max-width:320px}details.settings-group>summary{padding:12px 18px;cursor:pointer;border-bottom:1px solid var(--line);font-weight:600}details.settings-group:last-child:not([open])>summary{border-bottom:0}.preview{margin-top:8px;padding:8px 10px;background:var(--panel-soft);border-radius:5px;font:12px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.preview:empty{display:none}
 .office-scene{display:block;width:100%;height:auto}.office-scene text{font-family:system-ui,sans-serif}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--muted);font-size:1.8px;letter-spacing:.1px;text-transform:uppercase}.office-room-count{fill:var(--ink);font-size:1.8px;font-variant-numeric:tabular-nums}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed{opacity:.55}.office-name{fill:var(--ink);font-size:1.6px;font-weight:600}.office-state{fill:var(--muted);font-size:1.4px}.office-glyph{font-size:1.8px}.office-idle .office-glyph{fill:var(--dot-ok)}.office-busy .office-glyph{fill:var(--dot-warn)}.office-offline .office-glyph{fill:var(--dot)}.office-paused .office-glyph{fill:var(--dot-warn)}.office-waiting .office-glyph{fill:var(--dot-err)}.office-unknown .office-glyph{fill:var(--dot)}.office-meta{fill:var(--muted);font-size:1.2px}.office-hand{fill:var(--dot-err);font-size:1.6px}.office-bubble{fill:var(--blue-soft);stroke:var(--blue)}.office-bubble-text{fill:var(--blue);font-size:1.3px}.office-mode{fill:var(--amber);font-size:1.2px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1.3px;font-family:ui-monospace,monospace}.office-waiting-card .office-card{stroke:var(--waiting);stroke-dasharray:.5 .4}.office-rework-card .office-card{stroke:var(--red)}.office-more{fill:var(--blue);font-size:1.4px}.office-spotlight .office-desk-surface,.office-spotlight .office-card{stroke:var(--focus);stroke-width:.5}.row.spotlight{background:var(--hover)}
-.office-movable{transition:transform .8s ease}.office-arc-path{fill:none;stroke:var(--blue);stroke-width:.35}.office-arc-important{stroke:var(--amber)}.office-arc-dropped{stroke:var(--red);stroke-dasharray:.6 .4}.office-arc-label{fill:var(--muted);font-size:1.2px}.office-alert{fill:var(--red);font-size:1.4px}.office-latch{fill:var(--dot-warn);font-size:1.4px}.office-link-line{fill:none;stroke-width:.45;stroke-dasharray:.8 .5}.office-link-overlap .office-link-line{stroke:var(--amber)}.office-link-conflict .office-link-line{stroke:var(--red)}.office-link-cohort .office-link-line{stroke:var(--blue)}.office-link-label{font-size:1.2px;fill:var(--muted)}.office-link-conflict .office-link-label{fill:var(--red)}.office-link-overlap .office-link-label{fill:var(--amber)}.office-link-cohort .office-link-label{fill:var(--blue)}.office-checking{fill:var(--blue);font-size:1.1px}.office-card-checking .office-card{stroke:var(--blue)}.office-busy .office-glyph,.office-hand{animation:office-pulse 1.2s ease-in-out infinite}.office-appear{animation:office-appear .5s ease-out}.office-leaving{pointer-events:none;animation:office-fade .4s linear forwards}.office-fadeout{animation-name:office-fade;animation-duration:1s;animation-timing-function:linear;animation-fill-mode:forwards}.office-settle .office-movable{transition:none}.office-settle .office-appear{animation:none}
+.office-movable{transition:transform .8s ease}.office-arc .office-arc-path{fill:none;stroke:var(--blue);stroke-width:.35}.office-arc .office-arc-head{fill:var(--blue)}.office-arc-important .office-arc-path{stroke:var(--amber)}.office-arc-important .office-arc-head{fill:var(--amber)}.office-arc-dropped .office-arc-path{stroke:var(--red);stroke-dasharray:.6 .4}.office-arc-dropped .office-arc-head{fill:var(--red)}.office-arc-label{fill:var(--muted);font-size:1.2px}.office-alert{fill:var(--red);font-size:1.4px}.office-latch{fill:var(--dot-warn);font-size:1.4px}.office-link-line{fill:none;stroke-width:.45;stroke-dasharray:.8 .5}.office-link-overlap .office-link-line{stroke:var(--amber)}.office-link-conflict .office-link-line{stroke:var(--red)}.office-link-cohort .office-link-line{stroke:var(--blue)}.office-link-label{font-size:1.2px;fill:var(--muted)}.office-link-conflict .office-link-label{fill:var(--red)}.office-link-overlap .office-link-label{fill:var(--amber)}.office-link-cohort .office-link-label{fill:var(--blue)}.office-checking{fill:var(--blue);font-size:1.1px}.office-card-checking .office-card{stroke:var(--blue)}
+.office-avatar{fill:var(--muted)}.office-idle .office-avatar{fill:var(--dot-ok)}.office-busy .office-avatar{fill:var(--dot-warn)}.office-offline .office-avatar{fill:var(--dot)}.office-paused .office-avatar{fill:var(--dot-warn)}.office-waiting .office-avatar{fill:var(--amber)}.office-waiting .office-desk-surface{stroke:var(--amber);stroke-width:.6}.office-glyph-shape{fill:none;stroke-width:.32}.office-idle .office-glyph-shape{stroke:var(--dot-ok)}.office-busy .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-paused .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-offline .office-glyph-shape{stroke:var(--dot)}.office-handshape{fill:none;stroke:var(--dot-err);stroke-width:.28}.office-desk-leg{fill:var(--panel-soft);stroke:var(--line);stroke-width:.2}.office-nameplate{fill:var(--control);stroke:var(--control-border);stroke-width:.2}.office-room-wire{fill:none;stroke:var(--line);stroke-width:.25}.office-divider{fill:none;stroke:var(--line);stroke-width:.2}.office-shelf{fill:var(--panel-soft);stroke:var(--line);stroke-width:.3}.office-shelf-card{fill:var(--green-soft);stroke:var(--green);stroke-width:.25}.office-box-top{fill:var(--control);stroke:var(--control-border);stroke-width:.2}.office-box-left{fill:var(--panel-soft);stroke:var(--line);stroke-width:.2}.office-box-right{fill:var(--panel);stroke:var(--line);stroke-width:.2}.office-busy .office-glyph,.office-hand{animation:office-pulse 1.2s ease-in-out infinite}.office-appear{animation:office-appear .5s ease-out}.office-leaving{pointer-events:none;animation:office-fade .4s linear forwards}.office-fadeout{animation-name:office-fade;animation-duration:1s;animation-timing-function:linear;animation-fill-mode:forwards}.office-settle .office-movable{transition:none}.office-settle .office-appear{animation:none}
 @keyframes office-pulse{50%{opacity:.45}}@keyframes office-appear{from{opacity:0}}@keyframes office-fade{to{opacity:0}}
 @media(prefers-reduced-motion:reduce){.office-scene,.office-scene *{transition:none!important;animation:none!important}}
 </style>
@@ -511,22 +512,23 @@ async function poll() {
   catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
-// office-scene-begin (issue 264): the office, drawn Flat or Isometric. Draws the shared officeModel as inline
-// SVG from the same render(snapshot) call as the lists; no timer, no frame loop, no request and no action
-// lives here. Motion is CSS only: transitions on transform/opacity for card moves, keyframe fades for arcs,
-// alerts and the busy latch. Fading uses animation-delay computed from the model's timestamps at render time;
-// expired nodes purge lazily on the next changed render or on their own animationend, never on a timer.
-// The projection (phase 4) maps grid coordinates only: x' = (x - y) cos 30, y' = (x + y) sin 30. Every node is
-// laid out upright in local coordinates and positioned by its projected transform; tiles become parallelograms.
-// Text is never rotated, and the DOM order and accessible names do not depend on the projection.
+// office-scene-begin (issue 264): the office, drawn Flat or Isometric from the shared officeModel as inline
+// SVG, re-rendered only when its signature changed; no timer, no frame loop, no request and no action here.
+// Motion is CSS only: transform/opacity transitions for card moves, keyframe fades for arcs, alerts and the
+// busy latch, timed at render from the model's timestamps; expired nodes purge on the next changed render or
+// their own animationend. The projection (phase 4) maps grid coordinates only: x' = (x - y) cos 30, y' =
+// (x + y) sin 30; nodes are laid out upright in local coordinates, so text is never rotated and the DOM
+// order and accessible names do not depend on the projection.
 let officeProjection = 'flat';
 let officeLastProjection = '';
-function officeProject(x, y) { return officeProjection === 'iso' ? [(x - y) * 0.8660254, (x + y) * 0.5] : [x, y]; }
+const officeRound = (v) => Math.round(v * 100) / 100;
+function officeIsoLocal(x, y) { return [(x - y) * 0.8660254, (x + y) * 0.5]; }
+function officeProject(x, y) { return officeProjection === 'iso' ? officeIsoLocal(x, y) : [x, y]; }
 function officePlace(node, x, y) { const p = officeProject(x, y); node.style.transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)'; }
+function officePolygon(points, cls) { return officeNode('polygon', { points: points.map((p) => p.map(officeRound).join(',')).join(' '), class: cls }); }
 function officeTile(w, h, cls) {
   if (officeProjection !== 'iso') return officeNode('rect', { x: 0, y: 0, width: w, height: h, rx: 1, class: cls });
-  const c = 0.8660254, s = 0.5, round = (v) => Math.round(v * 100) / 100;
-  return officeNode('polygon', { points: [[0, 0], [w * c, w * s], [(w - h) * c, (w + h) * s], [-h * c, h * s]].map((p) => p.map(round).join(',')).join(' '), class: cls });
+  return officePolygon([[0, 0], officeIsoLocal(w, 0), officeIsoLocal(w, h), officeIsoLocal(0, h)], cls);
 }
 function officeViewBox(w, h) {
   if (officeProjection !== 'iso') return '0 0 ' + w + ' ' + h;
@@ -534,6 +536,49 @@ function officeViewBox(w, h) {
   const xs = corners.map((p) => p[0]), ys = corners.map((p) => p[1]), m = 3;
   const minX = Math.min(...xs), minY = Math.min(...ys);
   return (minX - m) + ' ' + (minY - m) + ' ' + (Math.max(...xs) - minX + 2 * m) + ' ' + (Math.max(...ys) - minY + 2 * m);
+}
+// A raised hand as outline shapes (palm and fingers), coloured by the desk's condition class.
+function officeHand(x, y) {
+  const g = officeNode('g', { class: 'office-handshape' });
+  g.append(officeNode('rect', { x: x + 0.05, y: y + 0.8, width: 1.5, height: 1.2, rx: 0.55 }));
+  for (let i = 0; i < 3; i++) g.append(officeNode('rect', { x: x + 0.24 + i * 0.42, y, width: 0.28, height: 1.05, rx: 0.14 }));
+  return g;
+}
+// The condition glyph as clean outline shapes; the label text next to it carries the state in words.
+function officeGlyphNode(desk, cx, cy) {
+  if (desk.condition === 'waiting') return officeHand(cx - 0.8, cy - 1.05);
+  const g = officeNode('g', { class: 'office-glyph-shape' });
+  if (desk.condition === 'busy' || desk.condition === 'idle') g.append(officeNode('circle', { cx, cy, r: 0.8 }));
+  else if (desk.condition === 'paused') g.append(officeNode('rect', { x: cx - 0.65, y: cy - 0.75, width: 0.45, height: 1.5, rx: 0.15 }), officeNode('rect', { x: cx + 0.2, y: cy - 0.75, width: 0.45, height: 1.5, rx: 0.15 }));
+  else if (desk.condition === 'offline') g.append(officeNode('line', { x1: cx - 0.55, y1: cy - 0.55, x2: cx + 0.55, y2: cy + 0.55 }), officeNode('line', { x1: cx - 0.55, y1: cy + 0.55, x2: cx + 0.55, y2: cy - 0.55 }));
+  else g.append(officeNode('text', { x: cx - 0.4, y: cy + 0.55, class: 'office-glyph' }, desk.glyph));
+  return g;
+}
+// A person: head over shoulders, upright in both projections. Isometric stands behind the desk.
+function officeAvatar() {
+  if (officeProjection === 'iso') return [
+    officeNode('circle', { cx: 1.5, cy: -3.7, r: 1.05, class: 'office-avatar' }),
+    officeNode('rect', { x: 0.55, y: -2.85, width: 1.9, height: 3.05, rx: 0.9, class: 'office-avatar' })];
+  return [
+    officeNode('circle', { cx: 2.2, cy: 3.1, r: 0.78, class: 'office-avatar' }),
+    officeNode('path', { d: 'M 1.2 4.6 A 1 1 0 0 1 3.2 4.6 Z', class: 'office-avatar' })];
+}
+// The Done shelf: a small cabinet of stacked card rows (flat) or boxes on a slab (iso); the count stays text.
+function officeShelf(iso) {
+  if (!iso) {
+    const nodes = [officeNode('rect', { x: 6.5, y: 4.4, width: 9, height: 10.4, rx: 1, class: 'office-shelf' })];
+    for (const sy of [7.8, 11.2]) nodes.push(officeNode('line', { x1: 6.5, y1: sy, x2: 15.5, y2: sy, class: 'office-divider' }));
+    for (const sy of [5.1, 8.5, 11.9]) for (const sx of [7.2, 11.4]) nodes.push(officeNode('rect', { x: sx, y: sy, width: 3.4, height: 2.1, rx: 0.5, class: 'office-shelf-card' }));
+    return nodes;
+  }
+  const nodes = [officePolygon([officeIsoLocal(6, 3), officeIsoLocal(16, 3), officeIsoLocal(16, 9), officeIsoLocal(6, 9)], 'office-shelf')];
+  for (const [bx, by] of [[7, 4], [11.5, 4], [9.2, 6.2]]) {
+    const s = 2.4, rise = 2.2;
+    const top = [officeIsoLocal(bx, by), officeIsoLocal(bx + s, by), officeIsoLocal(bx + s, by + s), officeIsoLocal(bx, by + s)];
+    const up = top.map(([x, y]) => [x, y - rise]);
+    nodes.push(officePolygon(up, 'office-box-top'), officePolygon([up[3], up[2], top[2], top[3]], 'office-box-left'), officePolygon([up[2], up[1], top[1], top[2]], 'office-box-right'));
+  }
+  return nodes;
 }
 function officeClip(text, max) { text = String(text); return text.length > max ? text.slice(0, max - 3) + '...' : text; }
 function officeNode(tag, attrs, text) { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const key in attrs) node.setAttribute(key, String(attrs[key])); if (text !== undefined) node.textContent = text; return node; }
@@ -544,7 +589,7 @@ function activateOfficePeer(id) { const row = peerRows.get(id); if (!row) return
 function activateOfficeTask(id) { const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
 function officeFilter(state) { $('task-filter').value = state; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); }
 // Fade timing for a transient mark: it holds, then fades over the final second so it is gone at `until`.
-// Applied once when the node is created; later renders leave the running animation alone.
+// Applied once at creation; later renders leave the running animation alone.
 function officeFade(node, until, now) {
   const remaining = Math.max(0, until - now);
   if (remaining <= 0) return false;
@@ -559,7 +604,7 @@ function officeCardPaint(node, card) {
   node.setAttribute('aria-label', card.name);
   const children = [
     officeNode('rect', { x: 0, y: 0, width: card.w, height: card.h, rx: 0.6, class: 'office-card' }),
-    officeNode('text', { x: 0.8, y: card.h - 0.7, class: 'office-card-text' }, officeClip(card.label, 22))];
+    officeNode('text', { x: 0.8, y: card.h - 0.7, class: 'office-card-text' }, officeClip(card.label, card.w > 12 ? 22 : 10))];
   if (card.checking) children.push(officeNode('text', { x: card.w - 0.6, y: card.h - 0.7, 'text-anchor': 'end', class: 'office-checking' }, '⟳'));
   node.replaceChildren(...children);
 }
@@ -567,17 +612,39 @@ function officeDeskPaint(node, desk) {
   node.setAttribute('class', 'office-desk office-' + desk.condition + (desk.dimmed ? ' office-dimmed' : ''));
   node.setAttribute('aria-label', desk.name);
   officePlace(node, desk.x, desk.y);
-  const children = [officeTile(desk.w, desk.h, 'office-desk-surface')];
-  if (desk.bubble) {
-    children.push(officeNode('rect', { x: 0.6, y: -2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
-    children.push(officeNode('text', { x: desk.w / 2, y: -0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
+  const iso = officeProjection === 'iso';
+  const children = [];
+  if (iso) {
+    children.push(...officeAvatar());
+    // The desk is a light extrusion: the top tile plus two thin front legs.
+    const B = officeIsoLocal(desk.w, 0), C = officeIsoLocal(desk.w, desk.h), D = officeIsoLocal(0, desk.h);
+    for (const [from, to] of [[D, C], [B, C]]) {
+      const at = (t) => [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t];
+      const a = at(0.78), b = at(0.92);
+      children.push(officePolygon([a, b, [b[0], b[1] + 2.4], [a[0], a[1] + 2.4]], 'office-desk-leg'));
+    }
   }
-  children.push(officeNode('text', { x: 1, y: 2, class: 'office-name' }, desk.id));
+  children.push(officeTile(desk.w, desk.h, 'office-desk-surface'));
+  if (iso) {
+    // The name plate is a small parallelogram on the desk's front edge; the name text stays upright.
+    const D = officeIsoLocal(0, desk.h), C = officeIsoLocal(desk.w, desk.h), off = officeIsoLocal(0, 1);
+    const c0 = [(D[0] + C[0]) / 2 + off[0], (D[1] + C[1]) / 2 + off[1]];
+    children.push(officePolygon([[-2.4, -0.75], [2.4, -0.75], [2.4, 0.75], [-2.4, 0.75]].map(([gx, gy]) => { const p = officeIsoLocal(gx, gy); return [c0[0] + p[0], c0[1] + p[1]]; }), 'office-nameplate'));
+    children.push(officeNode('text', { x: c0[0], y: c0[1] + 2.5, 'text-anchor': 'middle', class: 'office-name' }, desk.id));
+  } else {
+    children.push(officeNode('text', { x: 1, y: 2, class: 'office-name' }, desk.id));
+    children.push(...officeAvatar());
+  }
+  if (desk.bubble) {
+    const bx = iso ? 3.6 : 0.6; // clear of the standing avatar in iso
+    children.push(officeNode('rect', { x: bx, y: -2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
+    children.push(officeNode('text', { x: bx + (desk.w - 1.2) / 2, y: -0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
+  }
   if (desk.mode) children.push(officeNode('text', { x: desk.w - 1, y: 2, 'text-anchor': 'end', class: 'office-mode' }, desk.mode));
-  children.push(officeNode('text', { x: 1, y: 3.9, class: 'office-glyph' }, desk.glyph));
-  children.push(officeNode('text', { x: 2.6, y: 3.9, class: 'office-state' }, desk.label));
-  if (desk.approvals > 0) children.push(officeNode('text', { x: desk.w - 1, y: 3.9, 'text-anchor': 'end', class: 'office-hand' }, '⚑ ' + desk.approvals));
-  let line = 5.1;
+  children.push(officeGlyphNode(desk, iso ? 5.2 : 4.3, 3.65));
+  children.push(officeNode('text', { x: iso ? 6.3 : 5.3, y: 4, class: 'office-state' }, desk.label));
+  if (desk.approvals > 0) { children.push(officeHand(desk.w - 2.7, 2.5)); children.push(officeNode('text', { x: desk.w - 1, y: 4, 'text-anchor': 'end', class: 'office-hand' }, String(desk.approvals))); }
+  let line = 5.35;
   if (desk.breakNote) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip('Break: ' + desk.breakNote + (desk.breakResetsAt ? ' / resets ' + rel(desk.breakResetsAt) : ''), 38))); line += 1.05; }
   if (desk.finishing) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, 'finishing a turn')); line += 1.05; }
   if (!desk.attached) { children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, 'disconnected; work retained')); line += 1.05; }
@@ -593,13 +660,26 @@ function officeDeskPaint(node, desk) {
 function officeRoomPaint(node, room) {
   node.setAttribute('class', 'office-roombox office-roombox-' + room.id);
   officePlace(node, room.x, room.y);
-  node.replaceChildren(
-    officeTile(room.w, room.h, 'office-room'),
-    officeNode('text', { x: 1, y: 2.2, class: 'office-room-title' }, room.label),
-    officeNode('text', { x: room.w - 1, y: 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
+  const iso = officeProjection === 'iso';
+  const children = [officeTile(room.w, room.h, 'office-room')];
+  let moreAt = { x: 1, y: room.h - 1, anchor: 'start' };
+  if (iso) {
+    // A faint wireframe floor box: the floor tile and the two back vertical edges; the label sits at the base.
+    const B = officeIsoLocal(room.w, 0), D = officeIsoLocal(0, room.h), C = officeIsoLocal(room.w, room.h);
+    for (const p of [B, D]) children.push(officeNode('line', { x1: p[0], y1: p[1], x2: p[0], y2: p[1] - 6, class: 'office-room-wire' }));
+    children.push(officeNode('text', { x: C[0], y: C[1] + 2.4, 'text-anchor': 'middle', class: 'office-room-title' }, room.label));
+    children.push(officeNode('text', { x: C[0], y: C[1] + 3.8, 'text-anchor': 'middle', class: 'office-room-count' }, String(room.count)));
+    moreAt = { x: D[0], y: D[1] + 2.4, anchor: 'middle' };
+  } else {
+    if (room.x > 0) children.push(officeNode('line', { x1: -1, y1: 0.6, x2: -1, y2: room.h - 0.6, class: 'office-divider' }));
+    children.push(officeNode('text', { x: 1, y: 2.2, class: 'office-room-title' }, room.label));
+    children.push(officeNode('text', { x: room.w - 1, y: 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
+  }
+  if (room.id === 'done') children.push(...officeShelf(iso));
+  node.replaceChildren(...children);
   if (room.overflow > 0 && room.filterState) {
     const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + room.overflow + ' more ' + room.filterState.replaceAll('_', ' ') + ' tasks in the task list' });
-    more.append(officeNode('text', { x: 1, y: room.h - 1, class: 'office-more' }, '+' + room.overflow + ' more'));
+    more.append(officeNode('text', { x: moreAt.x, y: moreAt.y, 'text-anchor': moreAt.anchor, class: 'office-more' }, '+' + room.overflow + ' more'));
     const open = () => officeFilter(room.filterState);
     more.addEventListener('click', open);
     more.addEventListener('keydown', (event) => officeKeys(event, open));
@@ -700,10 +780,13 @@ function drawOffice(target, model) {
       if (!to) continue;
       const p1 = officeProject(from ? from.x + from.w / 2 : 1, from ? from.y : 1), p2 = officeProject(to.x + to.w / 2, to.y);
       const mx = (p1[0] + p2[0]) / 2, my = Math.min(p1[1], p2[1]) - 4;
-      const cls = 'office-arc-path' + (arc.priority === 'important' ? ' office-arc-important' : '') + (arc.dropped ? ' office-arc-dropped' : '');
+      const angle = Math.atan2(p2[1] - my, p2[0] - mx);
+      const tip = (a) => [officeRound(p2[0] - 1.5 * Math.cos(a)), officeRound(p2[1] - 1.5 * Math.sin(a))];
+      const cls = 'office-arc' + (arc.priority === 'important' ? ' office-arc-important' : '') + (arc.dropped ? ' office-arc-dropped' : '');
       const { node, fresh } = keep('arc:' + arc.seq + ':' + target, JSON.stringify([arc.seq, target, arc.kind, arc.task, arc.priority, arc.dropped, p1, p2]), scene.layers.arcs,
-        (n) => { n.setAttribute('class', 'office-arc'); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(
-          officeNode('path', { d: 'M ' + p1[0] + ' ' + p1[1] + ' Q ' + mx + ' ' + my + ' ' + p2[0] + ' ' + p2[1], class: cls }),
+        (n) => { n.setAttribute('class', cls); n.setAttribute('aria-hidden', 'true'); n.replaceChildren(
+          officeNode('path', { d: 'M ' + officeRound(p1[0]) + ' ' + officeRound(p1[1]) + ' Q ' + officeRound(mx) + ' ' + officeRound(my) + ' ' + officeRound(p2[0]) + ' ' + officeRound(p2[1]), class: 'office-arc-path' }),
+          officePolygon([[officeRound(p2[0]), officeRound(p2[1])], tip(angle - 0.45), tip(angle + 0.45)], 'office-arc-head'),
           officeNode('text', { x: mx, y: my - 0.8, 'text-anchor': 'middle', class: 'office-arc-label' }, label)); }, false);
       if (fresh) officeFade(node, arc.until, now);
     }

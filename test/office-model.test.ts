@@ -150,8 +150,8 @@ test("the busy bubble appears only when the peer has exactly one in_progress tas
   const none = officeModel(snap([{ id: 1, title: "a", class: "implement", state: "in_review", owner: "codex" }]), null, { cols: 1 });
   expect(none.desks[0]!.bubble).toBe("");
   const many = officeModel(snap(Array.from({ length: 5 }, (_, i) => ({ id: i + 1, title: `t${i}`, class: "implement", state: "in_progress", owner: "codex" }))), null, { cols: 1 });
-  expect(many.desks[0]!.cards).toHaveLength(3);
-  expect(many.desks[0]!.extraCards).toBe(2);
+  expect(many.desks[0]!.cards).toHaveLength(2);
+  expect(many.desks[0]!.extraCards).toBe(3);
   // A work card whose owner has no desk waits in the Work floor room instead.
   const orphan = officeModel({ status: { peers: {} }, tasks: [{ id: 9, title: "ownerless", class: "implement", state: "in_progress" }] }, null, { cols: 1 });
   expect(orphan.rooms.find((room) => room.id === "work")!.cards.map((card) => card.id)).toEqual([9]);

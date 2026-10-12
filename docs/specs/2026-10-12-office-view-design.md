@@ -153,7 +153,22 @@ Phase 4 decisions within the spec:
   same transform transition as Flat; reduced motion removes it all as before.
 - Size accounting against the issue's 30 KB budget (page base 59,329 bytes at
   phase 1 branch point): phase 1 +11,040, phase 2 +7,340, phase 3 +2,141,
-  phase 4 +1,704; final 81,554 bytes, +22,225 total, inside the budget.
+  phase 4 +1,704, art polish +3,559; final 89,113 bytes, +25,784 total,
+  inside the budget. The iso shelf's base skirt was dropped to stay under it.
+- Art polish (2026-10-12): two reference concept images (a flat view and an
+  isometric view) were generated with Higgsfield (nano_banana_pro) and kept
+  outside the repo (scratchpad); they served as drawing references only. Per
+  this issue's "art made in code, with no image files" rule, nothing ships as
+  an image: no asset files, no CSP change, no new route. What was adopted:
+  outline-shape condition glyphs (pause bars, ring, filled dot, cross) and a
+  raised hand drawn as palm-and-fingers shapes, a person avatar per desk
+  (inside the flat tile; standing behind the iso desk), an extruded iso desk
+  (top plus two front legs), a name plate parallelogram on the iso desk's
+  front edge, the warm-accent (--amber) emphasis on a waiting desk, faint
+  wireframe iso room boxes with small-caps labels at the base, a Done shelf
+  cabinet (flat) and stacked boxes on a slab (iso) with the count kept as
+  text, two-column room cards with thin dividers, and arc arrowheads at the
+  target end.
 
 ## Verification
 

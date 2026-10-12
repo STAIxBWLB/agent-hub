@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Add the Isometric projection to the dashboard Office view: the same model through the same code path with projected grid coordinates, upright labels, identical focus order and accessible names, and jump-on-switch (#264, phase 4 of 4).
+- Add the Isometric projection to the dashboard Office view: the same model through the same code path with projected grid coordinates, upright labels, identical focus order and accessible names, and jump-on-switch — plus an art polish pass (outline glyphs, drawn raised hand, per-desk avatars, extruded iso desks with legs and name plates, wireframe iso rooms, Done-shelf cabinet/stacks, two-column room cards with dividers, arc arrowheads) guided by generated reference concepts kept outside the repo (#264, phase 4 of 4).
 
 - Add optional turn/checking/links snapshot fields for the dashboard office view (exact task bubble, finishing-a-turn, check-running mark, overlap/conflict/cohort warning lines), ids-only and PII-safe with PROTOCOL and EVENTS_SCHEMA unchanged (#264, phase 3 of 4).
 
