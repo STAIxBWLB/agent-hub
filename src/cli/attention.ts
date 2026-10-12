@@ -14,10 +14,12 @@ export function consoleNeeds(state: AttentionState, now: number): Needs {
   const input: NeedsInput = { approvals: state.approvals.map(row => ({ id: row.id, peer: row.peer, expiresAt: row.expiresAt })), defaults: state.permissionDefaults.map(row => ({ peer: row.peer })), peers: Object.fromEntries(Object.entries(state.peers).map(([peer,row]) => [peer,{ state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }])), budget: Object.fromEntries(Object.entries(state.budget).map(([peer,row]) => [peer,{ ...(row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}) }])), messages: (state.attentionMessages ?? []).map(row => ({ id: row.id, peer: row.peer, important: row.important, since: row.since })), storageBlocked: state.storageBlocked, recovery: state.recoveryNeed };
   const result = needs(input, now);
   // Panel snapshots know each held row; enrich only ids, without changing the status-derived count.
-  const used = new Set(result.items.filter(item => item.kind === "delivery").map(item => item.id));
-  for (const item of result.items) if (item.kind === "delivery" && item.id === undefined) {
-    const row = state.queue?.find(row => row.state === "needs_review" && row.peer === item.peer && !used.has(row.id) && /^[A-Za-z0-9_.:-]{1,128}$/.test(row.id));
+  const used = new Set<string | number>();
+  for (const item of result.items) if (item.kind === "delivery") {
+    const eligible = (row: { id: string; peer?: string; state: string }) => row.state === "needs_review" && row.peer === item.peer && !used.has(row.id) && /^[A-Za-z0-9_.:-]{1,128}$/.test(row.id);
+    const row = state.queue?.find(row => row.id === item.id && eligible(row)) ?? state.queue?.find(eligible);
     if (row) { item.id = row.id; used.add(row.id); }
+    else if (item.id !== undefined) used.add(item.id);
   }
   return result;
 }

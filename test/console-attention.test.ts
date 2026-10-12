@@ -128,3 +128,14 @@ test("attention cursor restarts when needs are inserted removed or reordered", (
     expect(next.effects).toEqual([]);
   }
 });
+
+test("attention prefers an actual review row over a different in-flight held id", () => {
+  const state: ConsoleState = { ...initialConsoleState(true), petEnabled: true,
+    peers: { codex: { state: "idle", heldBy: "accepted-row", needsReview: 1 } },
+    queue: [{ id: "accepted-row", peer: "codex", state: "accepted" }, { id: "review-row", peer: "codex", state: "needs_review" }] };
+  expect(consoleNeeds(state, now).items[0]?.id).toBe("review-row");
+  const next = reduceConsole(state, "n", now);
+  expect(next.state.panel).toBe(4);
+  expect(next.state.selection).toBe(0);
+  expect(next.effects).toEqual([]);
+});
