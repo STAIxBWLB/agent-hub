@@ -87,6 +87,7 @@ import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
+import { detectTooling } from "./tooling.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -637,6 +638,9 @@ export async function startDaemon(opts: DaemonOptions) {
       },
     },
   });
+  // Written once this run owns the port, before any connection can attach a peer: a daemon that fails to bind (another
+  // is running) never marks a run boundary in the live one's events.
+  event({ type: "hub_start", instance: instanceId });
   startupCleanup.push(() => server.stop(true));
 
 
@@ -1985,6 +1989,10 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
   };
 
+  const tooled = new Map<string, number>(), attachedNow = new Set<string>();
+  /** Detections still running (each bounded by its probe deadline): settled before shutdown writes research records. */
+  const detecting = new Set<Promise<void>>();
+  let attachments = 0;
   bus.tap((e) => {
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
@@ -1992,6 +2000,17 @@ export async function startDaemon(opts: DaemonOptions) {
     if (e.t === "state") {
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
+      // #248: the add-ons it works with, once per attach (names and versions only).
+      // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
+      // still did its work under that attachment.
+      if (e.state === "offline") attachedNow.delete(e.peer);
+      else if (!attachedNow.has(e.peer)) {
+        attachedNow.add(e.peer);
+        const peer = e.peer, attachment = ++attachments;
+        tooled.set(peer, attachment);
+        const detection = detectTooling(peer, { cwd: opts.cwd }).then((addons) => { if (tooled.get(peer) === attachment) event({ type: "tooling", peer, addons }); }, () => undefined);
+        detecting.add(detection); void detection.finally(() => detecting.delete(detection));
+      }
       const open = turns.get(e.peer);
       // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";
@@ -4050,6 +4069,9 @@ export async function startDaemon(opts: DaemonOptions) {
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
       await Promise.allSettled([...starting.values()]);
+      // A fingerprint still being detected belongs in the research records written below; its peer must still be
+      // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).
+      await Promise.allSettled([...detecting]);
       const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()).concat(sidecar ? [sidecar.stop()] : []));
       // A peer whose stop rejects must not strand the daemon (issue #56): its failure is
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.

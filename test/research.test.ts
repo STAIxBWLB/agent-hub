@@ -179,6 +179,8 @@ async function daemonWith(research: boolean, home: string) {
   // Attached as peers too, so the board can give them tasks; the tools connections act for them.
   for (const peer of ["worker", "claude"]) { const c = await ControlClient.connect(stateDir, { role: "peer", peer }); cleanup.push(() => c.close()); }
   await until(() => daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle", "research worker and reviewer attached");
+  // #248: add-on detection settles in the background after each attach; work starts once both fingerprints are written.
+  await until(() => readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "tooling").length >= 2, "both peers' tooling fingerprints", 300);
   const codex = await as("worker"), claude = await as("claude");
   const op = async (c: ControlClient, name: string, args: Record<string, unknown>) => {
     const reply = await c.request({ t: "task", op: name, args });
@@ -212,6 +214,10 @@ test("the live writer records each approved task, holds no text, and backfill re
   const stored = readStore(file) as TaskRecord[];
   expect(stored).toHaveLength(1);
   expect(stored[0]).toMatchObject({ task: 1, owners: ["worker"], firstPass: true, dones: 1, writer: { source: "live" } });
+  // #248: one tooling fingerprint per attach, carried into the record for each peer that worked on the task.
+  const tooling = readEvents(join(f.stateDir, "events.jsonl")).filter((e) => e.type === "tooling");
+  expect(tooling.map((e) => e.type === "tooling" && e.peer).sort()).toEqual(["claude", "worker"]);
+  expect(Object.keys(stored[0]!.tooling ?? {}).sort()).toEqual(["claude", "worker"]);
   const raw = readFileSync(file, "utf8");
   // Nothing of the text in the store, the report or either export.
   const outputs = [raw, formatResearch(researchReport(stored)).join("\n"), JSON.stringify(researchReport(stored)), toCsv(stored)];
