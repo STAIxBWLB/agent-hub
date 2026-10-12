@@ -1840,6 +1840,22 @@
       "replacement": "label:release.name",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "redacted release options retain distinguishable public ids (#263)"
+    },
+    {
+      "id": "needs-approval-expiry",
+      "file": "src/ui/needs.ts",
+      "search": "request.expiresAt > now",
+      "replacement": "true",
+      "testFile": "test/needs.test.ts",
+      "testName": "attention model orders structural needs and watch facts never override state (#280)"
+    },
+    {
+      "id": "needs-watch-not-action",
+      "file": "src/ui/needs.ts",
+      "search": "message.important ? \"act\" : \"watch\"",
+      "replacement": "\"act\"",
+      "testFile": "test/needs.test.ts",
+      "testName": "attention model orders structural needs and watch facts never override state (#280)"
     }
   ]
 }
