@@ -1203,9 +1203,9 @@
     },
     {
       "id": "delivery-file-coverage",
-      "file": "src/hub/sdlc-queue.ts",
-      "search": "if (!read.pathsComplete) row.blockers.push",
-      "replacement": "if (false) row.blockers.push",
+      "file": "src/hub/sdlc.ts",
+      "search": "pathsComplete: Number.isSafeInteger(p.changedFiles) && p.changedFiles >= 0 && p.changedFiles === paths.length",
+      "replacement": "pathsComplete: true",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "queue stale heads incomplete files private and unlinked work remain blocked (#257)"
     },
