@@ -2080,6 +2080,14 @@
       "replacement": "\"--label\",input.label,...(input.milestone===undefined?[]:[\"--milestone\",input.milestone])",
       "testFile": "test/github-import.test.ts",
       "testName": "GitHub import selection is captured before repository resolution awaits (#263)"
+    },
+    {
+      "id": "board-card-release-membership",
+      "file": "src/ui/index.html",
+      "search": "if(task.release!=null){const release=boardViewState?.snapshot.releases?.find",
+      "replacement": "if(false){const release=boardViewState?.snapshot.releases?.find",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "task cards show public release membership and accessible identity (#263)"
     }
   ]
 }
