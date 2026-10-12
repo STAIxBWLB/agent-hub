@@ -91,7 +91,12 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   /** A peer that worked on the task carries its latest fingerprint into the record. */
   const involve = (a: Acc, peer: string | null | undefined) => { if (!peer) return; a.peers.add(peer); const f = tooling.get(peer); if (f) a.tooling[peer] = f; };
   for (const e of events) {
-    if (e.type === "tooling") { tooling.set(e.peer, e.addons); continue; }
+    if (e.type === "tooling") {
+      tooling.set(e.peer, e.addons);
+      // Detection settles in the background, so a peer may have worked on a task before its fingerprint was written.
+      for (const a of tasks.values()) if (a.peers.has(e.peer) && !Object.hasOwn(a.tooling, e.peer)) a.tooling[e.peer] = e.addons;
+      continue;
+    }
     if (e.type === "task") {
       const proposed = e.event === "proposed" || e.event === "backlog pulled";
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.

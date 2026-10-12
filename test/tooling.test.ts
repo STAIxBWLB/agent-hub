@@ -90,6 +90,11 @@ test("research records carry each working peer's latest fingerprint, and a peer 
   expect(r!.peers).toEqual(["claude", "codex", "kimi"]); // kimi worked on it without a fingerprint
   // The same events give the same record, live or backfill.
   expect(taskRecords(events, "proj", writer)).toEqual(taskRecords(events, "proj", writer));
+  // A fingerprint written after the peer's only task event still counts for that task (review of #351).
+  const late: StampedEvent[] = [{ v: 1, at: at(), type: "tooling", peer: "codex", addons: [] }, task(5, "proposed", "proposed", null), task(5, "assigned", "in_progress", "codex", null),
+    { v: 1, at: at(), type: "turn_end", peer: "pi", turn: "pi#1", ms: 10, task: 5, attribution: "delivery" }, task(5, "done", "approved", "codex", null),
+    { v: 1, at: at(), type: "tooling", peer: "pi", addons: [{ name: "ripwire", version: null }] }];
+  expect(taskRecords(late, "proj", writer)[0]!.tooling).toEqual({ codex: [], pi: [{ name: "ripwire", version: null }] });
   // Events from before #248 give records without the field: unknown, never "off".
   expect(taskRecords(events.filter((e) => e.type !== "tooling"), "proj", writer)[0]!.tooling).toBeUndefined();
   expect(addonState("ripwire", [undefined])).toBe("unknown");
