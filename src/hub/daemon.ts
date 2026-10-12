@@ -3025,7 +3025,7 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       status: { peers: peerView },
       boardCapabilities: { backlog: true },
-      planningCapabilities: { enabled: true },
+      planningCapabilities: { enabled: true, wipPull: true },
       releases: tasks.releaseList(USER),
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,

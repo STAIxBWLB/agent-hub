@@ -514,7 +514,7 @@ function taskCard(task, card, stage, ids) {
 
   const controls = el('div', undefined, 'actions');
   if (card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Pull into To Do', {action:'backlog_pull',id:task.id}));
-  if (card.pull && boardViewState?.snapshot.planningCapabilities?.enabled===true) controls.append(boardButton('Pull within WIP', {action:'planner_pull',id:task.id,revision:task.planningRevision ?? 0,reason:'person requested a WIP-constrained pull'}));
+  if (card.pull && boardViewState?.snapshot.planningCapabilities?.wipPull===true) controls.append(boardButton('Pull within WIP', {action:'planner_pull',id:task.id,revision:task.planningRevision ?? 0,reason:'person requested a WIP-constrained pull'}));
   if (card.returnable && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Return to Backlog', {action:'backlog_return',id:task.id}));
   if (card.assignable && ids.length) {
     const expected=boardContext(), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;
