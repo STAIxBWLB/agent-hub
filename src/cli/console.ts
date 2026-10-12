@@ -195,7 +195,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
       return;
     }
-    if (action.type === "keys") return stream({ text: keyTable(columns).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
+    if (action.type === "keys") return stream({ text: keyTable(columns, !!state.petEnabled).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
     if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) }, false);
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);

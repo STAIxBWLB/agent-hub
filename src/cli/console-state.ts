@@ -319,9 +319,9 @@ const KEYS: [string, string[]][] = [
   ["Events", ["f peer filter", "g kind filter"]],
 ];
 /** The `?` key table: one group per panel, its keys kept whole and packed into the width after the group column. */
-export function keyTable(columns: number): Span[][] {
+export function keyTable(columns: number, attention = false): Span[][] {
   const lines: Span[][] = []; const pad = 12;
-  for (const [group, items] of KEYS) {
+  for (const [group, items] of [...KEYS, ...(attention ? [["Attention", ["n next need", "P STAI/off"]] as [string, string[]]] : [])]) {
     let text = ""; let head = group;
     const flush = () => { lines.push([span(head.padEnd(pad), head ? "info" : undefined), span(text)]); head = ""; text = ""; };
     for (const item of items) { if (text && pad + Bun.stringWidth(`${text}   ${item}`) > columns) flush(); text = text ? `${text}   ${item}` : item; }
@@ -691,7 +691,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
   if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
-  else if (s.help) lines.push(...keyTable(columns));
+  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
