@@ -74,3 +74,51 @@ Example reviewer receipt (task 2 already depends on task 1):
 ```
 
 The repeated SHA is a syntax example, not verification evidence. Replace it with the head actually reviewed. A verified criterion requires hashed evidence refs and still does not replace the configured exact-head local/CI gates.
+
+# Custom lifecycle definition contract (#257)
+
+- The sdlc.toml loader reads a single regular single-link file up to 64 KiB, checks its identity/size across a bounded read and refuses symlinks or changing files.
+- Optional `definitions` in sdlc.toml maps a stage id to bounded data: `base`, `actor`, `entry_gates`, `exit_gates` and `after`. `stages` is the explicit ordered list, at most 32 distinct lower-case ASCII ids of at most 48 characters. Built-in names retain their original base; custom ids map to one of the seven existing semantic stages. Unknown keys, gates, actors, duplicate gates and references refuse before startup.
+- The list must contain a review-base and merge-base stage because existing Tasks done/review transitions need those destinations. Other stages can be renamed, inserted or omitted. `after` has at most eight distinct earlier ids; self, forward, missing and cyclic dependencies refuse. Configuration defines no new task states, runnable commands or capability.
+- Actors are owner, reviewer, person or planner (defaulting to the base's existing actor guidance). A configured actor never grants lifecycle write authority to a new caller. Existing task owner/reviewer/person eligibility remains the outer boundary. In enforce, an explicit custom stage change additionally requires its configured actor; a person may record every stage. A planner must already be an eligible task holder with the existing planner flow role. Off/advise preserve their nonblocking claim behavior.
+- Gate names are issue, pr, local, review, checks and phase. A phase gate requires workflow = "gsd-lite"; otherwise configuration refuses before startup. They read only the existing artifact identities, exact-head GitHub readback, claimed local receipt or current board-owned phase checklist. Entry/exit readiness is shown separately from approval readiness. Custom gates cannot remove the existing review/approval floor, turn a missing required-check set green or treat a phase claim as external verification.
+- Receipts keep their configured stage id. Tasks validates stage names against the active definition before storing. A definition removed after a restart makes the old stage visibly unknown until an eligible person/holder records a valid one; it is never silently remapped. Existing state-derived completion/approval selects the first configured review/merge base destination, not a hard-coded name; no arbitrary stage auto-advance is added.
+- CLI, console and dashboard use the same definition/base/actor and entry/exit blocker projection. Every managed native/local task schema advertises the same active stage ids. Separate MCP processes read authenticated daemon status, not a mutable sdlc.toml; a live older daemon without the optional field retains the seven-stage schema. An unavailable/malformed read withholds hub_sdlc_record until a successful tools-list read rather than inventing stages. The default definition produces the old seven-stage config, receipts, schemas and projections unchanged. Native model ingestion and an actual advise/release cycle remain unverified.
+
+Example:
+
+```toml
+mode = "advise"
+required_checks = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"]
+stages = ["question", "draft", "fact-check", "approve", "publish"]
+
+[definitions.question]
+base = "plan"
+actor = "planner"
+entry_gates = ["issue"]
+
+[definitions.draft]
+base = "implement"
+actor = "owner"
+after = ["question"]
+exit_gates = ["local"]
+
+[definitions.fact-check]
+base = "verify"
+actor = "reviewer"
+after = ["draft"]
+exit_gates = ["checks"]
+
+[definitions.approve]
+base = "review"
+actor = "reviewer"
+after = ["fact-check"]
+exit_gates = ["review"]
+
+[definitions.publish]
+base = "merge"
+actor = "person"
+after = ["approve"]
+```
+
+These ids are guidance/receipt destinations. Publish neither merges nor releases. Full release readiness, bidirectional GSD import and research measurements remain separate slices.

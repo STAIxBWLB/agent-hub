@@ -415,6 +415,7 @@ function render(snapshot) {
       const stage = progressStages.get(task.id);
       row.append(head, renderTaskStage(stage), el('p', (task.profileClass ? task.profileClass + ' (base ' + task.class + ')' : task.class) + ' / ' + (task.owner || 'unassigned') + (task.reviewer ? ' / review: ' + task.reviewer : ''), 'meta'));
       if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + (task.lifecycle.workflow ? ' (' + task.lifecycle.workflow + ')' : '') + ' / ' + task.lifecycle.stage + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
+      if (task.lifecycle?.definition) row.append(el('p', 'Stage base: ' + task.lifecycle.definition.base + ' / entry: ' + (task.lifecycle.entry?.length ? task.lifecycle.entry.join('; ') : 'ready') + ' / exit: ' + (task.lifecycle.exit?.length ? task.lifecycle.exit.join('; ') : 'ready'), 'meta'));
       if (task.detail) row.append(el('p', task.detail, 'body'));
       if (task.state !== 'approved' && ids.length) {
         const actions = el('div', undefined, 'actions'), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;

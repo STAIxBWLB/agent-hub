@@ -66,8 +66,9 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny" | "readOnly">, p
   // Not secret, but writing .git or .agenthub changes what runs outside the worker's control. Names are compared
   // folded: a new `.GIT/config` is `.git/config` to a case-insensitive disk, and git then runs what it names.
   if (mode === "write" && isHubWritePath(rel)) throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error("target is protected by data.readonly");
+  // Identity refusal is stable even when realPath names a protected hardlink alias.
   if (mode === "write" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error("hardlinked write target cannot be verified with data.readonly");
+  if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error("target is protected by data.readonly");
   return real;
 }
 

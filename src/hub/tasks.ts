@@ -16,7 +16,7 @@ import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { SUPPORTED_PEERS } from "./peer-catalog.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, type SdlcConfig, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
+import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -341,7 +341,7 @@ export class Tasks {
   /** A task as a cloud peer may see it. */
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
     const { title, detail, history, ...rest } = task;
-    if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: task.sdlc.stage } } : {}), title: "[pii]", detail: "[pii]" };
+    if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
@@ -1127,7 +1127,14 @@ export class Tasks {
   recordLifecycle(by: PeerId, id: unknown, input: unknown): Task {
     const task = this.need(id, false, true);
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
-    const next = sdlcReceipt(input, task.sdlc);
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    const next = sdlcReceipt(input, task.sdlc, config);
+    const definition = stageDefinition(config, next.stage);
+    if (config.mode === "enforce" && config.definitions && input && typeof input === "object" && "stage" in input && next.stage !== task.sdlc?.stage && by !== USER) {
+      const actor = definition?.actor;
+      const acts = actor === "owner" ? by === task.owner : actor === "reviewer" ? by === task.reviewer : actor === "planner" ? this.d.roles?.[by]?.includes("planner") : actor === "owner/planner" && (by === task.owner || this.d.roles?.[by]?.includes("planner"));
+      if (!acts) throw new PreEffectToolRefusal(`lifecycle stage requires its ${actor ?? "unknown"} actor or the person`);
+    }
     if (input && typeof input === "object" && "phase" in input) {
       this.mine(task, by, "reviewer", true);
       if (next.phase && !this.isPii(task) && !this.nameable(JSON.stringify(next.phase))) throw new PreEffectToolRefusal("phase metadata matches a PII pattern; use private work");
@@ -1142,7 +1149,7 @@ export class Tasks {
   }
   workflowExport(id: unknown): Record<string, unknown> {
     const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    const state = { id: task.id, state: task.state, stage: task.sdlc?.stage ?? "spec", ...(this.isPii(task) ? { private: true } : { phase: this.workflowView(task) ?? null }) };
+    const state = { id: task.id, state: task.state, stage: task.sdlc?.stage ?? config.stages[0] ?? "spec", ...(this.isPii(task) ? { private: true } : { phase: this.workflowView(task) ?? null }) };
     return { schema: 1, workflow: config.workflow ?? "none", state, stateHash: workflowHash(state), sourceHash: workflowHash(config) };
   }
   async lifecycleStatus(id: unknown, refresh = true): Promise<SdlcStatus> {
@@ -1159,7 +1166,7 @@ export class Tasks {
     const current = this.need(task.id, false, true);
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
     const status = sdlcStatus(config, receipt, evidence, this.workflowView(current));
-    const blockers = transition === "review" ? status.blockers.filter(blocker => ["issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)) : status.blockers;
+    const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
     if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);
   }
@@ -1446,7 +1453,7 @@ export class Tasks {
       this.mine(task, by, "owner", true);
       reviewer = task.reviewer;
     }
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: reviewer ? "review" : "merge" } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined });
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -1548,14 +1555,14 @@ export class Tasks {
     let task = valid();
     let reviewedHead: string | undefined;
     if (head !== undefined) {
-      const checked = sdlcReceipt({ reviewedHead: head }, task.sdlc);
+      const checked = sdlcReceipt({ reviewedHead: head }, task.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined));
       reviewedHead = checked.reviewedHead;
     }
     if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead); task = valid(); }
     const pii = this.isPii(task);
     const flag = { withheld: withheld || undefined };
     if (verdict === "approved") {
-      const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: "merge" } } : {}) }, note, flag);
+      const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
       if (next.owner) {
         this.d.board.recordOutcome(next.owner, next.class, true);
         this.d.board.recordReview({ implementer: next.owner, reviewer: by, class: next.class, kind: "approved", task: next.id });

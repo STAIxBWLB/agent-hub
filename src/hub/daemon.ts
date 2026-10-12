@@ -1775,6 +1775,7 @@ export async function startDaemon(opts: DaemonOptions) {
     projectId,
     instanceId,
     version: VERSION,
+    lifecycleStages: [...lifecycleConfig.stages],
     protocol: PROTOCOL,
     stopping,
     pid: process.pid,
@@ -2603,7 +2604,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, "pi", unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile, lifecycleConfig.stages), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
@@ -2770,6 +2771,7 @@ export async function startDaemon(opts: DaemonOptions) {
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
         profile: resolvedProfile,
+        sdlcStages: lifecycleConfig.stages,
         taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);

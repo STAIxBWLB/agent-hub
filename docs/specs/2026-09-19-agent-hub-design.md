@@ -2419,3 +2419,12 @@ the queue.
 ## Amendment: bounded data policy globs (#259)
 
 pii.paths and data.readonly accept exact paths/subtrees and *, ? and whole-segment ** patterns. Validation keeps 64 entries, 200 characters each and at most 16 wildcard characters. Unsupported bracket/brace/negation/escape syntax, absolute paths and parent traversal refuse. Matching folds case, protects matched subtrees and treats parent task scopes as private when a future matching descendant is possible. Resolve both declared and real paths; wildcard alias discovery is uncached and bounded to 4096 directory entries and 32 levels. Resolution/discovery failure conservatively matches an active policy. Managed local/Pi tools retain hardlink and read-only command protections. Only an authenticated pre-tool ask-when-needed write grant evaluates the daemon-side read-only matcher; other phases/modes perform no grant-policy discovery. Protected grants are withheld without exposing policy paths; explicit approval/never-ask remain native authority, with no new sandbox claim. No account/research pilot is implied.
+
+## Amendment: custom lifecycle data (#257)
+
+Optional ordered stage definitions map at most 32 bounded ids to the existing seven semantic bases, existing actor guidance and closed issue/pr/local/review/checks/phase entry/exit gates. Explicit after edges name at most eight earlier configured ids; missing/self/forward/cyclic references refuse. Review and merge base destinations are required by existing Tasks completion transitions. Built-in names cannot change base. Existing holder/person authority and the full approval floor remain; enforce additionally checks an explicit custom stage-change actor without granting a new caller authority. Off/advise preserve claim behavior. Config-aware receipts, projections and every managed native/local task schema use the same stage ids. Historical removed definitions remain unknown, not silently remapped. No new state, executable gate, auto-advance, merge, release, import authority or native success is introduced.
+
+
+### Custom lifecycle review corrections (#257)
+
+Phase gates require gsd-lite phase views at configuration validation. Authenticated daemon status gains optional lifecycleStages metadata, with no protocol bump. Separate MCP tools lists use that active snapshot; a live legacy daemon without the field keeps seven stages, while unknown/unavailable metadata withholds the lifecycle-record tool. Editing project data during a live daemon no longer changes its advertised stage ids.
