@@ -1984,6 +1984,14 @@
       "replacement": "...(false ? { namedOwner: task.reserved } : {})",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
+    },
+    {
+      "id": "release-label-public-identity",
+      "file": "src/ui/index.html",
+      "search": "label:'#'+release.id+' '+release.name",
+      "replacement": "label:release.name",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "redacted release options retain distinguishable public ids (#263)"
     }
   ]
 }

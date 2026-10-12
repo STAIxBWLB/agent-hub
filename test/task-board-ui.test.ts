@@ -156,3 +156,14 @@ test("planning date editors retain original UTC precision and parse changed loca
   const repeated=runInNewContext(`const $=get;${source};({load:loadPlanningDate,read:plannedDateInput})`,{get,Date:AmbiguousDate});
   const secondOccurrence=Date.UTC(2026,10,1,6,30,0,123);repeated.load("due",secondOccurrence);expect(repeated.read("due")).toBe(secondOccurrence);
 });
+
+
+test("redacted release options retain distinguishable public ids (#263)", () => {
+  const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8"),source=html.slice(html.indexOf("let planningEdit ="),html.indexOf("function peerMark("));
+  const nodes=new Map<string,Node>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id)!;};
+  const snapshot={tasks:[],releases:[{id:1,name:"[withheld]",goal:"safe",state:"planning",revision:0},{id:2,name:"[withheld]",goal:"safe",state:"planning",revision:0}],planningCapabilities:{enabled:true}};
+  const el=(_tag:string,text?:string)=>{const node=new Node();node.textContent=text??"";return node;};
+  const api=runInNewContext(`const $=get;let boardViewState={snapshot};${source};({render:renderPlanning})`,{get,snapshot,el,badge:(text:string)=>el("span",text),boardContext:()=>({projectId:"a"}),sameBoardContext:()=>true,update:()=>{},empty:()=>{},boardButton:()=>new Node()});
+  api.render(snapshot);
+  for(const id of ["task-release-filter","planning-release","release-edit"])expect(get(id).children.slice(1).map(node=>[node.value,node.textContent])).toEqual([["1","#1 [withheld]"],["2","#2 [withheld]"]]);
+});
