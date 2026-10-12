@@ -1312,6 +1312,14 @@
       "replacement": "server.timeout(req, 10);",
       "testFile": "test/ui.test.ts",
       "testName": "authenticated delivery HTTP reads outwait the default idle limit without extending ordinary actions (#257)"
+    },
+    {
+      "id": "queue-target-branch-completeness",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "!remaining.size && !touchingCoverageUnknown",
+      "replacement": "!remaining.size && result.rows.every(r => evidence.get(r.pr)?.pathsComplete === true)",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "queue completeness includes verified target branches beyond complete file pagination (#257)"
     }
   ]
 }

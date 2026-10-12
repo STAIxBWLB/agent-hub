@@ -67,3 +67,9 @@ test("unknown or private peer PR file coverage blocks ordinary readiness without
  expect(privateView.rows[0]?.ready).toBe(false);expect(privateView.rows[1]?.private).toBe(true);
  expect(privateFake.calls.filter(args=>args[0]==="pr"&&args[1]==="view").map(args=>args[2])).toEqual(["1"]);
 });
+test("queue completeness includes verified target branches beyond complete file pagination (#257)", async () => {
+ const f=fake({ids:[1]}),run:SdlcGh=async args=>{const result=await f.run(args);if(args[0]==="pr"&&args[1]==="view"){const row=JSON.parse(result.stdout);delete row.baseRefName;return{code:0,stdout:JSON.stringify(row)}}return result};
+ const unknown=await readMergeQueue("owner/repo",config,[task(1,1)],run);
+ expect(unknown.complete).toBe(false);expect(unknown.rows[0]?.ready).toBe(false);
+ const known=await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1]}).run);expect(known.complete).toBe(true);
+});
