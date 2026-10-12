@@ -56,6 +56,7 @@ import { parseSince, readEvents } from "../hub/events.ts";
 import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
+import { memoryCommand } from "./memory.ts";
 import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
@@ -1418,6 +1419,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       return;
     }
     fail("usage: ahub bench run|list|status|report|compare|export (ahub help bench)");
+  },
+  memory: () => {
+    // #258: the hub's own memory on this machine; reads are anyone's, changes a person's.
+    try { console.log(memoryCommand(args, cwd)); } catch (e) { fail((e as Error).message); }
   },
   research: () => {
     // #247: measures from the opt-in research records; `export` writes them out, `backfill` builds them from events.jsonl.
