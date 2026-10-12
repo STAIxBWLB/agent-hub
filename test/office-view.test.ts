@@ -525,3 +525,18 @@ test("backlog rows show no assignment action before they are pulled (#264 merge)
   expect(get("tasks").text()).toContain("staged");
   expect(get("tasks").findAll(node=>node.tag==="button" && node.textContent==="Assign")).toHaveLength(0);
 });
+
+
+test("project reset removes old office SVG and prevents view changes replaying the old snapshot (#264 merge)", () => {
+  const nodes=new Map<string,Node>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id)!;};
+  const old=new Node();old.tag="svg";get("office").append(old);
+  const control=new Node();let rendered=0;
+  const reset=html.slice(html.indexOf("function resetView("),html.indexOf("function projectName("));
+  const start=html.indexOf("officeControl.addEventListener('change'");const change=html.slice(start,html.indexOf("\n",start));
+  const api=runInNewContext(`let selectedProjectId='old',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={},officeScene={},lastSnapshot={projectId:'old'};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${reset};${change};({reset:resetView,snapshot:()=>lastSnapshot})`,{
+    get,officeControl:control,officeView:{get:()=>"flat",set:()=>{}},document:{getElementById:get},render:()=>{rendered++;},
+  });
+  api.reset("stopped","next");expect(get("office").children).toHaveLength(0);expect(api.snapshot()).toBeNull();
+  expect(get("office-section").hidden).toBe(true);control.fire("change");expect(rendered).toBe(0);
+  expect(get("peers").text()).toContain("No project selected");
+});

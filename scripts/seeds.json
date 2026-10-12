@@ -1632,6 +1632,22 @@
       "replacement": "if (false)",
       "testFile": "test/sdlc-delivery-surfaces.test.ts",
       "testName": "merge queue discards task associations when privacy policy changes during remote reads (#264 merge)"
+    },
+    {
+      "id": "office-project-reset-snapshot",
+      "file": "src/ui/index.html",
+      "search": "  lastSnapshot = null;",
+      "replacement": "  lastSnapshot = lastSnapshot;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "project reset removes old office SVG and prevents view changes replaying the old snapshot (#264 merge)"
+    },
+    {
+      "id": "office-project-reset-svg",
+      "file": "src/ui/index.html",
+      "search": "  $('office').replaceChildren(); $('office-section').hidden = true;",
+      "replacement": "  $('office-section').hidden = true;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "project reset removes old office SVG and prevents view changes replaying the old snapshot (#264 merge)"
     }
   ]
 }
