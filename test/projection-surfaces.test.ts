@@ -95,3 +95,36 @@ test("task review projection callbacks are quoted and remain outside task histor
   for(let i=0;i<200&&!reviewer.got.some(env=>env.kind==="review");i++)await Bun.sleep(5);
   const notice=reviewer.got.find(env=>env.kind==="review");expect(notice).toBeDefined();expect(notice!.body).toContain("DOC_PROJECTION_MARKER");expect(notice!.body).toContain('> [agent-hub message from "user"]');expect(JSON.stringify(board.get(task.id)!.history)).not.toContain("DOC_PROJECTION_MARKER");
 });
+
+
+test.skipIf(process.platform!=="darwin")("backlog pull captures the review baseline at the execution proposal boundary (#263)", async () => {
+  const f = await rig();
+  await f.op("hub_task_propose", { title: "Review staged paper", class: "implement", owner: "codex", backlog: true, refs: { paths: ["paper.docx"] } });
+  writeFileSync(join(f.dir, "paper.docx"), "document before pull\n");
+  await f.op("backlog_pull", { id: 1 });
+  writeFileSync(join(f.dir, "paper.docx"), "STAGED_REVISED_DOCUMENT\n");
+  await f.op("hub_task_done", { id: 1, summary: "staged paper updated" });
+  await f.wait(() => f.reviewer.got.some(env => env.kind === "review"));
+  const notice = f.reviewer.got.find(env => env.kind === "review")!;
+  expect(notice.body).toContain("-document before pull"); expect(notice.body).toContain("+STAGED_REVISED_DOCUMENT");
+  const task = JSON.parse((await f.op("task_show", { id: 1 })).text);
+  const created = task.history.find((h: any) => h.event === "backlog pulled").at;
+  const rows = new Turns(join(f.state, "hub.db"), true);
+  try { expect(rows.taskStart(1, created)).toBeDefined(); } finally { rows.close(); }
+  expect(JSON.stringify(task.history)).not.toContain("STAGED_REVISED_DOCUMENT");
+});
+
+
+test("backlog pull persists an execution proposal baseline without running a converter (#263)", async () => {
+  const f = await rig();
+  await f.op("hub_task_propose", { title: "staged projection", class: "implement", owner: "codex", backlog: true, refs: { paths: ["paper.docx"] } });
+  writeFileSync(join(f.dir, "paper.docx"), "portable pull baseline\n");
+  await f.op("backlog_pull", { id: 1 });
+  const task = JSON.parse((await f.op("task_show", { id: 1 })).text);
+  const created = task.history.find((h: any) => h.event === "backlog pulled").at;
+  const rows = new Turns(join(f.state, "hub.db"), true);
+  try {
+    const tree = rows.taskStart(1, created); expect(tree).toBeDefined();
+    expect(snapshotBytes(repoOf(f.dir)!, tree!, "paper.docx")?.toString()).toBe("portable pull baseline\n");
+  } finally { rows.close(); }
+});

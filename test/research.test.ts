@@ -312,3 +312,18 @@ test("session role research retains attributed preparation identities, empty and
   expect(JSON.stringify(records)).not.toContain("SECRET-ROLE-BODY");
   const home=temp("session-roles"); appendRecords("role-study",records,home); expect(readStore(researchFile("role-study",home))).toEqual(records);
 });
+
+
+test("backlog pull initializes research identity once and label lookup follows reset generations (#263)", () => {
+  const staged = task(7, "backlogged", "backlog"), pulled = task(7, "backlog pulled", "proposed");
+  const events = [staged, pulled, task(7, "backlog returned", "backlog"), task(7, "backlog pulled", "proposed"), task(7, "accepted", "in_progress", { owner: "codex" }), task(7, "approved", "approved", { owner: "codex", reviewer: "claude" })];
+  const records = taskRecords(events, "alpha", writer);
+  expect(records).toHaveLength(1); expect(records[0]!.createdAt).toBe(pulled.at);
+  expect(labelTarget(records, events, 7)).toBe(records[0]!);
+  const reset = task(7, "backlogged", "backlog"); events.push(reset);
+  expect(() => labelTarget(records, events, 7)).toThrow(/backlog/);
+  const next = task(7, "backlog pulled", "proposed"); events.push(next, task(7, "accepted", "in_progress", { owner: "codex" }), task(7, "approved", "approved", { owner: "codex" }));
+  const both = taskRecords(events, "alpha", writer);
+  expect(both).toHaveLength(2); expect(both.map(r => r.createdAt)).toEqual([pulled.at, next.at]);
+  expect(labelTarget(both, events, 7)).toBe(both[1]!);
+});

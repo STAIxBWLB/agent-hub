@@ -71,6 +71,15 @@ export interface Task {
   updated: number;
 }
 
+/** Structured execution evidence, including legacy rows whose owner was later cleared. */
+export function taskHasStarted(task: Pick<Task, "history">): boolean {
+  return task.history.some(entry => ["accepted", "done", "done (checking)", "check passed", "check failed", "changes_requested", "approved", "reopened", "integration requested", "integrated"].includes(entry.event));
+}
+/** First offer boundary; staged work has none until it is pulled. */
+export function taskProposalAt(task: Pick<Task, "history">): number | undefined {
+  return task.history.find(entry => entry.event === "proposed" || entry.event === "backlog pulled")?.at;
+}
+
 /** The moves the state machine allows. `accept` and `done` are transitions, not states: they carried no behaviour of their own. */
 const MOVES: Record<TaskState, TaskState[]> = {
   backlog: ["proposed"],
@@ -158,6 +167,7 @@ export class Board {
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
     if (next.state === "backlog" && (next.owner || next.reviewer)) throw new Error(`task #${id}: backlog cannot have an owner or reviewer`);
     if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
+    if (patch.state === "backlog" && taskHasStarted(task)) throw new Error(`task #${id}: started work cannot return to backlog`);
     const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
     this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, updated = ? WHERE id = ?")

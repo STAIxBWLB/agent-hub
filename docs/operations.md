@@ -2562,6 +2562,14 @@ view, releases and dates are later #263 slices; the native planner/two-release
 smoke remains unverified. No tag, publish or live activation occurs here.
 
 
+Pulling Backlog establishes its first execution-proposal boundary for projected
+review snapshots and research records. An initial Backlog row is not an offered
+proposal. Research uses the first pull time and preserves identity across later
+unstarted return/pull cycles; a new backlogged id after reset starts a new record
+generation. Partial work with acceptance/check/review evidence cannot return to
+Backlog even after decline or reassignment leaves it ownerless.
+
+
 ## Dashboard project board (#263)
 
 The board displays Backlog, To Do, In Progress, Review / QA and Done from task
