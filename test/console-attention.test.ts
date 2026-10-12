@@ -83,3 +83,16 @@ test("attention navigation visits every held delivery and session toggle grants 
   expect(off.state.petEnabled).toBe(false);
   expect(reduceConsole(off.state, "P", now).state.petEnabled).toBe(true);
 });
+
+test("attention missing held rows print guidance without selecting unrelated queue rows", () => {
+  for (const absentState of ["accepted", "dispatching", undefined]) {
+    const state: ConsoleState = { ...initialConsoleState(true), petEnabled: true,
+      peers: { codex: { state: "idle", heldBy: "missing", needsReview: 1 } },
+      queue: [{ id: "unrelated", peer: "kimi", state: "needs_review" }, ...(absentState ? [{ id: "missing", peer: "codex", state: absentState }] : [])] };
+    const next = reduceConsole(state, "n", now);
+    expect(next.state.panel).toBe(1);
+    expect(next.state.selection).toBe(state.selection);
+    expect(next.effects.map(effect => effect.type)).toEqual(["print"]);
+    expect(next.state.notice).toContain("ahub queue show missing");
+  }
+});

@@ -1860,8 +1860,8 @@
     {
       "id": "attention-choice-owns-key",
       "file": "src/cli/console-state.ts",
-      "search": "key === \"n\" && s.petEnabled && !s.optionChoice && !s.help",
-      "replacement": "key === \"n\" && s.petEnabled && !s.help",
+      "search": "if ((key === \"n\" || key === \"P\") && attentionKeyBlocked) return done();",
+      "replacement": "if (false) return done();",
       "testFile": "test/console-attention.test.ts",
       "testName": "attention respects editing, choice, help and confirmation keyboard ownership"
     },

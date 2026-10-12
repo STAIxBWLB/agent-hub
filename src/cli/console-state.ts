@@ -383,6 +383,7 @@ export const selectedApproval = (s: ConsoleState) => s.approvals.find(a => a.id 
 /** The selected row: the Approvals panel's is the selected request (-1 when none is). */
 const selection = (s: ConsoleState) => s.panel === 2 ? s.approvals.findIndex(a => a.id === s.approvalId) : s.selection;
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
+  const attentionKeyBlocked = !!(state.confirm || state.optionChoice || state.modeChoice || state.help || state.editing || state.input);
   // A notice answers the key before this one; one that pruning raises now stays.
   let s = pruneApprovals({ ...state, notice: "" }, now); const effects: ConsoleEffect[] = [];
   const done = () => ({ state: bound(s), effects });
@@ -444,6 +445,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     } else if (!key.startsWith("\x1b")) s.input += terminalText(key).replace(/\n/g, "");
     return done();
   }
+  if ((key === "n" || key === "P") && attentionKeyBlocked) return done();
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
   if (key === "P" && !s.optionChoice && !s.help) { s.petEnabled = !s.petEnabled; return done(); }
   if (key === "n" && s.petEnabled && !s.optionChoice && !s.help) {
@@ -452,17 +454,22 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     const index = ((s.attentionSelection ?? -1) + 1) % items.length;
     s.attentionSelection = index;
     const item = items[index]!;
-    s.detail = undefined; s.requestDetail = undefined;
+    let navigated = false;
     if (item.kind === "approval") {
       s.approvalId = String(item.id);
       if (s.mode === "panels") { s.panel = 2; s.selection = s.approvals.findIndex(row => row.id === item.id); }
+      navigated = true;
     } else if (item.kind === "delivery" && s.mode === "panels") {
-      s.panel = 4;
-      const rows = panelRows(s);
-      s.selection = Math.max(0, rows.findIndex(row => item.id !== undefined ? row.id === item.id : row.peer === item.peer));
-    } else {
+      const rows = s.queue.filter(row => row.state === "needs_review" || row.state === "queued");
+      const selected = rows.findIndex(row => item.id !== undefined ? row.id === item.id : row.peer === item.peer);
+      if (selected >= 0) { s.panel = 4; s.selection = selected; navigated = true; }
+    }
+    if (navigated) { s.detail = undefined; s.requestDetail = undefined; }
+    else {
       const command = item.kind === "delivery" ? `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}` : item.kind === "storage" ? "ahub doctor" : item.kind === "recovery" ? "ahub recovery status" : item.kind === "budget" ? "ahub budget" : item.kind === "default" ? "ahub permission" : item.peer ? `say ${item.peer} <message>` : "ahub console";
-      effects.push({ type: "print", text: `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`, kind: "attention", tone: "attention" });
+      const text = `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`;
+      if (s.mode === "panels") notify(s, text, now, "attention");
+      effects.push({ type: "print", text, kind: "attention", tone: "attention" });
     }
     return done();
   }
