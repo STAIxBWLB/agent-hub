@@ -16,15 +16,19 @@ const dashboardTheme = (() => {
 <style>
 :root{color-scheme:light;--waiting:#795399;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--panel:#ffffff;--panel-soft:#f4f6f2;--control:#ffffff;--control-border:#bbc4bb;--hover:#f0f4ef;--green:#245f45;--green-soft:#e4efe9;--amber:#8a5b12;--amber-soft:#f8eed6;--blue:#245a93;--blue-soft:#e6eef8;--red:#a2392f;--red-soft:#f6e5e2;--dot:#98a29b;--dot-ok:#2f7a52;--dot-warn:#b07a16;--dot-err:#b24539;--focus:#245f45;--on-accent:#ffffff}:root[data-theme="dark"]{color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:12px}.section-head .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.peername{display:flex;align-items:center;gap:8px;min-width:0}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:2px 7px;background:var(--panel-soft);color:var(--muted);border-radius:4px;white-space:nowrap}.badge.ok{background:var(--green-soft);color:var(--green)}.badge.warn{color:var(--amber);background:var(--amber-soft)}.badge.info{color:var(--blue);background:var(--blue-soft)}.badge.err{color:var(--red);background:var(--red-soft)}.dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--dot)}.dot.ok{background:var(--dot-ok)}.dot.warn{background:var(--dot-warn)}.dot.err{background:var(--dot-err)}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{background:var(--control);color:var(--muted);border:1px solid var(--control-border);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;line-height:1.2}.chip:hover{background:var(--hover)}.chip[aria-pressed="true"]{background:var(--green);color:var(--on-accent);border-color:var(--green);font-weight:600}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:var(--control);color:var(--ink);border:1px solid var(--control-border);border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:var(--hover)}button.primary{background:var(--green);color:var(--on-accent);border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--focus);outline-offset:3px}input,select,textarea{width:100%;border:1px solid var(--control-border);border-radius:5px;padding:8px;background:var(--control);color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.section-head .filters select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event[hidden]{display:none}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:var(--red)}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}progress.warn{accent-color:var(--amber)}progress.warn::-webkit-progress-value{background:var(--amber)}progress.critical{accent-color:var(--red)}progress.critical::-webkit-progress-value{background:var(--red)}progress::-moz-progress-bar{background:var(--green)}progress.warn::-moz-progress-bar{background:var(--amber)}progress.critical::-moz-progress-bar{background:var(--red)}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 .task-progress{padding:12px 18px;border-bottom:1px solid var(--line)}.task-progress svg{display:block;width:100%;height:12px;margin:8px 0}.progress-proposed{fill:var(--dot)}.progress-unknown{fill:var(--dot)}.progress-waiting{fill:var(--waiting)}.progress-in_progress{fill:var(--blue)}.progress-in_review{fill:var(--amber)}.progress-changes_requested{fill:var(--red)}.progress-approved{fill:var(--green)}.task-stage{font:12px ui-monospace,monospace;margin:8px 0;color:var(--muted)}.task-stage .reached{color:var(--green)}.task-stage.changes{color:var(--red)}.theme-choice{width:auto}.actions input[type="text"]{width:auto;flex:1 1 160px;max-width:320px}details.settings-group>summary{padding:12px 18px;cursor:pointer;border-bottom:1px solid var(--line);font-weight:600}details.settings-group:last-child:not([open])>summary{border-bottom:0}.preview{margin-top:8px;padding:8px 10px;background:var(--panel-soft);border-radius:5px;font:12px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.preview:empty{display:none}
+/* PEER_PALETTE_CSS */
+.task-board-section{grid-column:1/-1}.board-columns{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:18px}.board-column{min-width:0;background:var(--panel-soft);border:1px solid var(--line);border-radius:6px;padding:10px}.board-column h3{font-size:14px;margin:0 0 12px}.board-column h4{font-size:12px;color:var(--muted);margin:12px 0 8px}.task-card{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:12px;margin:0 0 10px;overflow-wrap:anywhere}.task-card .row-head{align-items:flex-start}.task-card .label{font-size:14px}.task-card .actions{display:grid;gap:8px}.task-card .actions select{max-width:none;width:100%}.task-card button,.task-card select,.agent-legend button{min-height:44px}.task-card .body{font-size:13px}.task-card .task-stage{font-size:12px}.board-columns .empty{padding:8px 0}.board-lane{border-top:1px solid var(--line)}.board-lane>h3{padding:14px 18px 0;font-size:15px}.peer-mark{display:inline-flex;align-items:center;gap:6px}.peer-color-dot{width:9px;height:9px;display:inline-block;border-radius:50%;background:var(--peer-color);flex-shrink:0}.peer-color-dot.reviewer{background:transparent;border:2px solid var(--peer-color)}.agent-legend{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-bottom:1px solid var(--line)}.agent-legend .agent-slot{border:1px solid var(--line);border-radius:5px;padding:10px;flex:1 1 180px;min-width:0}.agent-legend .meta{overflow-wrap:anywhere}.board-drop-active{outline:2px solid var(--green);outline-offset:2px}.board-toolbar{padding:12px 18px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}.board-toolbar label{margin:0}.board-toolbar select{width:auto;max-width:220px}.board-unknown{padding:12px 18px;color:var(--amber)}.task-list{max-height:none;overflow:visible}.progress-backlog{fill:var(--dot)}
+@media(max-width:1100px){.board-columns{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.board-columns{grid-template-columns:1fr;padding:12px}.board-toolbar{align-items:stretch}.board-toolbar select{max-width:none;width:100%}.board-toolbar label{width:100%}}
 </style>
 </head>
 <body>
 <header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div></header>
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
+<section class="task-board-section" aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <div class="stack">
 <section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
-<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="proposed">Proposed</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
+
 <section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
 <section aria-labelledby="settings-title"><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
 </div>
@@ -40,6 +44,7 @@ const dashboardTheme = (() => {
 <script>
 'use strict';
 /* TASK_PROGRESS_MODEL */
+/* BOARD_MODEL */
 /* PEER_START_RETRY_MS */
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
 let ticket = location.hash.slice(1);
@@ -124,10 +129,11 @@ function saveDraft() {
   if (!managerMode || !selectedProjectId) return;
   const previous = drafts.get(selectedProjectId) || {};
   drafts.set(selectedProjectId, {message:$('message').value, recipient:draftChoicesPending ? previous.recipient || '' : $('recipient').value,
-    title:$('title').value, detail:$('detail').value, class:$('class').value, owner:draftChoicesPending ? previous.owner || '' : $('owner').value});
+    ...($('backlog-proposal')?.checked ? {backlog:true} : {}), title:$('title').value, detail:$('detail').value, class:$('class').value, owner:draftChoicesPending ? previous.owner || '' : $('owner').value});
 }
 function restoreDraft(choices = false) {
   const draft = drafts.get(selectedProjectId) || {};
+  const staged=$('backlog-proposal'); if(staged)staged.checked=draft.backlog===true;
   if (choices) {
     for (const id of ['recipient','owner']) $(id).value = Array.from($(id).options).some((o) => o.value === draft[id]) ? draft[id] : '';
   } else { $('message').value = draft.message || ''; $('title').value = draft.title || ''; $('detail').value = draft.detail || ''; $('class').value = draft.class || 'implement'; }
@@ -139,6 +145,8 @@ function resetView(id, instance) {
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
+  if (typeof boardViewState !== 'undefined') boardViewState=null; if (typeof showAllDone !== 'undefined') showAllDone=false;
+  const legend = $('task-legend'); if (legend) legend.replaceChildren(); const filter = $('task-peer-filter'); if (filter) filter.value = '';
   for (const [id, text] of [['peers','No project selected.'],['tasks','No project selected.'],['task-progress','No project selected.'],['permissions','No project selected.'],['budget','No project selected.'],['settings','No project selected.']]) { $(id).replaceChildren(); empty($(id), text); }
   $('settings-session').textContent = '';
   $('peer-count').textContent = ''; $('task-count').textContent = ''; $('permission-count').textContent = ''; $('project-context').textContent = '';
@@ -368,6 +376,134 @@ function renderStarts(target, starts) {
     target.append(row);
   }
 }
+let boardViewState = null, showAllDone = false;
+function peerMark(peer, reviewer = false) {
+  const key = Object.hasOwn(peerPalette, peer || '') ? peer : 'other';
+  const mark = el('span', undefined, 'peer-mark peer-' + key), color = el('span', undefined, 'peer-color-dot' + (reviewer ? ' reviewer' : ''));
+  color.setAttribute('aria-hidden', 'true'); mark.append(color, el('span', (reviewer ? 'reviewer: ' : 'owner: ') + (peer || 'unassigned'))); return mark;
+}
+function boardContext() {
+  const current=context(), snapshot=boardViewState?.snapshot || {};
+  return {...current,origin:location.origin,projectId:typeof snapshot.projectId==='string' ? snapshot.projectId : current.projectId,instanceId:typeof snapshot.instanceId==='string' ? snapshot.instanceId : current.instanceId};
+}
+function sameBoardContext(expected) {
+  const current=boardContext(); return !stopped && canMutate() && Boolean(current.projectId && current.instanceId) && expected.origin===current.origin && expected.projectId===current.projectId && expected.instanceId===current.instanceId && expected.generation===current.generation;
+}
+function boardButton(text, payload) {
+  const expected=boardContext(), node=el('button',text); node.type='button';node.dataset.mutation='project';node.disabled=managerMode && !snapshotValid;
+  node.addEventListener('click',()=>{if(!sameBoardContext(expected))return notice('The project changed. Use its current board.',true);void action(payload,node)});return node;
+}
+function draggedCard(event) {
+  if (!canMutate() || !boardViewState) return null;
+  try {
+    const raw = event.dataTransfer?.getData('application/x-agent-hub-task');
+    if (!raw || raw.length > 1024) return null;
+    const data = JSON.parse(raw), current = boardContext();
+    if (data.origin !== current.origin || data.projectId !== current.projectId || data.instanceId !== current.instanceId || data.generation !== current.generation || !Number.isSafeInteger(data.id)) return null;
+    return boardViewState.cards.get(data.id) || null;
+  } catch { return null; }
+}
+function dropTarget(node, accepted, payload) {
+  const expected=boardContext();
+  node.addEventListener('dragover', event => { if (sameBoardContext(expected)) { event.preventDefault(); node.classList.add('board-drop-active'); } });
+  node.addEventListener('dragleave', () => node.classList.remove('board-drop-active'));
+  node.addEventListener('drop', event => {
+    event.preventDefault(); node.classList.remove('board-drop-active');
+    if(!sameBoardContext(expected))return notice('The project changed. Use its current board.',true);
+    const card = draggedCard(event);
+    if (!card || !accepted(card)) return notice('This task cannot move here. Use its available buttons.', true);
+    void action({...payload, id:card.id});
+  });
+}
+function taskCard(task, card, stage, ids) {
+  const row = el('article', undefined, 'task-card'), head = el('div', undefined, 'row-head');
+  row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
+  head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), badge('P' + card.priority));
+  if (card.starred) { const star = el('span', '★'); star.setAttribute('aria-hidden','true'); head.append(star); }
+  row.append(head, peerMark(task.owner)); if (task.reviewer) row.append(peerMark(task.reviewer, true));
+  row.append(el('p', task.profileClass ? task.profileClass + ' (base ' + task.class + ')' : task.class, 'meta'));
+  if (stage) row.append(renderTaskStage(stage));
+  if (card.waiting.length) row.append(el('p', 'Waiting: ' + card.waiting.join('; '), 'meta'));
+  if (task.reworkRound) row.append(el('p', 'Rework round ' + task.reworkRound, 'meta'));
+  if (task.checking) row.append(el('p', 'Check running', 'meta'));
+  if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + (task.lifecycle.workflow ? ' (' + task.lifecycle.workflow + ')' : '') + ' / ' + task.lifecycle.stage + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
+  if (task.lifecycle?.definition) row.append(el('p', 'Stage base: ' + task.lifecycle.definition.base + ' / entry: ' + (task.lifecycle.entry?.length ? task.lifecycle.entry.join('; ') : 'ready') + ' / exit: ' + (task.lifecycle.exit?.length ? task.lifecycle.exit.join('; ') : 'ready'), 'meta'));
+  if (task.detail) row.append(el('p', task.detail, 'body'));
+  const controls = el('div', undefined, 'actions');
+  if (card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Pull into To Do', {action:'backlog_pull',id:task.id}));
+  if (card.returnable && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Return to Backlog', {action:'backlog_return',id:task.id}));
+  if (card.assignable && ids.length) {
+    const expected=boardContext(), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;
+    const assign = el('button', 'Assign'); assign.type='button'; assign.dataset.mutation='project'; assign.disabled=managerMode && !snapshotValid;
+    assign.addEventListener('click', () => { if(!sameBoardContext(expected))return notice('The project changed. Use its current board.',true);if(select.value)void action({action:'assign',id:task.id,peer:select.value},assign);else notice('Select a peer before assigning this task.',true); }); controls.append(select,assign);
+  }
+  if (controls.children.length) row.append(controls);
+  if (card.pull || card.assignable) {
+    row.draggable = true; row.title = 'Drag to an available peer or Backlog/To Do, or use the buttons.';
+    row.addEventListener('dragstart', event => {
+      if (!canMutate() || !event.dataTransfer) return event.preventDefault();
+      event.dataTransfer.effectAllowed='move'; event.dataTransfer.setData('application/x-agent-hub-task',JSON.stringify({...boardContext(),id:task.id}));
+    });
+  }
+  return row;
+}
+function renderBoard(snapshot, peers, ids) {
+  if (!Array.isArray(snapshot.tasks)) { boardViewState=null; return update('tasks','unavailable',target=>empty(target,'Task board unavailable.')); }
+  const progress = taskProgress(snapshot.tasks), model = boardColumns(snapshot.tasks, peers);
+  renderTaskProgress(progress);
+  const stages = new Map(progress.stages.map(stage=>[stage.id,stage])), byId = new Map(snapshot.tasks.map(task=>[task.id,task]));
+  const cards = new Map(model.columns.flatMap(column=>[...column.ready,...column.waiting]).map(card=>[card.id,card]));
+  boardViewState={snapshot,peers,ids,cards};
+  const staged=$('backlog-proposal');staged.disabled=snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext());
+  if(snapshot.boardCapabilities?.backlog!==true)staged.checked=false;
+  const peerFilter=$('task-peer-filter'), previous=peerFilter.value;
+  peerOptions(peerFilter,ids,'All agents'); if (ids.includes(previous)) peerFilter.value=previous;
+  const taskFilter=$('task-filter').value, ownerFilter=peerFilter.value, lanes=$('task-lanes').value;
+  const eligible=ids.filter(id=>['idle','busy'].includes(peers[id].state) && peers[id].attached!==false && peers[id].rostered!==false);
+  $('task-count').textContent=snapshot.tasks.length+' tasks';
+  update('task-legend',[snapshot.boardLegend,peers],target=>{
+    for (const id of ids) {
+      const data=(snapshot.boardLegend || []).find(item=>item.peer===id), row=el('div',undefined,'agent-slot');
+      row.append(peerMark(id),el('p',String(peers[id].state || 'unknown'),'meta'));
+      const wip=data && Number.isSafeInteger(data.wip) && data.wip>=0 ? data.wip : 'unknown';
+      row.append(el('p','WIP '+wip+' / permission '+(data?.permissionMode || 'unknown'),'meta'));
+      if (Array.isArray(data?.activeTasks) && data.activeTasks.length) row.append(el('p','Active tasks: '+data.activeTasks.map(id=>'#'+id).join(', '),'meta'));
+      const filter=el('button','View '+id);filter.type='button';filter.addEventListener('click',()=>{if(!boardViewState)return;peerFilter.value=id;renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});row.append(filter);
+      if (eligible.includes(id)) dropTarget(row,card=>card.assignable,{action:'assign',peer:id});
+      target.append(row);
+    }
+    if (!ids.length) empty(target,'No peer status available.');
+  });
+  update('tasks',[snapshot.tasks,peers,taskFilter,ownerFilter,lanes,showAllDone],target=>{
+    const visible=snapshot.tasks.filter(task=>(!taskFilter || task.state===taskFilter) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter));
+    const visibleIds=new Set(visible.map(task=>task.id));
+    const owners=lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : [null];
+    if (!owners.length) owners.push(null);
+    for (const [laneIndex, owner] of owners.entries()) {
+      const lane=el('div',undefined,'board-lane');if(owner!==null) lane.append(el('h3',owner || 'Unassigned'));
+      const grid=el('div',undefined,'board-columns');
+      const inLane=card=>visibleIds.has(card.id) && (owner===null || (byId.get(card.id)?.owner || '')===owner);
+      for (const column of model.columns) {
+        const box=el('div',undefined,'board-column'), heading=el('h3',column.label);heading.id='board-lane-'+laneIndex+'-'+column.id;box.setAttribute('role','group');box.setAttribute('aria-labelledby',heading.id);box.append(heading);
+        if (column.id==='backlog' && snapshot.boardCapabilities?.backlog===true) dropTarget(box,card=>card.returnable,{action:'backlog_return'});
+        if (column.id==='todo' && snapshot.boardCapabilities?.backlog===true) dropTarget(box,card=>card.pull,{action:'backlog_pull'});
+        let ready=column.ready.filter(inLane), waiting=column.waiting.filter(inLane);
+        if(column.id==='done') ready.sort((a,b)=>(byId.get(b.id)?.updated || 0)-(byId.get(a.id)?.updated || 0) || b.id-a.id);
+        const hidden=column.id==='done' && !showAllDone ? Math.max(0,ready.length-10) : 0;
+        if(hidden) ready=ready.slice(0,10);
+        for(const [label,list] of [['Ready',ready],['Waiting',waiting]]) {
+          if(column.id==='todo') box.append(el('h4',label+' ('+list.length+')'));
+          for(const card of list) box.append(taskCard(byId.get(card.id),card,stages.get(card.id),eligible));
+        }
+        if(!ready.length && !waiting.length) empty(box,'No tasks');
+        if(hidden){const more=el('button','Show '+hidden+' older Done tasks');more.type='button';more.addEventListener('click',()=>{if(!boardViewState)return;showAllDone=true;renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});box.append(more)}
+        grid.append(box);
+      }
+      lane.append(grid);target.append(lane);
+    }
+    const unknown=model.unknown.filter(id=>visibleIds.has(id));if(unknown.length) target.append(el('p','Unsupported task states: '+unknown.map(id=>'#'+id).join(', '),'board-unknown'));
+  });
+}
 function render(snapshot) {
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id]}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
@@ -400,31 +536,7 @@ function render(snapshot) {
   const assignable = ids.filter((id) => peers[id].state !== 'offline' && peers[id].attached !== false);
   const peerSignature = JSON.stringify([ids, assignable]);
   if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), assignable, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
-  const progress = taskProgress(snapshot.tasks);
-  renderTaskProgress(progress);
-  const progressStages = new Map(progress.stages.map(stage => [stage.id, stage]));
-  $('task-count').textContent = snapshot.tasks.length + ' tasks';
-  const taskFilter = $('task-filter').value;
-  const visibleTasks = taskFilter ? snapshot.tasks.filter((task) => task.state === taskFilter) : snapshot.tasks;
-  update('tasks', [visibleTasks, ids, taskFilter, progress], (target) => {
-    if (!snapshot.tasks.length) return empty(target, 'No public tasks yet. Propose a task below to get started.');
-    if (!visibleTasks.length) return empty(target, 'No tasks in this state.');
-    for (const task of visibleTasks) {
-      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
-      head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), badge(task.state.replaceAll('_', ' '), taskBadge[task.state] || ''));
-      const stage = progressStages.get(task.id);
-      row.append(head, renderTaskStage(stage), el('p', (task.profileClass ? task.profileClass + ' (base ' + task.class + ')' : task.class) + ' / ' + (task.owner || 'unassigned') + (task.reviewer ? ' / review: ' + task.reviewer : ''), 'meta'));
-      if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + (task.lifecycle.workflow ? ' (' + task.lifecycle.workflow + ')' : '') + ' / ' + task.lifecycle.stage + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
-      if (task.lifecycle?.definition) row.append(el('p', 'Stage base: ' + task.lifecycle.definition.base + ' / entry: ' + (task.lifecycle.entry?.length ? task.lifecycle.entry.join('; ') : 'ready') + ' / exit: ' + (task.lifecycle.exit?.length ? task.lifecycle.exit.join('; ') : 'ready'), 'meta'));
-      if (task.detail) row.append(el('p', task.detail, 'body'));
-      if (task.state !== 'approved' && ids.length) {
-        const actions = el('div', undefined, 'actions'), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;
-        const assign = el('button', 'Assign'); assign.type = 'button'; assign.dataset.mutation = 'project'; assign.disabled = managerMode && !snapshotValid; assign.addEventListener('click', () => { if (select.value) void action({action:'assign', id:task.id, peer:select.value}, assign); else notice('Select a peer before assigning this task.', true); });
-        actions.append(select, assign); row.append(actions);
-      }
-      target.append(row);
-    }
-  });
+  renderBoard(snapshot, peers, ids);
   renderApprovals(snapshot.permissions);
   update('budget', snapshot.budget, (target) => {
     if (!Object.keys(snapshot.budget).length) return empty(target, 'No usage readings yet. Usage appears when a peer reports it.');
@@ -544,9 +656,11 @@ function renderStreamChips() {
     group.append(chip);
   }
 }
+$('task-peer-filter').addEventListener('change',()=>{if(boardViewState)renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});
+$('task-lanes').addEventListener('change',()=>{if(boardViewState)renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});
 $('task-filter').addEventListener('change', () => { if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); });
 $('send').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter) && generation === viewGeneration) $('message').value = ''; });
-$('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
+$('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if ($('backlog-proposal').checked) { if(boardViewState?.snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext())) return notice('Backlog is unavailable for this project snapshot.',true);payload.backlog=true; } if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
 (async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; renderStreamChips(); await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
 </script>
 </body>

@@ -1601,3 +1601,15 @@ Qwen recovery source/fake proof: saved ids pass through the driver and CLI to AC
 ## Jcode 0.94.0 peer (#332)
 
 Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.md. Unverified: real provider/model, native project MCP discovery and hub-tool receipt, native tool policy and stop/child teardown. Native automatic restoration is withheld because the pinned ACP load does not prove the id. No benchmark comparison or default replacement ran.
+
+
+## Project board (#263)
+
+- Source model and isolated DOM/daemon regressions cover five columns, ready/wait
+  reasons, public stubs, owner/reviewer markers, keyboard buttons, assignment and
+  staging authority, stale/foreign gesture fences and legacy capability refusal.
+- Current source checks are pending for this draft; browser visual verification
+  at desktop/phone widths and real peer permission/state readback are unverified.
+- Native planner grooming into two releases, planned/actual date measurement and
+  GitHub import remain unverified or unimplemented in later source slices. No
+  release, installation, account experiment or live activation is implied.

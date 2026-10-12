@@ -2560,3 +2560,30 @@ is never claimed, accepted, completed, swept, escalated or relayed. PII cards an
 notices use the existing public stub. Planner grooming tools, the five-column
 view, releases and dates are later #263 slices; the native planner/two-release
 smoke remains unverified. No tag, publish or live activation occurs here.
+
+
+## Dashboard project board (#263)
+
+The board displays Backlog, To Do, In Progress, Review / QA and Done from task
+states. To Do separates ready work from dependency, reservation, delivery-hold
+and unavailable-owner waits. Review and Done offer no flow dragging. Owner and
+reviewer names remain readable beside their filled/outlined color markers.
+Urgent tasks display P0 and a star; ordinary legacy tasks display P2.
+
+The legend reads the same live peer status as `ahub status`, with a derived
+owned-work count, active board ids and explicit permission display. Use the agent
+filter or By agent lanes to inspect work. Done shows recent rows first, with
+older rows expandable. At phone width columns stack and controls remain usable.
+
+Drag eligible work onto a peer to assign it, or use its labelled select and
+Assign button. Drag Backlog into To Do to pull it; return only ownerless To Do
+work to Backlog. Each move has a button/keyboard equivalent and reaches `Tasks`
+through the existing authenticated console/dashboard action path. Cards carry
+origin, project, instance and view-generation fences; stale or foreign drags
+are refused. Review/verdict/approval transitions stay with their flow actors.
+
+A hub advertises Backlog support explicitly. Older or unknown snapshots cannot
+silently turn Add to Backlog into an immediate offer. PII cards retain their
+public stub; legend entries contain ids/counts, never task prose. Editable
+planning priority/rank, releases, dates, planner grooming/undo and GitHub import
+remain subsequent #263 slices. This source slice is not a native planner cycle.

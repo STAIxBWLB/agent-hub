@@ -1,3 +1,5 @@
+import { boardColumns } from "../ui/task-board.ts";
+import { PEER_PALETTE, peerPaletteCss } from "../ui/peer-palette.ts";
 import { PEER_START_RETRY_MS } from "./start-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -28,6 +30,8 @@ export function startDashboard(options: DashboardOptions) {
   const sessions = new Map<string, { expires: number; settingsUntil?: number }>();
   // Inject the same pure public-board model used by the console before computing CSP hashes.
   const html = readFileSync(new URL("../ui/index.html", import.meta.url), "utf8")
+    .replace("/* BOARD_MODEL */", () => `const boardColumns = ${boardColumns.toString()}; const peerPalette = ${JSON.stringify(PEER_PALETTE)};`)
+    .replace("/* PEER_PALETTE_CSS */", () => peerPaletteCss())
     .replace("/* TASK_PROGRESS_MODEL */", () => `const taskProgress = ${taskProgress.toString()};`)
     .replace("/* PEER_START_RETRY_MS */", () => `const PEER_START_RETRY_MS = ${PEER_START_RETRY_MS};`);
   const hashes = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))]

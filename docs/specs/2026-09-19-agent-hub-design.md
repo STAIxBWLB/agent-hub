@@ -2450,3 +2450,28 @@ future explicit planner tools provide its agent read path. This foundation does
 not implement ranks, undoable planner grooming, release states, planned dates or
 dashboard drag/columns. Those remain required by #263. The live planner grooming
 cycle into two releases remains unverified.
+
+
+## Project board presentation (#263)
+
+Five fixed state-derived columns share a structural public model with tests;
+unknown states stay explicit. To Do waits derive from authoritative dependency
+states and peer availability/holds. Priority P0/P1 has a star plus a text label;
+legacy urgent maps to P0 and ordinary work to P2 until planning data exists.
+
+One identity palette supplies terminal board/status tones and dashboard CSS.
+Owner markers are filled, reviewer markers outlined, with text names. Legend
+state, WIP and active task ids derive from the same snapshot and permission
+display used by status. Filter/lane actions are read-only. Recent Done records
+precede collapsible older work. Responsive columns stack at phone width.
+
+Only assignment and eligible Backlog/To Do staging have drag controls, each with
+labelled buttons/selects. Origin/project/instance/generation fences prevent
+stale gestures, including standalone dashboards on different loopback ports.
+Server authority and all task writes remain in existing console/session gates
+and Tasks. A capability bit prevents an older hub silently ignoring Backlog
+intent. CSP hashes include the injected model/palette, with no outside assets.
+
+Planner grooming, releases, editable planning data, dates and one-way import
+remain required source slices. Browser visual and the native planner/two-release
+cycle remain unverified until their independent checks run.

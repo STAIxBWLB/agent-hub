@@ -2940,15 +2940,23 @@ export async function startDaemon(opts: DaemonOptions) {
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
+    const peerView = status().peers, boardTasks = board.list();
     return {
       ok: true,
       projectId,
       instanceId,
-      status: { peers: status().peers },
-      tasks: board.list().map((task) => {
+      status: { peers: peerView },
+      boardCapabilities: { backlog: true },
+      boardLegend: Object.entries(peerView).map(([id, peer]) => ({
+        peer: id, state: peer.state,
+        permissionMode: peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
+        wip: boardTasks.filter(task => task.owner === id && task.state !== "approved" && task.state !== "backlog").length,
+        activeTasks: boardTasks.filter(task => task.owner === id && ["in_progress", "changes_requested"].includes(task.state)).map(task => task.id),
+      })),
+      tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
@@ -3247,10 +3255,13 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: true, ...(off.length ? { text: `retained off roster for ${off.join(", ")}` } : {}) };
       }
       case "propose": {
-        if (!text("title", 300) || (a.detail !== undefined && !text("detail", 8000)) || (a.class !== undefined && !text("class", 32)) || (a.owner !== undefined && !(typeof a.owner === "string" && PEER_ID.test(a.owner)))) return bad;
-        const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner });
+        if (!text("title", 300) || (a.detail !== undefined && !text("detail", 8000)) || (a.class !== undefined && !text("class", 32)) || (a.owner !== undefined && !(typeof a.owner === "string" && PEER_ID.test(a.owner))) || (a.backlog !== undefined && typeof a.backlog !== "boolean")) return bad;
+        const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner, ...(a.backlog === true ? { backlog: true } : {}) });
         return { ok: true, text: result };
       }
+      case "backlog_pull":
+      case "backlog_return":
+        return taskId() ? { ok: true, text: await taskOp(USER, a.action, { id: a.id }) } : bad;
       case "assign":
         return taskId() && peer() && (a.role === undefined || a.role === "owner" || a.role === "reviewer") ? { ok: true, text: await taskOp(USER, "task_assign", { id: a.id, peer: a.peer, role: a.role }) } : bad;
       case "start_peer": {
