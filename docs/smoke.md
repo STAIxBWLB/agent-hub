@@ -25,6 +25,15 @@ one scrolls to and highlights the matching list row, that reduced motion gives
 static positions, and that the page weight stays within the 30 KB budget of the
 issue. Record the look here when performed.
 
+## Add-on arms and fingerprints (#248)
+
+Not run yet (2026-10-12). Source and fakes cover the fingerprint, the arm check and the report (`test/tooling.test.ts`, `test/bench.test.ts`, `test/research.test.ts`).
+
+- [ ] Live fingerprint: `ahub claude` and `ahub codex` attached on the development machine, `events.jsonl` shows one `tooling` event per attach with claude-mem, ponytail, ripwire and dot-admit as installed.
+- [ ] Arms on a bench project for each of claude-mem, ponytail and ripwire: `all-on`, `<tool>-off`, `all-off`, 5 repeats each, interleaved and with a randomized task order (docs/bench.md, Add-on arms); then `ahub bench compare`.
+- [ ] Field data: `research.enabled` on this repository for at least two weeks, then `ahub research addons`.
+- [ ] Update `docs/addons/*.md` from the results.
+
 ## Settings from the dashboard and the terminal (#269, part 1)
 
 Not run live yet (unverified). `test/settings.test.ts` drives a real daemon, its

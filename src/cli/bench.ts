@@ -10,6 +10,7 @@ import { taskRecords } from "../hub/research.ts";
 import { appendBench, BENCH_SCHEMA, parseSuite, suiteHash, type Attempt, type AttemptError, type AttemptMetrics, type Fingerprint, type Outcome, type SuiteTask } from "../hub/bench.ts";
 import { hubHome, realPath } from "../hub/project.ts";
 import { processSignature } from "../pi/process-signature.ts";
+import { addonState, detectTooling, type Addon, type AddonName } from "../hub/tooling.ts";
 import { VERSION } from "../version.ts";
 
 /** What the runner needs from the world, so tests can drive it without a terminal. */
@@ -24,8 +25,10 @@ export interface BenchIo {
   now(): number;
   sleep(ms: number): Promise<void>;
   log(line: string): void;
+  /** #248: the add-ons a peer works with; `detectTooling` on this machine unless a test supplies its own. */
+  tooling?(peer: string): Addon[] | Promise<Addon[]>;
 }
-export interface BenchOptions { cwd: string; stateDir: string; suitePath: string; arm: string; repeat: number; only?: string[]; home?: string; pollMs?: number; verifyTimeoutMs?: number; setupTimeoutMs?: number; settleMs?: number; stopped?: () => boolean }
+export interface BenchOptions { cwd: string; stateDir: string; suitePath: string; arm: string; repeat: number; addons?: Partial<Record<AddonName, "on" | "off">>; only?: string[]; home?: string; pollMs?: number; verifyTimeoutMs?: number; setupTimeoutMs?: number; settleMs?: number; stopped?: () => boolean }
 
 const fail = (message: string): never => { throw new Error(message); };
 
@@ -192,12 +195,20 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
       // ponytail: the hub's status reports a requested model for Pi only and permission modes once #242 lands; the rest
       // are recorded as absent. Reading each peer's launch settings would fill them in.
       // The status lists every peer the hub has known; an arm is the ones attached now.
-      peers: Object.entries(status.peers ?? {}).filter(([, p]) => p.state !== "offline")
-        .map(([id, p]) => ({ id, ...(p.requestedModel ? { model: p.requestedModel } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) })).sort((a, b) => a.id.localeCompare(b.id)),
+      peers: (await Promise.all(Object.entries(status.peers ?? {}).filter(([, p]) => p.state !== "offline")
+        .map(async ([id, p]) => ({ id, ...(p.requestedModel ? { model: p.requestedModel } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}),
+          addons: await (io.tooling ?? ((peer: string) => detectTooling(peer, { cwd: opts.cwd })))(id) })))).sort((a, b) => a.id.localeCompare(b.id)),
       routingHash: existsSync(routing) ? createHash("sha256").update(readFileSync(routing)).digest("hex") : null,
       hubVersion: status.version,
     };
+    // #248: a declared add-on condition must hold for the attached peers before anything is recorded or reset.
+    const addons = Object.entries(opts.addons ?? {}) as [AddonName, "on" | "off"][];
+    for (const [name, want] of addons) {
+      const found = addonState(name, fingerprint.peers.map((p) => p.addons));
+      if (found !== want) throw new Error(`the arm declares ${name} ${want}, but the attached peers have it ${found}; change their setup or the declaration (nothing was run)`);
+    }
     appendBench({ schema: BENCH_SCHEMA, kind: "run", run, suite: suite.name, suiteHash: suiteHash(suiteText), arm: opts.arm, fingerprint, version: VERSION,
+      ...(addons.length ? { condition: { addons: Object.fromEntries(addons.sort(([a], [b]) => a.localeCompare(b))) } } : {}),
       startedAt: new Date(io.now()).toISOString(), tasks: tasks.length, repeats: opts.repeat, order: tasks.map((t) => t.id), runner: { pid: process.pid, signature: processSignature(process.pid) ?? null } }, home);
     io.log(`bench run ${run}: ${suite.name} [${opts.arm}], ${tasks.length} task${tasks.length === 1 ? "" : "s"} x ${opts.repeat}`);
     let stopped: "timeout" | "interrupted" | "error" | undefined;
@@ -237,7 +248,7 @@ async function runAttempt(task: SuiteTask, commit: string, repeat: number, run: 
   // The attempt ends when its outcome is known: the wait for its measures is not part of its time.
   const done = (outcome: Outcome, extra: { error?: AttemptError; verifyExit?: number | null; hubTask?: number | null; metrics?: AttemptMetrics | null; ended?: number; open?: boolean } = {}) => {
     const ended = extra.ended ?? io.now();
-    const attempt: Attempt = { schema: BENCH_SCHEMA, kind: "attempt", run, task: task.id, repeat, outcome, ...(extra.error ? { error: extra.error } : {}), verifyExit: extra.verifyExit ?? null,
+    const attempt: Attempt = { schema: BENCH_SCHEMA, kind: "attempt", run, arm: opts.arm, task: task.id, repeat, outcome, ...(extra.error ? { error: extra.error } : {}), verifyExit: extra.verifyExit ?? null,
       hubTask: extra.hubTask ?? null, startedAt: new Date(started).toISOString(), endedAt: new Date(ended).toISOString(), ms: ended - started, metrics: extra.metrics ?? null };
     return { attempt, open: extra.open ?? false };
   };

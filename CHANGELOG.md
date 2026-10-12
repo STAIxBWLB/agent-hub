@@ -11,6 +11,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Add snapshot-driven motion to the dashboard Office view: card moves by CSS transform transition, message arcs, delivery warning marks and the busy latch from event rows with timer-free keyframe fades, and the settle rule, with reduced-motion support (#264, phase 2 of 4).
 
 - Add a static flat Office view to the dashboard: stable desks, state rooms, capped cards, an Off/Flat view control persisted in a second host-scoped cookie, and scene/list highlighting, with no daemon change (#264, phase 1 of 4).
+
+- Record each peer's add-ons (claude-mem, ponytail, ripwire, open-code-review, the Codex plugin, dot admission) by name and version in a `tooling` event and the research records, compare tasks with each on and off (`ahub research addons`), declare and check add-on arms in `ahub bench run --addon`, and record a decision per add-on in `docs/addons/` (#248).
+
 - Add person-only bounded merge-order and release-readiness evidence through CLI, console and both dashboard modes; retain unknown/native gates and never merge or publish from a report (#257).
 
 - Stage unoffered Backlog tasks, reserve suggested owners, and pull/return through person-owned Tasks transitions; hide backlog from ordinary agent and conductor task reads (#263).
