@@ -10,6 +10,12 @@ export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: s
 const SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+/** One identity floor for initial and final remote tag observations. */
+function tagMatches(target: unknown, commit: string): boolean {
+  const parsed = target as { oid?: unknown; target?: { oid?: unknown } } | null | undefined;
+  const oid = parsed?.oid ?? parsed?.target?.oid;
+  return typeof oid === "string" && SHA.test(oid) && oid === commit;
+}
 /** Package-owned checker only; no caller-supplied program or document text is executed. */
 export function readDocEvidence(root: string, timeoutMs = 10_000): Promise<DocEvidence | undefined> {
   return new Promise(resolve => {
@@ -47,9 +53,9 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
     report.tag = tag; const local = git(["rev-parse","--verify",`refs/tags/${tag}^{commit}`]);
     const [owner,name] = repo.split("/");
     const ref = await gh(["api","graphql","-f","query=query($owner:String!,$name:String!,$ref:String!){repository(owner:$owner,name:$name){ref(qualifiedName:$ref){target{... on Commit{oid} ... on Tag{target{... on Commit{oid}}}}}}}","-f",`owner=${owner}`,"-f",`name=${name}`,"-f",`ref=refs/tags/${tag}`]);
-    let remote: string | undefined; try { const target = JSON.parse(ref.stdout)?.data?.repository?.ref?.target; remote = target?.oid ?? target?.target?.oid; } catch { /* unknown */ }
     const commit = local.stdout.trim();
-    if (local.code !== 0 || ref.code !== 0 || !SHA.test(commit) || remote !== commit) report.blockers.push("local and remote release tag identity differ or are unknown");
+    let remoteMatches = false; try { remoteMatches = tagMatches(JSON.parse(ref.stdout)?.data?.repository?.ref?.target, commit); } catch { /* unknown */ }
+    if (local.code !== 0 || ref.code !== 0 || !SHA.test(commit) || !remoteMatches) report.blockers.push("local and remote release tag identity differ or are unknown");
     else if (git(["merge-base","--is-ancestor",commit,head]).code !== 0) report.blockers.push("published release is not a verified ancestor");
     else {
       report.tagCommit = commit;
@@ -95,7 +101,7 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
       const data = JSON.parse(snapshot.stdout), repository = data.data?.repository, rows = repository?.releases?.nodes;
       if (snapshot.code === 0 && !data.errors && Array.isArray(rows) && rows.length <= 100 && typeof repository.releases.pageInfo?.hasNextPage === "boolean" && rows.every(p => typeof p?.tagName === "string" && typeof p.isDraft === "boolean")) {
         const newest = rows.find(p => !p.isDraft), target = repository.ref?.target;
-        stable = newest?.tagName === report.tag && (target?.oid ?? target?.target?.oid) === report.tagCommit;
+        stable = newest?.tagName === report.tag && tagMatches(target, report.tagCommit);
       }
     } catch { /* unavailable predecessor remains blocked */ }
     if (!stable) report.blockers.push("published release or remote tag changed or could not be reverified");

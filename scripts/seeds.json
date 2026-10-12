@@ -1212,8 +1212,8 @@
     {
       "id": "release-remote-tag-identity",
       "file": "src/hub/sdlc-release.ts",
-      "search": "remote !== commit",
-      "replacement": "false",
+      "search": "return typeof oid === \"string\" && SHA.test(oid) && oid === commit;",
+      "replacement": "return true;",
       "testFile": "test/sdlc-release.test.ts",
       "testName": "release mismatched tags stale docs old version open native ledger and changing heads remain blocked (#257)"
     },
