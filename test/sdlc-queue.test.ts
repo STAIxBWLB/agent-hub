@@ -13,6 +13,11 @@ function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?:
       const pr = Number(args[2]), paths = options.paths?.[pr] ?? ["src/shared.ts"], head = options.heads?.[pr] ?? A;
       return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", baseRefOid: M, state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
     }
+    const finalQuery = args.find(arg => arg.startsWith("query=") && arg.includes("queue_p"));
+    if (finalQuery) return { code: 0, stdout: JSON.stringify({ data: { repository: Object.fromEntries([...finalQuery.matchAll(/queue_p([0-9]+):/g)].map(match => {
+      const number = Number(match[1]), paths = options.paths?.[number] ?? ["src/shared.ts"];
+      return [`queue_p${number}`, { headRefOid: options.heads?.[number] ?? A, state: "OPEN", isDraft: false, baseRefName: "main", baseRefOid: M, changedFiles: paths.length + (options.incomplete ? 1 : 0), reviewDecision: "APPROVED", reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } }, statusCheckRollup: { contexts: { nodes: [{ name: "gate", conclusion: "SUCCESS" }], pageInfo: { hasNextPage: false } } } }];
+    })) } } }) };
     const number = Number(args.at(-1)?.split("=")[1]);
     return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: options.heads?.[number] ?? A, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
   };
@@ -124,4 +129,28 @@ test("private and mixed queue holders never expose board associations (#257)", a
   }
   const ordinary = await readMergeQueue("owner/repo", config, [task(938, 1)], fake({ ids: [1] }).run);
   expect(ordinary.rows[0]?.tasks).toEqual([938]);
+});
+
+
+test("final queue gate snapshot rejects changed checks reviews requests and threads on the same head (#257)", async () => {
+  const f = fake({ paths: { 1: ["src/one.ts"], 2: ["src/two.ts"] } });
+  const holders = [task(1, 1), task(2, 2)];
+  expect((await readMergeQueue("owner/repo", config, holders, f.run)).rows.every(row => row.ready)).toBe(true);
+  for (const kind of ["check", "review", "request", "thread", "pagination", "unavailable"] as const) {
+    const run: SdlcGh = async args => {
+      const reply = await f.run(args);
+      if (!args.some(arg => arg.startsWith("query=") && arg.includes("queue_p"))) return reply;
+      if (kind === "unavailable") return { code: 1, stdout: "" };
+      const data = JSON.parse(reply.stdout), p = data.data.repository.queue_p1;
+      if (kind === "check") p.statusCheckRollup.contexts.nodes[0].conclusion = "FAILURE";
+      if (kind === "review") p.reviewDecision = "CHANGES_REQUESTED";
+      if (kind === "request") p.reviewRequests.nodes.push({ requestedReviewer: { __typename: "User" } });
+      if (kind === "thread") p.reviewThreads.nodes.push({ isResolved: false });
+      if (kind === "pagination") p.statusCheckRollup.contexts.pageInfo.hasNextPage = true;
+      return { code: 0, stdout: JSON.stringify(data) };
+    };
+    const report = await readMergeQueue("owner/repo", config, holders, run);
+    expect(report.complete).toBe(false); expect(report.order).toEqual([]);
+    expect(report.rows.every(row => !row.ready)).toBe(true); expect(report.unordered).toEqual([1, 2]);
+  }
 });

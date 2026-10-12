@@ -1,11 +1,33 @@
 import type { PhaseView } from "./workflow.ts";
-import { readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
+import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
 export interface DeliveryTask { id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: PhaseView; }
 export interface MergeQueueRow { pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
 const validId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+const gateIdentity = (p: PrEvidence) => JSON.stringify({ head: p.head, state: p.state, checks: [...p.checks].sort((a, b) => a.name.localeCompare(b.name) || a.state.localeCompare(b.state)), review: p.review, pending: p.pendingReviews, unresolved: p.unresolved, draft: p.draft, base: p.base, baseHead: p.baseHead, pathsComplete: p.pathsComplete });
+/** One batched remote read fences mutable gates without a second sequential per-PR scan. */
+async function stableGates(repo: string, evidence: Map<number, PrEvidence>, run: SdlcGh): Promise<boolean> {
+  const [owner, name] = repo.split("/");
+  const fields = "headRefOid state isDraft baseRefName baseRefOid changedFiles reviewDecision reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage}}}";
+  const entries = [...evidence.entries()];
+  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){${entries.map(([id]) => `queue_p${id}:pullRequest(number:${id}){${fields}}`).join(" ")}}}`;
+  try {
+    const reply = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`]);
+    if (reply.code !== 0) return false;
+    const data = JSON.parse(reply.stdout);
+    if (data.errors || !data.data?.repository) return false;
+    for (const [id, before] of entries) {
+      const p = data.data.repository[`queue_p${id}`];
+      const threads = p?.reviewThreads, reviews = p?.reviewRequests, checks = p?.statusCheckRollup === null ? { nodes: [], pageInfo: { hasNextPage: false } } : p?.statusCheckRollup?.contexts;
+      if (threads?.pageInfo?.hasNextPage !== false || reviews?.pageInfo?.hasNextPage !== false || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100 || threads.nodes.some((n: { isResolved?: unknown }) => typeof n?.isResolved !== "boolean") || !Array.isArray(reviews.nodes) || !Array.isArray(checks.nodes) || checks.nodes.length > 100) return false;
+      const after = parsePrEvidence({ ...p, files: before.paths.map(path => ({ path })), statusCheckRollup: checks.nodes, reviewRequests: reviews.nodes, unresolvedThreads: threads.nodes.filter((n: { isResolved: boolean }) => !n.isResolved).length });
+      if (gateIdentity(before) !== gateIdentity(after)) return false;
+    }
+    return true;
+  } catch { return false; }
+}
 /** Fixed metadata-only reads; local claims and unknown dependency evidence never become merge approval. */
 export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: DeliveryTask[], run: SdlcGh = sdlcGh): Promise<MergeQueue> {
   if (!validRepo(repo)) throw new Error("merge queue requires owner/repository");
@@ -75,8 +97,9 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   result.complete = !result.truncated && !remaining.size && !touchingCoverageUnknown && !personOrder.size;
   // Empty/private-only snapshots have no intervening remote reads and offer no private PR evidence.
   if (evidence.size) {
+    const gatesStable = await stableGates(repo, evidence, bounded);
     const finalPrs = parseSnapshot(await bounded(listArgs));
-    if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead))) {
+    if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead))) {
       result.complete = false; result.order = []; result.unordered = ids;
       for (const row of result.rows) { row.ready = false; row.blockers.push("open PR set changed or could not be reverified"); }
     }
