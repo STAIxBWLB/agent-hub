@@ -1288,6 +1288,22 @@
       "replacement": "[\"release\",\"view\",\"--repo\",repo",
       "testFile": "test/sdlc-release.test.ts",
       "testName": "release predecessor read includes the published prerelease instead of stable-only latest (#257)"
+    },
+    {
+      "id": "manager-delivery-forwarding",
+      "file": "src/hub/manager.ts",
+      "search": "\"start_peer\", \"sdlc_queue\", \"sdlc_release\"",
+      "replacement": "\"start_peer\", \"unavailable_queue\", \"unavailable_release\"",
+      "testFile": "test/manager.test.ts",
+      "testName": "manager forwards scoped delivery evidence reads beyond ordinary deadlines and rejects stale targets (#257)"
+    },
+    {
+      "id": "manager-delivery-deadline",
+      "file": "src/hub/manager.ts",
+      "search": "else if (deliveryRead) nominalMs = 30_000;",
+      "replacement": "else if (deliveryRead) nominalMs = 10_000;",
+      "testFile": "test/manager.test.ts",
+      "testName": "manager forwards scoped delivery evidence reads beyond ordinary deadlines and rejects stale targets (#257)"
     }
   ]
 }
