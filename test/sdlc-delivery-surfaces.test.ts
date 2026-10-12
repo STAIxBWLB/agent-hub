@@ -39,7 +39,14 @@ test("board revision fence removes a previously ordered nonempty delivery result
  const gh:SdlcGh=async args=>{
   if(args[0]==="pr"&&args[1]==="list")return{code:0,stdout:JSON.stringify([{number:1,headRefOid:head,baseRefName:"main",baseRefOid:head}])};
   if(args[0]==="pr"){board.update(t.id,USER,"changed",{owner:"codex"});return{code:0,stdout:JSON.stringify({headRefOid:head,state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:head,changedFiles:1,files:[{path:"src/one.ts"}],statusCheckRollup:[{name:"gate",conclusion:"SUCCESS"}],reviewDecision:"APPROVED",reviewRequests:[]})}};
-  if(args.some(arg=>arg.startsWith("query=")&&arg.includes("queue_p")))return{code:0,stdout:JSON.stringify({data:{repository:{queue_p1:{headRefOid:head,state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:head,changedFiles:1,reviewDecision:"APPROVED",reviewRequests:{nodes:[],pageInfo:{hasNextPage:false}},reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}},statusCheckRollup:{contexts:{nodes:[{name:"gate",conclusion:"SUCCESS"}],pageInfo:{hasNextPage:false}}}}}})};
+  if(args.some(arg=>arg.startsWith("query=")&&arg.includes("queue_p"))) {
+    const gates = {
+      headRefOid:head,state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:head,changedFiles:1,reviewDecision:"APPROVED",
+      reviewRequests:{nodes:[],pageInfo:{hasNextPage:false}},reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}},
+      statusCheckRollup:{contexts:{nodes:[{name:"gate",conclusion:"SUCCESS"}],pageInfo:{hasNextPage:false}}},
+    };
+    return {code:0,stdout:JSON.stringify({data:{repository:{queue_p1:gates}}})};
+  }
   return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{headRefOid:head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}}}}})};
  };
  const tasks=new Tasks({board,bus:new Bus({batchMs:0}),cwd:dir,project:"fixture",notify:()=>{},routing:()=>loadRouting(dir),sdlc:{config:()=>sdlcConfig({mode:"enforce",required_checks:["gate"]}),gh}});

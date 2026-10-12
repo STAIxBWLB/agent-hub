@@ -14,10 +14,20 @@ function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?:
       return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", baseRefOid: M, state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
     }
     const finalQuery = args.find(arg => arg.startsWith("query=") && arg.includes("queue_p"));
-    if (finalQuery) return { code: 0, stdout: JSON.stringify({ data: { repository: Object.fromEntries([...finalQuery.matchAll(/queue_p([0-9]+):/g)].map(match => {
-      const number = Number(match[1]), paths = options.paths?.[number] ?? ["src/shared.ts"];
-      return [`queue_p${number}`, { headRefOid: options.heads?.[number] ?? A, state: "OPEN", isDraft: false, baseRefName: "main", baseRefOid: M, changedFiles: paths.length + (options.incomplete ? 1 : 0), reviewDecision: "APPROVED", reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } }, statusCheckRollup: { contexts: { nodes: [{ name: "gate", conclusion: "SUCCESS" }], pageInfo: { hasNextPage: false } } } }];
-    })) } } }) };
+    if (finalQuery) {
+      const repository = Object.fromEntries([...finalQuery.matchAll(/queue_p([0-9]+):/g)].map(match => {
+        const number = Number(match[1]), paths = options.paths?.[number] ?? ["src/shared.ts"];
+        const gates = {
+          headRefOid: options.heads?.[number] ?? A, state: "OPEN", isDraft: false,
+          baseRefName: "main", baseRefOid: M, changedFiles: paths.length + (options.incomplete ? 1 : 0),
+          reviewDecision: "APPROVED", reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } },
+          reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+          statusCheckRollup: { contexts: { nodes: [{ name: "gate", conclusion: "SUCCESS" }], pageInfo: { hasNextPage: false } } },
+        };
+        return [`queue_p${number}`, gates];
+      }));
+      return { code: 0, stdout: JSON.stringify({ data: { repository } }) };
+    }
     const number = Number(args.at(-1)?.split("=")[1]);
     return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: options.heads?.[number] ?? A, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
   };
