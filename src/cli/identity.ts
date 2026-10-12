@@ -45,7 +45,7 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
   if (command === "budget") return !args.length || args.every((arg) => arg === "--json" || arg === "--full" || arg.startsWith("--color=")) ? "allowed" : "console";
   if (command === "jcode") return "console"; // the person launcher alone writes its project MCP entry
   if (isSupportedPeer(command) || ["pause", "resume"].includes(command)) return "conductor";
-  if (["help", "version", "--version", "say", "status", "board", "report", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
+  if (["help", "version", "--version", "say", "status", "pet", "board", "report", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
   return "console";
 }
 
@@ -53,7 +53,7 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
 export function cliCommandLabel(command: string, args: readonly string[]): string {
   if (command === "backlog") return ["list", "add", "pull", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
-  if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "qwen", "jcode", "pi", "local", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "logs", "export", "report", "research", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
+  if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "qwen", "jcode", "pi", "local", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "bench"].includes(command)) {
     const sub = command === "bench" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "setup", "start", "stop", "remove", "export", "backfill", "addons", "run", "report", "compare"].includes(sub)) return `${command} ${sub}`;

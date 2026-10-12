@@ -1670,3 +1670,27 @@ remains unverified; no account, release, installation or live activation ran.
 Dependency/reservation grooming regression covers direct/transitive cycles,
 missing or duplicate ids, off-roster reservations, atomic rejection and undo,
 and started-task refusal. Current source/fixture proof remains pending.
+
+## Console attention (#280, phase 1)
+
+Automated coverage targets request ordering, read-only navigation/modal ownership,
+fixed footer/cursor cells at 80/99/100/120 columns and 24/40 rows, allowlisted
+structural projection, configuration precedence, deadline-only blink and plain
+message acknowledgement. Platform/full seeded gates are pending. Light/dark
+terminal, tmux, colour-off and actual terminal glyph readbacks are unverified;
+this phase renders ASCII only. No native account or live hub was activated.
+
+## Global attention status and CLI (#280, phase 3 in progress)
+
+Source/fixture checks target person review, offline ownership, unknown/absent
+recovery runners, status privacy/role separation, signed file ownership and CLI
+output without a token or connection. Full immutable-head platform/seed/review
+gates remain pending. Native light/dark terminal, tmux, glyph and account readback
+is unverified; no release, installation or live hub activation ran.
+
+## Attention status follow-up (#280)
+
+Regression fixtures cover reserved pseudo-peer ownership, preserved person
+reviews, selected SQL columns and actual status reads with unreadable unrelated
+JSON payloads. The focused tests pass; immutable-head platform/255-guard proof
+is pending. Native/account/artwork/dashboard legs remain unverified.

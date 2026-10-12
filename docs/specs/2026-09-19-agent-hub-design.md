@@ -2535,3 +2535,45 @@ hub run regroups its currently staged backlog. This is advisory grooming; no
 ownership or execution state changes. Planned reservation edits participate in
 the conductor's latest ownership-decision check, preserving a person's decision
 when the hub later carries it out. Full proof remains pending.
+
+## Console attention foundation (#280, in progress)
+
+The self-contained needs(input,now) model receives structural console-owned
+approval/default/delivery/storage/message/budget/recovery facts. It copies only
+bounded ids, peers and known timestamps into sorted act/watch items. Approval
+expiry is checked against now; watch items never override state.
+Delivery action counts require positive `needsReview` evidence. A `heldBy` id
+alone also names dispatching/accepted holds, which cannot be resolved by the
+person, and does not create an action item. No title,
+message/error/option text, path, network call or timer enters the model. Phase1
+console line/keys/configuration now uses a read-only console-local config reader,
+the existing redraw/poll requests and body-free unread metadata. The line is
+ASCII only, with STAI/off session choices; alternate artwork remains gated.
+Review/offline/act-level recovery and
+artwork variants remain later explicit phases. Native/visual proof is unknown.
+
+## Global attention status and CLI (#280, phase 3 in progress)
+
+Global needs summaries contain only act/watch counts, the known state and the
+first structural item. Console-local unread messages are excluded at the
+allowlisted summary boundary. Person review is one act item per in_review task
+whose reviewer is user; offline ownership is one watch item per offline peer
+with proposed/in_progress/changes_requested work, using its lowest task id.
+Only an observed absent runner makes an open recovery operation an act item;
+an unreadable/unknown runner remains watch. This phase is independent of the
+owner-held larger artwork/variant selection. Daemon/status.json, existing
+console input and CLI pet/status wiring and full verification remain pending.
+No protocol/event schema, authority, mutation, timer or account scope is added.
+
+The authenticated console-role reply to the existing status request also carries
+attentionItems, the complete structural global item list, so stream-mode next
+navigation can reach review/offline ids without a new task-list request. This
+optional read-only projection contains only the NeedItem allowlist; it is not
+written to status.json, returned to peer/tools status callers, or sent to memory.
+The persisted needs field remains counts/state/first, excluding console messages.
+
+Status task facts are selected once from the board as id/state/owner/reviewer
+columns, excluding approved rows, and reused for retained off-roster peer ids and
+attention. No task JSON payload is decoded for this projection. Reserved
+pseudo-peers user and hub never produce offline-agent attention; a task reviewed
+by user still produces its normal review action.

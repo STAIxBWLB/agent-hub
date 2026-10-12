@@ -94,6 +94,31 @@ jobs:
         env:
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
+      - name: Capture macOS fsmonitor readback diagnostics after a failed gate
+        if: failure() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          diagnostic_dir="$RUNNER_TEMP/ahub-docs-git-diagnostics"
+          mkdir -p "$diagnostic_dir"
+          git --version > "$diagnostic_dir/versions.txt"
+          bun --version >> "$diagnostic_dir/versions.txt"
+          node --version >> "$diagnostic_dir/versions.txt"
+          for iteration in $(seq 1 20); do
+            if GIT_TRACE2_EVENT="$diagnostic_dir/git-$iteration.jsonl" bun test --timeout 20000 test/check-docs.test.ts --test-name-pattern 'documentation readbacks never execute the repository fsmonitor helper' > "$diagnostic_dir/test-$iteration.log" 2>&1; then
+              echo "fsmonitor diagnostic $iteration passed"
+            else
+              echo "fsmonitor diagnostic $iteration failed; preserving trace"
+              break
+            fi
+          done
+      - name: Retain macOS fsmonitor readback diagnostics
+        if: failure() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: docs-git-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/ahub-docs-git-diagnostics
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Retain failed restart fixture diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
