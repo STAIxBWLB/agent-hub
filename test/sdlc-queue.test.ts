@@ -8,10 +8,10 @@ function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?:
   const calls: string[][] = [], ids = options.ids ?? [1,2];
   const run: SdlcGh = async args => {
     calls.push(args);
-    if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: JSON.stringify(ids.map(number => ({ number, headRefOid: options.heads?.[number] ?? A }))) };
+    if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: JSON.stringify(ids.map(number => ({ number, headRefOid: options.heads?.[number] ?? A, baseRefName: "main", baseRefOid: M }))) };
     if (args[0] === "pr") {
       const pr = Number(args[2]), paths = options.paths?.[pr] ?? ["src/shared.ts"], head = options.heads?.[pr] ?? A;
-      return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
+      return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", baseRefOid: M, state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
     }
     const number = Number(args.at(-1)?.split("=")[1]);
     return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: options.heads?.[number] ?? A, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
@@ -82,13 +82,13 @@ test("touching PRs and their dependents stay unordered until a person supplies d
  const truncated=await readMergeQueue("owner/repo",config,[],fake({ids:Array.from({length:17},(_,i)=>i+1)}).run);expect(truncated.order).toEqual([]);
 });
 test("open PR identity readback fence invalidates added removed or unavailable sets (#257)", async () => {
- for(const final of [{code:0,stdout:"[]"},{code:0,stdout:JSON.stringify([{number:1,headRefOid:A},{number:2,headRefOid:A}])},{code:1,stdout:"PRIVATE_LIST_ERROR_MARKER"},{code:0,stdout:JSON.stringify([{number:1,headRefOid:A},{number:1,headRefOid:A}])}]){
+ for(const final of [{code:0,stdout:"[]"},{code:0,stdout:JSON.stringify([{number:1,headRefOid:A,baseRefName:"main",baseRefOid:M},{number:2,headRefOid:A,baseRefName:"main",baseRefOid:M}])},{code:1,stdout:"PRIVATE_LIST_ERROR_MARKER"},{code:0,stdout:JSON.stringify([{number:1,headRefOid:A,baseRefName:"main",baseRefOid:M},{number:1,headRefOid:A,baseRefName:"main",baseRefOid:M}])}]){
   let lists=0;const f=fake({ids:[1]}),run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve(final):f.run(args);
   const report=await readMergeQueue("owner/repo",config,[task(1,1)],run);
   expect(report.complete).toBe(false);expect(report.rows[0]?.ready).toBe(false);expect(report.order).toEqual([]);expect(report.unordered).toEqual([1]);expect(report.rows[0]?.blockers).toContain("open PR set changed or could not be reverified");expect(JSON.stringify(report)).not.toContain("PRIVATE_LIST_ERROR_MARKER");
  }
  const paths={1:["src/one.ts"],2:["src/two.ts"]},f=fake({paths});let lists=0;
- const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:2,headRefOid:A},{number:1,headRefOid:A}])}):f.run(args);
+ const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:2,headRefOid:A,baseRefName:"main",baseRefOid:M},{number:1,headRefOid:A,baseRefName:"main",baseRefOid:M}])}):f.run(args);
  expect((await readMergeQueue("owner/repo",config,[task(1,1),task(2,2)],run)).complete).toBe(true);
 });
 test("case-insensitive repository identities retain linked holders and merged dependencies (#257)", async () => {
@@ -100,7 +100,15 @@ test("case-insensitive repository identities retain linked holders and merged de
 });
 test("final queue snapshot refuses changed heads even when open PR identities stay the same (#257)", async () => {
  const f=fake({paths:{1:["src/one.ts"],2:["src/two.ts"]}});let lists=0;
- const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:1,headRefOid:B},{number:2,headRefOid:A}])}):f.run(args);
+ const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:1,headRefOid:B,baseRefName:"main",baseRefOid:M},{number:2,headRefOid:A,baseRefName:"main",baseRefOid:M}])}):f.run(args);
  const report=await readMergeQueue("owner/repo",config,[task(1,1),task(2,2)],run);
  expect(report.complete).toBe(false);expect(report.order).toEqual([]);expect(report.rows.every(row=>!row.ready)).toBe(true);expect(report.unordered).toEqual([1,2]);
+});
+test("final queue snapshot rejects retargets and advancing bases without a head change (#257)", async () => {
+ for(const target of [{baseRefName:"release",baseRefOid:M},{baseRefName:"main",baseRefOid:B}]){
+  const f=fake({ids:[1]});let lists=0;
+  const run:SdlcGh=args=>args[0]==="pr"&&args[1]==="list"&&++lists>1?Promise.resolve({code:0,stdout:JSON.stringify([{number:1,headRefOid:A,...target}])}):f.run(args);
+  const report=await readMergeQueue("owner/repo",config,[task(1,1)],run);
+  expect(report.complete).toBe(false);expect(report.order).toEqual([]);expect(report.rows[0]?.ready).toBe(false);
+ }
 });

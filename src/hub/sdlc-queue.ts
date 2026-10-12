@@ -12,9 +12,9 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   const result: MergeQueue = { repo, rows: [], order: [], conflicts: [], complete: false, truncated: false };
   const deadline = performance.now() + 20_000;
   const bounded: SdlcGh = args => { const remaining = deadline - performance.now(); return remaining > 0 ? run(args, Math.min(10_000, remaining)) : Promise.resolve({ code: 1, stdout: "" }); };
-  const listArgs = ["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number,headRefOid"];
-  const parseSnapshot = (reply: { code: number; stdout: string }): { number: number; head: string }[] | undefined => {
-    try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number) || typeof p.headRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.headRefOid)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => ({ number: p.number, head: p.headRefOid })).sort((a, b) => a.number - b.number); }
+  const listArgs = ["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number,headRefOid,baseRefName,baseRefOid"];
+  const parseSnapshot = (reply: { code: number; stdout: string }): { number: number; head: string; base: string; baseHead: string }[] | undefined => {
+    try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number) || typeof p.headRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.headRefOid) || typeof p.baseRefName !== "string" || !p.baseRefName || p.baseRefName.length > 200 || /[\x00-\x1f\x7f]/.test(p.baseRefName) || typeof p.baseRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.baseRefOid)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => ({ number: p.number, head: p.headRefOid, base: p.baseRefName, baseHead: p.baseRefOid })).sort((a, b) => a.number - b.number); }
     catch { return; }
   };
   const initialPrs = parseSnapshot(await bounded(listArgs)); if (!initialPrs) return result;
@@ -76,7 +76,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   // Empty/private-only snapshots have no intervening remote reads and offer no private PR evidence.
   if (evidence.size) {
     const finalPrs = parseSnapshot(await bounded(listArgs));
-    if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && evidence.get(pr.number)?.head !== pr.head)) {
+    if (!finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead))) {
       result.complete = false; result.order = []; result.unordered = ids;
       for (const row of result.rows) { row.ready = false; row.blockers.push("open PR set changed or could not be reverified"); }
     }
