@@ -2,7 +2,7 @@
 title: Office view of live agent work in the dashboard
 date: 2026-10-12
 project: agent-hub
-status: phases 1-2 implemented (static Flat office with snapshot-driven motion); phases 3-5 pending
+status: phases 1-3 implemented (Flat office with motion and turn/checking/link fields); phases 4-5 pending
 issue: 264
 ---
 
@@ -105,6 +105,34 @@ Phase 2 decisions within the spec:
   are not drawn (the mapping table names only overflow, undeliverable, stale
   and quiet). Event `reason` strings are never copied into the model.
 
+Phase 3 decisions within the spec:
+
+- `status.peers[id].turn` is built in `uiSnapshot` from the daemon's `turns`
+  map as `{ since, task?, attribution }`. A private turn (a peer holding a PII
+  task) or an attribution flagged `pii` omits `task`; such a turn can exist
+  only for the in-process local worker, since the board refuses PII tasks to
+  any other owner.
+- The exact busy bubble uses `turn.task` whenever present (even when the peer
+  has zero or several in_progress tasks, and even if the task meanwhile left
+  the board, then with a plain label). The phase-1 heuristic is the fallback
+  for an older daemon that sends no `turn`.
+- `tasks[].checking` comes from `Tasks.isChecking` at snapshot time. A checking
+  task stays `in_progress`, so its card never moves; the mark is a glyph plus
+  an accessible-name note, not a state.
+- `links[]` is assembled in `uiSnapshot`: overlap pairs from the new
+  `Tasks.overlapLinks()` (the board's own `overlapHits`, so `ahub route` and
+  the scene cannot drift) and `Tasks.cohortLinks()` (`Cohorts.list()`), plus
+  conflicts from a bounded (12) in-memory list the daemon fills where it
+  already emits `conflict` events, deduped by task pair and dropped once either
+  task leaves the open states. All three carry task and peer ids only; overlap
+  and cohort links exclude PII tasks through `overlapHits`/`formCohort`.
+- The scene validates links down to the three kinds and their id lists (an
+  older or newer peer of the protocol that sends more is ignored), draws a
+  dashed line per consecutive desk pair with a kind/task-ids label, and treats
+  links as state: no fade, present while the link exists.
+- `PROTOCOL` (16) and `EVENTS_SCHEMA` (1) are pinned by a test; the fields are
+  additive and optional both ways.
+
 ## Verification
 
 - `test/office-model.test.ts`: mapping fixture, counts equality with
@@ -112,13 +140,23 @@ Phase 2 decisions within the spec:
   marker test (no body, detail, approval title or PII text in the model);
   phase 2: arcs, delivery marks and the busy latch from event rows, no replay
   on the first snapshot, seq dedupe, arc expiry on the snapshot clock, and the
-  settle rule (first snapshot, gap, transition storm, flag stability).
+  settle rule (first snapshot, gap, transition storm, flag stability);
+  phase 3: the exact bubble and its fallback, finishing-a-turn, the checking
+  mark, link validation, and markers in turn-adjacent data, check output and
+  conflict reasons never reaching the model.
 - `test/office-view.test.ts`: injection and CSP cleanliness of the served page,
   the cookie (default Off, persistence, blocked-cookie fallback), no
   timer/request/colour literal in the scene code, reduced-motion and motion CSS
   scans, no DOM write on an unchanged snapshot (counting fake document), focus
   and activation highlighting, "+N more" filtering, `resetView` clearing;
   phase 2: card moves keep their node and animate by transform, arcs/marks/
-  latch draw once with fade timing, departure fade purges on animationend.
+  latch draw once with fade timing, departure fade purges on animationend;
+  phase 3: the exact bubble, finishing-a-turn line, check-running mark and
+  warning lines render.
+- `test/tasks.test.ts`: `overlapLinks`/`cohortLinks` carry ids only and exclude
+  PII tasks. `test/daemon.test.ts`: `ui_snapshot` carries `turn`, `checking`
+  and overlap/cohort links against a real daemon, pins `PROTOCOL` (16) and
+  `EVENTS_SCHEMA` (1), and proves a PII task keeps its stub, refuses a
+  non-local owner and joins no link.
 - The live browser look (two agents working, both themes, console open) is
   recorded in `docs/smoke.md` as unverified for phase 1.

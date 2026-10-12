@@ -184,6 +184,18 @@ over three seconds, or when one snapshot brings more than six transitions.
 Event reasons and bodies never enter the scene; arcs carry from, to, kind,
 priority, the task ref and the dropped flag only.
 
+Snapshot fields (phase 3): three additive optional fields, so older pages and
+older daemons mix freely and `PROTOCOL`/`EVENTS_SCHEMA` stay unchanged. A peer's
+open turn (`since`, `task`, `attribution`) names the busy bubble's task exactly
+instead of the single-in-progress-task heuristic, and a turn still open while
+the peer is paused adds a "finishing a turn" line under the Break sign. A task's
+`checking` flag draws a check-running mark on its card, which stays at its
+owner's desk (rooms follow states only). Warning `links` (overlap from the
+board's overlap test, cohorts, and recent turn-end conflicts the daemon keeps in
+a bounded in-memory list) draw dashed lines between the desks they name, labeled
+with kind and task ids; all three carry task and peer ids only, and a PII task
+never joins a link.
+
 Console color policy is `--color=auto|always|never`, with `auto` as the default.
 Auto enables color only when both input and output are TTYs, `TERM` is not
 `dumb`, and `NO_COLOR` is empty or absent. Explicit `always` overrides these

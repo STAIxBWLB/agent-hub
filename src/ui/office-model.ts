@@ -17,6 +17,8 @@ export interface OfficePeerInput {
   needsReview?: number;
   heldBy?: string;
   permissionMode?: string;
+  /** Optional (phase 3): the open turn's start, attributed task id and attribution kind. Absent on older daemons. */
+  turn?: { since?: number; task?: number; attribution?: string };
 }
 /** The task fields the scene reads. `title` is the public view (`[pii]` stub for private tasks). */
 export interface OfficeTaskInput {
@@ -27,6 +29,15 @@ export interface OfficeTaskInput {
   owner?: string;
   reviewer?: string;
   deps?: readonly number[];
+  /** Optional (phase 3): the task's check is running; the task stays in_progress meanwhile. */
+  checking?: boolean;
+}
+/** Optional (phase 3): a warning line between desks. Task and peer ids only, never paths or symbols. */
+export interface OfficeLinkInput {
+  kind?: string;
+  tasks?: readonly number[];
+  peers?: readonly string[];
+  [key: string]: unknown;
 }
 /** The event-row fields the scene reads from `events[]`. Bodies and reasons are never read. */
 export interface OfficeEventInput {
@@ -47,6 +58,12 @@ export interface OfficeSnapshotInput {
   permissions?: readonly { peer?: string }[];
   budget?: Record<string, { paused?: { reason?: string; resetsAt?: number | null } | null; [key: string]: unknown }>;
   events?: readonly OfficeEventInput[];
+  links?: readonly OfficeLinkInput[];
+}
+export interface OfficeLink {
+  kind: string;
+  tasks: number[];
+  peers: string[];
 }
 export interface OfficeCounts {
   proposed: number; waiting: number; in_progress: number; in_review: number; changes_requested: number; approved: number;
@@ -61,6 +78,8 @@ export interface OfficeCard {
   reviewer: string;
   waiting: boolean;
   rework: boolean;
+  /** The task's check is running; the card stays at its owner's desk. */
+  checking: boolean;
   /** Visible text: "#id class". */
   label: string;
   /** Accessible name: "#id class: public title (state)", plus waiting/rework/review marks. */
@@ -83,8 +102,10 @@ export interface OfficeDesk {
   approvals: number;
   tray: { queued: number; important: number; heldBy: string; needsReview: number };
   mode: string;
-  /** "#id class" of the peer's single in_progress task; empty when zero, several or unknown. Never guessed. */
+  /** "#id class" of the turn's attributed task (phase 3, exact), else of the peer's single in_progress task; empty when unknown. Never guessed. */
   bubble: string;
+  /** The peer is paused with a turn still open: "finishing a turn" under the Break sign. */
+  finishing: boolean;
   breakNote: string;
   breakResetsAt: number | null;
   cards: OfficeCard[];
@@ -135,6 +156,7 @@ export interface OfficeScene {
   rooms: OfficeRoom[];
   counts: OfficeCounts;
   transitions: OfficeTransitions;
+  links: OfficeLink[];
   /** Sticky desk assignment; pass the whole scene back as `previous` so slots survive churn. */
   slots: Record<string, number>;
   /** Task id -> placement ("room:todo" | "room:work" | "room:review" | "shelf:done" | "desk:<peer>" | "counted:unknown"). */
@@ -216,6 +238,8 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const byId = (a: OfficeTaskInput, b: OfficeTaskInput) => a.id - b.id;
   const todo: OfficeTaskInput[] = [], review: OfficeTaskInput[] = [], workUnplaced: OfficeTaskInput[] = [];
   const workByOwner = new Map<string, OfficeTaskInput[]>();
+  const classById = new Map<number, string>();
+  for (const task of tasks) classById.set(task.id, text(task.class) || "task");
   for (const task of tasks) {
     const state = text(task.state);
     if (state === "proposed") todo.push(task);
@@ -236,13 +260,15 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     const taskClass = text(task.class) || "task";
     const waiting = waitingById.get(task.id) === true;
     const rework = state === "changes_requested";
+    const checking = task.checking === true;
     const owner = text(task.owner);
     const reviewer = text(task.reviewer);
     let name = `#${task.id} ${taskClass}: ${text(task.title)} (${state.replaceAll("_", " ")})`;
     if (waiting) name += ", waiting on dependencies";
     if (rework) name += ", rework";
+    if (checking) name += ", check running";
     if (state === "in_review") name += `, ${owner || "unassigned"} reviewed by ${reviewer || "unassigned"}`;
-    return { id: task.id, taskClass, state, owner, reviewer, waiting, rework, label: `#${task.id} ${taskClass}`, name, x, y, w, h };
+    return { id: task.id, taskClass, state, owner, reviewer, waiting, rework, checking, label: `#${task.id} ${taskClass}`, name, x, y, w, h };
   };
 
   const desks: OfficeDesk[] = shownIds.map((id) => {
@@ -265,12 +291,19 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     const attached = peer.attached !== false;
     const work = (workByOwner.get(id) ?? []).sort(byId);
     const current = work.filter((task) => text(task.state) === "in_progress");
-    const bubble = current.length === 1 ? `#${current[0]!.id} ${text(current[0]!.class) || "task"}` : "";
+    // The open turn's attributed task names the bubble exactly (phase 3); without it the
+    // single-in_progress-task heuristic applies, and otherwise there is no bubble. Never guessed.
+    const turn = peer.turn && typeof peer.turn === "object" ? peer.turn : undefined;
+    const turnTask = turn && typeof turn.task === "number" && Number.isSafeInteger(turn.task) ? turn.task : undefined;
+    const bubble = turnTask !== undefined ? `#${turnTask} ${classById.get(turnTask) ?? "task"}`
+      : current.length === 1 ? `#${current[0]!.id} ${text(current[0]!.class) || "task"}` : "";
+    const finishing = turn !== undefined && condition === "paused";
     const label = LABELS[condition] ?? state;
     const parts = [condition === "busy" ? (bubble ? `busy on task ${bubble}` : "busy")
       : condition === "waiting" ? `waiting on approval (${count})`
       : condition === "paused" && breakNote ? `paused: ${breakNote}`
       : label];
+    if (finishing) parts.push("finishing a turn");
     if (condition !== "waiting" && count > 0) parts.push(`${count} approval${count === 1 ? "" : "s"} waiting`);
     if (!attached) parts.push("disconnected, work retained");
     return {
@@ -279,6 +312,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       dimmed: condition === "offline", attached, approvals: count,
       tray: { queued: num(peer.queued), important: num(peer.queuedImportant), heldBy: text(peer.heldBy), needsReview: num(peer.needsReview) },
       mode: text(peer.permissionMode), bubble, breakNote, breakResetsAt,
+      finishing,
       cards: work.slice(0, DESK_CARDS).map((task, index) => card(task, x + 0.8, y + 7.9 + index * 1.05, DESK_W - 1.6, 1)),
       extraCards: Math.max(0, work.length - DESK_CARDS),
     };
@@ -304,8 +338,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   });
 
   const placed: Record<string, string> = {};
-  for (const task of tasks) {
-    const state = text(task.state);
+  for (const task of tasks) {    const state = text(task.state);
     const owner = text(task.owner);
     placed[task.id] = state === "proposed" ? "room:todo"
       : state === "in_review" ? "room:review"
@@ -375,11 +408,23 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
 
   const roomRows = Math.ceil(rooms.length / cols);
   const desksWidth = shownIds.length ? Math.min(shownIds.length, DESK_COLS) * DESK_DX - 2 : 0;
+  // Phase 3 warning lines: validated down to the three kinds and their id lists; nothing else is copied.
+  const links: OfficeLink[] = [];
+  for (const link of Array.isArray(snapshot?.links) ? snapshot.links : []) {
+    const kind = text(link?.kind);
+    if (kind !== "overlap" && kind !== "conflict" && kind !== "cohort") continue;
+    const linkTasks = (Array.isArray(link?.tasks) ? link.tasks : []).filter((id: unknown) => typeof id === "number" && Number.isSafeInteger(id));
+    const linkPeers = (Array.isArray(link?.peers) ? link.peers : []).filter((id: unknown) => typeof id === "string" && id.length > 0);
+    if (linkTasks.length + linkPeers.length < 2) continue;
+    links.push({ kind, tasks: linkTasks, peers: linkPeers });
+    if (links.length >= 24) break;
+  }
   return {
     cols,
     width: Math.max(desksWidth, Math.min(rooms.length, cols) * ROOM_DX - 2, 1),
     height: roomsY + roomRows * ROOM_DY - 2,
     desks, extraPeers, rooms, counts, transitions, slots, placed,
+    links,
     arcs: keptArcs, alerts: keptAlerts, latched, settle, at, eventTime, lastSeq,
   };
 }

@@ -9,7 +9,7 @@ import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Turns } from "../src/hub/snapshots.ts";
-import { readEvents } from "../src/hub/events.ts";
+import { readEvents, EVENTS_SCHEMA } from "../src/hub/events.ts";
 import { summarize } from "../src/hub/report.ts";
 import { factsHook } from "../src/cli/facts-hook.ts";
 import { parse as parseOverlaps } from "../scripts/overlaps.ts";
@@ -1958,4 +1958,49 @@ test("ui_snapshot preserves public dependencies of PII task stubs (#246)", async
   const task = snapshot.tasks.find((task: any) => task.id === 2);
   expect(task).toMatchObject({ title: '[pii]', detail: '[pii]', deps: [1] });
   expect(JSON.stringify(snapshot)).not.toContain('900101-1234567');
+});
+
+// issue #264 (phase 3): turn, checking and links are additive optional ui_snapshot fields with ids and enums
+// only, so PROTOCOL and EVENTS_SCHEMA stay unchanged and a PII turn exposes no task id.
+test("ui_snapshot carries turn, checking and overlap/cohort links, ids only and PII-safe (#264)", async () => {
+  expect(PROTOCOL).toBe(16);
+  expect(EVENTS_SCHEMA).toBe(1);
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-ui264-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  Bun.spawnSync(["git", "-C", dir, "init", "-q"]);
+  const { daemon, console_ } = await hub({ cwd: dir, checks: { timeout_s: 600, implement: "sleep 30" } });
+  class Slow extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() { this.setState("busy"); }
+    release() { this.setState("idle"); }
+    async stop() { this.setState("offline"); }
+  }
+  const slow = new Slow("slow"), slow2 = new Slow("slow2");
+  daemon.bus.add(slow);
+  daemon.bus.add(slow2);
+  await slow.start();
+  await slow2.start();
+  const op = async (op: string, args: unknown) => (await console_.request({ t: "task", op, args })).text as string;
+  await op("hub_task_propose", { title: "slow part", class: "implement", owner: "slow", refs: { paths: ["src/a.ts"] } });
+  await op("hub_task_propose", { title: "other part", class: "implement", owner: "slow2", refs: { paths: ["src/a.ts"] } });
+  const snap = () => console_.request({ t: "ui_snapshot", after: 0 });
+  let shot: any = {};
+  for (let i = 0; i < 300 && !shot.status?.peers?.slow?.turn; i++) { shot = await snap(); await Bun.sleep(10); }
+  expect(shot.status.peers.slow.turn).toMatchObject({ task: 1, attribution: "delivery" });
+  expect(typeof shot.status.peers.slow.turn.since).toBe("number");
+  expect(shot.links).toContainEqual({ kind: "overlap", tasks: [1, 2], peers: ["slow", "slow2"] });
+  expect(shot.links).toContainEqual({ kind: "cohort", tasks: [1, 2], peers: ["slow", "slow2"] });
+  // While its check runs the task stays in_progress and carries checking: true.
+  expect(await op("hub_task_done", { id: 1, summary: "fixed" })).toContain("its check is queued or running");
+  for (let i = 0; i < 300 && !shot.tasks?.some((t: any) => t.checking); i++) { shot = await snap(); await Bun.sleep(10); }
+  expect(shot.tasks.find((t: any) => t.id === 1)).toMatchObject({ state: "in_progress", checking: true });
+  // A PII task refuses a non-local owner (only the on-prem worker may take it), never joins a link,
+  // and its text is nowhere in the snapshot. (The turn view omits the task id of a private or
+  // PII-attributed turn; such a turn exists only for the in-process local worker.)
+  expect(await op("hub_task_propose", { title: "secret 900101-1234567", class: "review", owner: "slow", refs: { paths: ["src/a.ts"] } })).toContain("owner none");
+  shot = await snap();
+  expect(shot.tasks.find((t: any) => t.id === 3)).toMatchObject({ title: "[pii]" });
+  expect(shot.links.some((link: any) => link.tasks.includes(3))).toBe(false);
+  expect(JSON.stringify(shot)).not.toContain("900101-1234567");
+  slow.release();
 });

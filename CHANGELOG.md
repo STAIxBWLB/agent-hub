@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add optional turn/checking/links snapshot fields for the dashboard office view (exact task bubble, finishing-a-turn, check-running mark, overlap/conflict/cohort warning lines), ids-only and PII-safe with PROTOCOL and EVENTS_SCHEMA unchanged (#264, phase 3 of 4).
+
 - Add snapshot-driven motion to the dashboard Office view: card moves by CSS transform transition, message arcs, delivery warning marks and the busy latch from event rows with timer-free keyframe fades, and the settle rule, with reduced-motion support (#264, phase 2 of 4).
 
 - Add a static flat Office view to the dashboard: stable desks, state rooms, capped cards, an Off/Flat view control persisted in a second host-scoped cookie, and scene/list highlighting, with no daemon change (#264, phase 1 of 4).

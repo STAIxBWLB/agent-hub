@@ -218,6 +218,16 @@ test("MARKER: no body, detail, approval title or PII text enters the serialized 
   }, model, { cols: 4, now: 3000 });
   expect(flowing.arcs).toHaveLength(1);
   expect(JSON.stringify(flowing)).not.toContain(MARKER);
+  // Phase 3: markers in turn-adjacent data, check output and conflict reasons never reach the model.
+  const phased = officeModel({
+    ...dirty,
+    status: { peers: { codex: { state: "busy", turn: { since: 1, task: 1, attribution: "delivery", note: MARKER } }, pi: { state: "idle" } } },
+    tasks: (dirty.tasks as unknown as Record<string, unknown>[]).map((task) => ({ ...task, checking: true, checkOutput: MARKER })),
+    links: [{ kind: "conflict", tasks: [1, 2], peers: ["codex", "pi"], reason: MARKER, paths: [MARKER] }],
+  } as unknown as OfficeSnapshotInput, model, { cols: 4, now: 4000 });
+  expect(phased.links).toEqual([{ kind: "conflict", tasks: [1, 2], peers: ["codex", "pi"] }]);
+  expect(phased.desks[0]!.bubble).toBe("#1 implement");
+  expect(JSON.stringify(phased)).not.toContain(MARKER);
   // The PII stub is carried as the public title, nothing more.
   expect(model.desks[0]!.cards[0]!.name).toContain("[pii]");
 });
@@ -345,4 +355,89 @@ test("the settle rule: gap over 3 s or more than 6 transitions jumps to final po
   const after = officeModel(storm, stormy, { cols: 4, now: 11_000 });
   expect(after.settle).toBe(true);
   expect(officeModel(storm, after, { cols: 4, now: 12_000 })).toEqual(after);
+});
+
+test("phase 3: the open turn names the exact task bubble; without it the heuristic applies", () => {
+  const snap: OfficeSnapshotInput = {
+    status: {
+      peers: {
+        codex: { state: "busy", turn: { since: 9000, task: 5, attribution: "delivery" } },
+        kimi: { state: "busy", turn: { since: 9000, attribution: "unattributed" } },
+        claude: { state: "busy" },
+      },
+    },
+    tasks: [
+      { id: 4, title: "one", class: "implement", state: "in_progress", owner: "codex" },
+      { id: 5, title: "two", class: "review", state: "in_progress", owner: "codex" },
+      { id: 6, title: "three", class: "test", state: "in_review", owner: "kimi", reviewer: "claude" },
+      { id: 7, title: "four", class: "plan", state: "in_progress", owner: "claude" },
+    ],
+  };
+  const desks = new Map(officeModel(snap, null, { cols: 4, now: 10_000 }).desks.map((desk) => [desk.id, desk]));
+  // codex has two in_progress tasks, so the heuristic would say nothing; the turn names task 5 exactly.
+  expect(desks.get("codex")!.bubble).toBe("#5 review");
+  expect(desks.get("codex")!.name).toBe("codex: busy on task #5 review");
+  // An unattributed turn carries no task: the heuristic finds kimi has no in_progress task, so no bubble.
+  expect(desks.get("kimi")!.bubble).toBe("");
+  // No turn field (an older daemon): the single in_progress task heuristic still applies.
+  expect(desks.get("claude")!.bubble).toBe("#7 plan");
+  // A turn task that is no longer on the board still bubbles by id, with a plain label.
+  const gone = officeModel({ status: { peers: { codex: { state: "busy", turn: { since: 1, task: 99, attribution: "delivery" } } } }, tasks: [] }, null, { cols: 1, now: 100 });
+  expect(gone.desks[0]!.bubble).toBe("#99 task");
+});
+
+test("phase 3: a paused peer with an open turn is finishing a turn", () => {
+  const model = officeModel({
+    status: {
+      peers: {
+        kimi: { state: "paused", paused: "quota exhausted", turn: { since: 9000, task: 4, attribution: "delivery" } },
+        codex: { state: "busy", turn: { since: 9000, task: 4, attribution: "delivery" } },
+      },
+    },
+    tasks: [{ id: 4, title: "work", class: "implement", state: "in_progress", owner: "codex" }],
+  }, null, { cols: 4, now: 10_000 });
+  const kimi = model.desks.find((desk) => desk.id === "kimi")!;
+  expect(kimi.condition).toBe("paused");
+  expect(kimi.finishing).toBe(true);
+  expect(kimi.name).toBe("kimi: paused: quota exhausted, finishing a turn");
+  expect(model.desks.find((desk) => desk.id === "codex")!.finishing).toBe(false);
+  // Without a turn a paused peer is just on a break.
+  const plain = officeModel({ status: { peers: { kimi: { state: "paused" } } }, tasks: [] }, null, { cols: 1, now: 100 });
+  expect(plain.desks[0]!.finishing).toBe(false);
+});
+
+test("phase 3: a checking task keeps its place and is marked, and links pass through as ids only", () => {
+  const model = officeModel({
+    status: { peers: { codex: { state: "busy" }, kimi: { state: "busy" } } },
+    tasks: [
+      { id: 4, title: "build", class: "implement", state: "in_progress", owner: "codex", checking: true },
+      { id: 5, title: "other", class: "implement", state: "in_progress", owner: "kimi" },
+    ],
+    links: [
+      { kind: "overlap", tasks: [4, 5], peers: ["codex", "kimi"], paths: ["secret-path"], note: "marker text" },
+      { kind: "conflict", tasks: [5, 4], peers: ["kimi", "codex"], reason: "marker text" },
+      { kind: "cohort", tasks: [4, 5], peers: ["codex", "kimi"] },
+      { kind: "mystery", tasks: [4, 5], peers: ["codex"] },
+      { kind: "overlap", tasks: ["4"], peers: [] },
+      "junk",
+    ] as OfficeSnapshotInput["links"],
+  }, null, { cols: 4, now: 10_000 });
+  const card = model.desks.find((desk) => desk.id === "codex")!.cards[0]!;
+  expect(card.checking).toBe(true);
+  expect(card.name).toContain("check running");
+  expect(model.placed[4]).toBe("desk:codex"); // rooms follow states only: checking never moves the card
+  expect(model.links).toEqual([
+    { kind: "overlap", tasks: [4, 5], peers: ["codex", "kimi"] },
+    { kind: "conflict", tasks: [5, 4], peers: ["kimi", "codex"] },
+    { kind: "cohort", tasks: [4, 5], peers: ["codex", "kimi"] },
+  ]);
+  expect(JSON.stringify(model.links)).not.toContain("secret-path");
+  expect(JSON.stringify(model.links)).not.toContain("marker text");
+});
+
+test("phase 3 fields are optional both ways: an older daemon's snapshot models as before", () => {
+  const model = officeModel(fixture(), null, { cols: 4, now: 1000 });
+  expect(model.links).toEqual([]);
+  for (const desk of model.desks) expect(desk.finishing).toBe(false);
+  for (const desk of model.desks) for (const card of desk.cards) expect(card.checking).toBe(false);
 });

@@ -685,6 +685,38 @@ export class Tasks {
   /** The tasks an overlap text for `task` names: their plans are in it (issue #108). */
   overlapTasks = (task: Task): number[] => this.overlapHits(task).map((h) => h.task.id);
 
+  /**
+   * Dashboard warning links (#264): the board's overlap pairs and the live cohorts, as task and peer ids only.
+   * Paths, symbols and plans stay out; PII tasks are excluded by the same rules overlapHits applies.
+   * ponytail: O(open²) board reads per call, fine at dashboard board sizes; cache by board revision if it ever shows.
+   */
+  overlapLinks(): { tasks: [number, number]; peers: string[] }[] {
+    const links: { tasks: [number, number]; peers: string[] }[] = [];
+    const seen = new Set<string>();
+    for (const task of this.d.board.list()) {
+      if (!OPEN.includes(task.state) || !task.owner || this.isPii(task)) continue;
+      for (const hit of this.overlapHits(task)) {
+        const pair = [task.id, hit.task.id].sort((a, b) => a - b) as [number, number];
+        const key = pair.join(":");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        links.push({ tasks: pair, peers: [...new Set([task.owner, hit.task.owner!])].sort() });
+      }
+    }
+    return links;
+  }
+
+  /** The live cohorts as dashboard links (#264): member task ids and their owners, nothing else. */
+  cohortLinks(): { tasks: number[]; peers: string[] }[] {
+    const links: { tasks: number[]; peers: string[] }[] = [];
+    for (const cohort of this.cohorts.list()) {
+      const members = [...cohort.members.values()];
+      if (members.length < 2) continue;
+      links.push({ tasks: members.map((m) => m.task).sort((a, b) => a - b), peers: [...new Set(members.map((m) => m.owner))].sort() });
+    }
+    return links;
+  }
+
   /** While a gone owner's tasks move, its other tasks are about to move too: they are no one to settle with. */
   private releasing: PeerId | undefined;
 

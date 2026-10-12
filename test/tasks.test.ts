@@ -3122,3 +3122,23 @@ test("a named reviewer change withdraws its unread request and notifies the form
   expect(read.find(env => env.refs?.task === String(task.id) && env.kind === "status")!.body).toContain("is withdrawn");
   await expect(f.tasks.review("kimi", task.id, "approved")).rejects.toThrow("reviewer");
 });
+
+// issue #264 (phase 3): the dashboard's warning links are task and peer ids only, from the board's own overlap
+// test and the live cohorts; PII tasks never join a link.
+test("dashboard links: overlap and cohort rows carry task and peer ids only", async () => {
+  const { tasks } = await setup(["claude", "codex", "kimi"]);
+  const first = await tasks.propose("kimi", { title: "one part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const second = await tasks.propose("codex", { title: "other part", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  expect(tasks.overlapLinks()).toEqual([{ tasks: [first.id, second.id], peers: ["codex", "kimi"] }]);
+  expect(tasks.cohortLinks()).toEqual([{ tasks: [first.id, second.id], peers: ["codex", "kimi"] }]);
+  // A lone task has no link, and an approved task drops out of both.
+  await tasks.propose("kimi", { title: "solo", class: "implement", owner: "kimi", refs: { paths: ["src/b.ts"] } });
+  expect(tasks.overlapLinks()).toHaveLength(1);
+  // A PII task never joins a link, whatever its refs say.
+  const pii = await tasks.propose("kimi", { title: "secret 900101-1234567", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  expect(tasks.isPii(pii)).toBe(true);
+  for (const links of [tasks.overlapLinks(), tasks.cohortLinks()]) {
+    expect(JSON.stringify(links)).not.toContain("900101-1234567");
+    expect(links.flatMap((link) => link.tasks)).not.toContain(pii.id);
+  }
+});

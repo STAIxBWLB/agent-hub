@@ -1866,6 +1866,16 @@ export async function startDaemon(opts: DaemonOptions) {
   // Early conflict detection (issue #32): the files a turn changed, against what other owners' open tasks changed
   // before it. Warns both owners once per file and task; never blocks a write.
   const conflictSeen = new Set<string>();
+  // #264 (phase 3): recent conflicts as dashboard warning links. A conflict is a moment at a turn's end, so the
+  // daemon keeps a short in-memory list; ids only, and the snapshot drops a link once a task of it is no longer open.
+  const recentConflicts: { tasks: [number, number]; peers: string[] }[] = [];
+  const recordConflictLink = (a: number, b: number, peers: string[]) => {
+    const pair = [a, b].sort((x, y) => x - y).join(":");
+    const stale = recentConflicts.findIndex((c) => [...c.tasks].sort((x, y) => x - y).join(":") === pair);
+    if (stale >= 0) recentConflicts.splice(stale, 1);
+    recentConflicts.push({ tasks: [a, b], peers: [...new Set(peers)].sort() });
+    if (recentConflicts.length > 12) recentConflicts.shift();
+  };
   const turnTasks = new Map<string, number[]>();
   /** Work a conflict notice is about: open tasks and tasks in review (#91); a notice for anything else is dropped (#106). */
   const CONFLICT_STATES: Task["state"][] = ["proposed", "in_progress", "changes_requested", "in_review"];
@@ -1887,6 +1897,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. ${together}`;
         notify(`conflict: ${text}`);
         event({ type: "conflict", peer: record.peer, task: ours.id, other: theirs.id, owner: otherTurn.peer, paths: named, concurrent: true, turns: [record.id, otherTurn.id] });
+        recordConflictLink(ours.id, theirs.id, [record.peer, otherTurn.peer]);
         // Each owner hears it while its own task is open; once that task is closed the notice is dropped (issue #106).
         for (const [owner, task] of [[record.peer, ours.id], [otherTurn.peer, theirs.id]] as const) if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task, text, CONFLICT_STATES);
       }
@@ -1923,6 +1934,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const files = [...named, ...(hidden ? [`${hidden} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
       notify(`conflict: ${peer}${ours} changed ${files}, which #${task.id} (owner ${owner}) changed before${others.length ? ` (concurrent: ${others.join(", ")})` : ""}`);
       event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths: named, concurrent: others.length > 0 });
+      if (mine[0]) recordConflictLink(mine[0].id, task.id, [peer, owner]);
       // Both notices are about an open task of their recipient: dropped at delivery once it is closed (issue #106).
       const settle = mine[0] && tasks.silentFor(mine[0].id) && tasks.silentFor(task.id) ? `; do not message ${owner} (you are in one turn-free cohort): the hub shows you its changes` : `, and settle it with ${owner} via hub_send`;
       const toPeer = `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work${settle}.${concurrent}`;
@@ -2932,16 +2944,34 @@ export async function startDaemon(opts: DaemonOptions) {
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
+    // #264 (phase 3): turn, checking and links are additive optional fields that older pages ignore,
+    // so PROTOCOL and EVENTS_SCHEMA stay unchanged. They carry ids and enums only.
+    const turnView = (peer: PeerId) => {
+      const turn = turns.get(peer);
+      if (!turn) return {};
+      const pii = turn.private === true || turn.attribution.pii === true;
+      return { turn: { since: turn.start, attribution: turn.attribution.attribution, ...(!pii && turn.attribution.task !== undefined ? { task: turn.attribution.task } : {}) } };
+    };
+    const links = [
+      ...tasks.overlapLinks().map((link) => ({ kind: "overlap" as const, ...link })),
+      ...tasks.cohortLinks().map((link) => ({ kind: "cohort" as const, ...link })),
+      ...recentConflicts.flatMap((conflict) => {
+        const [a, b] = conflict.tasks;
+        const ta = board.get(a), tb = board.get(b);
+        return ta && tb && CONFLICT_STATES.includes(ta.state) && CONFLICT_STATES.includes(tb.state) ? [{ kind: "conflict" as const, tasks: conflict.tasks, peers: conflict.peers }] : [];
+      }),
+    ];
     return {
       ok: true,
       projectId,
       instanceId,
-      status: { peers: status().peers },
+      status: { peers: Object.fromEntries(Object.entries(status().peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])) },
       tasks: board.list().map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(tasks.isChecking(task.id) ? { checking: true } : {}) };
       }),
+      links,
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
         const req = JSON.parse(push);

@@ -2,13 +2,16 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
-## Office view (#264, phases 1-2)
+## Office view (#264, phases 1-3)
 
-Not run live yet (unverified). Phases 1-2 ship the static Flat office with
+Not run live yet (unverified). Phases 1-3 ship the Flat office with
 snapshot-driven motion (card moves, message arcs, delivery marks, the busy
-latch, the settle rule) and its Off/Flat control; `test/office-model.test.ts`
-and `test/office-view.test.ts` cover the model, the cookie, the CSP cleanliness,
-the motion wiring and the settle rule against fakes, but no browser was opened.
+latch, the settle rule), the Off/Flat control, and the optional turn/checking/
+links snapshot fields (exact task bubble, check-running mark, finishing-a-turn,
+warning lines); `test/office-model.test.ts`, `test/office-view.test.ts`,
+`test/tasks.test.ts` and `test/daemon.test.ts` cover the model, the daemon
+fields, the cookie, the CSP cleanliness, the motion wiring and the settle rule
+against fakes, but no browser was opened.
 The live leg: `ahub up` on a scratch project with two agents working, `ahub ui`,
 set the Office View control to Flat. Check the scene in both themes and at phone
 width with the browser console open (no CSP violations), that cards glide between

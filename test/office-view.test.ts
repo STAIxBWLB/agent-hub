@@ -329,3 +329,56 @@ test("no arc is drawn for history on the first snapshot (no replay)", () => {
   });
   expect(get("office").findAll((node) => (node.attrs.class ?? "").includes("office-arc"))).toHaveLength(0);
 });
+
+test("phase 3: the exact task bubble, finishing-a-turn and the check-running mark render", () => {
+  const { api, get } = startOfficeRuntime(() => "flat");
+  api.draw({
+    status: {
+      peers: {
+        codex: { state: "busy", queued: 0, turn: { since: 1, task: 5, attribution: "delivery" } },
+        kimi: { state: "paused", paused: "quota exhausted", queued: 0, turn: { since: 1, task: 6, attribution: "single_open" } },
+      },
+    },
+    tasks: [
+      { id: 4, title: "one", class: "implement", state: "in_progress", owner: "codex", checking: true },
+      { id: 5, title: "two", class: "review", state: "in_progress", owner: "codex" },
+      { id: 6, title: "three", class: "implement", state: "in_progress", owner: "kimi" },
+    ],
+    permissions: [],
+    budget: {},
+    events: [],
+  });
+  const codex = api.maps.officeDesks.get("codex")!;
+  expect(codex.text()).toContain("#5 review"); // the turn's task, not the two in_progress tasks
+  expect(codex.attrs["aria-label"]).toBe("codex: busy on task #5 review");
+  const kimi = api.maps.officeDesks.get("kimi")!;
+  expect(kimi.text()).toContain("finishing a turn"); // under the Break sign
+  expect(kimi.text().indexOf("Break: quota exhausted")).toBeLessThan(kimi.text().indexOf("finishing a turn"));
+  const card = api.maps.officeCards.get(4)!;
+  expect(card.attrs.class).toContain("office-card-checking");
+  expect(card.text()).toContain("⟳");
+  expect(card.attrs["aria-label"]).toContain("check running");
+  expect(get("office").findAll((node) => (node.attrs.class ?? "").includes("office-checking"))).toHaveLength(1);
+});
+
+test("phase 3: warning lines draw between the desks a link names", () => {
+  const { api, get } = startOfficeRuntime(() => "flat");
+  api.draw({
+    ...snapshot,
+    links: [
+      { kind: "overlap", tasks: [4, 5], peers: ["codex", "claude"] },
+      { kind: "conflict", tasks: [2, 4], peers: ["kimi", "codex"] },
+      { kind: "cohort", tasks: [4, 5], peers: ["codex", "ghost"] }, // a peer without a desk: no line
+    ],
+  });
+  const links = get("office").findAll((node) => (node.attrs.class ?? "").split(" ").includes("office-link"));
+  expect(links).toHaveLength(2);
+  expect(links[0]!.attrs.class).toContain("office-link-overlap");
+  expect(links[0]!.text()).toContain("overlap #4 #5");
+  expect(links[0]!.findAll((node) => node.attrs.class === "office-link-line")).toHaveLength(1);
+  expect(links[1]!.attrs.class).toContain("office-link-conflict");
+  expect(links[0]!.attrs["aria-hidden"]).toBe("true");
+  // The link is state-driven: it stays while the link exists and leaves when it is gone.
+  api.draw({ ...snapshot, links: [] });
+  expect(get("office").findAll((node) => (node.attrs.class ?? "").split(" ").includes("office-link") && !node.classList.contains("office-leaving"))).toHaveLength(0);
+});
