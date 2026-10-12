@@ -2730,3 +2730,20 @@ value changes, including repeated local wall times during a clock change. Local
 inputs retain seconds/milliseconds and support HTML date years without truncating
 fields; see https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#local-dates-and-times.
 Current exact-head date-editor proof is pending.
+
+
+## Backlog split (#263, source verification pending)
+
+Use `hub_backlog_split` with parent id/revision, reason and two to eight part
+objects, or `ahub backlog split <id> <revision> <parts-json> <reason>`. Each part
+has a title and optional detail/class/refs/plan; `after` names existing ids and
+`afterParts` names earlier zero-based parts. The selected task's dashboard Split
+form accepts one title per line and optional sequential dependencies.
+
+The original card remains integration/acceptance work and waits for every part.
+Children retain prerequisite, privacy and phase planning. A person's P0 order
+permits that goal's required predecessors, preventing dependency deadlock.
+Unused unchanged backlog children can be removed by latest split undo; later
+edits, execution, ownership or outside references refuse it. All writes roll
+back together and observers receive changes only after commit. Current source
+and native/visual verification remain pending.

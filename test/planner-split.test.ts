@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import type { Envelope } from "../src/hub/envelope.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 const cleanup:(()=>void)[]=[];
@@ -12,7 +14,7 @@ afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
 function rig(){
   const dir=mkdtempSync(join(tmpdir(),"ahub-split-")),board=new Board(join(dir,"hub.db")),bus=new Bus({batchMs:0});
   const tasks=new Tasks({board,bus,cwd:dir,project:"split",roles:{claude:["planner"]},routing:()=>loadRouting(dir),notify:()=>{}});
-  cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});return {board,tasks};
+  cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});return {board,tasks,bus};
 }
 test("backlog split commits a child DAG and undo provenance without partial callbacks (#263)",async()=>{
   const {board,tasks}=rig(),parent=await tasks.propose(USER,{title:"integration goal",class:"implement",backlog:true});
@@ -49,4 +51,16 @@ test("split undo refuses child references and invalid late writes stay atomic (#
   const split=await tasks.splitBacklog("claude",{id:parent.id,revision:0,parts:[{title:"first"},{title:"second"}],reason:"parts"});
   await tasks.propose(USER,{title:"external dependent",class:"implement",backlog:true,after:[split.children[0]!.id]});
   await expect(tasks.undoPlanning("claude",parent.id,1)).rejects.toThrow("referenced");expect(board.list()).toHaveLength(4);
+});
+
+
+test("person P0 integration order allows its split prerequisites first (#263)",async()=>{
+  const {board,tasks,bus}=rig();
+  class Peer extends BasePeer{async start(){this.setState("idle");}async stop(){}async deliver(_envs:Envelope[]){} }
+  for(const id of ["codex","claude"]){const peer=new Peer(id);bus.add(peer);await peer.start();}
+  const parent=await tasks.propose(USER,{title:"urgent integration",class:"implement",backlog:true,urgent:true});
+  await tasks.planBacklog(USER,{id:parent.id,revision:0,fields:{rank:1,priority:0},reason:"person first goal"});
+  const split=await tasks.splitBacklog("claude",{id:parent.id,revision:1,parts:[{title:"first"},{title:"second"}],reason:"prerequisites"});
+  const part=split.children[0]!;expect(await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"required first"})).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
+  expect(board.get(parent.id)?.state).toBe("backlog");
 });

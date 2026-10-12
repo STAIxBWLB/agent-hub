@@ -1677,3 +1677,9 @@ reservation floors, post-screen races, offer-time capacity changes, dependency
 approval and pin refusal, pending-only undo, bounded integer settings/local
 store and actual HTTP/tool/status projections. Current full proof and native
 planner/two-release/desktop/phone readback remain unverified.
+
+
+Split fixtures cover atomic callbacks/rollback, earlier-part DAGs, cycle refusal,
+changed/referenced children, private phase inheritance, P0 prerequisites and
+actual tool/CLI/authenticated HTTP undo. Full current source/native/visual proof
+remains pending; the inherited started fixture exception is still unresolved.

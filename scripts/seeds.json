@@ -2016,6 +2016,14 @@
       "replacement": "label:release.name",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "redacted release options retain distinguishable public ids (#263)"
+    },
+    {
+      "id": "split-person-prerequisite-order",
+      "file": "src/hub/tasks.ts",
+      "search": " && !this.prerequisiteOf(other, task.id)",
+      "replacement": " && true",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "person P0 integration order allows its split prerequisites first (#263)"
     }
   ]
 }

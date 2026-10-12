@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add atomic backlog decomposition and bounded unused-child undo with staged DAGs and tool/CLI/dashboard wiring (#263).
+
 - Add planner WIP slot admission and bounded pending-pull undo, configured capacity through existing settings, and tool/CLI/dashboard/status wiring (#263).
 
 - Extend backlog planning with bounded acyclic dependencies and rostered reservations, retaining revision-fenced undo and unstarted-work floors (#263).

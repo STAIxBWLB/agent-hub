@@ -1053,6 +1053,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (["pull", "return"].includes(sub ?? "") && args.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
     if (!/^\d+$/.test(revision ?? "")) fail("planning revision is required");
     if (sub === "pull-ready" && args.length >= 4) return console.log(await taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: args.slice(3).join(" ") }));
+    if (sub === "split" && value && reason.length) {
+      let parts: unknown;try { parts=JSON.parse(value); } catch { return fail("split parts must be JSON"); }
+      return console.log(await taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
+    }
     if (sub === "undo" && args.length === 3) return console.log(await taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
     if (!["plan", "pin"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
     let fields: unknown;
