@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { supportsBoardReleaseFilter } from "./board-read.ts";
+import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
@@ -1100,11 +1100,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (release) { const hub = await connect(); try { const reply = await hub.request({ t: "status" }); boardStatus = reply.status; if (!supportsBoardReleaseFilter(boardStatus)) fail("running hub does not support release filters; use a compatible daemon"); } finally { hub.close(); } }
     const ready = rest.includes("--ready"), byColumn = rest.includes("--columns");
     const state = rest.find((a) => !a.startsWith("--"));
-    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}) })) as any[];
+    if (byColumn && !boardStatus) { const hub = await connect(); try { boardStatus = (await hub.request({ t: "status" })).status; } finally { hub.close(); } }
+    if (byColumn && !supportsBoardColumnMetadata(boardStatus)) fail("running hub does not support accurate board column metadata; use a compatible daemon");
+    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) })) as any[];
     if (options.json && !byColumn) return console.log(JSON.stringify(tasks, null, 2));
     let allTasks: any[] | null = tasks;
     if (ready || state || release) {
-      try { allTasks = JSON.parse(await taskOp("hub_task_list", {}, true)) as any[]; }
+      try { allTasks = JSON.parse(await taskOp("hub_task_list", byColumn ? { columnMetadata: true } : {}, true)) as any[]; }
       catch (error) {
         allTasks = null;
         console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\n\t]/g, " ")}` }], false));

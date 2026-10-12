@@ -4,3 +4,9 @@ export function supportsBoardReleaseFilter(status: unknown): boolean {
   const capability = (status as Record<string,unknown>).boardReadCapabilities;
   return !!capability && typeof capability === "object" && (capability as Record<string,unknown>).releaseFilter === true;
 }
+
+export function supportsBoardColumnMetadata(status: unknown): boolean {
+  if (!status || typeof status !== "object") return false;
+  const capability = (status as Record<string,unknown>).boardReadCapabilities;
+  return !!capability && typeof capability === "object" && (capability as Record<string,unknown>).columnMetadata === true;
+}

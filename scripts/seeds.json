@@ -2128,6 +2128,14 @@
       "replacement": "roleInfo: {}",
       "testFile": "test/role-settings.test.ts",
       "testName": "dashboard role metadata retains separate current and pending catalog guidance (#295)"
+    },
+    {
+      "id": "board-column-started-projection",
+      "file": "src/hub/daemon.ts",
+      "search": "...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {})",
+      "replacement": "...{}",
+      "testFile": "test/board-followup-surfaces.test.ts",
+      "testName": "board release filters and columns are readonly and retain agent backlog floors (#263)"
     }
   ]
 }
