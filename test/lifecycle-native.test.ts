@@ -17,16 +17,16 @@ function root() {
 }
 test("every managed MCP surface advertises the project lifecycle ids in its real tools response (#257)", async () => {
   const dir = root();
-  for (const [peer, mode] of [["claude", "inbox"], ["claude", "channel"], ["codex", "tools"], ["kimi", "tools"], ["qwen", "tools"], ["jcode", "tools"], ["pi", "tools"]] as const) {
+  for (const entry of ["../src/adapters/claude-channel.ts", "../plugins/agent-hub/server.js"]) for (const [peer, mode] of [["claude", "inbox"], ["claude", "channel"], ["codex", "tools"], ["kimi", "tools"], ["qwen", "tools"], ["jcode", "tools"], ["pi", "tools"]] as const) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !["CODEX_THREAD_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "AGENTHUB_CHANNEL", "AGENTHUB_MODE", "AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID"].includes(key))) as Record<string, string>;
     Object.assign(env, { AGENTHUB_PROJECT_DIR: dir, AGENTHUB_STATE_DIR: join(dir, "state"), AGENTHUB_PEER_ID: peer });
     if (mode === "channel") env.AGENTHUB_CHANNEL = "1"; if (mode === "tools") env.AGENTHUB_MODE = "tools";
     const client = new Client({ name: "lifecycle-schema-fixture", version: "1" });
-    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], env, stderr: "pipe" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, entry)], env, stderr: "pipe" });
     try {
       await client.connect(transport); const tools = await client.listTools();
       const schema = tools.tools.find(t => t.name === "hub_sdlc_record")?.inputSchema.properties?.receipt as { properties: { stage: { enum: string[] } } };
-      expect(schema.properties.stage.enum, `${peer}/${mode}`).toEqual(ids);
+      expect(schema.properties.stage.enum, `${entry}:${peer}/${mode}`).toEqual(ids);
     } finally { await client.close(); }
   }
 });

@@ -6919,6 +6919,116 @@ var require_dist = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.default = formatsPlugin;
 });
+
+// src/hub/sdlc.ts
+import { constants, openSync, fstatSync, readSync, closeSync } from "fs";
+import { join } from "path";
+
+// src/hub/child-process.ts
+var PS_OPTIONS = { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, detached: true };
+var emptied = new WeakSet;
+
+// src/hub/sdlc.ts
+var SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"];
+var STAGE_ID = /^[a-z][a-z0-9_-]{0,47}$/;
+var STAGE_GATES = ["issue", "pr", "local", "review", "checks", "phase"];
+var baseActor = (base) => base === "review" || base === "verify" ? "reviewer" : base === "merge" || base === "release" ? "person" : "owner/planner";
+function stageDefinition(config, stage) {
+  if (!config.stages.includes(stage))
+    return;
+  if (config.definitions && Object.hasOwn(config.definitions, stage))
+    return config.definitions[stage];
+  if (!SDLC_STAGES.includes(stage))
+    return;
+  const base = stage;
+  return { base, actor: baseActor(base), entry_gates: [], exit_gates: [], after: [] };
+}
+function definitions(raw, stages) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length > 32)
+    throw new Error("sdlc.definitions: expected at most 32 stage definitions");
+  if (!Array.isArray(stages) || !stages.length || stages.length > 32 || stages.some((s) => typeof s !== "string" || !STAGE_ID.test(s)) || new Set(stages).size !== stages.length)
+    throw new Error("sdlc.stages: expected 1..32 distinct bounded stage ids");
+  const result = Object.create(null);
+  for (const [id, value] of Object.entries(raw)) {
+    if (!STAGE_ID.test(id) || !stages.includes(id) || !value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("sdlc.definitions: invalid or unlisted stage");
+    const def = value;
+    if (Object.keys(def).some((k) => !["base", "actor", "entry_gates", "exit_gates", "after"].includes(k)) || !SDLC_STAGES.includes(def.base))
+      throw new Error("sdlc.definitions: unknown field or base");
+    const base = def.base;
+    if (SDLC_STAGES.includes(id) && id !== base)
+      throw new Error("sdlc.definitions: built-in stage base cannot change");
+    const actor = def.actor ?? baseActor(base);
+    if (typeof actor !== "string" || actor !== baseActor(base) && !["owner", "reviewer", "person", "planner"].includes(actor))
+      throw new Error("sdlc.definitions.actor: unknown actor");
+    const gates = (key) => {
+      const list = def[key] ?? [];
+      if (!Array.isArray(list) || list.length > 6 || list.some((g) => !STAGE_GATES.includes(g)) || new Set(list).size !== list.length)
+        throw new Error(`sdlc.definitions.${key}: unknown or duplicate gate`);
+      return [...list];
+    };
+    const after = def.after ?? [];
+    if (!Array.isArray(after) || after.length > 8 || after.some((a) => typeof a !== "string" || !stages.includes(a) || stages.indexOf(a) >= stages.indexOf(id)) || new Set(after).size !== after.length)
+      throw new Error("sdlc.definitions.after: dependencies must be distinct earlier stages (no missing, self, forward or cyclic edge)");
+    result[id] = { base, actor, entry_gates: gates("entry_gates"), exit_gates: gates("exit_gates"), after: [...after] };
+  }
+  const config = { stages, definitions: result };
+  if (stages.some((s) => !stageDefinition(config, s)) || !["review", "merge"].every((base) => stages.some((s) => stageDefinition(config, s)?.base === base)))
+    throw new Error("sdlc.stages: define every custom id and include review and merge base destinations");
+  return { stages: [...stages], definitions: result };
+}
+function sdlcConfig(value) {
+  if (value === undefined)
+    return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("sdlc: expected a table");
+  const raw = value;
+  for (const key of Object.keys(raw))
+    if (!["mode", "required_checks", "stages", "workflow", "definitions"].includes(key))
+      throw new Error(`sdlc.${key}: unknown field`);
+  const mode = raw.mode ?? "off";
+  if (mode !== "off" && mode !== "advise" && mode !== "enforce")
+    throw new Error("sdlc.mode: expected off, advise or enforce");
+  const workflow = raw.workflow ?? "none";
+  if (workflow !== "none" && workflow !== "gsd-lite")
+    throw new Error("sdlc.workflow: expected none or gsd-lite");
+  const checks = raw.required_checks ?? [];
+  if (!Array.isArray(checks) || checks.length > 32 || checks.some((c) => typeof c !== "string" || !c.trim() || c.length > 120 || /[\r\n\x00-\x1f]/.test(c)) || new Set(checks).size !== checks.length)
+    throw new Error("sdlc.required_checks: expected at most 32 unique nonempty names");
+  if (raw.definitions !== undefined)
+    return { mode, requiredChecks: [...checks], ...definitions(raw.definitions, raw.stages), ...workflow === "gsd-lite" ? { workflow } : {} };
+  const stages = raw.stages ?? [...SDLC_STAGES];
+  if (!Array.isArray(stages) || stages.length !== SDLC_STAGES.length || stages.some((stage, i) => stage !== SDLC_STAGES[i]))
+    throw new Error("sdlc.stages: use spec, plan, implement, review, verify, merge, release in that order; custom stages are not supported yet");
+  return { mode, requiredChecks: [...checks], stages: [...stages], ...workflow === "gsd-lite" ? { workflow } : {} };
+}
+function loadSdlc(cwd) {
+  try {
+    const fd = openSync(join(cwd, ".agenthub", "sdlc.toml"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = fstatSync(fd), cap = 64 * 1024;
+      if (!before.isFile() || before.nlink !== 1 || before.size > cap)
+        throw new Error("sdlc.toml must be a regular single-link file within 64 KiB");
+      const bytes = Buffer.alloc(cap + 1);
+      let length = 0, n = 0;
+      while ((n = readSync(fd, bytes, length, bytes.length - length, null)) > 0) {
+        length += n;
+        if (length > cap)
+          throw new Error("sdlc.toml exceeds 64 KiB");
+      }
+      const after = fstatSync(fd);
+      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size)
+        throw new Error("sdlc.toml changed during read");
+      return sdlcConfig(Bun.TOML.parse(bytes.subarray(0, length).toString("utf8")));
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return sdlcConfig(undefined);
+    throw error;
+  }
+}
 // templates/profiles/dev.json
 var dev_default = {
   name: "dev",
@@ -7065,8 +7175,8 @@ var OUTCOMES_KEPT_MS = 7 * 24 * 3600000;
 
 // src/hub/roles.ts
 import { createHash } from "crypto";
-import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync } from "fs";
-import { join } from "path";
+import { constants as constants2, closeSync as closeSync2, fstatSync as fstatSync2, lstatSync, openSync as openSync2, readSync as readSync2, readdirSync } from "fs";
+import { join as join2 } from "path";
 
 // src/hub/envelope.ts
 var HUB = "hub";
@@ -7471,24 +7581,24 @@ function parseRole(text, stem, layer) {
   return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES2), body, review, layer, hash: createHash("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const fd = openSync2(file, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
   try {
-    const before = fstatSync(fd);
+    const before = fstatSync2(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 8192)
       throw new Error("role must be a bounded regular file");
     const bytes = Buffer.alloc(8193);
     let length = 0, n = 0;
-    while ((n = readSync(fd, bytes, length, bytes.length - length, null)) > 0) {
+    while ((n = readSync2(fd, bytes, length, bytes.length - length, null)) > 0) {
       length += n;
       if (length > 8192)
         throw new Error("role exceeds file cap");
     }
-    const after = fstatSync(fd);
+    const after = fstatSync2(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size)
       throw new Error("role changed during read");
     return bytes.subarray(0, length).toString("utf8");
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 function loadRoleCatalog(cwd) {
@@ -7503,7 +7613,7 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join(cwd, ".agenthub"), dir = join(config, "roles");
+    const config = join2(cwd, ".agenthub"), dir = join2(config, "roles");
     for (const path of [config, dir]) {
       const stat = lstatSync(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
@@ -7515,7 +7625,7 @@ function loadRoleCatalog(cwd) {
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join2(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -15918,15 +16028,15 @@ class StdioServerTransport {
 
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync3 } from "fs";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/hub/control-client.ts
 import { readFileSync as readFileSync2 } from "fs";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 
 // src/hub/project.ts
 import { existsSync, lstatSync as lstatSync2, readFileSync, realpathSync } from "fs";
-import { basename, dirname, isAbsolute, join as join2, resolve } from "path";
+import { basename, dirname, isAbsolute, join as join3, resolve } from "path";
 
 // src/hub/git.ts
 import { spawnSync } from "child_process";
@@ -15945,7 +16055,7 @@ var canonical = (path) => {
     return realpathSync(absolute);
   } catch {
     const parent = dirname(absolute);
-    return parent === absolute ? absolute : join2(canonical(parent), basename(absolute));
+    return parent === absolute ? absolute : join3(canonical(parent), basename(absolute));
   }
 };
 function gitRoot(dir) {
@@ -15956,7 +16066,7 @@ function gitRoot(dir) {
   return root ? canonical(root) : undefined;
 }
 function hasConfig(dir) {
-  return existsSync(join2(dir, ".agenthub", "config.json"));
+  return existsSync(join3(dir, ".agenthub", "config.json"));
 }
 function projectRoot(cwd) {
   const input = isAbsolute(cwd) ? cwd : resolve(cwd);
@@ -15985,7 +16095,7 @@ function parseRoot(dir) {
   return current;
 }
 function stateMarker(stateDir) {
-  for (const file of [join2(stateDir, "project.json"), join2(stateDir, "status.json")]) {
+  for (const file of [join3(stateDir, "project.json"), join3(stateDir, "status.json")]) {
     try {
       const value = JSON.parse(readFileSync(file, "utf8"));
       const root = value.root ?? value.cwd;
@@ -15999,7 +16109,7 @@ function projectContext(cwd, env = process.env) {
   const root = projectRoot(cwd);
   const override = env.AGENTHUB_STATE_DIR?.trim();
   if (!override)
-    return { root, stateDir: canonical(join2(root, ".agenthub", "state")) };
+    return { root, stateDir: canonical(join3(root, ".agenthub", "state")) };
   const declared = env.AGENTHUB_PROJECT_DIR?.trim();
   const stateDir = canonical(override);
   const recorded = stateMarker(stateDir);
@@ -16007,7 +16117,7 @@ function projectContext(cwd, env = process.env) {
     return { root, stateDir };
   if (!recorded && declared && canonical(declared) === root)
     return { root, stateDir };
-  return { root, stateDir: canonical(join2(root, ".agenthub", "state")) };
+  return { root, stateDir: canonical(join3(root, ".agenthub", "state")) };
 }
 
 // src/hub/control-client.ts
@@ -16018,8 +16128,8 @@ var PROTOCOL = 16;
 var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync2(join3(stateDir, "status.json"), "utf8"));
-    const token = readFileSync2(join3(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync2(join4(stateDir, "status.json"), "utf8"));
+    const token = readFileSync2(join4(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     return {
@@ -16255,17 +16365,23 @@ function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev"
   return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
 `);
 }
-function profileTaskTools(profile = "dev") {
-  if (profile === "dev" || profileData(profile) === projectProfile("dev"))
+function profileTaskTools(profile = "dev", stages) {
+  const customStages = stages && (stages.length !== SDLC_STAGES.length || stages.some((s, i) => s !== SDLC_STAGES[i]));
+  const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
+  if (!customStages && !customProfile)
     return TASK_TOOLS;
   const data = profileData(profile);
   return TASK_TOOLS.map((tool) => {
     const properties = { ...tool.inputSchema.properties };
-    if (tool.name === "hub_task_propose")
+    if (customStages && tool.name === "hub_sdlc_record") {
+      const receipt = properties.receipt;
+      properties.receipt = { ...receipt, properties: { ...receipt.properties, stage: { type: "string", enum: [...stages ?? SDLC_STAGES] } } };
+    }
+    if (customProfile && tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };
-    if (properties.plan && tool.name !== "hub_task_accept")
+    if (customProfile && properties.plan && tool.name !== "hub_task_accept")
       properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
-    return { ...tool, ...tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
+    return { ...tool, ...customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
 
@@ -16273,12 +16389,20 @@ function profileTaskTools(profile = "dev") {
 var stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 var peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
+var lifecycleStages = (() => {
+  try {
+    return loadSdlc(projectRoot2).stages;
+  } catch {
+    console.error("[agent-hub] invalid lifecycle definition; custom stages unavailable");
+    return [...SDLC_STAGES];
+  }
+})();
 var toolsMode = process.env.AGENTHUB_MODE === "tools";
 var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync3(join5(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -16291,7 +16415,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync3(join5(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -16318,7 +16442,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync3(join5(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -16347,7 +16471,7 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync3(join4(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync3(join5(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;
@@ -16522,7 +16646,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         }
       ] : []
     ],
-    ...profileTaskTools(profile),
+    ...profileTaskTools(profile, lifecycleStages),
     ...CONDUCTOR_TOOLS
   ]
 }));
