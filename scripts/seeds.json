@@ -1315,9 +1315,9 @@
     },
     {
       "id": "queue-target-branch-completeness",
-      "file": "src/hub/sdlc-queue.ts",
-      "search": "!remaining.size && !touchingCoverageUnknown",
-      "replacement": "!remaining.size && result.rows.every(r => evidence.get(r.pr)?.pathsComplete === true)",
+      "file": "src/hub/sdlc.ts",
+      "search": "...(typeof p.baseRefName === \"string\" && p.baseRefName && p.baseRefName.length <= 200 && !/[\\x00-\\x1f\\x7f]/.test(p.baseRefName) ? { base: p.baseRefName } : {})",
+      "replacement": "...({ base: p.baseRefName ?? \"main\" })",
       "testFile": "test/sdlc-queue.test.ts",
       "testName": "queue completeness includes verified target branches beyond complete file pagination (#257)"
     },
