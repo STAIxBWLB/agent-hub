@@ -1,4 +1,4 @@
-import { loadSdlc, SDLC_STAGES } from "../hub/sdlc.ts";
+import { activeLifecycleStages } from "../hub/lifecycle-schema.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName, type ProjectProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 // Claude Code channel plugin server (MCP over stdio). Bundled to plugins/agent-hub/server.js.
@@ -20,7 +20,6 @@ import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } 
 const stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 const peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
-const lifecycleStages = (() => { try { return loadSdlc(projectRoot).stages; } catch { console.error("[agent-hub] invalid lifecycle definition; custom stages unavailable"); return [...SDLC_STAGES]; } })();
 /** tools mode: the same server, run by Kimi (ACP mcpServers) or Codex (mcp_servers override). Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
 const toolsMode = process.env.AGENTHUB_MODE === "tools";
 /**
@@ -231,7 +230,9 @@ async function connectLoop(): Promise<void> {
   }
 }
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const lifecycleStages = await activeLifecycleStages(stateDir, peerId, projectRoot, hub);
+  return {
   tools: [
     {
       name: "hub_send",
@@ -268,10 +269,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               ]
             : []),
         ]),
-    ...profileTaskTools(profile, lifecycleStages),
+    ...profileTaskTools(profile, lifecycleStages).filter(tool => lifecycleStages !== undefined || tool.name !== "hub_sdlc_record"),
     ...CONDUCTOR_TOOLS,
   ],
-}));
+  };
+});
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;

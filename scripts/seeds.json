@@ -1168,6 +1168,22 @@
       "replacement": "task.sdlc?.stage ?? \"spec\"",
       "testFile": "test/lifecycle-definitions.test.ts",
       "testName": "custom lifecycle export and public status agree on the initial configured stage before a receipt (#257)"
+    },
+    {
+      "id": "lifecycle-phase-view-required",
+      "file": "src/hub/sdlc.ts",
+      "search": "if (workflow !== \"gsd-lite\" && Object.values(custom.definitions)",
+      "replacement": "if (false && Object.values(custom.definitions)",
+      "testFile": "test/lifecycle-definitions.test.ts",
+      "testName": "phase gates require board phase views and cannot silently deadlock a none workflow (#257)"
+    },
+    {
+      "id": "lifecycle-active-daemon-stages",
+      "file": "src/hub/daemon.ts",
+      "search": "lifecycleStages: [...lifecycleConfig.stages],",
+      "replacement": "lifecycleStages: undefined,",
+      "testFile": "test/lifecycle-native.test.ts",
+      "testName": "daemon forwards its active custom lifecycle schema to the actual LocalPeer provider request (#257)"
     }
   ]
 }

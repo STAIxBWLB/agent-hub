@@ -92,3 +92,11 @@ test("custom lifecycle export and public status agree on the initial configured 
   expect((tasks.workflowExport(task.id).state as { stage: string }).stage).toBe("question");
   expect((tasks.publicView(task).lifecycle as { stage: string }).stage).toBe("question");
 });
+
+test("phase gates require board phase views and cannot silently deadlock a none workflow (#257)", () => {
+  const r = raw("enforce"); r.definitions.draft.exit_gates = ["phase"];
+  expect(() => sdlcConfig(r)).toThrow("phase gates require workflow = gsd-lite");
+  expect(sdlcConfig({ ...r, workflow: "gsd-lite" }).definitions?.draft?.exit_gates).toEqual(["phase"]);
+  r.definitions.draft.exit_gates = []; r.definitions.question.entry_gates = ["phase"];
+  expect(() => sdlcConfig(r)).toThrow("phase gates require workflow = gsd-lite");
+});

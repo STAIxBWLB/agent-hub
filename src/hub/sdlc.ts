@@ -87,7 +87,11 @@ export function sdlcConfig(value: unknown): SdlcConfig {
   if (workflow !== "none" && workflow !== "gsd-lite") throw new Error("sdlc.workflow: expected none or gsd-lite");
   const checks = raw.required_checks ?? [];
   if (!Array.isArray(checks) || checks.length > 32 || checks.some(c => typeof c !== "string" || !c.trim() || c.length > 120 || /[\r\n\x00-\x1f]/.test(c)) || new Set(checks).size !== checks.length) throw new Error("sdlc.required_checks: expected at most 32 unique nonempty names");
-  if (raw.definitions !== undefined) return { mode, requiredChecks: [...checks] as string[], ...definitions(raw.definitions, raw.stages), ...(workflow === "gsd-lite" ? { workflow } : {}) };
+  if (raw.definitions !== undefined) {
+    const custom = definitions(raw.definitions, raw.stages);
+    if (workflow !== "gsd-lite" && Object.values(custom.definitions).some(d => [...d.entry_gates, ...d.exit_gates].includes("phase"))) throw new Error("sdlc.definitions: phase gates require workflow = gsd-lite");
+    return { mode, requiredChecks: [...checks] as string[], ...custom, ...(workflow === "gsd-lite" ? { workflow } : {}) };
+  }
   const stages = raw.stages ?? [...SDLC_STAGES];
   if (!Array.isArray(stages) || stages.length !== SDLC_STAGES.length || stages.some((stage, i) => stage !== SDLC_STAGES[i])) throw new Error("sdlc.stages: use spec, plan, implement, review, verify, merge, release in that order; custom stages are not supported yet");
   return { mode, requiredChecks: [...checks] as string[], stages: [...stages] as SdlcStage[], ...(workflow === "gsd-lite" ? { workflow } : {}) };

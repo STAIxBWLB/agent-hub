@@ -1775,6 +1775,7 @@ export async function startDaemon(opts: DaemonOptions) {
     projectId,
     instanceId,
     version: VERSION,
+    lifecycleStages: [...lifecycleConfig.stages],
     protocol: PROTOCOL,
     stopping,
     pid: process.pid,
