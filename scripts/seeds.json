@@ -1832,6 +1832,14 @@
       "replacement": "if(false)return loaded.utc;",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "planning date editors retain original UTC precision and parse changed local values (#263)"
+    },
+    {
+      "id": "release-label-public-identity",
+      "file": "src/ui/index.html",
+      "search": "label:'#'+release.id+' '+release.name",
+      "replacement": "label:release.name",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "redacted release options retain distinguishable public ids (#263)"
     }
   ]
 }
