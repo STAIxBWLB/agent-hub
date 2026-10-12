@@ -1944,6 +1944,14 @@
       "replacement": "boardViewState?.snapshot.planningCapabilities?.enabled===true",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "WIP pull controls require an explicit capability and carry the task revision (#263)"
+    },
+    {
+      "id": "planning-original-utc-precision",
+      "file": "src/ui/index.html",
+      "search": "if(loaded && loaded.text===value)return loaded.utc;",
+      "replacement": "if(false)return loaded.utc;",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "planning date editors retain original UTC precision and parse changed local values (#263)"
     }
   ]
 }

@@ -2723,3 +2723,10 @@ Pending unowned, unstarted pull can be undone at its latest owned revision via
 reservation. Normal release routing offers work only while that reserved peer
 still has capacity; no other peer inherits its slot. Native/visual verification,
 full exact-head source gates, split and one-way import remain outstanding.
+
+
+Planned-date editors preserve loaded UTC milliseconds until their displayed
+value changes, including repeated local wall times during a clock change. Local
+inputs retain seconds/milliseconds and support HTML date years without truncating
+fields; see https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#local-dates-and-times.
+Current exact-head date-editor proof is pending.
