@@ -2428,3 +2428,25 @@ Optional ordered stage definitions map at most 32 bounded ids to the existing se
 ### Custom lifecycle review corrections (#257)
 
 Phase gates require gsd-lite phase views at configuration validation. Authenticated daemon status gains optional lifecycleStages metadata, with no protocol bump. Separate MCP tools lists use that active snapshot; a live legacy daemon without the field keeps seven stages, while unknown/unavailable metadata withholds the lifecycle-record tool. Editing project data during a live daemon no longer changes its advertised stage ids.
+
+
+## Backlog foundation (#263)
+
+`backlog` is a durable task state for known, unoffered work. Its only flow edge is
+`backlog -> proposed`; `proposed -> backlog` requires no current owner. Backlog
+rows have no owner or reviewer. Existing rows and proposal history are unchanged.
+
+`hub_task_propose(backlog: true)` still validates class, plan, role, dependencies,
+roster reservation and PII before persistence. A named owner is a reservation,
+never a claim. No routing, offer, overlap announcement, sweep or conductor feed
+occurs. The person alone uses `Tasks.moveBacklog` through console task operations
+and `ahub backlog pull|return`; peers cannot invoke these transitions. Pull uses
+existing dependency and assignment delivery rules, recording a durable ready or
+blocked marker for restart recovery. Return clears transient ready-offer state.
+
+Public progress counts Backlog separately at stage zero only when present.
+Ordinary agent list/show/explain and conductor task tools exclude staged work;
+future explicit planner tools provide its agent read path. This foundation does
+not implement ranks, undoable planner grooming, release states, planned dates or
+dashboard drag/columns. Those remain required by #263. The live planner grooming
+cycle into two releases remains unverified.

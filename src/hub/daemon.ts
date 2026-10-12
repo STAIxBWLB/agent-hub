@@ -1452,6 +1452,7 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
+        if (t.state === "backlog") return line(t);
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // as for an accept
         return [line(t), overlap, tasks.claimRoleGuidance(t, by)].filter(Boolean).join("\n");
@@ -1505,15 +1506,22 @@ export async function startDaemon(opts: DaemonOptions) {
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }
       case "hub_task_list":
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => a.ready !== true || !tasks.waitsFor(t).length).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
     }
     if (op === "task_show" && by !== USER) {
       const task = board.get(Number(a.id));
+      if (task?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
       return JSON.stringify(task ? publicConductorTask(task, (t) => tasks.publicView(t, true)) : `no task #${a.id}`);
     }
-    if (op === "route_explain" && by !== USER) return tasks.publicExplain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
+    if (op === "route_explain" && by !== USER) {
+      if (a.id !== undefined && board.get(Number(a.id))?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
+      return tasks.publicExplain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
+    }
     if (by !== USER) throw new Error(`${op} is a console command`);
     switch (op) {
+      case "backlog_pull":
+      case "backlog_return":
+        return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
       case "task_show":
         return JSON.stringify(board.get(Number(a.id)) ? { ...board.get(Number(a.id)), reviews: board.reviews({ task: Number(a.id) }) } : `no task #${a.id}`, null, 2);
       case "task_assign": {
