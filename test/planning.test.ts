@@ -133,6 +133,7 @@ test("backlog planning validates dependency cycles reservations and atomic undo 
   expect(undone.deps).toEqual([first.id]);
   expect(undone.reserved).toBeNull();
   expect(undone.priority).toBeUndefined();
+  await tasks.moveBacklog(USER, first.id, true);
   const executing = board.update(first.id, USER, "accepted", { state: "in_progress", owner: "codex" });
   await expect(tasks.planBacklog(USER, { id: first.id, revision: 0, fields: { deps: [] }, reason: "too late" })).rejects.toThrow("unstarted backlog");
   expect(board.get(first.id)).toEqual(executing);
