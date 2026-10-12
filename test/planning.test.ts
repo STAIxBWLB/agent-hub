@@ -101,3 +101,14 @@ test("planning persistence failures never claim a pre-effect refusal (#263)", as
   expect(releaseError).not.toBeInstanceOf(PreEffectToolRefusal);
   expect(board.release(release.id)?.state).toBe("active");
 });
+
+
+test("planner backlog reads follow saved rank with stable unknown order (#263)", async () => {
+  const { tasks } = rig();
+  const first = await tasks.propose(USER, { title: "first", class: "implement", backlog: true });
+  const second = await tasks.propose(USER, { title: "second", class: "implement", backlog: true });
+  const third = await tasks.propose(USER, { title: "third", class: "implement", backlog: true });
+  await tasks.planBacklog(USER, { id: third.id, revision: 0, fields: { rank: 1 }, reason: "first phase" });
+  await tasks.planBacklog(USER, { id: second.id, revision: 0, fields: { rank: 1 }, reason: "first phase" });
+  expect(tasks.backlogList("claude").map(task => task.id)).toEqual([second.id, third.id, first.id]);
+});

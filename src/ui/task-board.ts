@@ -1,7 +1,7 @@
 /** Only structural public fields enter the board model; never titles, details or history. */
 export interface BoardCardInput {
   id: number; state: string; owner?: string | null; reviewer?: string | null;
-  deps?: readonly number[]; reserved?: string | null; urgent?: boolean; priority?: number; started?: boolean;
+  deps?: readonly number[]; reserved?: string | null; urgent?: boolean; priority?: number; rank?: number; started?: boolean;
 }
 export interface BoardPeerInput { state?: string; attached?: boolean; rostered?: boolean; needsReview?: number; heldBy?: string; }
 export interface BoardCardState {
@@ -37,11 +37,13 @@ export function boardColumns(tasks: readonly BoardCardInput[], peers: Readonly<R
         else if (peer.state === "offline" || peer.attached === false || peer.rostered === false) waiting.push("owner unavailable");
       }
     }
-    const priority = task.urgent === true ? 0 : Number.isInteger(task.priority) && task.priority! >= 0 && task.priority! <= 3 ? task.priority! : 2;
+    const priority = Number.isInteger(task.priority) && task.priority! >= 0 && task.priority! <= 3 ? task.priority! : task.urgent === true ? 0 : 2;
     const card: BoardCardState = { id: task.id, column: column.id, priority, starred: priority <= 1, waiting,
       assignable: ["proposed", "in_progress", "changes_requested"].includes(task.state),
       pull: task.state === "backlog", returnable: task.state === "proposed" && !task.owner && task.started === false };
     (waiting.length ? column.waiting : column.ready).push(card);
   }
+  const ranks = new Map(tasks.map(task => [task.id, Number.isSafeInteger(task.rank) && task.rank! >= 0 ? task.rank! : Number.MAX_SAFE_INTEGER]));
+  columns[0]!.ready.sort((a, b) => ranks.get(a.id)! - ranks.get(b.id)! || a.id - b.id);
   return { columns, unknown };
 }

@@ -73,3 +73,12 @@ test("recovered owner delivery holds stay waiting until settlement (#263)", () =
   expect(settled.ready.map(card => card.id)).toEqual([1]);
   expect(settled.waiting).toEqual([]);
 });
+
+
+test("planned priorities override urgent fallback and backlog ranks order cards (#263)", () => {
+  const tasks = [{ id: 3, state: "backlog", urgent: true }, { id: 2, state: "backlog", urgent: true, priority: 3, rank: 2 }, { id: 1, state: "backlog", urgent: true, priority: 1, rank: 1 }, { id: 4, state: "backlog", rank: 2 }];
+  const cards = boardColumns(tasks, {}).columns[0]!.ready;
+  expect(cards.map(card => card.id)).toEqual([1, 2, 4, 3]);
+  expect(cards.map(card => [card.priority, card.starred])).toEqual([[1, true], [3, false], [2, false], [0, true]]);
+  expect(tasks.map(task => task.id)).toEqual([3, 2, 1, 4]);
+});

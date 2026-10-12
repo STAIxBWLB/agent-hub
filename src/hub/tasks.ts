@@ -534,7 +534,7 @@ export class Tasks {
 
   backlogList(by: PeerId): Record<string, unknown>[] {
     this.planningAuthority(by);
-    return this.d.board.list("backlog").map(task => this.publicView(task));
+    return this.d.board.list("backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id).map(task => this.publicView(task));
   }
   releaseList(by: PeerId): Record<string, unknown>[] {
     this.planningAuthority(by);
