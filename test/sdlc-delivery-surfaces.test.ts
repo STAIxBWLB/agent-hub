@@ -69,3 +69,27 @@ test("aggregate lifecycle status excludes staged backlog without hiding executab
     expect(listed.map((task:any)=>[task.id,task.state])).toEqual([[1,"backlog"],[2,"proposed"]]);
   }
 },20_000);
+
+
+test("merge queue discards task associations when privacy policy changes during remote reads (#264 merge)", async () => {
+  const dir=root(),board=new Board(join(dir,"hub.db"));cleanup.push(()=>board.close());
+  const bus=new Bus({batchMs:0});cleanup.push(()=>bus.closeJournal());
+  const routing=loadRouting(dir);routing.constraints.pii="off";
+  const task=board.propose(USER,{title:"private marker",class:"implement",signals:["pii"]}),head="a".repeat(40);
+  board.update(task.id,USER,"lifecycle",{sdlc:{repo:"owner/repo",pr:1,stage:"implement"}});
+  const before=board.get(task.id)!;
+  const gh:SdlcGh=async args=>{
+    if(args[0]==="pr" && args[1]==="list"){
+      routing.constraints.pii="local_only";
+      return{code:0,stdout:JSON.stringify([{number:1,headRefOid:head,baseRefName:"main",baseRefOid:head}])};
+    }
+    if(args[0]==="pr")return{code:0,stdout:JSON.stringify({headRefOid:head,state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:head,changedFiles:1,files:[{path:"src/one.ts"}],statusCheckRollup:[],reviewDecision:"APPROVED",reviewRequests:[]})};
+    return{code:0,stdout:"{}"};
+  };
+  const tasks=new Tasks({board,bus,cwd:dir,project:"fixture",notify:()=>{},routing:()=>routing,sdlc:{config:()=>sdlcConfig(undefined),gh}});
+  expect(tasks.isPii(before)).toBe(false);
+  const report=await tasks.deliveryQueue("owner/repo");
+  expect(tasks.isPii(board.get(task.id)!)).toBe(true);expect(board.get(task.id)).toEqual(before);
+  expect(report.complete).toBe(false);expect(report.rows).toEqual([]);expect(report.conflicts).toEqual([]);expect(report.order).toEqual([]);
+  expect(JSON.stringify(report)).not.toContain(head);
+});

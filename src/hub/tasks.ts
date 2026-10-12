@@ -1210,6 +1210,12 @@ export class Tasks {
     const before = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
     const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t) }));
     const report = await readMergeQueue(repo, this.d.sdlc?.config() ?? sdlcConfig(undefined), links, this.d.sdlc?.gh);
+    // Policy can change across remote awaits without any board write. Never return its stale public projection.
+    const currentPrivacy = this.d.board.list().map(task => ({ id: task.id, private: this.isPii(task) }));
+    if (workflowHash(links.map(({ id, private: hidden }) => ({ id, private: hidden }))) !== workflowHash(currentPrivacy)) {
+      return { ...report, complete: false, rows: [], order: [], unordered: [], conflicts: [] };
+    }
+
     const after = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
     if (before !== after) { report.complete = false; report.order = []; if (report.rows.length) report.unordered = report.rows.map(row => row.pr); for (const row of report.rows) { row.ready = false; row.blockers.push("board changed during delivery readback"); } }
     return report;

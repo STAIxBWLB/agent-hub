@@ -1624,6 +1624,14 @@
       "replacement": "(task.sdlc || lifecycleConfig.mode !== \"off\" || lifecycleConfig.workflow === \"gsd-lite\")",
       "testFile": "test/sdlc-delivery-surfaces.test.ts",
       "testName": "aggregate lifecycle status excludes staged backlog without hiding executable work (#264 merge)"
+    },
+    {
+      "id": "delivery-current-privacy-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "if (workflowHash(links.map(({ id, private: hidden }) => ({ id, private: hidden }))) !== workflowHash(currentPrivacy))",
+      "replacement": "if (false)",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "merge queue discards task associations when privacy policy changes during remote reads (#264 merge)"
     }
   ]
 }
