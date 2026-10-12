@@ -1928,6 +1928,22 @@
       "replacement": "if (state.mode === \"panels\") notify(state, pet.notice, Date.now(), \"attention\");",
       "testFile": "test/pet-config.test.ts",
       "testName": "requested panels print unknown config warnings when the terminal falls back to plain"
+    },
+    {
+      "id": "attention-review-person-only",
+      "file": "src/ui/needs.ts",
+      "search": "task.reviewer === \"user\"",
+      "replacement": "true",
+      "testFile": "test/needs-status.test.ts",
+      "testName": "person review and offline ownership use ids and count each offline peer once"
+    },
+    {
+      "id": "attention-recovery-unknown-watch",
+      "file": "src/ui/needs.ts",
+      "search": "input.recovery.running === false ? \"act\" : \"watch\"",
+      "replacement": "\"act\"",
+      "testFile": "test/needs-status.test.ts",
+      "testName": "only an observed absent recovery runner creates a blocked action"
     }
   ]
 }

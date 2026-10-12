@@ -2528,3 +2528,16 @@ the existing redraw/poll requests and body-free unread metadata. The line is
 ASCII only, with STAI/off session choices; alternate artwork remains gated.
 Review/offline/act-level recovery and
 artwork variants remain later explicit phases. Native/visual proof is unknown.
+
+## Global attention status and CLI (#280, phase 3 in progress)
+
+Global needs summaries contain only act/watch counts, the known state and the
+first structural item. Console-local unread messages are excluded at the
+allowlisted summary boundary. Person review is one act item per in_review task
+whose reviewer is user; offline ownership is one watch item per offline peer
+with proposed/in_progress/changes_requested work, using its lowest task id.
+Only an observed absent runner makes an open recovery operation an act item;
+an unreadable/unknown runner remains watch. This phase is independent of the
+owner-held larger artwork/variant selection. Daemon/status.json, existing
+console input and CLI pet/status wiring and full verification remain pending.
+No protocol/event schema, authority, mutation, timer or account scope is added.
