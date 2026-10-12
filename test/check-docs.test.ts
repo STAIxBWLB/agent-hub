@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -120,4 +120,20 @@ test("structured invalid stamp evidence preserves uncertainty and excludes raw e
 test("documentation readbacks never execute the repository fsmonitor helper (#257)", () => fixture((root, _stamp, git) => {
   const marker = join(root, "monitor-ran"), script = join(root, "monitor.sh"); writeFileSync(script, '#!/bin/sh\nprintf marker > "' + marker + '"\n'); chmodSync(script, 0o755); git("config", "core.fsmonitor", script);
   const result = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" }); expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(true); expect(existsSync(marker)).toBe(false);
+}));
+
+test("installed-layout release reader finds the explicitly published checker and runs structured evidence (#257)", () => fixture(root => {
+  const target = mkdtempSync(join(tmpdir(), "ahub-installed-doc-reader-"));
+  try {
+    mkdirSync(join(target, "src/hub"), { recursive: true });
+    for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts"]) {
+      copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
+    }
+    mkdirSync(join(target, "scripts"));
+    copyFileSync(checker, join(target, "scripts/check-docs.mjs"));
+    writeFileSync(join(target, "probe.ts"), `import {readDocEvidence} from "./src/hub/sdlc-release.ts"; console.log(JSON.stringify(await readDocEvidence(${JSON.stringify(root)})));`);
+    const result = spawnSync(process.execPath, [join(target, "probe.ts")], { encoding: "utf8", timeout: 20_000 });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ schemaVersion: 1, fresh: true, errors: 0, version: "1.2.3" });
+  } finally { rmSync(target, { recursive: true, force: true }); }
 }));

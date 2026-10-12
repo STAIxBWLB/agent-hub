@@ -1232,6 +1232,14 @@
       "replacement": "if (false) { report.complete = false;",
       "testFile": "test/sdlc-delivery-surfaces.test.ts",
       "testName": "queue board revision fence invalidates late evidence instead of offering stale merge readiness (#257)"
+    },
+    {
+      "id": "delivery-current-phase-view",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "sdlcStatus(config, holder?.receipt, read, holder?.phase)",
+      "replacement": "sdlcStatus(config, holder?.receipt, read)",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "gsd-lite queue readiness uses current board phase views and keeps absent or failed views unknown (#257)"
     }
   ]
 }

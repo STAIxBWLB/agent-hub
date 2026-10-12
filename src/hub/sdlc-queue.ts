@@ -1,5 +1,6 @@
+import type { PhaseView } from "./workflow.ts";
 import { readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
-export interface DeliveryTask { id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; }
+export interface DeliveryTask { id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: PhaseView; }
 export interface MergeQueueRow { pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
@@ -27,8 +28,8 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     if (!read.pathsComplete) row.blockers.push("PR file coverage is incomplete or unknown");
     if (read.draft !== false) row.blockers.push("PR is draft or draft status is unknown");
     if (!read.base) row.blockers.push("PR target branch is unknown");
-    const receipts = holders.length ? holders.map(t => t.receipt!) : [undefined];
-    for (const receipt of receipts) row.blockers.push(...sdlcStatus(config, receipt, read).blockers);
+    const linked = holders.length ? holders : [undefined];
+    for (const holder of linked) row.blockers.push(...sdlcStatus(config, holder?.receipt, read, holder?.phase).blockers);
   }
   const dependencyEvidence = new Map<number, PrEvidence | undefined>(); let dependencyReads = 0;
   for (const row of result.rows) {
