@@ -476,13 +476,18 @@ function renderBoard(snapshot, peers, ids) {
     }
     if (!ids.length) empty(target,'No peer status available.');
   });
-  update('tasks',[snapshot.tasks,peers,taskFilter,ownerFilter,lanes,showAllDone],target=>{
+  update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,lanes,showAllDone],target=>{
     const visible=snapshot.tasks.filter(task=>(!taskFilter || task.state===taskFilter) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter));
     const visibleIds=new Set(visible.map(task=>task.id));
     const owners=lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : [null];
     if (!owners.length) owners.push(null);
     for (const [laneIndex, owner] of owners.entries()) {
-      const lane=el('div',undefined,'board-lane');if(owner!==null) lane.append(el('h3',owner || 'Unassigned'));
+      const lane=el('div',undefined,'board-lane');
+      if(owner!==null) {
+        const heading=el('h3',owner || 'Unassigned');
+        if(eligible.includes(owner)) dropTarget(heading,card=>card.assignable,{action:'assign',peer:owner});
+        lane.append(heading);
+      }
       const grid=el('div',undefined,'board-columns');
       const inLane=card=>visibleIds.has(card.id) && (owner===null || (byId.get(card.id)?.owner || '')===owner);
       for (const column of model.columns) {

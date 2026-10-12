@@ -81,3 +81,18 @@ test("older snapshots cannot silently offer a requested backlog task or expose u
   expect(get("backlog-proposal").disabled).toBe(true);
   expect(all(get("tasks")).some(node => node.textContent === "Pull into To Do")).toBe(false);
 });
+
+
+test("agent lane headings assign eligible tasks and retain the flow floor (#263)", () => {
+  const { api, snapshot, peers, get, all, calls, scope } = page();
+  get("task-lanes").value = "agents";
+  api.draw(snapshot, peers, Object.keys(peers));
+  const heading = all(get("tasks")).find(node => node.tag === "h3" && node.textContent === "claude")!;
+  const event = (id: number) => ({ preventDefault() {}, dataTransfer: { getData: () => JSON.stringify({ ...scope, origin: "http://127.0.0.1:4000", id }) } });
+  heading.emit("drop", event(3));
+  expect(calls).toEqual([]);
+  heading.emit("drop", event(2));
+  expect(calls).toEqual([{ action: "assign", peer: "claude", id: 2 }]);
+  const unassigned = all(get("tasks")).find(node => node.tag === "h3" && node.textContent === "Unassigned")!;
+  expect(unassigned.handlers.has("drop")).toBe(false);
+});
