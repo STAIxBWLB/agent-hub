@@ -70,3 +70,19 @@ test("research planning metadata preserves unknown legacy values and reset gener
   expect(records[0]).toMatchObject({ release: 1, priority: 1, plannedStart: 100, due: 200 });
   expect(records[1]?.release).toBeUndefined(); expect(records[1]?.due).toBeUndefined();
 });
+
+
+test("planning events retain saved priority and unknown urgent metadata (#263)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-planning-priority-")), stateDir = join(root, ".agenthub/state");
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, batch_ms: 0 } });
+  const person = await ControlClient.connect(stateDir, { role: "console" });
+  try {
+    expect(await person.request({ t: "task", op: "hub_task_propose", args: { title: "urgent future", class: "implement", backlog: true, urgent: true } })).toMatchObject({ ok: true });
+    const list = await person.request({ t: "task", op: "hub_backlog_list", args: {} });
+    const id = JSON.parse(list.text)[0].id;
+    expect(await person.request({ t: "task", op: "hub_backlog_plan", args: { id, revision: 0, fields: { rank: 1 }, reason: "person order" } })).toMatchObject({ ok: true });
+    expect(await person.request({ t: "task", op: "hub_backlog_plan", args: { id, revision: 1, fields: { priority: 3 }, reason: "later phase" } })).toMatchObject({ ok: true });
+    const events = readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "task" && event.id === id && event.event === "planned");
+    expect(events.map(event => event.type === "task" ? event.priority : undefined)).toEqual([null, 3]);
+  } finally { person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);

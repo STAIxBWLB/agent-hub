@@ -103,6 +103,17 @@ test("planning persistence failures never claim a pre-effect refusal (#263)", as
 });
 
 
+test("planner backlog reads follow saved rank with stable unknown order (#263)", async () => {
+  const { tasks } = rig();
+  const first = await tasks.propose(USER, { title: "first", class: "implement", backlog: true });
+  const second = await tasks.propose(USER, { title: "second", class: "implement", backlog: true });
+  const third = await tasks.propose(USER, { title: "third", class: "implement", backlog: true });
+  await tasks.planBacklog(USER, { id: third.id, revision: 0, fields: { rank: 1 }, reason: "first phase" });
+  await tasks.planBacklog(USER, { id: second.id, revision: 0, fields: { rank: 1 }, reason: "first phase" });
+  expect(tasks.backlogList("claude").map(task => task.id)).toEqual([second.id, third.id, first.id]);
+});
+
+
 test("backlog planning validates dependency cycles reservations and atomic undo (#263)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-planning-graph-"));
   const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0, rostered: peer => ["claude", "codex"].includes(peer) });

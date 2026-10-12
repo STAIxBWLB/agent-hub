@@ -1784,6 +1784,38 @@
       "replacement": "if (false) throw new PreEffectToolRefusal(\"dependency and reservation changes require unstarted backlog work\");",
       "testFile": "test/planning.test.ts",
       "testName": "backlog planning validates dependency cycles reservations and atomic undo (#263)"
+    },
+    {
+      "id": "planning-saved-event-priority",
+      "file": "src/hub/daemon.ts",
+      "search": "priority: t.priority ?? null",
+      "replacement": "priority: t.signals.includes(\"urgent\") ? 0 : t.priority ?? null",
+      "testFile": "test/planning-surfaces.test.ts",
+      "testName": "planning events retain saved priority and unknown urgent metadata (#263)"
+    },
+    {
+      "id": "planning-priority-precedence",
+      "file": "src/ui/task-board.ts",
+      "search": "const priority = Number.isInteger(task.priority) && task.priority! >= 0 && task.priority! <= 3 ? task.priority! : task.urgent === true ? 0 : 2;",
+      "replacement": "const priority = task.urgent === true ? 0 : Number.isInteger(task.priority) && task.priority! >= 0 && task.priority! <= 3 ? task.priority! : 2;",
+      "testFile": "test/task-board.test.ts",
+      "testName": "planned priorities override urgent fallback and backlog ranks order cards (#263)"
+    },
+    {
+      "id": "planning-board-rank",
+      "file": "src/ui/task-board.ts",
+      "search": "columns[0]!.ready.sort((a, b) => ranks.get(a.id)! - ranks.get(b.id)! || a.id - b.id);",
+      "replacement": "columns[0]!.ready.sort((a, b) => a.id - b.id);",
+      "testFile": "test/task-board.test.ts",
+      "testName": "planned priorities override urgent fallback and backlog ranks order cards (#263)"
+    },
+    {
+      "id": "planning-list-rank",
+      "file": "src/hub/tasks.ts",
+      "search": ".sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id)",
+      "replacement": ".sort((a, b) => a.id - b.id)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner backlog reads follow saved rank with stable unknown order (#263)"
     }
   ]
 }
