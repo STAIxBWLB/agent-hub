@@ -126,3 +126,24 @@ test("project reset clears release creation draft before switching projects (#26
   runInNewContext(`let selectedProjectId='a',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot={};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${source};resetView('b','next');`, { get });
   expect(get("release-name").value).toBe("");expect(get("release-goal").value).toBe("");expect(get("release-order").value).toBe("0");
 });
+
+
+test("planning date editors retain original UTC precision and parse changed local values (#263)", () => {
+  const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8"),source=html.slice(html.indexOf("const loadedPlanningDates ="),html.indexOf("const dateText ="));
+  const nodes=new Map<string,Node>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id)!;};
+  const api=runInNewContext(`const $=get;${source};({load:loadPlanningDate,read:plannedDateInput,format:localDateInput})`,{get});
+  for(const stamp of [100,200,Date.UTC(2026,10,1,6,30,0,123),8_640_000_000_000_000]){
+    api.load("due",stamp);expect(api.read("due")).toBe(stamp);expect(get("due").value).toMatch(/\.\d{3}$/);
+  }
+  api.load("due",100);get("due").value="2026-10-12T12:30:45.123";expect(api.read("due")).toBe(new Date(get("due").value).getTime());
+  get("due").value="";expect(api.read("due")).toBeNull();
+  api.load("due",null);expect(api.read("due")).toBeNull();
+  // A simulated repeated wall hour parses to its first occurrence; the loaded second occurrence must survive.
+  class AmbiguousDate extends Date {
+    constructor(value:number|string){super(typeof value==="string" ? Date.parse(value+"Z")-3_600_000 : value);}
+    getFullYear(){return this.getUTCFullYear();}getMonth(){return this.getUTCMonth();}getDate(){return this.getUTCDate();}
+    getHours(){const hour=this.getUTCHours();return hour===5 ? 6 : hour;}getMinutes(){return this.getUTCMinutes();}getSeconds(){return this.getUTCSeconds();}
+  }
+  const repeated=runInNewContext(`const $=get;${source};({load:loadPlanningDate,read:plannedDateInput})`,{get,Date:AmbiguousDate});
+  const secondOccurrence=Date.UTC(2026,10,1,6,30,0,123);repeated.load("due",secondOccurrence);expect(repeated.read("due")).toBe(secondOccurrence);
+});

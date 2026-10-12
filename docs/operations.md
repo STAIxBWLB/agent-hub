@@ -2701,3 +2701,10 @@ without overwriting unsaved dates. Project changes clear release creation drafts
 Dashboard release actions use public numeric ids even when labels are withheld;
 `ahub release show <name>` looks up the stored identity on the console and returns
 the screened public projection. Source verification remains pending.
+
+
+Planned-date editors preserve loaded UTC milliseconds until their displayed
+value changes, including repeated local wall times during a clock change. Local
+inputs retain seconds/milliseconds and support HTML date years without truncating
+fields; see https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#local-dates-and-times.
+Current exact-head date-editor proof is pending.
