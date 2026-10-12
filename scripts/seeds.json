@@ -2016,6 +2016,30 @@
       "replacement": "finally { /* seeded missing task snapshot update */ }",
       "testFile": "test/daemon-attention.test.ts",
       "testName": "task review transitions refresh persisted attention without a native peer"
+    },
+    {
+      "id": "attention-pseudo-owner-not-offline",
+      "file": "src/ui/needs.ts",
+      "search": "id(value) && value !== \"user\" && value !== \"hub\"",
+      "replacement": "id(value)",
+      "testFile": "test/attention-followup.test.ts",
+      "testName": "person and hub owners never create offline-agent needs while person review remains actionable"
+    },
+    {
+      "id": "attention-board-structural-query",
+      "file": "src/hub/board.ts",
+      "search": "SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id",
+      "replacement": "SELECT * FROM tasks WHERE state != 'approved' ORDER BY id",
+      "testFile": "test/attention-followup.test.ts",
+      "testName": "status task facts read only structural columns without decoding stored payloads"
+    },
+    {
+      "id": "attention-status-structural-wiring",
+      "file": "src/hub/daemon.ts",
+      "search": "const taskNeeds = board.statusTasks();",
+      "replacement": "const taskNeeds = board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer }));",
+      "testFile": "test/attention-followup.test.ts",
+      "testName": "real daemon excludes intentionally person-owned work from offline attention"
     }
   ]
 }

@@ -2745,3 +2745,8 @@ receives those structural facts through its existing authenticated status reply.
 that row is unavailable. Offline guidance names status/task reads and an explicit
 assignment command. No command is executed by navigation. There is no extra
 console poll, timer or task-list request for stream mode.
+
+Intentionally person-owned work is not an offline agent. Neither user nor hub
+creates an offline watch item, while person-reviewed tasks remain actionable.
+Status reads only the board's structural id/state/owner/reviewer projection and
+reuses it for retained peer ids, avoiding task body/plan/history decoding.

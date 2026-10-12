@@ -17,6 +17,7 @@ export interface NeedsSummary { act: number; watch: number; state: Needs["state"
 export function needs(input: NeedsInput, now: number): Needs {
   const items: NeedItem[] = [];
   const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(value);
+  const agent = (value: unknown): value is string => id(value) && value !== "user" && value !== "hub";
   const time = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
   const add = (kind: NeedKind, level: "act" | "watch", peer?: unknown, identifier?: unknown, until?: unknown, since?: unknown) => items.push({ kind, level, ...(id(peer) ? { peer } : {}), ...(id(identifier) || typeof identifier === "number" && Number.isSafeInteger(identifier) && identifier > 0 ? { id: identifier } : {}), ...(time(until) ? { until } : {}), ...(time(since) ? { since } : {}) });
   for (const request of input.approvals ?? []) if (id(request.id) && time(request.expiresAt) && request.expiresAt > now) add("approval", "act", request.peer, request.id, request.expiresAt, request.since);
@@ -32,13 +33,13 @@ export function needs(input: NeedsInput, now: number): Needs {
   const tasks = [...(input.tasks ?? [])].filter(task => Number.isSafeInteger(task.id) && task.id > 0).sort((a,b) => a.id - b.id);
   for (const task of tasks) {
     if (task.state === "in_review" && task.reviewer === "user") add("review", "act", undefined, task.id);
-    if (["proposed", "in_progress", "changes_requested"].includes(task.state) && id(task.owner) && input.peers?.[task.owner]?.state === "offline" && !offline.has(task.owner)) {
+    if (["proposed", "in_progress", "changes_requested"].includes(task.state) && agent(task.owner) && input.peers?.[task.owner]?.state === "offline" && !offline.has(task.owner)) {
       offline.add(task.owner); add("offline", "watch", task.owner, task.id);
     }
   }
   for (const fact of input.facts ?? []) if (Number.isSafeInteger(fact.id) && fact.id > 0) {
     if (fact.kind === "review") add("review", "act", undefined, fact.id);
-    else if (fact.kind === "offline" && id(fact.peer) && !offline.has(fact.peer)) { offline.add(fact.peer); add("offline", "watch", fact.peer, fact.id); }
+    else if (fact.kind === "offline" && agent(fact.peer) && !offline.has(fact.peer)) { offline.add(fact.peer); add("offline", "watch", fact.peer, fact.id); }
   }
   for (const [peer, budget] of Object.entries(input.budget ?? {})) if (budget.paused) add("budget", "watch", peer, undefined, budget.paused.resetsAt, budget.paused.since);
   const order: Record<NeedKind, number> = { approval: 0, default: 1, storage: 2, recovery: 3, delivery: 4, review: 5, message: 6, budget: 7, offline: 8 };

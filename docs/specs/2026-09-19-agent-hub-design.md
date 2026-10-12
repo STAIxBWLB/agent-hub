@@ -2548,3 +2548,9 @@ navigation can reach review/offline ids without a new task-list request. This
 optional read-only projection contains only the NeedItem allowlist; it is not
 written to status.json, returned to peer/tools status callers, or sent to memory.
 The persisted needs field remains counts/state/first, excluding console messages.
+
+Status task facts are selected once from the board as id/state/owner/reviewer
+columns, excluding approved rows, and reused for retained off-roster peer ids and
+attention. No task JSON payload is decoded for this projection. Reserved
+pseudo-peers user and hub never produce offline-agent attention; a task reviewed
+by user still produces its normal review action.
