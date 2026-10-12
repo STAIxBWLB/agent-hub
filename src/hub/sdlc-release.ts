@@ -95,16 +95,27 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
   // The predecessor and tag can change while documents/issues are read. Recheck both in the last remote snapshot.
   if (report.tag && report.tagCommit) {
     const [owner, name] = repo.split("/");
-    const snapshot = await gh(["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$ref:String!){repository(owner:$owner,name:$name){releases(first:100,orderBy:{field:CREATED_AT,direction:DESC}){nodes{tagName isDraft} pageInfo{hasNextPage}} ref(qualifiedName:$ref){target{... on Commit{oid} ... on Tag{target{... on Commit{oid}}}}}}}", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `ref=refs/tags/${report.tag}`]);
-    let stable = false;
+    const ledgers = liveIssues.map(id => `ledger_${id}:issue(number:${id}){number state}`).join(" ");
+    const query = `query($owner:String!,$name:String!,$ref:String!){repository(owner:$owner,name:$name){releases(first:100,orderBy:{field:CREATED_AT,direction:DESC}){nodes{tagName isDraft} pageInfo{hasNextPage}} ref(qualifiedName:$ref){target{... on Commit{oid} ... on Tag{target{... on Commit{oid}}}}} ${ledgers}}}`;
+    const snapshot = await gh(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `ref=refs/tags/${report.tag}`]);
+    let stable = false, issuesStable = false;
+    let finalIssues: ReleaseReadiness["liveIssues"] = report.liveIssues.map(issue => ({ id: issue.id, state: "unknown" }));
     try {
       const data = JSON.parse(snapshot.stdout), repository = data.data?.repository, rows = repository?.releases?.nodes;
       if (snapshot.code === 0 && !data.errors && Array.isArray(rows) && rows.length <= 100 && typeof repository.releases.pageInfo?.hasNextPage === "boolean" && rows.every(p => typeof p?.tagName === "string" && typeof p.isDraft === "boolean")) {
+        finalIssues = report.liveIssues.map(issue => {
+          const value = repository[`ledger_${issue.id}`];
+          const state: "open" | "closed" | "unknown" = value?.number === issue.id && ["OPEN", "CLOSED"].includes(value.state) ? value.state.toLowerCase() : "unknown";
+          return { id: issue.id, state };
+        });
+        issuesStable = finalIssues.every((issue, index) => issue.state === "closed" && issue.state === report.liveIssues[index]?.state);
         const newest = rows.find(p => !p.isDraft), target = repository.ref?.target;
         stable = newest?.tagName === report.tag && tagMatches(target, report.tagCommit);
       }
     } catch { /* unavailable predecessor remains blocked */ }
     if (!stable) report.blockers.push("published release or remote tag changed or could not be reverified");
+    report.liveIssues = finalIssues;
+    if (!issuesStable) report.blockers.push("live issue states changed or could not be reverified");
   }
   const last = git(["rev-parse","--verify","HEAD"]); if (last.code !== 0 || last.stdout.trim() !== head) report.blockers.push("local HEAD changed during release readback");
   report.blockers = [...new Set(report.blockers)]; report.sourceReady = report.blockers.length === 0;

@@ -1424,6 +1424,14 @@
       "replacement": "if (false) report.blockers.push(\"published release or remote tag changed or could not be reverified\");",
       "testFile": "test/sdlc-release.test.ts",
       "testName": "release final snapshot refuses a new predecessor moved tag or unavailable evidence (#257)"
+    },
+    {
+      "id": "release-ledger-final-snapshot",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "if (!issuesStable) report.blockers.push(\"live issue states changed or could not be reverified\");",
+      "replacement": "if (false) report.blockers.push(\"live issue states changed or could not be reverified\");",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release final snapshot invalidates reopened missing or mismatched ledger identities (#257)"
     }
   ]
 }

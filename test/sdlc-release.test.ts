@@ -17,7 +17,12 @@ function fake(options:{version?:string;tag?:string;remote?:string;ancestor?:bool
   if(args[0]==="release")return{code:0,stdout:JSON.stringify([{tagName:options.tag??"v1.2.3",isDraft:false,isPrerelease:(options.tag??"").includes("-"),publishedAt:"2026-10-11T00:00:00Z"}])};
   if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:1,mergeCommit:{oid:C}}])};
   if(args.some(arg=>arg.includes("associatedPullRequests")))return{code:0,stdout:JSON.stringify({data:{repository:{c0:{oid:C,associatedPullRequests:{nodes:[{number:1,state:"MERGED",mergeCommit:{oid:C}}],pageInfo:{hasNextPage:false}}}}}})};
-  if(args.some(arg=>arg.includes("releases(first:100")))return{code:0,stdout:JSON.stringify({data:{repository:{releases:{nodes:[{tagName:options.tag??"v1.2.3",isDraft:false}],pageInfo:{hasNextPage:false}},ref:{target:{target:{oid:options.remote??T}}}}}})};
+  if(args.some(arg=>arg.includes("releases(first:100"))) {
+    const query = args.find(arg=>arg.startsWith("query=")) || "";
+    const ledgers = Object.fromEntries([...query.matchAll(/ledger_([0-9]+):issue/g)].map(match=>[`ledger_${match[1]}`,{number:Number(match[1]),state:options.native??"CLOSED"}]));
+    const repository = { ...ledgers, releases:{nodes:[{tagName:options.tag??"v1.2.3",isDraft:false}],pageInfo:{hasNextPage:false}}, ref:{target:{target:{oid:options.remote??T}}} };
+    return {code:0,stdout:JSON.stringify({data:{repository}})};
+  }
   if(args[0]==="issue")return{code:0,stdout:JSON.stringify({number:273,state:options.native??"CLOSED"})};
   return{code:0,stdout:JSON.stringify({data:{repository:{ref:{target:{target:{oid:options.remote??T}}}}}})};
  };
@@ -82,5 +87,25 @@ test("release final snapshot refuses a new predecessor moved tag or unavailable 
     expect(report.sourceReady).toBe(false); expect(report.ready).toBe(false);
     expect(report.blockers).toContain("published release or remote tag changed or could not be reverified");
     expect(JSON.stringify(report)).not.toContain("PRIVATE_RELEASE_ERROR_MARKER");
+  }
+});
+
+
+test("release final snapshot invalidates reopened missing or mismatched ledger identities (#257)", async () => {
+  for (const kind of ["reopened", "missing", "identity"] as const) {
+    const f = fake(), gh = f.readers.gh;
+    f.readers.gh = async args => {
+      const reply = await gh(args);
+      if (!args.some(arg => arg.includes("releases(first:100"))) return reply;
+      const data = JSON.parse(reply.stdout), repo = data.data.repository;
+      if (kind === "reopened") repo.ledger_273.state = "OPEN";
+      if (kind === "missing") delete repo.ledger_273;
+      if (kind === "identity") repo.ledger_273.number = 274;
+      return { code: 0, stdout: JSON.stringify(data) };
+    };
+    const report = await readReleaseReadiness("fixture", "owner/repo", [273], f.readers);
+    expect(report.sourceReady).toBe(false); expect(report.ready).toBe(false);
+    expect(report.liveIssues).toEqual([{ id: 273, state: kind === "reopened" ? "open" : "unknown" }]);
+    expect(report.blockers).toContain("live issue states changed or could not be reverified");
   }
 });
