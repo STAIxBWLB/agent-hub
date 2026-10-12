@@ -252,7 +252,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   client.onClose = (_code, reason) => stop(`Hub connection closed${reason ? `: ${reason}` : ""}`);
   try {
     if (state.petEnabled && pet.notice) {
-      if (state.mode === "panels") notify(state, pet.notice, Date.now(), "attention");
+      if (state.mode === "panels" && !plain) notify(state, pet.notice, Date.now(), "attention");
       else stream({ text: pet.notice, kind: "attention", tone: "attention" }, false);
     }
     if (plain) { state.mode = "stream"; safeWrite("Console panels need a terminal of at least 80x24; showing the plain stream.\n"); }

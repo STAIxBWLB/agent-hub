@@ -106,3 +106,22 @@ test("unknown pet configuration is visible immediately in panels without switchi
     expect(output).not.toContain("PRIVATE_MARKER");
   } finally { signal(); await running; rmSync(cwd, { recursive: true }); }
 });
+
+test("requested panels print unknown config warnings when the terminal falls back to plain", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-pet-fallback-warning-"));
+  mkdirSync(join(cwd, ".agenthub"));
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ pet: { character: "PRIVATE_MARKER" } }));
+  try {
+    for (const surface of [{ columns: 70, rows: 20, isTTY: true }, { columns: 100, rows: 24, isTTY: false }]) {
+      let output = "", signal = () => {};
+      const terminal: ConsoleTerminal = { ...surface, write: text => { output += text; }, raw: () => {}, onData: () => () => {}, onSignal: fn => { signal = fn; return () => {}; }, onResize: () => () => {} };
+      const client = { request: async () => ({}), send: () => {}, close: () => {}, onPush: () => {}, onClose: () => {} };
+      const running = runConsole({ cwd, stateDir: cwd, client, terminal, panels: true, color: false });
+      try {
+        expect(output).toContain("Unknown pet option; using stai line defaults for that option.");
+        expect(output).toContain("showing the plain stream");
+        expect(output).not.toContain("PRIVATE_MARKER");
+      } finally { signal(); await running; }
+    }
+  } finally { rmSync(cwd, { recursive: true }); }
+});

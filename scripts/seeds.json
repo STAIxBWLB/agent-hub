@@ -1916,10 +1916,18 @@
     {
       "id": "attention-panel-config-warning",
       "file": "src/cli/console.ts",
-      "search": "if (state.mode === \"panels\") notify(state, pet.notice, Date.now(), \"attention\");",
+      "search": "if (state.mode === \"panels\" && !plain) notify(state, pet.notice, Date.now(), \"attention\");",
       "replacement": "if (state.mode === \"panels\") {}",
       "testFile": "test/pet-config.test.ts",
       "testName": "unknown pet configuration is visible immediately in panels without switching modes"
+    },
+    {
+      "id": "attention-plain-config-warning",
+      "file": "src/cli/console.ts",
+      "search": "state.mode === \"panels\" && !plain",
+      "replacement": "state.mode === \"panels\"",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "requested panels print unknown config warnings when the terminal falls back to plain"
     }
   ]
 }
