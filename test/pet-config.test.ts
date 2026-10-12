@@ -92,3 +92,17 @@ test("paste acknowledges unread attention and optional bell observes edges and r
     request("fourth"); expect(bells()).toBe(2);
   } finally { signal(); await running; setSystemTime(); rmSync(cwd, { recursive: true }); }
 });
+
+test("unknown pet configuration is visible immediately in panels without switching modes", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-pet-panel-warning-"));
+  mkdirSync(join(cwd, ".agenthub"));
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ pet: { character: "PRIVATE_MARKER" } }));
+  let output = "", signal = () => {};
+  const terminal: ConsoleTerminal = { columns: 100, rows: 24, isTTY: true, write: text => { output += text; }, raw: () => {}, onData: () => () => {}, onSignal: fn => { signal = fn; return () => {}; }, onResize: () => () => {} };
+  const client = { request: async () => ({}), send: () => {}, close: () => {}, onPush: undefined, onClose: undefined };
+  const running = runConsole({ cwd, stateDir: cwd, client, terminal, panels: true, color: false });
+  try {
+    expect(output).toContain("Unknown pet option; using stai line defaults for that option.");
+    expect(output).not.toContain("PRIVATE_MARKER");
+  } finally { signal(); await running; rmSync(cwd, { recursive: true }); }
+});
