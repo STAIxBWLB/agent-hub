@@ -1616,6 +1616,14 @@
       "replacement": "(e.event === \"proposed\" && tasks.get(e.id)?.createdAt)",
       "testFile": "test/research.test.ts",
       "testName": "unpulled backlog generations cannot contaminate a reused normal proposal (#264 merge)"
+    },
+    {
+      "id": "sdlc-aggregate-backlog-floor",
+      "file": "src/hub/daemon.ts",
+      "search": "task.state !== \"backlog\" && (task.sdlc || lifecycleConfig.mode !== \"off\" || lifecycleConfig.workflow === \"gsd-lite\")",
+      "replacement": "(task.sdlc || lifecycleConfig.mode !== \"off\" || lifecycleConfig.workflow === \"gsd-lite\")",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "aggregate lifecycle status excludes staged backlog without hiding executable work (#264 merge)"
     }
   ]
 }

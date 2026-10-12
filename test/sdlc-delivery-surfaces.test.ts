@@ -52,3 +52,20 @@ test("board revision fence removes a previously ordered nonempty delivery result
  const tasks=new Tasks({board,bus:new Bus({batchMs:0}),cwd:dir,project:"fixture",notify:()=>{},routing:()=>loadRouting(dir),sdlc:{config:()=>sdlcConfig({mode:"enforce",required_checks:["gate"]}),gh}});
  const report=await tasks.deliveryQueue("owner/repo");expect(report.complete).toBe(false);expect(report.order).toEqual([]);expect(report.unordered).toEqual([1]);expect(report.rows[0]?.blockers).toContain("board changed during delivery readback");
 });
+
+
+test("aggregate lifecycle status excludes staged backlog without hiding executable work (#264 merge)", async () => {
+  for (const mode of ["advise", "enforce"] as const) {
+    const dir=root();mkdirSync(join(dir,".agenthub"));writeFileSync(join(dir,".agenthub/sdlc.toml"),`mode = "${mode}"\n`);
+    const stateDir=join(dir,"state"),daemon=await startDaemon({cwd:dir,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,
+      config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false},snapshots:{...DEFAULT_CONFIG.snapshots,enabled:false}}});cleanup.push(()=>daemon.stop());
+    const client=await ControlClient.connect(stateDir,{role:"console"});cleanup.push(()=>client.close());
+    expect((await client.request({t:"task",op:"hub_task_propose",args:{title:"future",class:"implement",backlog:true}})).ok).toBe(true);
+    expect((await client.request({t:"task",op:"hub_task_propose",args:{title:"executable",class:"implement",after:[1]}})).ok).toBe(true);
+    const status=await client.request({t:"sdlc",op:"status"});
+    expect(status.ok).toBe(true);expect(status.mode).toBe(mode);expect(status.rows.map((row:any)=>row.id)).toEqual([2]);
+    expect((await client.request({t:"sdlc",op:"explain",id:1})).ok).toBe(false);
+    const listed=JSON.parse((await client.request({t:"task",op:"hub_task_list",args:{}})).text);
+    expect(listed.map((task:any)=>[task.id,task.state])).toEqual([[1,"backlog"],[2,"proposed"]]);
+  }
+},20_000);

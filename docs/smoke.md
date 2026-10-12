@@ -1633,5 +1633,5 @@ merge worktree. Source regressions cover the visible Off selector, filtered-card
 activation, card/desk sibling layers, sparse sticky bounds, Work/rework overflow,
 reduced-motion/settled cleanup, expired arcs, explicit unattributed turn omission,
 conflict priority under the cap and distinct parallel warning coordinates.
-Platform/full202-guard proof is pending. Desktop/phone/real-peer visual readback
+Platform/full203-guard proof is pending. Desktop/phone/real-peer visual readback
 remains unverified; no account, release, installation or live activation ran.

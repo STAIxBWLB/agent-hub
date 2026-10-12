@@ -3913,7 +3913,7 @@ export async function startDaemon(opts: DaemonOptions) {
           try { return void reply({ ok: true, export: tasks.workflowExport(msg.id) }); } catch { return void reply({ ok: false, error: "workflow export unavailable" }); }
         }
         if (msg.op !== "status" && msg.op !== "explain") return void reply({ ok: false, error: "unknown SDLC operation" });
-        const selected = msg.id === undefined ? board.list().filter(task => task.sdlc || lifecycleConfig.mode !== "off" || lifecycleConfig.workflow === "gsd-lite") : [board.get(Number(msg.id))].filter((task): task is Task => !!task);
+        const selected = msg.id === undefined ? board.list().filter(task => task.state !== "backlog" && (task.sdlc || lifecycleConfig.mode !== "off" || lifecycleConfig.workflow === "gsd-lite")) : [board.get(Number(msg.id))].filter((task): task is Task => !!task);
         if (msg.id !== undefined && (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !selected.length)) return void reply({ ok: false, error: "invalid lifecycle task id" });
         void (async () => {
           const rows = [];
