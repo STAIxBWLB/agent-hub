@@ -20,7 +20,7 @@ export function loadPetConfig(cwd: string): PetConfig {
   const row = value as Record<string, unknown>;
   const invalid = Object.keys(row).some(key => !["character", "size", "glyphs", "blink", "bell"].includes(key)) ||
     row.character !== undefined && row.character !== "stai" || row.size !== undefined && row.size !== "line" ||
-    row.glyphs !== undefined && !["auto", "ascii", "blocks"].includes(String(row.glyphs)) ||
+    row.glyphs !== undefined && (typeof row.glyphs !== "string" || !["auto", "ascii", "blocks"].includes(row.glyphs)) ||
     row.blink !== undefined && typeof row.blink !== "boolean" || row.bell !== undefined && typeof row.bell !== "boolean";
   return { enabled: true, blink: typeof row.blink === "boolean" ? row.blink : true, bell: typeof row.bell === "boolean" ? row.bell : false,
     ...(invalid ? { notice: "Unknown pet option; using stai line defaults for that option." } : {}) };

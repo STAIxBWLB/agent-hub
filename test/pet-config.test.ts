@@ -33,6 +33,15 @@ test("only approval deadlines blink, with an explicit static escape", () => {
   }
 });
 
+test("unknown structured pet options fall back without coercing source objects", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-pet-option-"));
+  try {
+    mkdirSync(join(cwd, ".agenthub"));
+    writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ pet: { glyphs: { toString: "PRIVATE_MARKER" } } }));
+    expect(loadPetConfig(cwd)).toEqual({ enabled: true, blink: true, bell: false, notice: "Unknown pet option; using stai line defaults for that option." });
+  } finally { rmSync(cwd, { recursive: true }); }
+});
+
 test("plain attention prints changed act counts and no-pet preserves the stream", async () => {
   for (const noPet of [false, true]) {
     const cwd = mkdtempSync(join(tmpdir(), "ahub-pet-plain-"));
