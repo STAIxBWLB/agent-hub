@@ -1549,7 +1549,7 @@
       "id": "board-started-return-floor",
       "file": "src/ui/task-board.ts",
       "search": "&& task.started === false",
-      "replacement": "",
+      "replacement": "&& true",
       "testFile": "test/task-board.test.ts",
       "testName": "board return controls refuse started and unknown-history ownerless proposals (#263)"
     }
