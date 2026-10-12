@@ -43,7 +43,7 @@ test("every managed MCP surface advertises the project lifecycle ids in its real
     try {
       await client.connect(transport); const tools = await client.listTools();
       const schema = tools.tools.find(t => t.name === "hub_sdlc_record")?.inputSchema.properties?.receipt as { properties: { stage: { enum: string[] } } };
-      expect(schema.properties.stage.enum, `${entry}:${peer}/${mode}`).toEqual(ids);
+      expect(schema.properties.stage.enum).toEqual(ids);
     } finally { await client.close(); }
   }
 });
