@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add bounded one-way GitHub issue intake into persistent deduplicated private-safe Backlog (#263).
+
 - Add atomic backlog decomposition and bounded unused-child undo with staged DAGs and tool/CLI/dashboard wiring (#263).
 
 - Add planner WIP slot admission and bounded pending-pull undo, configured capacity through existing settings, and tool/CLI/dashboard/status wiring (#263).

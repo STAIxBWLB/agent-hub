@@ -2024,6 +2024,38 @@
       "replacement": " && true",
       "testFile": "test/planner-split.test.ts",
       "testName": "person P0 integration order allows its split prerequisites first (#263)"
+    },
+    {
+      "id": "github-import-readonly-state",
+      "file": "src/hub/github-import.ts",
+      "search": "\"--state\",\"open\"",
+      "replacement": "\"--state\",\"all\"",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub import selects only fixed readonly argv and reports bounded pages (#263)"
+    },
+    {
+      "id": "github-import-url-identity",
+      "file": "src/hub/github-import.ts",
+      "search": "if(row.url.toLowerCase()!==expected.toLowerCase())",
+      "replacement": "if(false)",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub import refuses malformed selections identities duplicates and oversized pages (#263)"
+    },
+    {
+      "id": "github-import-after-screen-dedupe",
+      "file": "src/hub/tasks.ts",
+      "search": "if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }",
+      "replacement": "if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (false) return prior!; }",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub import rechecks persistent identity after asynchronous screening (#263)"
+    },
+    {
+      "id": "github-import-person-cli",
+      "file": "src/cli/identity.ts",
+      "search": "if (command === \"board\" && args[0] === \"import\") return \"console\";",
+      "replacement": "if (false) return \"console\";",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake persists dedupe and PII sources only through public projection (#263)"
     }
   ]
 }

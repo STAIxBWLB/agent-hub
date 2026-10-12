@@ -64,6 +64,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>", "release a delivery held as needs_review: mark it completed, retry it or discard it"],
   ]],
   ["Tasks and review", [
+    ["ahub board import github --label <label> [--milestone <milestone>] [--repo <owner/repo>]", "person only: read bounded open issues into deduplicated Backlog; never writes GitHub"],
     ["ahub board [state | --ready] [--json] [--color=auto|always|never]", "the task board; --ready: proposed tasks with nothing left to wait for"],
     ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--backlog] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
     ["ahub backlog list | add <class> <title...> | plan <id> <revision> <fields-json> <reason...> | pin <id> <revision> true|false <reason...> | undo <id> <revision>", "person only: stage and plan work, preserve pins/frozen scope and refuse stale edits"],

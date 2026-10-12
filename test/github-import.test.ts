@@ -1,0 +1,15 @@
+import { expect,test } from "bun:test";
+import {readGitHubImport} from "../src/hub/github-import.ts";
+import type {SdlcGh} from "../src/hub/sdlc.ts";
+const issue=(number:number)=>({number,title:`issue ${number}`,body:"bounded body",url:`https://github.com/Owner/Repo/issues/${number}`,state:"OPEN"});
+test("GitHub import selects only fixed readonly argv and reports bounded pages (#263)",async()=>{
+  const calls:string[][]=[];const run:SdlcGh=async(args)=>{calls.push(args);return {code:0,stdout:JSON.stringify(args[0]==="repo"?{nameWithOwner:"Owner/Repo"}:Array.from({length:33},(_,i)=>issue(i+1)))};};
+  const result=await readGitHubImport({label:"ready work",milestone:"phase one"},run);expect(result.issues).toHaveLength(32);expect(result.partial).toBe(true);expect(result.issues[0]?.source).toMatchObject({provider:"github",repo:"owner/repo",issue:1});
+  expect(calls).toEqual([["repo","view","--json","nameWithOwner"],["issue","list","--repo","Owner/Repo","--state","open","--label","ready work","--milestone","phase one","--limit","33","--json","number,title,body,url,state"]]);
+});
+test("GitHub import refuses malformed selections identities duplicates and oversized pages (#263)",async()=>{
+  let reads=0;const run:SdlcGh=async()=>{reads++;return {code:0,stdout:"[]"};};
+  for(const input of [{repo:"--bad",label:"ready"},{repo:"Owner/Repo",label:"--write"},{repo:"Owner/Repo",label:"ready\nclose"},{repo:"Owner/Repo",label:"ready",milestone:"--bad"}])await expect(readGitHubImport(input,run)).rejects.toThrow();expect(reads).toBe(0);
+  for(const page of [[{...issue(1),url:"https://example.com/secret"}],[issue(1),issue(1)],[{...issue(1),state:"CLOSED"}],Array.from({length:34},(_,i)=>issue(i+1)),[{...issue(1),body:"x".repeat(8001)}]])await expect(readGitHubImport({repo:"Owner/Repo",label:"ready"},async()=>({code:0,stdout:JSON.stringify(page)}))).rejects.toThrow();
+  await expect(readGitHubImport({repo:"Owner/Repo",label:"ready"},async()=>({code:1,stdout:"secret diagnostic"}))).rejects.toThrow("read failed");
+});

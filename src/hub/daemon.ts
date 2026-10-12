@@ -1547,6 +1547,8 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "release_new":
         return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
+      case "github_import":
+        return JSON.stringify(await tasks.importGitHub(USER, { repo: a.repo, label: a.label, milestone: a.milestone }));
       case "release_show": {
         const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);
         if (!release) throw new PreEffectToolRefusal("no such release");
@@ -3044,7 +3046,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),

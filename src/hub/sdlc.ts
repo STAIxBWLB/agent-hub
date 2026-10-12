@@ -215,10 +215,10 @@ export function touchingPrs(prs: { pr: number; paths: string[] }[]): { before: n
   return conflicts;
 }
 
-export type SdlcGh = (args: string[], timeoutMs?: number) => Promise<{ code: number; stdout: string }>;
+export type SdlcGh = (args: string[], timeoutMs?: number, cwd?: string) => Promise<{ code: number; stdout: string }>;
 /** Read-only, fixed argv. Output and time are bounded; diagnostics never expose credentials or remote text. */
-export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000) => new Promise((resolve) => {
-  const child = spawn("gh", args, { env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
+export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd) => new Promise((resolve) => {
+  const child = spawn("gh", args, { ...(cwd ? { cwd } : {}), env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
   let stdout = "", failed = false;
   const stop = () => { failed = true; void stopOwnedProcess(child, { group: true }).catch(() => {}); };
   const timer = setTimeout(stop, Math.max(1, Math.min(10_000, timeoutMs)));

@@ -1,3 +1,4 @@
+import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
@@ -19,7 +20,7 @@ import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { SUPPORTED_PEERS } from "./peer-catalog.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
+import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -348,7 +349,7 @@ export class Tasks {
 
   /** A task as a cloud peer may see it. */
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
-    const { title, detail, history, ...rest } = task;
+    const { title, detail, history, external, ...rest } = task;
     if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
@@ -360,7 +361,7 @@ export class Tasks {
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
-    return { ...rest, actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -677,6 +678,26 @@ export class Tasks {
     return this.planBacklog(by, { id, revision, fields: entry.planning.previous, reason: `undo planning revision ${revision}` });
   }
 
+  async importGitHub(by: PeerId, input: GitHubImportSelection, run?: SdlcGh): Promise<{ imported: number[]; existing: number[]; partial: boolean; complete: boolean; unconfirmed?: true }> {
+    if (by !== USER) throw new PreEffectToolRefusal("GitHub import is a person console command");
+    const deadline = performance.now() + 20_000;
+    const page = await readGitHubImport(input, run ?? ((args, timeout) => sdlcGh(args, timeout, this.d.cwd)));
+    const imported: number[] = [], existing: number[] = [];
+    for (const issue of page.issues) {
+      if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };
+      const prior = this.d.board.imported(issue.source.repo, issue.source.issue);
+      if (prior) { existing.push(prior.id); continue; }
+      let created = false;
+      const classes = profileData(this.d.profileData ?? this.d.profile ?? "dev").classes;
+      const cls = Object.keys(classes).find(name => classes[name] === "implement") ?? Object.keys(classes)[0];
+      try {
+        const task = await this.propose(USER, { title: issue.title, detail: issue.detail, class: cls, backlog: true }, issue.source, () => { created = true; });
+        (created ? imported : existing).push(task.id);
+      } catch { return { imported, existing, partial: true, complete: false, unconfirmed: true }; }
+    }
+    return { imported, existing, partial: page.partial, complete: !page.partial };
+  }
+
   async splitBacklog(by: PeerId, input: { id: number; revision: number; parts: unknown; reason: string }): Promise<{ parent: Task; children: Task[] }> {
     this.planningAuthority(by);
     const { id, revision } = input;
@@ -744,7 +765,8 @@ export class Tasks {
     return updated; // a failed readback may follow a durable release write
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown }): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown }, external?: GitHubSource, created?: () => void): Promise<Task> {
+    if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
     const backlog = input.backlog === true;
     if (backlog && input.owner && !this.d.bus.isRostered(input.owner)) throw new PreEffectToolRefusal(`${input.owner} is off roster; add it before reserving work`);
@@ -798,7 +820,9 @@ export class Tasks {
     try { selected = taskRole(input.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
-    let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
+    if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }
+    let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
+    created?.();
     if (screening) task = this.screenedTask(task, screened);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");

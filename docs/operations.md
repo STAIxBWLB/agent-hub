@@ -2747,3 +2747,19 @@ Unused unchanged backlog children can be removed by latest split undo; later
 edits, execution, ownership or outside references refuse it. All writes roll
 back together and observers receive changes only after commit. Current source
 and native/visual verification remain pending.
+
+
+## One-way GitHub intake (#263, verification pending)
+
+`ahub board import github --label <label> [--milestone <milestone>]
+[--repo <owner/repo>]` is person-only. Omitted repo is resolved by gh in the
+project directory. The command reads open issues with fixed bounded argv and
+stages up to32 into unoffered Backlog, retaining canonical repo/issue identity
+across restarts. Repeating intake does not refresh or overwrite existing cards.
+
+The response lists confirmed imported/existing task ids and explicit partial,
+complete and unconfirmed state. A truncated page, time budget or interrupted
+staging is incomplete; repeat safely to reconcile the persisted identity.
+Public cards link to their source; PII cards expose no external identity.
+GitHub comments/labels/assignment/closure are never written. Current source and
+native verification remain pending; no live account import was performed.

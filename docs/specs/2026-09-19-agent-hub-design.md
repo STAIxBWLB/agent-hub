@@ -2569,3 +2569,15 @@ unchanged unstarted backlog children, refusing later edits, owners, execution or
 external references. Role, revision, pin/person and frozen scope floors remain.
 Public projections expose child ids without private prior values. Source/native
 verification remains pending; no live operation or release process is implied.
+
+## One-way GitHub backlog intake (#263, in progress)
+
+A person may import open issues selected by a required label and optional
+milestone/repository, using fixed read-only gh argv. The existing reader bounds
+stdout and execution; one page stages at most32 issues and reports truncation.
+The entire returned page must validate before any staging. Repository/issue
+identity is stored persistently and deduplicated across restart and concurrent
+screening. Tasks screens imported content and stages unoffered backlog; links
+are shown only through the central public projection, with no source identity
+exposed for PII cards. No GitHub comment, label, assignment or close is written.
+Current source/native proof remains pending.

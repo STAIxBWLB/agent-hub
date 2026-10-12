@@ -523,6 +523,7 @@ function taskCard(task, card, stage, ids) {
   if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + (task.lifecycle.workflow ? ' (' + task.lifecycle.workflow + ')' : '') + ' / ' + task.lifecycle.stage + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
   if (task.lifecycle?.definition) row.append(el('p', 'Stage base: ' + task.lifecycle.definition.base + ' / entry: ' + (task.lifecycle.entry?.length ? task.lifecycle.entry.join('; ') : 'ready') + ' / exit: ' + (task.lifecycle.exit?.length ? task.lifecycle.exit.join('; ') : 'ready'), 'meta'));
   if (task.detail) row.append(el('p', task.detail, 'body'));
+  if(task.external?.provider==='github'){const source=el('a','GitHub #'+task.external.issue);source.href=task.external.url;source.rel='noreferrer';source.target='_blank';row.append(source);}
   if(task.pinned)row.append(el('p','Pinned','meta'));
   if(task.plannedStart != null || task.due != null)row.append(el('p','Planned '+dateText(task.plannedStart)+' / due '+dateText(task.due),'meta'));
   if(task.due != null && task.due<Date.now() && task.state!=='approved')row.append(badge('Overdue','warn'));
