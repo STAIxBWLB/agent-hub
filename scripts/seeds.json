@@ -1696,6 +1696,14 @@
       "replacement": "&& true",
       "testFile": "test/task-board.test.ts",
       "testName": "board return controls refuse started and unknown-history ownerless proposals (#263)"
+    },
+    {
+      "id": "board-recovered-owner-hold",
+      "file": "src/ui/task-board.ts",
+      "search": " || peer.heldBy",
+      "replacement": " || false",
+      "testFile": "test/task-board.test.ts",
+      "testName": "recovered owner delivery holds stay waiting until settlement (#263)"
     }
   ]
 }

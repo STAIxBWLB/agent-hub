@@ -3,7 +3,7 @@ export interface BoardCardInput {
   id: number; state: string; owner?: string | null; reviewer?: string | null;
   deps?: readonly number[]; reserved?: string | null; urgent?: boolean; priority?: number; started?: boolean;
 }
-export interface BoardPeerInput { state?: string; attached?: boolean; rostered?: boolean; needsReview?: number; }
+export interface BoardPeerInput { state?: string; attached?: boolean; rostered?: boolean; needsReview?: number; heldBy?: string; }
 export interface BoardCardState {
   id: number; column: string; priority: number; starred: boolean; waiting: string[];
   assignable: boolean; pull: boolean; returnable: boolean;
@@ -33,7 +33,7 @@ export function boardColumns(tasks: readonly BoardCardInput[], peers: Readonly<R
       if (task.owner) {
         const peer = Object.hasOwn(peers, task.owner) ? peers[task.owner] : undefined;
         if (!peer || !["idle", "busy", "paused", "offline"].includes(peer.state ?? "")) waiting.push("owner status unknown");
-        else if (peer.state === "paused" || (peer.needsReview ?? 0) > 0) waiting.push("owner delivery held");
+        else if (peer.state === "paused" || (peer.needsReview ?? 0) > 0 || peer.heldBy) waiting.push("owner delivery held");
         else if (peer.state === "offline" || peer.attached === false || peer.rostered === false) waiting.push("owner unavailable");
       }
     }
