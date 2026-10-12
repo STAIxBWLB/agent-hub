@@ -92,8 +92,13 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const attach = new Map<string, number>(), online = new Set<string>();
   const tooling = new Map<string, { attach: number; addons: Addon[] }>();
   /** A peer that worked on the task carries the fingerprint of the attachment it worked in. */
-  const involve = (a: Acc, peer: string | null | undefined) => {
-    if (!peer) return;
+  /**
+   * `acted`: the peer did something for the task (an attributed turn, tokens, the actor of a board move). A peer only
+   * named on a move (the owner or reviewer an approval lists) joins the task once and never moves to a later
+   * attachment, where it did no work.
+   */
+  const involve = (a: Acc, peer: string | null | undefined, acted = true) => {
+    if (!peer || peer === "hub" || peer === "user" || (!acted && a.peers.has(peer))) return;
     const now = attach.get(peer) ?? 0, f = tooling.get(peer);
     a.peers.set(peer, now);
     if (f?.attach === now) a.tooling[peer] = f.addons;
@@ -134,7 +139,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       if (e.state === "changes_requested" && a.lastState !== "changes_requested") a.changesRequested++;
       if (e.state === "approved") a.approvedAt ??= e.at;
       a.lastState = e.state;
-      involve(a, e.owner); involve(a, e.reviewer);
+      involve(a, e.by); involve(a, e.owner, false); involve(a, e.reviewer, false);
       continue;
     }
     const task = "task" in e && typeof e.task === "number" ? e.task : undefined;

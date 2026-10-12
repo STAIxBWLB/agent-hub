@@ -151,6 +151,12 @@ test("research records carry each working peer's latest fingerprint, and a peer 
   const early: StampedEvent[] = [state("qwen", "idle"), { v: 1, at: at(), type: "tooling", peer: "qwen", addons: [{ name: "ripwire", version: null }] },
     { v: 1, at: at(), type: "hub_start", instance: "run-3" }, task(10, "proposed", "proposed", null), task(10, "assigned", "in_progress", "qwen", null), task(10, "done", "approved", "qwen", null)];
   expect(taskRecords(early, "proj", writer)[0]!.tooling).toBeUndefined();
+  // An approval that merely names the owner does not move it to the attachment it reconnected with (review of #351).
+  const named: StampedEvent[] = [state("codex", "idle"), { v: 1, at: at(), type: "tooling", peer: "codex", addons: [{ name: "ripwire", version: null }] },
+    task(11, "proposed", "proposed", null), task(11, "assigned", "in_progress", "codex", "claude"), turn(11, "codex"), task(11, "done", "in_review", "codex", "claude"),
+    state("codex", "offline"), state("codex", "idle"), { v: 1, at: at(), type: "tooling", peer: "codex", addons: [] },
+    { ...task(11, "approved", "approved", "codex", "claude"), by: "claude" } as StampedEvent];
+  expect(taskRecords(named, "proj", writer)[0]!.tooling?.codex).toEqual([{ name: "ripwire", version: null }]);
   const [six, seven] = taskRecords(windows, "proj", writer);
   expect(six!.tooling).toBeUndefined(); // worked before any fingerprint of its attachment existed
   expect(seven!.tooling).toEqual({ pi: [] }); // its last work was in the later attachment
