@@ -1160,6 +1160,14 @@
       "replacement": "sdlcStages: undefined,",
       "testFile": "test/lifecycle-native.test.ts",
       "testName": "daemon forwards its active custom lifecycle schema to the actual LocalPeer provider request (#257)"
+    },
+    {
+      "id": "lifecycle-export-initial-stage",
+      "file": "src/hub/tasks.ts",
+      "search": "task.sdlc?.stage ?? config.stages[0] ?? \"spec\"",
+      "replacement": "task.sdlc?.stage ?? \"spec\"",
+      "testFile": "test/lifecycle-definitions.test.ts",
+      "testName": "custom lifecycle export and public status agree on the initial configured stage before a receipt (#257)"
     }
   ]
 }

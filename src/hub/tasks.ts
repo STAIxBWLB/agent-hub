@@ -1149,7 +1149,7 @@ export class Tasks {
   }
   workflowExport(id: unknown): Record<string, unknown> {
     const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    const state = { id: task.id, state: task.state, stage: task.sdlc?.stage ?? "spec", ...(this.isPii(task) ? { private: true } : { phase: this.workflowView(task) ?? null }) };
+    const state = { id: task.id, state: task.state, stage: task.sdlc?.stage ?? config.stages[0] ?? "spec", ...(this.isPii(task) ? { private: true } : { phase: this.workflowView(task) ?? null }) };
     return { schema: 1, workflow: config.workflow ?? "none", state, stateHash: workflowHash(state), sourceHash: workflowHash(config) };
   }
   async lifecycleStatus(id: unknown, refresh = true): Promise<SdlcStatus> {

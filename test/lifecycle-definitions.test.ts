@@ -83,3 +83,12 @@ test("lifecycle configuration reads are bounded regular files rather than symlin
   writeFileSync(file, "#" + "x".repeat(65536)); expect(() => loadSdlc(dir)).toThrow("64 KiB");
   rmSync(file); writeFileSync(join(dir, "foreign.toml"), 'mode = "off"\n'); symlinkSync("../foreign.toml", file); expect(() => loadSdlc(dir)).toThrow();
 });
+
+test("custom lifecycle export and public status agree on the initial configured stage before a receipt (#257)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-initial-lifecycle-")), board = new Board(join(dir, "hub.db")); cleanup.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
+  const config = sdlcConfig(raw()), tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), cwd: dir, project: "fixture", notify: () => {}, routing: () => loadRouting(dir), sdlc: { config: () => config } });
+  const task = board.propose(USER, { title: "fixture", class: "implement" });
+  expect((await tasks.lifecycleStatus(task.id, false)).stage).toBe("question");
+  expect((tasks.workflowExport(task.id).state as { stage: string }).stage).toBe("question");
+  expect((tasks.publicView(task).lifecycle as { stage: string }).stage).toBe("question");
+});
