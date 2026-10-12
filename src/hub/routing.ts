@@ -248,7 +248,7 @@ export interface Assignment {
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
 export function assign(
-  task: Pick<Task, "class" | "signals" | "reserved">,
+  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state">>,
   states: Record<PeerId, PeerState>,
   routing: Routing,
   opts: {
@@ -278,6 +278,7 @@ export function assign(
     roles?: Record<string, string[]>;
   } = {},
 ): Assignment {
+  if (task.state === "backlog") return { trace: ["backlog: not routed; pull into To Do first"] };
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
   // Which file each of this class's values comes from (#269), only when the machine-local overlay sets one.

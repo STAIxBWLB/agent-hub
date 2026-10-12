@@ -2541,3 +2541,30 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 - Use `profile_overrides` for class aliases, supported plan selection, role guidance, catalog defaults, managed AGENTS content and advisory example checks. Shared/local maps merge by key; selections/text replace. See [profiles](profiles.md).
 - Refresh instructions with init and restart the daemon/MCP clients to apply their resolved contracts. Existing flow-role and executable-check authority remains in `roles`/trusted `checks`. Native model/account evidence remains unverified.
+
+
+## Staging work in Backlog (#263)
+
+Use `ahub task propose implement "Later work" --backlog --owner codex` to stage
+work without routing it. The owner is a reservation, including when an agent
+names itself. Normal proposal behavior is unchanged without `--backlog`.
+
+The person inspects `ahub board backlog` and `ahub task show <id>`, then runs
+`ahub backlog pull <id>` to put it in To Do. Dependencies still block assignment.
+Ready work uses the existing assignment and delivery-recovery contract; if no
+peer can take it, a later attachment or restart can offer it. Return ownerless
+To Do work with `ahub backlog return <id>`. Owned or started work cannot return.
+
+Ordinary agent task lists and conductor task reads exclude Backlog. Staged work
+is never claimed, accepted, completed, swept, escalated or relayed. PII cards and
+notices use the existing public stub. Planner grooming tools, the five-column
+view, releases and dates are later #263 slices; the native planner/two-release
+smoke remains unverified. No tag, publish or live activation occurs here.
+
+
+Pulling Backlog establishes its first execution-proposal boundary for projected
+review snapshots and research records. An initial Backlog row is not an offered
+proposal. Research uses the first pull time and preserves identity across later
+unstarted return/pull cycles; a new backlogged id after reset starts a new record
+generation. Partial work with acceptance/check/review evidence cannot return to
+Backlog even after decline or reassignment leaves it ownerless.
