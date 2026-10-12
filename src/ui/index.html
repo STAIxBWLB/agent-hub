@@ -16,6 +16,7 @@ const dashboardTheme = (() => {
 <style>
 :root{color-scheme:light;--waiting:#795399;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--panel:#ffffff;--panel-soft:#f4f6f2;--control:#ffffff;--control-border:#bbc4bb;--hover:#f0f4ef;--green:#245f45;--green-soft:#e4efe9;--amber:#8a5b12;--amber-soft:#f8eed6;--blue:#245a93;--blue-soft:#e6eef8;--red:#a2392f;--red-soft:#f6e5e2;--dot:#98a29b;--dot-ok:#2f7a52;--dot-warn:#b07a16;--dot-err:#b24539;--focus:#245f45;--on-accent:#ffffff}:root[data-theme="dark"]{color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:12px}.section-head .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.peername{display:flex;align-items:center;gap:8px;min-width:0}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:2px 7px;background:var(--panel-soft);color:var(--muted);border-radius:4px;white-space:nowrap}.badge.ok{background:var(--green-soft);color:var(--green)}.badge.warn{color:var(--amber);background:var(--amber-soft)}.badge.info{color:var(--blue);background:var(--blue-soft)}.badge.err{color:var(--red);background:var(--red-soft)}.dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--dot)}.dot.ok{background:var(--dot-ok)}.dot.warn{background:var(--dot-warn)}.dot.err{background:var(--dot-err)}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{background:var(--control);color:var(--muted);border:1px solid var(--control-border);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;line-height:1.2}.chip:hover{background:var(--hover)}.chip[aria-pressed="true"]{background:var(--green);color:var(--on-accent);border-color:var(--green);font-weight:600}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:var(--control);color:var(--ink);border:1px solid var(--control-border);border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:var(--hover)}button.primary{background:var(--green);color:var(--on-accent);border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--focus);outline-offset:3px}input,select,textarea{width:100%;border:1px solid var(--control-border);border-radius:5px;padding:8px;background:var(--control);color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.section-head .filters select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event[hidden]{display:none}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:var(--red)}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}progress.warn{accent-color:var(--amber)}progress.warn::-webkit-progress-value{background:var(--amber)}progress.critical{accent-color:var(--red)}progress.critical::-webkit-progress-value{background:var(--red)}progress::-moz-progress-bar{background:var(--green)}progress.warn::-moz-progress-bar{background:var(--amber)}progress.critical::-moz-progress-bar{background:var(--red)}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 .task-progress{padding:12px 18px;border-bottom:1px solid var(--line)}.task-progress svg{display:block;width:100%;height:12px;margin:8px 0}.progress-proposed{fill:var(--dot)}.progress-unknown{fill:var(--dot)}.progress-waiting{fill:var(--waiting)}.progress-in_progress{fill:var(--blue)}.progress-in_review{fill:var(--amber)}.progress-changes_requested{fill:var(--red)}.progress-approved{fill:var(--green)}.task-stage{font:12px ui-monospace,monospace;margin:8px 0;color:var(--muted)}.task-stage .reached{color:var(--green)}.task-stage.changes{color:var(--red)}.theme-choice{width:auto}.actions input[type="text"]{width:auto;flex:1 1 160px;max-width:320px}details.settings-group>summary{padding:12px 18px;cursor:pointer;border-bottom:1px solid var(--line);font-weight:600}details.settings-group:last-child:not([open])>summary{border-bottom:0}.preview{margin-top:8px;padding:8px 10px;background:var(--panel-soft);border-radius:5px;font:12px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.preview:empty{display:none}
+.office-scene{display:block;width:100%;height:auto}.office-scene text{font-family:system-ui,sans-serif}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--muted);font-size:1.8px;letter-spacing:.1px;text-transform:uppercase}.office-room-count{fill:var(--ink);font-size:1.8px;font-variant-numeric:tabular-nums}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed{opacity:.55}.office-name{fill:var(--ink);font-size:1.6px;font-weight:600}.office-state{fill:var(--muted);font-size:1.4px}.office-glyph{font-size:1.8px}.office-idle .office-glyph{fill:var(--dot-ok)}.office-busy .office-glyph{fill:var(--dot-warn)}.office-offline .office-glyph{fill:var(--dot)}.office-paused .office-glyph{fill:var(--dot-warn)}.office-waiting .office-glyph{fill:var(--dot-err)}.office-unknown .office-glyph{fill:var(--dot)}.office-meta{fill:var(--muted);font-size:1.2px}.office-hand{fill:var(--dot-err);font-size:1.6px}.office-bubble{fill:var(--blue-soft);stroke:var(--blue)}.office-bubble-text{fill:var(--blue);font-size:1.3px}.office-mode{fill:var(--amber);font-size:1.2px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1.3px;font-family:ui-monospace,monospace}.office-waiting-card .office-card{stroke:var(--waiting);stroke-dasharray:.5 .4}.office-rework-card .office-card{stroke:var(--red)}.office-more{fill:var(--blue);font-size:1.4px}.office-spotlight .office-desk-surface,.office-spotlight .office-card{stroke:var(--focus);stroke-width:.5}.row.spotlight{background:var(--hover)}
 </style>
 </head>
 <body>
@@ -23,6 +24,7 @@ const dashboardTheme = (() => {
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
 <div class="stack">
+<section id="office-section" aria-labelledby="office-title" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 <section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="proposed">Proposed</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
@@ -41,7 +43,14 @@ const dashboardTheme = (() => {
 'use strict';
 /* TASK_PROGRESS_MODEL */
 /* PEER_START_RETRY_MS */
+/* OFFICE_MODEL */
+const officeView = (() => {
+  let choice = 'off';
+  try { const saved = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('agent-hub-office='))?.slice('agent-hub-office='.length); if (['off','flat'].includes(saved)) choice = saved; } catch {}
+  return { get: () => choice, set: (value) => { choice = ['off','flat'].includes(value) ? value : 'off'; try { document.cookie = `agent-hub-office=${choice}; Path=/; Max-Age=31536000; SameSite=Strict`; } catch {} } };
+})();
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
+const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; });
 let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
@@ -49,6 +58,8 @@ const el = (tag, text, cls) => { const node = document.createElement(tag); if (t
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
 let managerMode = false, projectList = [], selectedProjectId = '', selectedInstanceId = '', snapshotValid = false, viewGeneration = 0, projectRequest = 0;
 let lastSnapshot = null;
+let officePrev = null;
+const peerRows = new Map(), taskRows = new Map(), officeDesks = new Map(), officeCards = new Map();
 const drafts = new Map();
 const pendingButtons = new WeakSet();
 const pendingStarts = new Map();
@@ -136,6 +147,7 @@ function syncMutationControls() { document.querySelectorAll('button[data-mutatio
 function resetView(id, instance) {
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
+  officePrev = null; officeDesks.clear(); officeCards.clear();
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
@@ -373,6 +385,7 @@ function render(snapshot) {
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
   update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
+    peerRows.clear();
     if (!ids.length) { empty(target, 'No peers connected. Start one below, or from your terminal.'); return renderStarts(target, starts); }
     for (const [id, peer] of Object.entries(peers)) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
@@ -393,10 +406,15 @@ function render(snapshot) {
         if (backend.requestedModel) row.append(el('p', backend.kind.toUpperCase() + ': ' + (backend.actualModel || 'model not reported') + ' (' + backend.state + ')', 'meta'));
       }
       const paused = peer.state === 'paused' || peer.paused;
+      row.tabIndex = 0; peerRows.set(id, row);
+      const trackDesk = (on) => { const desk = officeDesks.get(id); if (desk) desk.classList.toggle('office-spotlight', on); };
+      row.addEventListener('mouseenter', () => trackDesk(true)); row.addEventListener('mouseleave', () => trackDesk(false));
+      row.addEventListener('focus', () => trackDesk(true)); row.addEventListener('blur', () => trackDesk(false));
       row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
     }
     renderStarts(target, starts);
   });
+  renderOffice(snapshot);
   const assignable = ids.filter((id) => peers[id].state !== 'offline' && peers[id].attached !== false);
   const peerSignature = JSON.stringify([ids, assignable]);
   if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), assignable, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
@@ -407,6 +425,7 @@ function render(snapshot) {
   const taskFilter = $('task-filter').value;
   const visibleTasks = taskFilter ? snapshot.tasks.filter((task) => task.state === taskFilter) : snapshot.tasks;
   update('tasks', [visibleTasks, ids, taskFilter, progress], (target) => {
+    taskRows.clear();
     if (!snapshot.tasks.length) return empty(target, 'No public tasks yet. Propose a task below to get started.');
     if (!visibleTasks.length) return empty(target, 'No tasks in this state.');
     for (const task of visibleTasks) {
@@ -422,6 +441,10 @@ function render(snapshot) {
         const assign = el('button', 'Assign'); assign.type = 'button'; assign.dataset.mutation = 'project'; assign.disabled = managerMode && !snapshotValid; assign.addEventListener('click', () => { if (select.value) void action({action:'assign', id:task.id, peer:select.value}, assign); else notice('Select a peer before assigning this task.', true); });
         actions.append(select, assign); row.append(actions);
       }
+      row.tabIndex = 0; taskRows.set(task.id, row);
+      const trackCard = (on) => { const card = officeCards.get(task.id); if (card) card.classList.toggle('office-spotlight', on); };
+      row.addEventListener('mouseenter', () => trackCard(true)); row.addEventListener('mouseleave', () => trackCard(false));
+      row.addEventListener('focus', () => trackCard(true)); row.addEventListener('blur', () => trackCard(false));
       target.append(row);
     }
   });
@@ -485,6 +508,91 @@ async function poll() {
   catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
+// office-scene-begin (issue 264): the static Flat office. Draws the shared officeModel as inline SVG from the
+// same render(snapshot) call as the lists; no timer, no frame loop, no request and no action lives here.
+function officeClip(text, max) { text = String(text); return text.length > max ? text.slice(0, max - 3) + '...' : text; }
+function officeNode(tag, attrs, text) { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const key in attrs) node.setAttribute(key, String(attrs[key])); if (text !== undefined) node.textContent = text; return node; }
+function officeKeys(event, activate) { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } }
+let spotlitRow = null;
+function spotlightRow(row) { if (spotlitRow && spotlitRow !== row) spotlitRow.classList.remove('spotlight'); spotlitRow = row; if (row) row.classList.add('spotlight'); }
+function activateOfficePeer(id) { const row = peerRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
+function activateOfficeTask(id) { const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
+function officeFilter(state) { $('task-filter').value = state; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); }
+function officeCardNode(card) {
+  const g = officeNode('g', { class: 'office-card-node' + (card.waiting ? ' office-waiting-card' : '') + (card.rework ? ' office-rework-card' : ''), tabindex: '0', role: 'button', 'aria-label': card.name });
+  g.append(officeNode('rect', { x: card.x, y: card.y, width: card.w, height: card.h, rx: 0.6, class: 'office-card' }));
+  g.append(officeNode('text', { x: card.x + 0.8, y: card.y + card.h - 0.7, class: 'office-card-text' }, officeClip(card.label, 22)));
+  officeCards.set(card.id, g);
+  const open = () => activateOfficeTask(card.id);
+  g.addEventListener('click', open);
+  g.addEventListener('keydown', (event) => officeKeys(event, open));
+  return g;
+}
+function officeDeskNode(desk) {
+  const g = officeNode('g', { class: 'office-desk office-' + desk.condition + (desk.dimmed ? ' office-dimmed' : ''), tabindex: '0', role: 'button', 'aria-label': desk.name });
+  g.append(officeNode('rect', { x: desk.x, y: desk.y, width: desk.w, height: desk.h, rx: 1, class: 'office-desk-surface' }));
+  if (desk.bubble) {
+    g.append(officeNode('rect', { x: desk.x + 0.6, y: desk.y - 2.3, width: desk.w - 1.2, height: 1.9, rx: 0.9, class: 'office-bubble' }));
+    g.append(officeNode('text', { x: desk.x + desk.w / 2, y: desk.y - 0.95, 'text-anchor': 'middle', class: 'office-bubble-text' }, officeClip(desk.bubble, 16)));
+  }
+  g.append(officeNode('text', { x: desk.x + 1, y: desk.y + 2, class: 'office-name' }, desk.id));
+  if (desk.mode) g.append(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 2, 'text-anchor': 'end', class: 'office-mode' }, desk.mode));
+  g.append(officeNode('text', { x: desk.x + 1, y: desk.y + 3.9, class: 'office-glyph' }, desk.glyph));
+  g.append(officeNode('text', { x: desk.x + 2.6, y: desk.y + 3.9, class: 'office-state' }, desk.label));
+  if (desk.approvals > 0) g.append(officeNode('text', { x: desk.x + desk.w - 1, y: desk.y + 3.9, 'text-anchor': 'end', class: 'office-hand' }, '⚑ ' + desk.approvals));
+  let line = 5.1;
+  if (desk.breakNote) { g.append(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip('Break: ' + desk.breakNote + (desk.breakResetsAt ? ' / resets ' + rel(desk.breakResetsAt) : ''), 38))); line += 1.05; }
+  if (!desk.attached) { g.append(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, 'disconnected; work retained')); line += 1.05; }
+  const tray = [];
+  if (desk.tray.queued) tray.push(desk.tray.queued + ' queued');
+  if (desk.tray.important) tray.push(desk.tray.important + ' important');
+  if (desk.tray.needsReview) tray.push(desk.tray.needsReview + ' to review');
+  if (desk.tray.heldBy) tray.push('held by ' + desk.tray.heldBy);
+  if (tray.length) g.append(officeNode('text', { x: desk.x + 1, y: desk.y + line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
+  for (const card of desk.cards) g.append(officeCardNode(card));
+  if (desk.extraCards > 0) g.append(officeNode('text', { x: desk.x + 1, y: desk.y + desk.h - 0.4, class: 'office-meta' }, '+' + desk.extraCards + ' more'));
+  officeDesks.set(desk.id, g);
+  const open = () => activateOfficePeer(desk.id);
+  g.addEventListener('click', open);
+  g.addEventListener('keydown', (event) => officeKeys(event, open));
+  return g;
+}
+function drawOffice(target, model) {
+  officeDesks.clear(); officeCards.clear();
+  const svg = officeNode('svg', { viewBox: '0 0 ' + model.width + ' ' + model.height, class: 'office-scene', role: 'group', 'aria-label': 'Office: desks, rooms and task cards' });
+  for (const room of model.rooms) {
+    const box = officeNode('g', { class: 'office-roombox office-roombox-' + room.id });
+    box.append(officeNode('rect', { x: room.x, y: room.y, width: room.w, height: room.h, rx: 1, class: 'office-room' }));
+    box.append(officeNode('text', { x: room.x + 1, y: room.y + 2.2, class: 'office-room-title' }, room.label));
+    box.append(officeNode('text', { x: room.x + room.w - 1, y: room.y + 2.2, 'text-anchor': 'end', class: 'office-room-count' }, String(room.count)));
+    for (const card of room.cards) box.append(officeCardNode(card));
+    if (room.overflow > 0 && room.filterState) {
+      const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + room.overflow + ' more ' + room.filterState.replaceAll('_', ' ') + ' tasks in the task list' });
+      more.append(officeNode('text', { x: room.x + 1, y: room.y + room.h - 1, class: 'office-more' }, '+' + room.overflow + ' more'));
+      const open = () => officeFilter(room.filterState);
+      more.addEventListener('click', open);
+      more.addEventListener('keydown', (event) => officeKeys(event, open));
+      box.append(more);
+    }
+    svg.append(box);
+  }
+  for (const desk of model.desks) svg.append(officeDeskNode(desk));
+  if (model.extraPeers > 0) svg.append(officeNode('text', { x: model.width, y: 1.8, 'text-anchor': 'end', class: 'office-meta' }, '+' + model.extraPeers + ' peers'));
+  target.append(svg);
+}
+function renderOffice(snapshot) {
+  const view = officeView.get(), section = $('office-section');
+  section.hidden = view === 'off';
+  if (view === 'off') {
+    if (signatures.has('office')) { signatures.delete('office'); $('office').replaceChildren(); }
+    officePrev = null; officeDesks.clear(); officeCards.clear(); return;
+  }
+  const cols = (section.clientWidth || 0) >= 1000 ? 4 : (section.clientWidth || 0) >= 700 ? 2 : 1;
+  const model = officeModel(snapshot, officePrev, { cols });
+  officePrev = model;
+  update('office', [view, cols, model], (target) => drawOffice(target, model));
+}
+// office-scene-end
 const STREAM_KINDS = ['chat', 'task', 'review', 'status', 'budget', 'presence', 'state'];
 let streamFilter = '';
 function applyStreamFilter(node) { node.hidden = streamFilter !== '' && node.dataset.kind !== streamFilter; }
@@ -545,6 +653,7 @@ function renderStreamChips() {
   }
 }
 $('task-filter').addEventListener('change', () => { if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); });
+window.addEventListener('resize', () => { if (!stopped && officeView.get() !== 'off' && snapshotValid && lastSnapshot) renderOffice(lastSnapshot); });
 $('send').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter) && generation === viewGeneration) $('message').value = ''; });
 $('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
 (async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; renderStreamChips(); await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();

@@ -148,6 +148,27 @@ OS color preference through CSS. Both inline scripts and the style retain CSP
 hashes; there are no external chart/theme assets. Live theme/readability inspection
 is tracked in `docs/smoke.md` and remains unverified until performed.
 
+The dashboard Office section (#264, phase 1 of 4) draws the same snapshot as a
+static flat office: one desk per peer in a stable slot (claude, codex, kimi, pi,
+local, then others by id; a peer going offline dims its desk and never moves
+another), rooms for the board columns in a fixed order (To Do, Work floor,
+Review, Done shelf as a count only), at most 8 cards per room with "+N more"
+filtering the task list to that state, and at most 12 desks with "+N peers".
+Work-floor cards sit at the owner's desk, marked for rework; a busy peer's task
+bubble names its task only when it has exactly one in progress. Every peer
+condition (idle, busy, offline, paused, waiting on approval) has a glyph and a
+text label, and the scene carries ids, classes, states, kinds, counts and public
+titles only: message bodies, task details and approval titles never enter it.
+The scene adds no timer, frame loop or request and re-renders only when its
+signature changes. A View control offers Off (the default) and Flat; the choice
+is stored in a second host-scoped loopback cookie `agent-hub-office` with the
+same attributes as the theme cookie, and blocked cookie access defaults to Off
+without preventing operation. Desks and cards are focusable buttons; activating
+one scrolls to and highlights the matching list row, and a list row highlights
+its desk or card on focus and hover. The scene performs no action: every control
+stays in the lists. The live browser look is tracked in `docs/smoke.md` and
+remains unverified until performed.
+
 Console color policy is `--color=auto|always|never`, with `auto` as the default.
 Auto enables color only when both input and output are TTYs, `TERM` is not
 `dumb`, and `NO_COLOR` is empty or absent. Explicit `always` overrides these

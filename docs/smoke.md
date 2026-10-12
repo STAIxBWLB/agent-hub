@@ -2,6 +2,18 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Office view (#264, phase 1)
+
+Not run live yet (unverified). Phase 1 ships the static Flat office and its Off/Flat
+control; `test/office-model.test.ts` and `test/office-view.test.ts` cover the model,
+the cookie, the CSP cleanliness and the focus/highlight wiring against fakes, but no
+browser was opened. The live leg: `ahub up` on a scratch project with two agents
+working, `ahub ui`, set the Office View control to Flat. Check the scene in both
+themes and at phone width with the browser console open (no CSP violations), that
+desks and cards are focusable with sensible names, that activating one scrolls to
+and highlights the matching list row, and that the page weight stays within the
+30 KB budget of the issue. Record the look here when performed.
+
 ## Settings from the dashboard and the terminal (#269, part 1)
 
 Not run live yet (unverified). `test/settings.test.ts` drives a real daemon, its
