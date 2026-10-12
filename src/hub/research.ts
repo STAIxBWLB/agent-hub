@@ -52,6 +52,8 @@ export interface TaskRecord {
   writer: { version: string; source: "live" | "backfill" };
   /** #248: the add-ons each peer that worked on the task had at its latest attach; a peer missing here is unknown. */
   tooling?: Record<string, Addon[]>;
+  /** #248, with `tooling`: every peer with an event attributed to the task, fingerprinted or not. */
+  peers?: string[];
 }
 /** A person's later verdict on one task record: `createdAt` binds it to that task, not a later one with the same id. */
 export interface LabelRecord { schema: typeof RESEARCH_SCHEMA; kind: "label"; project: string; task: number; createdAt: string; label: Label; at: string }
@@ -64,15 +66,15 @@ export const researchFile = (projectId: string, home = hubHome()): string => joi
 /** One task across every record about it: a task id is reused after `ahub reset --all`, its proposal time is not. */
 export const recordKey = (r: { project: string; task: number; createdAt: string | null; approvedAt?: string }): string => `${r.project}#${r.task}@${r.createdAt ?? r.approvedAt ?? ""}`;
 
-type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling"> & {
-  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>;
+type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers"> & {
+  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Set<string>;
 };
 /** Keyed by peer ids, model names and reasons, any of which may be `constructor` or `__proto__`: no prototype to inherit from. */
 const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
   tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
-  approvedAt: null, lastState: null, tooling: keyed() });
+  approvedAt: null, lastState: null, tooling: keyed(), peers: new Set() });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
 
@@ -87,7 +89,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const seenUsage = new Set<string>();
   const tooling = new Map<string, Addon[]>();
   /** A peer that worked on the task carries its latest fingerprint into the record. */
-  const involve = (a: Acc, peer: string | null | undefined) => { const f = peer ? tooling.get(peer) : undefined; if (peer && f) a.tooling[peer] = f; };
+  const involve = (a: Acc, peer: string | null | undefined) => { if (!peer) return; a.peers.add(peer); const f = tooling.get(peer); if (f) a.tooling[peer] = f; };
   for (const e of events) {
     if (e.type === "tooling") { tooling.set(e.peer, e.addons); continue; }
     if (e.type === "task") {
@@ -143,12 +145,12 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const out: TaskRecord[] = [];
   for (const a of [...earlier, ...tasks.values()]) {
     if (!a.approvedAt) continue;
-    const { approvedAt, lastState: _state, models, tooling: fingerprints, ...rest } = a;
+    const { approvedAt, lastState: _state, models, tooling: fingerprints, peers, ...rest } = a;
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(approvedAt);
     out.push({ schema: RESEARCH_SCHEMA, kind: "task", project: projectKey(projectId), ...rest, outcome: "approved", approvedAt,
       wallMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null,
       firstPass: a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer,
-      ...(Object.keys(fingerprints).length ? { tooling: fingerprints } : {}) });
+      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers].sort() } : {}) });
   }
   return out.sort((x, y) => x.approvedAt.localeCompare(y.approvedAt) || x.task - y.task);
 }
@@ -268,8 +270,10 @@ function latestRecords(records: ResearchRecord[], since: number): { all: TaskRec
   return { all: [...latest.values()], labels };
 }
 
-/** The peers that worked on a task: its owners, its reviewer and every peer its tokens are attributed to. */
-const involved = (r: TaskRecord): string[] => [...new Set([...r.owners, ...(r.reviewer ? [r.reviewer] : []), ...Object.keys(r.tokens.byPeer)])].filter((p) => p !== "user");
+/** The peers that worked on a task: every peer with an attributed event, else (older records) owners, reviewer and token peers. */
+const involved = (r: TaskRecord): string[] => [...new Set([...(r.peers ?? []), ...r.owners, ...(r.reviewer ? [r.reviewer] : []), ...Object.keys(r.tokens.byPeer)])].filter((p) => p !== "user");
+/** Own properties only: a peer may be named `constructor`, and a parsed record's object would answer with an inherited one. */
+const fingerprintOf = (r: TaskRecord, peer: string): Addon[] | undefined => r.tooling && Object.hasOwn(r.tooling, peer) ? r.tooling[peer] : undefined;
 
 type AddonMeasure = "successRate" | "firstPassRate" | "reworkRate" | "checkFailureRate" | "tokensMedian" | "wallMsMedian" | "collisionRate";
 const ADDON_MEASURES: AddonMeasure[] = ["successRate", "firstPassRate", "reworkRate", "checkFailureRate", "tokensMedian", "wallMsMedian", "collisionRate"];
@@ -295,7 +299,7 @@ export function addonReport(records: ResearchRecord[], since = 0, resamples = 10
   const { all, labels } = latestRecords(records, since);
   return ADDONS.map((addon) => {
     const side = { on: [] as TaskRecord[], off: [] as TaskRecord[], unknown: [] as TaskRecord[] };
-    for (const r of all) side[addonState(addon, involved(r).map((p) => r.tooling?.[p]))].push(r);
+    for (const r of all) side[addonState(addon, involved(r).map((p) => fingerprintOf(r, p)))].push(r);
     const random = mulberry32(seed);
     const pick = (xs: TaskRecord[]) => Array.from({ length: xs.length }, () => xs[Math.floor(random() * xs.length)]!);
     const samples = new Map<AddonMeasure, number[]>(ADDON_MEASURES.map((m) => [m, []]));

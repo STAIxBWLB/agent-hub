@@ -74,6 +74,7 @@ test("research records carry each working peer's latest fingerprint, and a peer 
   expect(r!.tooling).toEqual({ codex: [{ name: "ripwire", version: null }], claude: [{ name: "claude-mem", version: "13.29.0" }] });
   expect(r!.tooling!.kimi).toBeUndefined();
   expect(JSON.stringify(r)).not.toContain(MARKER);
+  expect(r!.peers).toEqual(["claude", "codex", "kimi"]); // kimi worked on it without a fingerprint
   // The same events give the same record, live or backfill.
   expect(taskRecords(events, "proj", writer)).toEqual(taskRecords(events, "proj", writer));
   // Events from before #248 give records without the field: unknown, never "off".
@@ -119,4 +120,11 @@ test("the add-on report splits tasks on, off and unknown, gives intervals, and m
   expect(thin.on).toBe(4);
   expect(thin.measures.every((m) => m.inconclusive)).toBe(true);
   expect(formatAddons(rows).join("\n")).toContain("ripwire: 6 on, 6 off, 2 unknown");
+  // A peer that only had a turn, with or without a fingerprint, still decides the side (review of #351).
+  const turnOnly = (tooling: TaskRecord["tooling"]) => addonReport([record(40, tooling, { peers: ["claude", "codex", "pi"] })]).find((r) => r.addon === "ripwire")!;
+  expect(turnOnly({ codex: [], claude: [], pi: [{ name: "ripwire", version: null }] }).on).toBe(1);
+  expect(turnOnly({ codex: [], claude: [] }).unknown).toBe(1);
+  // A peer named like an Object.prototype member is looked up as its own property only.
+  const parsed = JSON.parse(JSON.stringify(record(41, { codex: [] }, { owners: ["constructor"], peers: ["codex", "constructor"] }))) as TaskRecord;
+  expect(addonReport([parsed]).find((r) => r.addon === "ripwire")!.unknown).toBe(1);
 });
