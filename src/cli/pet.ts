@@ -28,6 +28,10 @@ export function parseNeedsSummary(raw: unknown): NeedsSummary | undefined {
   if ((row.act + row.watch > 0) !== !!first) return;
   if (row.act > 0 && first?.level !== "act" || row.act === 0 && first?.level === "act") return;
   if (row.act === 0 && ["waiting", "blocked", "review"].includes(row.state) || row.act > 0 && ["working", "idle", "sleeping"].includes(row.state)) return;
+  if (first?.level === "watch" && !["recovery", "budget", "offline"].includes(first.kind) || first?.level === "act" && ["budget", "offline"].includes(first.kind)) return;
+  if (row.state === "waiting" && !["approval", "default"].includes(first?.kind ?? "")) return;
+  if (row.state === "blocked" && !["storage", "recovery", "delivery"].includes(first?.kind ?? "")) return;
+  if (row.state === "review" && first?.kind !== "review") return;
   return { act: row.act, watch: row.watch, state: row.state as NeedsSummary["state"], ...(first ? { first } : {}) };
 }
 

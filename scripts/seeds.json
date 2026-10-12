@@ -1984,6 +1984,14 @@
       "replacement": "true ? { attentionItems: attention.items } : {}",
       "testFile": "test/daemon.test.ts",
       "testName": "global attention summary persists while full items stay console-role only (#280)"
+    },
+    {
+      "id": "pet-first-kind-state-consistency",
+      "file": "src/cli/pet.ts",
+      "search": "if (row.state === \"waiting\" && ![\"approval\", \"default\"].includes(first?.kind ?? \"\")) return;",
+      "replacement": "if (false) return;",
+      "testFile": "test/pet-summary-validation.test.ts",
+      "testName": "pet snapshot state and level require a consistent first structural item"
     }
   ]
 }
