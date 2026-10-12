@@ -5,7 +5,7 @@ import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
+import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasStarted, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -519,7 +519,10 @@ export class Tasks {
     }
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown }): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown }): Promise<Task> {
+    if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
+    const backlog = input.backlog === true;
+    if (backlog && input.owner && !this.d.bus.isRostered(input.owner)) throw new PreEffectToolRefusal(`${input.owner} is off roster; add it before reserving work`);
     // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new PreEffectToolRefusal("title is required");
@@ -536,7 +539,7 @@ export class Tasks {
       if (!deps.includes(id)) deps.push(id);
     }
     // An owner for work that waits is reserved (issue #207): routing offers it to that peer first once it is ready.
-    const reserved = this.waitsFor({ deps }).length ? input.owner : undefined;
+    const reserved = backlog || this.waitsFor({ deps }).length ? input.owner : undefined;
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     const profile = this.d.profile ?? "dev";
     let baseGiven: TaskClass | undefined;
@@ -563,17 +566,21 @@ export class Tasks {
       triaged = !!cls;
     }
     // A claim is work the caller will do itself: without a class and a model to name one, it is implementation (#6).
-    const defaulted = !cls && input.owner === by;
+    const defaulted = !backlog && !cls && input.owner === by;
     if (defaulted) cls = "implement";
     if (!cls) throw new PreEffectToolRefusal(`class is required (one of ${CLASSES.join(", ")}); ${fenced ? "the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one" : "the hub could not name one for you"}`);
     let selected;
     try { selected = taskRole(input.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
-    let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
+    let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
     if (screening) task = this.screenedTask(task, screened);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
+    if (backlog) {
+      this.releaseNotice(`task ${this.publicTitle(task)} backlogged by ${by} [${profileTaskLabel(task)}]`);
+      return task;
+    }
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${profileTaskLabel(task)}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
     // Re-read: a dependency approved while triage was awaited looked for its dependents before this row existed.
     const still = this.waitsFor(task);
@@ -583,6 +590,26 @@ export class Tasks {
     }
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
     return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], namedOwner: input.owner, claim: input.owner === by } : {});
+  }
+
+  /** Person-owned staging only. Flow transitions remain with their existing owners and reviewers. */
+  async moveBacklog(by: PeerId, id: unknown, pull: boolean): Promise<Task> {
+    if (by !== USER) throw new PreEffectToolRefusal("backlog pull/return is a console command");
+    if (typeof pull !== "boolean") throw new PreEffectToolRefusal("pull must be a boolean");
+    const n = typeof id === "number" ? id : typeof id === "string" && /^\s*\d+\s*$/.test(id) ? Number(id) : NaN;
+    if (!Number.isSafeInteger(n) || n <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
+    const task = this.d.board.get(n);
+    if (!task) throw new PreEffectToolRefusal(`no task #${n}`);
+    if (task.state !== (pull ? "backlog" : "proposed") || task.owner) throw new PreEffectToolRefusal(`task #${n}: ${pull ? "only backlog may be pulled" : "only ownerless proposed work may return to backlog"}`);
+    if (!pull && taskHasStarted(task)) throw new PreEffectToolRefusal(`task #${n}: started work cannot return to backlog`);
+    const next = this.d.board.update(n, by, pull ? "backlog pulled" : "backlog returned", { state: pull ? "proposed" : "backlog", owner: null, reviewer: null });
+    this.offered.delete(n);
+    if (!pull) return next;
+    const waits = this.waitsFor(next);
+    if (waits.length) return this.d.board.update(n, HUB, "blocked", {}, `waits for ${waits.map(v => `#${v}`).join(", ")}`);
+    // This persisted ready marker also lets a restart offer ownerless work once a peer attaches.
+    const ready = this.d.board.update(n, HUB, "ready", {}, "pulled from backlog");
+    return this.assignOwner(ready, by);
   }
 
   /** Where a screened task's `pii` signal came from, on its history and in events (issue #198); no verdict is a console line by id. */
@@ -890,6 +917,7 @@ export class Tasks {
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean } = {}): Promise<Task> {
+    if (task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const waits = this.waitsFor(task);
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
 
@@ -1083,7 +1111,7 @@ export class Tasks {
   async releaseReady(): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
       const last = t.history.at(-1)?.event;
-      if (!t.deps?.length || t.owner || this.offered.has(t.id) || (last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
+      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || t.owner || this.offered.has(t.id) || (last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
       // an offline one; hold reserved tasks for a grace period if restarts show that up.
       if (!assign(t, this.states(), this.d.routing(), { exclude: this.excluded(t), ...this.health() }).owner) continue; // nobody attached can take it yet
@@ -1177,6 +1205,7 @@ export class Tasks {
     if (!Number.isInteger(n)) throw new (preEffect ? PreEffectToolRefusal : Error)(`id must be a task number, not ${(typeof id === "number" ? String(id) : JSON.stringify(id ?? null)).slice(0, 60)}`);
     const task = this.d.board.get(n);
     if (!task) throw new (preEffect ? PreEffectToolRefusal : Error)(`no task #${n}`);
+    if (task.state === "backlog") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${n} is backlog: pull it into To Do first`);
     // Handing a task to someone else only makes sense while there is work left on it.
     if (open && !OPEN.includes(task.state)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: it can no longer change hands`);
     return task;

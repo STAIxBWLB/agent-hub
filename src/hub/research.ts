@@ -83,16 +83,18 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const seenUsage = new Set<string>();
   for (const e of events) {
     if (e.type === "task") {
+      const proposed = e.event === "proposed" || e.event === "backlog pulled";
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.
-      if (e.event === "proposed" && tasks.get(e.id)?.createdAt) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
+      if ((e.event === "proposed" && tasks.get(e.id)?.createdAt) || (e.event === "backlogged" && tasks.has(e.id))) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
       const a = acc(e.id);
       a.class = e.class; if (e.role && a.role === undefined) { a.role = e.role; if (e.event === "proposed" && e.roleIdentity) a.roleIdentity = e.roleIdentity; } if (e.profile) { a.profile = e.profile; a.profileClass = e.profileClass; } if (e.pii) a.pii = true;
+      if (proposed && e.role === a.role && e.roleIdentity && a.roleIdentity === undefined) a.roleIdentity = e.roleIdentity;
       if (e.owner && e.owner !== a.owners.at(-1)) {
         if (a.owners.length) { a.reassignments++; bump(a.reassignedBy, e.reason ?? "none"); }
         a.owners.push(e.owner);
       }
       if (e.reviewer) a.reviewer = e.reviewer;
-      if (e.event === "proposed") a.createdAt ??= e.at;
+      if (proposed) a.createdAt ??= e.at;
       if (e.state === "in_progress") a.startedAt ??= e.at;
       if (e.event === "done") a.dones++;
       if (e.event === "check passed") a.checkPassed++;
@@ -182,7 +184,11 @@ export function labelTarget(records: ResearchRecord[], events: StampedEvent[], t
   if (created !== undefined) {
     return mine.find((r) => r.createdAt === created) ?? fail(`no research record for task #${task} proposed at ${created}${mine.length ? ` (it has: ${mine.map((r) => r.createdAt).join(", ")})` : ""}`);
   }
-  const proposed = events.filter((e) => e.type === "task" && e.id === task && e.event === "proposed").at(-1);
+  const creation = events.findLast(e => e.type === "task" && e.id === task && ["proposed", "backlogged"].includes(e.event));
+  const proposed = creation?.type === "task" && creation.event === "backlogged"
+    ? events.slice(events.indexOf(creation) + 1).find(e => e.type === "task" && e.id === task && e.event === "backlog pulled")
+    : creation;
+  if (creation?.type === "task" && creation.event === "backlogged" && !proposed) fail(`task #${task} is backlog and has no execution proposal; name an earlier record with --created`);
   if (proposed) {
     return mine.find((r) => r.createdAt === proposed.at)
       ?? fail(`task #${task} has no research record yet: it is not approved, its record still waits for the turns that approved it, or it was approved while research was off (ahub research backfill builds that one)${mine.length ? `; an earlier task #${task} from before a reset is labelled with --created ${mine.map((r) => r.createdAt).join(" or ")}` : ""}`);

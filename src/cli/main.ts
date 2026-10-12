@@ -1044,6 +1044,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     printOutput(renderBudget(data, options.columns, Date.now(), options.full), options.color);
   },
 
+  backlog: async () => {
+    const [sub, id] = args;
+    if (args.length !== 2 || !["pull", "return"].includes(sub ?? "") || !/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog pull|return <id>; add with ahub task propose --backlog");
+    console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
+  },
+
   board: async () => {
     const options = outputOptions();
     const ready = args.includes("--ready");
@@ -1108,13 +1114,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | escalate <id>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
-    const urgent = rest.includes("--urgent");
-    const flags = takeFlags(rest.filter((a) => a !== "--urgent"), ["--owner", "--detail", "--class"], ["--path", "--after"]);
+    const urgent = rest.includes("--urgent"), backlog = rest.includes("--backlog");
+    const flags = takeFlags(rest.filter((a) => a !== "--urgent" && a !== "--backlog"), ["--owner", "--detail", "--class"], ["--path", "--after"]);
     const positional = !flags.one["--class"] && ((CLASSES as readonly string[]).includes(flags.rest[0] ?? "") || Object.hasOwn((() => { const config = projectConfig(); return resolveProfile(config.profile, config.profile_overrides); })().classes, flags.rest[0] ?? "")) && flags.rest.length > 1;
     const cls = flags.one["--class"] ?? (positional ? flags.rest[0] : undefined);
     const title = (positional ? flags.rest.slice(1) : flags.rest).join(" ");
     if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);
-    console.log(await taskOp("hub_task_propose", { ...(cls ? { class: cls } : {}), title, owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}), ...(flags.many["--after"]?.length ? { after: flags.many["--after"].map(Number) } : {}), ...(urgent ? { urgent: true } : {}) }));
+    console.log(await taskOp("hub_task_propose", { ...(cls ? { class: cls } : {}), title, owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}), ...(flags.many["--after"]?.length ? { after: flags.many["--after"].map(Number) } : {}), ...(urgent ? { urgent: true } : {}), ...(backlog ? { backlog: true } : {}) }));
   },
 
   review: async () => {

@@ -188,7 +188,7 @@ export class Conductor {
       const id = taskId(args.id);
       const task = id === undefined ? undefined : this.hooks.task(id);
       // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
-      if (task && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
+      if (task && task.state !== "backlog" && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
       // Its proposer (the first history entry) redirects it while nobody ever accepted it (#207: a decline or a release puts
       // worked tasks back in proposed); work that waits gets a reserved owner. Never over the person: a console assign or
       // reservation stands until the conductor or the console moves it, also once the hub carried it out (the hub's own
@@ -214,6 +214,7 @@ export class Conductor {
       if (id === undefined) throw new PreEffectToolRefusal("id must be a positive integer");
       const task = this.hooks.task(id);
       if (!task) throw new PreEffectToolRefusal(`no task #${args.id}`);
+      if (task.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools, not conductor task tools");
       if (tool === "hub_task_show") { const result = publicConductorTask(task, this.hooks.publicView); emit({ task: task.id }); return result; }
       if (tool === "hub_task_assign") {
         const peer = peerId(args.peer, true);

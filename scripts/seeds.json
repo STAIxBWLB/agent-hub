@@ -1192,6 +1192,78 @@
       "replacement": "  if (mode === \"write\" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error(\"target is protected by data.readonly\");\n  if (mode === \"write\" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error(\"hardlinked write target cannot be verified with data.readonly\");",
       "testFile": "test/path-policy.test.ts",
       "testName": "read-only hardlink identity refusal is stable for the protected original and its ordinary alias (#259)"
+    },
+    {
+      "id": "backlog-staging",
+      "file": "src/hub/tasks.ts",
+      "search": "const backlog = input.backlog === true;",
+      "replacement": "const backlog = false;",
+      "testFile": "test/backlog.test.ts",
+      "testName": "backlog self nomination remains unoffered and invisible to sweeps and relays (#263)"
+    },
+    {
+      "id": "backlog-person-authority",
+      "file": "src/hub/tasks.ts",
+      "search": "if (by !== USER) throw new PreEffectToolRefusal(\"backlog pull/return is a console command\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"backlog pull/return is a console command\");",
+      "testFile": "test/backlog.test.ts",
+      "testName": "backlog transitions require a person and an ownerless eligible state (#263)"
+    },
+    {
+      "id": "backlog-agent-list",
+      "file": "src/hub/daemon.ts",
+      "search": "(by === USER || t.state !== \"backlog\")",
+      "replacement": "true",
+      "testFile": "test/daemon.test.ts",
+      "testName": "backlog tools hide staged rows and refuse peer promotion while console can pull (#263)"
+    },
+    {
+      "id": "backlog-pure-routing",
+      "file": "src/hub/routing.ts",
+      "search": "if (task.state === \"backlog\") return { trace: [\"backlog: not routed; pull into To Do first\"] };",
+      "replacement": "if (false) return { trace: [\"backlog: not routed; pull into To Do first\"] };",
+      "testFile": "test/backlog.test.ts",
+      "testName": "backlog self nomination remains unoffered and invisible to sweeps and relays (#263)"
+    },
+    {
+      "id": "backlog-owner-floor",
+      "file": "src/hub/board.ts",
+      "search": "if (patch.state === \"backlog\" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);",
+      "replacement": "if (false) throw new Error(`task #${id}: owned work cannot return to backlog`);",
+      "testFile": "test/backlog.test.ts",
+      "testName": "board backlog survives restart while default proposal history stays unchanged (#263)"
+    },
+    {
+      "id": "backlog-restart-ready",
+      "file": "src/hub/tasks.ts",
+      "search": "(!t.deps?.length && !t.history.some(h => h.event === \"backlog pulled\"))",
+      "replacement": "!t.deps?.length",
+      "testFile": "test/backlog.test.ts",
+      "testName": "pulled ownerless backlog without dependencies is offered after peers attach (#263)"
+    },
+    {
+      "id": "backlog-started-history-floor",
+      "file": "src/hub/board.ts",
+      "search": "return task.history.some(entry => [\"accepted\", \"done\", \"done (checking)\", \"check passed\", \"check failed\", \"changes_requested\", \"approved\", \"reopened\", \"integration requested\", \"integrated\"].includes(entry.event));",
+      "replacement": "return false;",
+      "testFile": "test/backlog.test.ts",
+      "testName": "started work cannot return after decline leaves an ownerless proposed row (#263)"
+    },
+    {
+      "id": "backlog-projection-boundary",
+      "file": "src/hub/daemon.ts",
+      "search": "if ((h.event === \"proposed\" || h.event === \"backlog pulled\") && projections.enabled && turnLog)",
+      "replacement": "if (h.event === \"proposed\" && projections.enabled && turnLog)",
+      "testFile": "test/projection-surfaces.test.ts",
+      "testName": "backlog pull persists an execution proposal baseline without running a converter (#263)"
+    },
+    {
+      "id": "backlog-research-created-boundary",
+      "file": "src/hub/research.ts",
+      "search": "const proposed = e.event === \"proposed\" || e.event === \"backlog pulled\";",
+      "replacement": "const proposed = e.event === \"proposed\";",
+      "testFile": "test/research.test.ts",
+      "testName": "backlog pull initializes research identity once and label lookup follows reset generations (#263)"
     }
   ]
 }

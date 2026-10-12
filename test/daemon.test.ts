@@ -1565,6 +1565,25 @@ test("conflicts: a long turn spanning another peer's edit does not make that pee
 });
 
 // issue #34: the ready queue as agents and the console see it.
+test("backlog tools hide staged rows and refuse peer promotion while console can pull (#263)", async () => {
+  const { stateDir, console_ } = await hub({ roles: { claude: ["conductor"] } });
+  const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "claude" });
+  cleanup.push(() => tools.close());
+  const op = (client: ControlClient, name: string, args: unknown = {}) => client.request({ t: "task", op: name, args });
+  expect(await op(tools, "hub_task_propose", { title: "future marker 263", class: "implement", owner: "claude", backlog: true })).toMatchObject({ ok: true, text: "task #1: backlog, owner none, reviewer none" });
+  for (const args of [{}, { state: "backlog" }, { ready: true }]) {
+    const reply = await op(tools, "hub_task_list", args);
+    expect(reply.ok).toBe(true); expect(JSON.parse(reply.text)).toEqual([]);
+  }
+  for (const name of ["task_show", "hub_task_show", "route_explain", "backlog_pull", "backlog_return", "hub_task_assign", "hub_task_escalate"]) {
+    const reply = await op(tools, name, { id: 1, peer: "claude" });
+    expect(reply.ok).toBe(false); expect(reply.error).not.toContain("future marker 263");
+  }
+  expect(JSON.parse((await op(console_, "hub_task_list", { state: "backlog" })).text)).toEqual([expect.objectContaining({ id: 1, state: "backlog", owner: null, reserved: "claude" })]);
+  expect(await op(console_, "backlog_pull", { id: 1 })).toMatchObject({ ok: true });
+  expect(JSON.parse((await op(console_, "task_show", { id: 1 })).text).state).toBe("proposed");
+});
+
 test("hub_task_list ready: proposed tasks with nothing left to wait for", async () => {
   const { console_ } = await hub();
   const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
