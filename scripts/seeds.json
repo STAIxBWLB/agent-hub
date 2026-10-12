@@ -1952,6 +1952,14 @@
       "replacement": "if(false)return loaded.utc;",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "planning date editors retain original UTC precision and parse changed local values (#263)"
+    },
+    {
+      "id": "planner-readiness-preserves-undo",
+      "file": "src/hub/board.ts",
+      "search": "return task.history.findLast(item => item.by !== HUB || item.event !== \"ready\");",
+      "replacement": "return task.history.at(-1);",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "unoffered planner pull can undo after a hub readiness marker (#263)"
     }
   ]
 }

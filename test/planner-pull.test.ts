@@ -103,5 +103,5 @@ test("unoffered planner pull can undo after a hub readiness marker (#263)", asyn
   await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});
   board.onChange=(changed,entry)=>{if(changed.id===task.id&&entry.event==="ready")capacity.codex=0;};
   await tasks.releaseReady();expect(board.get(task.id)?.owner).toBeNull();expect(board.get(task.id)?.history.at(-1)?.event).toBe("ready");
-  expect(await tasks.undoPlanning("claude",task.id,1)).toMatchObject({state:"backlog",owner:null,reserved:null,planningRevision:2});
+  const undone=await tasks.undoPlanning("claude",task.id,1).catch(()=>null);expect(undone).toMatchObject({state:"backlog",owner:null,reserved:null,planningRevision:2});
 });
