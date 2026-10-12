@@ -1309,7 +1309,7 @@
       "id": "delivery-http-idle-limit",
       "file": "src/hub/ui.ts",
       "search": "server.timeout(req, 35);",
-      "replacement": "server.timeout(req, 1);",
+      "replacement": "setTimeout(() => server.stop(true), 1_000);",
       "testFile": "test/ui.test.ts",
       "testName": "authenticated delivery HTTP reads outwait the default idle limit without extending ordinary actions (#257)"
     },
