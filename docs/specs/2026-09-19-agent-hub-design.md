@@ -2535,3 +2535,20 @@ hub run regroups its currently staged backlog. This is advisory grooming; no
 ownership or execution state changes. Planned reservation edits participate in
 the conductor's latest ownership-decision check, preserving a person's decision
 when the hub later carries it out. Full proof remains pending.
+
+
+## Planner pull admission and undo (#263, in progress)
+
+Planner pull reserves a bounded per-peer WIP slot and moves ready backlog work
+into To Do through Tasks. A proposed planner-pull reservation counts as WIP
+before assignment; its own slot is excluded while the normal routing path offers
+it to that reserved peer. Capacity and recovery/review holds are checked again
+at offer time. Default capacity is one per peer; machine-local integer limits
+0..32 use the existing settings registry and loader.
+
+Pull requires current revision and a screened reason, unstarted/unowned/unpinned
+backlog, approved dependencies and unfrozen scope. Person P0 order and explicit
+reservations remain protected. Board saves the pull provenance and previous
+reservation in one CAS. The latest eligible pull can return to backlog only
+while unowned and unstarted, restoring its previous reservation; it never claims
+to cancel a dispatched native turn. Native/visual proof remains unverified.

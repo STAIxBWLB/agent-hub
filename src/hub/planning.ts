@@ -12,6 +12,17 @@ export interface PlanningFields {
   reserved?: string | null;
 }
 export interface PlanningPatch extends PlanningFields {}
+/** Machine-local capacity settings; ids never grant roster membership or authority. */
+export function planningWipLimits(input: unknown): Record<string, number> {
+  if (input === undefined) return {};
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length > 64) throw new Error("tasks.wip_limits must be a bounded peer map");
+  const limits: Record<string, number> = Object.create(null);
+  for (const [peer, value] of Object.entries(input)) {
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer) || typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 32) throw new Error("tasks.wip_limits needs peer ids and integer capacities 0..32");
+    limits[peer] = value;
+  }
+  return limits;
+}
 export const RELEASE_STATES = ["planning", "active", "frozen", "shipped", "dropped"] as const;
 export type ReleaseState = (typeof RELEASE_STATES)[number];
 export interface Release {

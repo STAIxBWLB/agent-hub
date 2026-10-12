@@ -1872,6 +1872,38 @@
       "replacement": "case \"release_change\": {\n        const release = board.releases().find(release => release.name === a.name);",
       "testFile": "test/planning-surfaces.test.ts",
       "testName": "redacted release labels retain stable mutation and console lookup identity (#263)"
+    },
+    {
+      "id": "planner-pull-capacity",
+      "file": "src/hub/tasks.ts",
+      "search": "const full = Object.keys(states).filter(peer => {\n      const queue = this.d.bus.queueSummary(peer);\n      return this.wip(peer, task.id) >= this.wipLimit(peer)",
+      "replacement": "const full = Object.keys(states).filter(peer => {\n      const queue = this.d.bus.queueSummary(peer);\n      return false",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
+    },
+    {
+      "id": "planner-pull-after-screen",
+      "file": "src/hub/tasks.ts",
+      "search": "const current = validate();",
+      "replacement": "const current = initial;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull rechecks capacity pins and dependency approval after screening (#263)"
+    },
+    {
+      "id": "planner-pull-person-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task.reserved && reservation?.by === USER && assignment.owner !== task.reserved)",
+      "replacement": "if (false)",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
+    },
+    {
+      "id": "planner-pull-person-order",
+      "file": "src/hub/tasks.ts",
+      "search": "if (priority === 0 && this.d.board.list(\"backlog\").some",
+      "replacement": "if (false && this.d.board.list(\"backlog\").some",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
     }
   ]
 }

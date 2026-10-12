@@ -42,7 +42,7 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
-  planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields };
+  planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true };
 }
 export interface Task extends PlanningFields {
   planningRevision?: number;
@@ -204,6 +204,28 @@ export class Board {
     const result = this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
       .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
     if (result.changes !== 1) throw new Error("planning revision changed");
+    const updated = this.get(id)!; this.changed(updated, entry); return updated;
+  }
+
+  /** A planner reserves a routing slot without claiming or dispatching the work. */
+  pullPlanned(id: number, by: PeerId, reserved: PeerId, revision: number, note: string, withheld = false): Task {
+    const task = this.get(id);
+    if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || taskHasStarted(task)) throw new Error("planner pull changed or already started");
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
+    const result = this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
+      .run(reserved, JSON.stringify([...task.history, entry]), now, id, revision);
+    if (result.changes !== 1) throw new Error("planner pull changed");
+    const updated = this.get(id)!; this.changed(updated, entry); return updated;
+  }
+
+  /** No owner or execution evidence may be taken back by planning undo. */
+  undoPlannedPull(id: number, by: PeerId, revision: number): Task {
+    const task = this.get(id), pull = task?.history.at(-1)?.planning;
+    if (!task || task.state !== "proposed" || task.owner || taskHasStarted(task) || (task.planningRevision ?? 0) !== revision || !pull?.pull || pull.revision !== revision) throw new Error("planner pull undo changed or already offered");
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog returned", note: `undo planner pull revision ${revision}` };
+    const result = this.db.query("UPDATE tasks SET state='backlog',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='proposed' AND owner IS NULL")
+      .run(pull.previous.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
+    if (result.changes !== 1) throw new Error("planner pull undo changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
 
