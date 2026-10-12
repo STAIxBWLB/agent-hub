@@ -1104,6 +1104,14 @@
       "replacement": "if (++budget.entries > 100000)",
       "testFile": "test/path-globs.test.ts",
       "testName": "glob discovery entry ceiling protects rather than treating an incomplete expansion as public (#259)"
+    },
+    {
+      "id": "claude-glob-usable-pre-grant",
+      "file": "src/cli/facts-hook.ts",
+      "search": "phase === \"pre\" && permission === \"ask-when-needed\" && [\"Edit\",",
+      "replacement": "[\"Edit\",",
+      "testFile": "test/facts-hook.test.ts",
+      "testName": "expensive scoped file policy is evaluated only for a usable PreToolUse write grant (#259)"
     }
   ]
 }

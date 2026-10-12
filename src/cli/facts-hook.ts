@@ -51,6 +51,11 @@ export function projectFileTool(tool: unknown, input: unknown, projectRoot: unkn
   } catch { return false; }
 }
 
+/** Only a usable managed scoped-write grant may evaluate filesystem policy. */
+export function scopedWriteBlocked(phase: string, permission: unknown, tool: unknown, evaluate: () => boolean): boolean {
+  return phase === "pre" && permission === "ask-when-needed" && ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(String(tool)) && !evaluate();
+}
+
 /** The hook's stdout for one Claude Code hook input, or undefined for none. */
 export async function factsHook(stdin: string, stateDir: string, peer: string, timeoutMs = 2000): Promise<string | undefined> {
   const input = JSON.parse(stdin) as { hook_event_name?: unknown; tool_name?: unknown; tool_input?: unknown; tool_use_id?: unknown; session_id?: unknown; transcript_path?: unknown };

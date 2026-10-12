@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { linkSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { factsHook, projectFileTool, nativeHookIdentity } from "../src/cli/facts-hook.ts";
+import { factsHook, projectFileTool, scopedWriteBlocked, nativeHookIdentity } from "../src/cli/facts-hook.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 
 test("Claude permission hook fixtures preserve facts and delegate shell decisions unless never-ask", async () => {
@@ -118,4 +118,19 @@ test("instruction protection removes write grants under both spellings but keeps
     symlinkSync(join(root, "CLAUDE.md"), join(root, "alias.txt"));
     for (const file_path of ["nested/AGENTS.md", "alias.txt"]) expect(projectFileTool("Write", { file_path }, root, true)).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("expensive scoped file policy is evaluated only for a usable PreToolUse write grant (#259)", () => {
+  let evaluated = 0;
+  const lookup = () => { evaluated++; return false; };
+  for (const phase of ["session", "start", "post", "stop"]) for (const mode of [undefined, "ask", "ask-when-needed", "never-ask"]) {
+    expect(scopedWriteBlocked(phase, mode, "Write", lookup)).toBe(false);
+  }
+  for (const mode of [undefined, "unknown", "ask", "never-ask"]) expect(scopedWriteBlocked("pre", mode, "Write", lookup)).toBe(false);
+  for (const tool of ["Read", "Glob", "Grep", "Bash", "mcp__example__edit"]) expect(scopedWriteBlocked("pre", "ask-when-needed", tool, lookup)).toBe(false);
+  expect(evaluated).toBe(0);
+  for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) expect(scopedWriteBlocked("pre", "ask-when-needed", tool, lookup)).toBe(true);
+  expect(evaluated).toBe(4);
+  expect(scopedWriteBlocked("pre", "ask-when-needed", "Write", () => true)).toBe(false);
 });

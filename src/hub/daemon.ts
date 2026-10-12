@@ -86,7 +86,7 @@ import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
-import { projectFileTool } from "../cli/facts-hook.ts";
+import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -3710,7 +3710,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const permissionLaunch = peer === "claude" ? claudePermissionLaunch() : undefined;
           const permission = nativeClaude && permissionLaunch && !permissionLaunch.unattended && msg.nativeLaunchId === permissionLaunch.launchId ? permissionMode(peer) : undefined;
           if (permission !== undefined && nativePeer instanceof WsPeer) claudePermissionGenerations.set(peer, nativePeer.sessionGeneration);
-          const protectedWrite = ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(msg.tool) && !projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files, config.data?.readonly);
+          const protectedWrite = scopedWriteBlocked(phase, permission, msg.tool, () => projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files, config.data?.readonly));
           const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: opts.cwd, protectInstructionFiles: config.protect_instruction_files } : {};
           // Permission-only hooks carry no native-turn evidence and must never drive busy state.
           const purpose = permissionLaunch?.hookPurpose ?? msg.hookPurpose;
