@@ -1988,6 +1988,8 @@ export async function startDaemon(opts: DaemonOptions) {
   };
 
   const tooled = new Map<string, number>();
+  /** Detections still running (each bounded by its probe deadline): settled before shutdown writes research records. */
+  const detecting = new Set<Promise<void>>();
   let attachments = 0;
   bus.tap((e) => {
     e = redact(e);
@@ -2002,7 +2004,8 @@ export async function startDaemon(opts: DaemonOptions) {
         // A result is written only while the attachment that started its detection is still the current one.
         const peer = e.peer, attachment = ++attachments;
         tooled.set(peer, attachment);
-        void detectTooling(peer, { cwd: opts.cwd }).then((addons) => { if (tooled.get(peer) === attachment) event({ type: "tooling", peer, addons }); }, () => undefined);
+        const detection = detectTooling(peer, { cwd: opts.cwd }).then((addons) => { if (tooled.get(peer) === attachment) event({ type: "tooling", peer, addons }); }, () => undefined);
+        detecting.add(detection); void detection.finally(() => detecting.delete(detection));
       }
       const open = turns.get(e.peer);
       // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
@@ -4070,6 +4073,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await egress?.close();
       await piReceipts?.close();
       collectClaudeUsage();
+      await Promise.allSettled([...detecting]); // a fingerprint still being detected belongs in the records written now
       for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
       conductorHolds.close();

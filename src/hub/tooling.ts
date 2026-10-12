@@ -15,9 +15,10 @@ export type AddonName = (typeof ADDONS)[number];
 export interface Addon { name: AddonName; version: string | null }
 
 /** Plugin names (before the `@marketplace`) that stand for an add-on. */
-const PLUGINS: Record<string, AddonName> = { "claude-mem": "claude-mem", ponytail: "ponytail", "open-code-review": "open-code-review" };
+// Maps, not objects: a plugin named `constructor` or `toString` must find nothing, not an inherited property.
+const PLUGINS = new Map<string, AddonName>([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
 /** Claude Code only: the Codex plugin is a Claude plugin named `codex` from the `openai-codex` marketplace. */
-const CLAUDE_ONLY: Record<string, AddonName> = { "codex@openai-codex": "codex-plugin" };
+const CLAUDE_ONLY = new Map<string, AddonName>([["codex@openai-codex", "codex-plugin"]]);
 /**
  * Executables any peer with a shell can run, and how each is told apart from another program of the same name: the
  * first one on PATH is asked for its version (bounded, no stdin), so Graphviz's `dot` is never resource admission.
@@ -45,7 +46,7 @@ function claudePlugins(home: string, cwd: string | undefined): Addon[] {
   const out: Addon[] = [];
   for (const [key, on] of enabled) {
     if (!on) continue;
-    const name = CLAUDE_ONLY[key] ?? PLUGINS[key.split("@")[0]!];
+    const name = CLAUDE_ONLY.get(key) ?? PLUGINS.get(key.split("@")[0]!);
     const entries = Array.isArray(installed[key]) ? installed[key]! : [];
     // An install for another project is not this one's.
     const entry = entries.find((e) => e?.scope === "user") ?? entries.find((e) => e?.projectPath === cwd);
@@ -63,7 +64,7 @@ function codexPlugins(home: string): Addon[] {
   for (const m of text.matchAll(/^\[hooks\.state\."([^"@]+)@([^":]+):/gm)) found.set(m[1]!, m[2]!);
   const out: Addon[] = [];
   for (const [plugin, market] of found) {
-    const name = PLUGINS[plugin];
+    const name = PLUGINS.get(plugin);
     if (!name) continue;
     let versions: string[] = [];
     try { versions = readdirSync(join(home, ".codex", "plugins", "cache", market, plugin)); } catch { /* no cache: version unknown */ }

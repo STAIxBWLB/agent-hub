@@ -53,6 +53,15 @@ test("detection reads names and versions from the closed list, per runtime, and 
   mkdirSync(join(project, ".claude"));
   writeFileSync(join(project, ".claude", "settings.local.json"), JSON.stringify({ enabledPlugins: { "claude-mem@thedotmack": false } }));
   expect((await detectTooling("claude", { home, cwd: project, path: "" })).map((a) => a.name)).toEqual(["ponytail"]);
+  // Plugins named like Object.prototype members are outside the closed list (review of #351).
+  const odd = temp("odd");
+  mkdirSync(join(odd, ".claude", "plugins"), { recursive: true });
+  writeFileSync(join(odd, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "constructor@x": true, "toString@y": true, "ponytail@ponytail": true } }));
+  writeFileSync(join(odd, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: { "constructor@x": [{ scope: "user" }], "toString@y": [{ scope: "user" }], "ponytail@ponytail": [{ scope: "user", version: "4.10.0" }] } }));
+  mkdirSync(join(odd, ".codex"));
+  writeFileSync(join(odd, ".codex", "config.toml"), `[plugins."constructor@x"]\nenabled = true\n`);
+  expect(await detectTooling("claude", { home: odd, path: "" })).toEqual([{ name: "ponytail", version: "4.10.0" }]);
+  expect(await detectTooling("codex", { home: odd, path: "" })).toEqual([]);
   // No inventory at all is no add-on, never an error.
   expect(await detectTooling("claude", { home: temp("empty"), path: "" })).toEqual([]);
   for (const peer of ["claude", "codex", "kimi"]) expect(JSON.stringify(await detectTooling(peer, { home, cwd: "/project", path: bin }))).not.toContain(MARKER);
