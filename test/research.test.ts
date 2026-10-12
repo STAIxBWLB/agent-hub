@@ -330,9 +330,9 @@ test("backlog pull initializes research identity once and label lookup follows r
 
 
 test("unpulled backlog generations cannot contaminate a reused normal proposal (#264 merge)", () => {
-  const events: StampedEvent[] = [task(7,"backlogged","backlog",{pii:true,role:"old-role",owner:"local"}),
+  const events: StampedEvent[] = [{...task(7,"backlogged","backlog",{pii:true,owner:"local"}),role:"old-role"},
     {v:1,at:at(),type:"turn_end",peer:"local",turn:"old",task:7,pii:true,ms:20},
-    task(7,"proposed","proposed",{role:"new-role",owner:"codex"}),
+    {...task(7,"proposed","proposed",{owner:"codex"}),role:"new-role"},
     task(7,"accepted","in_progress",{owner:"codex"}),task(7,"approved","approved",{owner:"codex"})];
   const records=taskRecords(events,"alpha",writer);
   expect(records).toHaveLength(1);
