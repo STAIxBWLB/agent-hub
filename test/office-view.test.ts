@@ -462,3 +462,58 @@ test("the polished flat scene: avatar, outline glyphs, hand shape, shelf cabinet
   expect(office.findAll((node) => node.attrs.class === "office-divider").length).toBeGreaterThan(0); // between room columns
   expect(office.text()).toContain("Done shelf");
 });
+
+function mergeOfficeRuntime(reduced: { value: boolean }, clock: { value: number }) {
+  const nodes = new Map<string, Node>(), get = (id: string) => { if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id)!; };
+  const taskRows = new Map<number, Node>(), peerRows = new Map<string, Node>();
+  const api = runInNewContext(`let officePrev=null,stopped=false,snapshotValid=true,lastSnapshot={};const signatures=new Map(),officeDesks=new Map(),officeCards=new Map();const $=get;${scene};({draw:drawOffice,prune:()=>officePrune(officeScene,Date.now()),activate:activateOfficeTask,scene:()=>officeScene})`, {
+    get, taskRows, peerRows, officeModel, officeView: { get: () => "flat" },
+    Date: class extends Date { static override now() { return clock.value; } },
+    matchMedia: () => ({ matches: reduced.value }),
+    document: { createElementNS: (_ns: string, tag: string) => { const node=new Node();node.tag=tag;return node; } },
+    render: () => { taskRows.set(4,new Node()); },
+  });
+  return { api, get, taskRows, peerRows };
+}
+
+test("Office selector stays visible while Off hides only the scene section (#264 merge)", () => {
+  const header = html.slice(html.indexOf("<header>"),html.indexOf("</header>"));
+  expect(header).toContain('id="office-view"');
+  expect(html.slice(html.indexOf('<section id="office-section"'),html.indexOf('// office-scene-begin'))).not.toContain('id="office-view"');
+});
+
+test("office settled paints and reduced motion do not retain departed or appearance nodes (#264 merge)", () => {
+  const reduced={value:false},clock={value:20000},{api,get}=mergeOfficeRuntime(reduced,clock);
+  const first=officeModel(snapshot,null,{cols:4,now:clock.value});api.draw(get("office"),first);
+  expect(get("office").findAll(node=>node.classList.contains("office-appear"))).toHaveLength(0);
+  reduced.value=true;
+  const gone=officeModel({...snapshot,tasks:[]},first,{cols:4,now:clock.value+1});api.draw(get("office"),{...gone,settle:false});
+  expect(get("office").findAll(node=>node.classList.contains("office-leaving"))).toHaveLength(0);
+});
+
+test("expired arcs are skipped and reduced motion marks expire without animationend (#264 merge)", () => {
+  const reduced={value:true},clock={value:20000},{api,get}=mergeOfficeRuntime(reduced,clock);
+  const first=officeModel(snapshot,null,{cols:4,now:clock.value});
+  const arc={seq:1,from:"codex",to:["claude"],kind:"chat",priority:"status",task:"",dropped:"",until:19000};
+  api.draw(get("office"),{...first,arcs:[arc]});
+  const arcs=()=>get("office").findAll(node=>(node.attrs.class??"").split(" ").includes("office-arc"));
+  expect(arcs()).toHaveLength(0);
+  api.draw(get("office"),{...first,arcs:[{...arc,until:21000}]});expect(arcs()).toHaveLength(1);
+  clock.value=22000;api.prune();expect(arcs()).toHaveLength(0);
+});
+
+test("office task activation reveals filtered rows and card/desk handlers live in sibling layers (#264 merge)", () => {
+  const {api,get,taskRows}=mergeOfficeRuntime({value:false},{value:20000});
+  api.activate(4);expect(taskRows.has(4)).toBe(true);expect(taskRows.get(4)?.scrolled).toBe(1);
+  const model=officeModel(snapshot,null,{cols:4,now:20000});api.draw(get("office"),model);
+  const scene=api.scene();expect(scene.els.get("card:4").node.parent).toBe(scene.layers.cards);
+  expect(scene.layers.cards.parent).toBe(scene.layers.desks.parent);
+});
+
+test("parallel warning kinds draw distinguishable coordinates (#264 merge)", () => {
+  const {api,get}=mergeOfficeRuntime({value:false},{value:20000});
+  const model=officeModel({...snapshot,links:["overlap","cohort","conflict"].map(kind=>({kind,tasks:[4,5],peers:["codex","claude"]}))},null,{cols:4,now:20000});
+  api.draw(get("office"),model);
+  const lines=get("office").findAll(node=>node.attrs.class==="office-link-line");
+  expect(lines).toHaveLength(3);expect(new Set(lines.map(line=>line.attrs.y1)).size).toBe(3);
+});

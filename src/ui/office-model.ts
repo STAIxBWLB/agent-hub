@@ -296,7 +296,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     const turn = peer.turn && typeof peer.turn === "object" ? peer.turn : undefined;
     const turnTask = turn && typeof turn.task === "number" && Number.isSafeInteger(turn.task) ? turn.task : undefined;
     const bubble = turnTask !== undefined ? `#${turnTask} ${classById.get(turnTask) ?? "task"}`
-      : current.length === 1 ? `#${current[0]!.id} ${text(current[0]!.class) || "task"}` : "";
+      : !Object.hasOwn(peer, "turn") && current.length === 1 ? `#${current[0]!.id} ${text(current[0]!.class) || "task"}` : "";
     const finishing = turn !== undefined && condition === "paused";
     const label = LABELS[condition] ?? state;
     const parts = [condition === "busy" ? (bubble ? `busy on task ${bubble}` : "busy")
@@ -320,11 +320,11 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     };
   });
 
-  const desksBottom = shownIds.length ? DESK_TOP + Math.ceil(shownIds.length / DESK_COLS) * DESK_DY - (DESK_DY - DESK_H) : 0;
+  const desksBottom = Math.max(0, ...desks.map(desk => desk.y + desk.h));
   const roomsY = desksBottom ? desksBottom + 2 : 0;
   const roomDefs = [
     { id: "todo", label: "To Do", filterState: "proposed", list: todo, count: counts.proposed + counts.waiting },
-    { id: "work", label: "Work floor", filterState: "in_progress", list: workUnplaced, count: counts.in_progress + counts.changes_requested },
+    { id: "work", label: "Work floor", filterState: "work", list: workUnplaced, count: counts.in_progress + counts.changes_requested },
     { id: "review", label: "Review", filterState: "in_review", list: review, count: counts.in_review },
     { id: "done", label: "Done shelf", filterState: "", list: [] as OfficeTaskInput[], count: counts.approved },
   ];
@@ -410,7 +410,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const at = !previous || moves > 0 ? now : previous.at;
 
   const roomRows = Math.ceil(rooms.length / cols);
-  const desksWidth = shownIds.length ? Math.min(shownIds.length, DESK_COLS) * DESK_DX - 2 : 0;
+  const desksWidth = Math.max(0, ...desks.map(desk => desk.x + desk.w));
   // Phase 3 warning lines: validated down to the three kinds and their id lists; nothing else is copied.
   const links: OfficeLink[] = [];
   for (const link of Array.isArray(snapshot?.links) ? snapshot.links : []) {
@@ -420,7 +420,12 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     const linkPeers = (Array.isArray(link?.peers) ? link.peers : []).filter((id: unknown) => typeof id === "string" && id.length > 0);
     if (linkTasks.length + linkPeers.length < 2) continue;
     links.push({ kind, tasks: linkTasks, peers: linkPeers });
-    if (links.length >= 24) break;
+
+  }
+  if (links.length > 24) {
+    const rank = (kind: string) => kind === "conflict" ? 0 : kind === "cohort" ? 1 : 2;
+    links.sort((a, b) => rank(a.kind) - rank(b.kind));
+    links.length = 24;
   }
   return {
     cols,

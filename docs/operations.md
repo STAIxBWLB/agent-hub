@@ -2622,3 +2622,12 @@ proposal. Research uses the first pull time and preserves identity across later
 unstarted return/pull cycles; a new backlogged id after reset starts a new record
 generation. Partial work with acceptance/check/review evidence cannot return to
 Backlog even after decline or reassignment leaves it ownerless.
+
+
+Office merge corrections retain the header's view selector when Off hides the
+scene. Activating a card reveals its task if a state filter excluded it; Work
+includes rework. Stable desk slots determine bounds after peers disconnect.
+Reduced motion removes departures immediately and the existing snapshot poll
+prunes transient deadlines without new timers. Explicit unattributed turns have
+no guessed task bubble. Warning caps retain conflicts first and parallel warning
+kinds have separate segments/labels. Physical visual validation remains pending.

@@ -1504,6 +1504,78 @@
       "replacement": "const proposed = e.event === \"proposed\";",
       "testFile": "test/research.test.ts",
       "testName": "backlog pull initializes research identity once and label lookup follows reset generations (#263)"
+    },
+    {
+      "id": "office-turn-omission",
+      "file": "src/ui/office-model.ts",
+      "search": "!Object.hasOwn(peer, \"turn\") && current.length === 1",
+      "replacement": "current.length === 1",
+      "testFile": "test/office-model.test.ts",
+      "testName": "explicit unattributed turns suppress bubbles while legacy snapshots retain fallback (#264 merge)"
+    },
+    {
+      "id": "office-sticky-bottom",
+      "file": "src/ui/office-model.ts",
+      "search": "Math.max(0, ...desks.map(desk => desk.y + desk.h))",
+      "replacement": "shownIds.length ? DESK_TOP + Math.ceil(shownIds.length / DESK_COLS) * DESK_DY - (DESK_DY - DESK_H) : 0",
+      "testFile": "test/office-model.test.ts",
+      "testName": "sticky desk bounds and work overflow remain correct after peers leave (#264 merge)"
+    },
+    {
+      "id": "office-sticky-width",
+      "file": "src/ui/office-model.ts",
+      "search": "Math.max(0, ...desks.map(desk => desk.x + desk.w))",
+      "replacement": "shownIds.length ? Math.min(shownIds.length, DESK_COLS) * DESK_DX - 2 : 0",
+      "testFile": "test/office-model.test.ts",
+      "testName": "a sparse rightmost sticky desk remains inside a narrow office view (#264 merge)"
+    },
+    {
+      "id": "office-conflict-cap",
+      "file": "src/ui/office-model.ts",
+      "search": "links.sort((a, b) => rank(a.kind) - rank(b.kind));",
+      "replacement": "links.sort(() => 0);",
+      "testFile": "test/office-model.test.ts",
+      "testName": "conflict and cohort warnings survive a large overlap cap without reordering small snapshots (#264 merge)"
+    },
+    {
+      "id": "office-reduced-removal",
+      "file": "src/ui/index.html",
+      "search": "if(officeReducedMotion() || scene.settled){entry.node.remove();return;}",
+      "replacement": "if(false){entry.node.remove();return;}",
+      "testFile": "test/office-view.test.ts",
+      "testName": "office settled paints and reduced motion do not retain departed or appearance nodes (#264 merge)"
+    },
+    {
+      "id": "office-expired-arc",
+      "file": "src/ui/index.html",
+      "search": "if(arc.until<=now)continue;",
+      "replacement": "if(false)continue;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "expired arcs are skipped and reduced motion marks expire without animationend (#264 merge)"
+    },
+    {
+      "id": "office-settled-appearance",
+      "file": "src/ui/index.html",
+      "search": "appear !== false && !scene.settled && !officeReducedMotion()",
+      "replacement": "appear !== false && !officeReducedMotion()",
+      "testFile": "test/office-view.test.ts",
+      "testName": "office settled paints and reduced motion do not retain departed or appearance nodes (#264 merge)"
+    },
+    {
+      "id": "office-warning-separation",
+      "file": "src/ui/index.html",
+      "search": "const offset = link.kind === 'overlap' ? -1.5 : link.kind === 'cohort' ? 1.5 : 0;",
+      "replacement": "const offset = 0;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "parallel warning kinds draw distinguishable coordinates (#264 merge)"
+    },
+    {
+      "id": "office-filter-reveal",
+      "file": "src/ui/index.html",
+      "search": "if (!taskRows.has(id)) officeFilter('');",
+      "replacement": "if (false) officeFilter('');",
+      "testFile": "test/office-view.test.ts",
+      "testName": "office task activation reveals filtered rows and card/desk handlers live in sibling layers (#264 merge)"
     }
   ]
 }

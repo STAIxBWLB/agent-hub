@@ -1624,3 +1624,14 @@ Qwen recovery source/fake proof: saved ids pass through the driver and CLI to AC
 ## Jcode 0.94.0 peer (#332)
 
 Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.md. Unverified: real provider/model, native project MCP discovery and hub-tool receipt, native tool policy and stop/child teardown. Native automatic restoration is withheld because the pinned ACP load does not prove the id. No benchmark comparison or default replacement ran.
+
+
+## Office stack merge review (#355, #357, #358, #360)
+
+Current-main integration and review corrections are being verified on an owned
+merge worktree. Source regressions cover the visible Off selector, filtered-card
+activation, card/desk sibling layers, sparse sticky bounds, Work/rework overflow,
+reduced-motion/settled cleanup, expired arcs, explicit unattributed turn omission,
+conflict priority under the cap and distinct parallel warning coordinates.
+Platform/full197-guard proof is pending. Desktop/phone/real-peer visual readback
+remains unverified; no account, release, installation or live activation ran.

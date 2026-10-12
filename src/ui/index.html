@@ -24,13 +24,13 @@ const dashboardTheme = (() => {
 </style>
 </head>
 <body>
-<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div></header>
+<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></header>
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
 <div class="stack">
-<section id="office-section" aria-labelledby="office-title" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
+<section id="office-section" aria-labelledby="office-title" hidden><div class="section-head"><h2 id="office-title">Office</h2></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
-<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="proposed">Proposed</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div id="tasks" class="task-list"></div><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
+<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="proposed">Proposed</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div id="tasks" class="task-list"></div><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
 <section aria-labelledby="settings-title"><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
 </div>
@@ -429,7 +429,7 @@ function render(snapshot) {
   const progressStages = new Map(progress.stages.map(stage => [stage.id, stage]));
   $('task-count').textContent = snapshot.tasks.length + ' tasks';
   const taskFilter = $('task-filter').value;
-  const visibleTasks = taskFilter ? snapshot.tasks.filter((task) => task.state === taskFilter) : snapshot.tasks;
+  const visibleTasks = taskFilter ? snapshot.tasks.filter((task) => taskFilter === 'work' ? ['in_progress','changes_requested'].includes(task.state) : task.state === taskFilter) : snapshot.tasks;
   update('tasks', [visibleTasks, ids, taskFilter, progress], (target) => {
     taskRows.clear();
     if (!snapshot.tasks.length) return empty(target, 'No public tasks yet. Propose a task below to get started.');
@@ -588,13 +588,15 @@ function officeKeys(event, activate) { if (event.key === 'Enter' || event.key ==
 let spotlitRow = null;
 function spotlightRow(row) { if (spotlitRow && spotlitRow !== row) spotlitRow.classList.remove('spotlight'); spotlitRow = row; if (row) row.classList.add('spotlight'); }
 function activateOfficePeer(id) { const row = peerRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
-function activateOfficeTask(id) { const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
+function activateOfficeTask(id) { if (!taskRows.has(id)) officeFilter(''); const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
 function officeFilter(state) { $('task-filter').value = state; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); }
 // Fade timing for a transient mark: it holds, then fades over the final second so it is gone at `until`.
 // Applied once at creation; later renders leave the running animation alone.
 function officeFade(node, until, now) {
+  node.dataset.officeUntil = String(until);
   const remaining = Math.max(0, until - now);
   if (remaining <= 0) return false;
+  if (officeReducedMotion()) return true;
   const duration = Math.min(1000, remaining);
   node.setAttribute('class', ((node.getAttribute('class') || '') + ' office-fadeout').trim());
   if (duration !== 1000) node.style.animationDuration = duration + 'ms';
@@ -694,22 +696,35 @@ function officeEnsure(target) {
   const svg = officeNode('svg', { class: 'office-scene', role: 'group', 'aria-label': 'Office: desks, rooms and task cards' });
   const layers = {};
   for (const name of ['rooms', 'desks', 'links', 'marks', 'arcs', 'cards']) { const layer = officeNode('g', { class: 'office-layer office-layer-' + name }); svg.append(layer); layers[name] = layer; }
-  officeScene = { svg, layers, els: new Map() };
+  officeScene = { svg, layers, els: new Map(), leaving: new Map(), settled: true };
   target.replaceChildren(svg);
   return officeScene;
+}
+function officeReducedMotion() { return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true; }
+function officePrune(scene, now) {
+  if(!scene)return;
+  for(const [node,until] of scene.leaving)if(officeReducedMotion() || until<=now){node.remove();scene.leaving.delete(node)}
+  for(const [key,entry] of scene.els){
+    if(officeReducedMotion())entry.node.classList.remove('office-appear');
+    if(entry.node.dataset.officeUntil && Number(entry.node.dataset.officeUntil)<=now){entry.node.remove();scene.els.delete(key)}
+  }
 }
 function officeLeave(scene, key) {
   const entry = scene.els.get(key);
   if (!entry) return;
   scene.els.delete(key);
+  if(officeReducedMotion() || scene.settled){entry.node.remove();return;}
+  scene.leaving.set(entry.node,Date.now()+400);
   entry.node.classList.add('office-leaving');
-  entry.node.addEventListener('animationend', () => entry.node.remove());
+  entry.node.addEventListener('animationend', () => {entry.node.remove();scene.leaving.delete(entry.node)});
 }
 function drawOffice(target, model) {
   const scene = officeEnsure(target), els = scene.els, now = Date.now();
   scene.svg.setAttribute('viewBox', officeViewBox(model.width, model.height));
   const switched = officeLastProjection !== officeProjection; // a view switch jumps, never animates
   officeLastProjection = officeProjection;
+  scene.settled = model.settle || switched;
+  officePrune(scene, now);
   scene.svg.setAttribute('class', 'office-scene' + (model.settle || switched ? ' office-settle' : ''));
   const seen = new Set();
   const keep = (key, sig, layer, paint, appear) => {
@@ -721,7 +736,7 @@ function drawOffice(target, model) {
     paint(node);
     if (entry) entry.sig = sig;
     else {
-      if (appear !== false) { node.classList.add('office-appear'); node.addEventListener('animationend', () => node.classList.remove('office-appear')); }
+      if (appear !== false && !scene.settled && !officeReducedMotion()) { node.classList.add('office-appear'); node.addEventListener('animationend', () => node.classList.remove('office-appear')); }
       layer.append(node);
       els.set(key, { node, sig });
     }
@@ -761,7 +776,8 @@ function drawOffice(target, model) {
   const deskById = new Map(model.desks.map((desk) => [desk.id, desk]));
   // Warning lines between desks (phase 3): overlap, conflict and cohort links, ids only, state-driven (no fade).
   for (const link of model.links) {
-    const points = [...new Set(link.peers)].map((id) => deskById.get(id)).filter(Boolean).map((d) => officeProject(d.x + d.w / 2, d.y + d.h / 2));
+    const offset = link.kind === 'overlap' ? -1.5 : link.kind === 'cohort' ? 1.5 : 0;
+    const points = [...new Set(link.peers)].map((id) => deskById.get(id)).filter(Boolean).map((d) => {const p=officeProject(d.x + d.w / 2,d.y + d.h / 2);return [p[0],p[1]+offset]});
     if (points.length < 2) continue;
     const segments = [];
     for (let i = 0; i + 1 < points.length; i++) segments.push([points[i], points[i + 1]]);
@@ -775,6 +791,7 @@ function drawOffice(target, model) {
       }, false);
   }
   for (const arc of model.arcs) {
+    if(arc.until<=now)continue;
     const from = deskById.get(arc.from);
     const label = arc.kind + (arc.task ? ' #' + arc.task : '');
     for (const target of arc.to.length ? arc.to : model.desks.map((desk) => desk.id)) {
@@ -828,6 +845,7 @@ function renderOffice(snapshot) {
   const model = officeModel(snapshot, officePrev, { cols, now: Date.now() });
   officePrev = model;
   const signature = JSON.stringify([view, cols, model]);
+  officePrune(officeScene,Date.now());
   if (signatures.get('office') === signature) return;
   signatures.set('office', signature);
   drawOffice($('office'), model);

@@ -441,3 +441,35 @@ test("phase 3 fields are optional both ways: an older daemon's snapshot models a
   for (const desk of model.desks) expect(desk.finishing).toBe(false);
   for (const desk of model.desks) for (const card of desk.cards) expect(card.checking).toBe(false);
 });
+
+test("sticky desk bounds and work overflow remain correct after peers leave (#264 merge)", () => {
+  const first = officeModel({ status: { peers: Object.fromEntries(["claude", "codex", "kimi", "pi", "local"].map(id => [id, { state: "idle" }])) }, tasks: [] }, null, { cols: 1, now: 1000 });
+  const sparse = officeModel({ status: { peers: { local: { state: "idle" } } }, tasks: Array.from({ length: 10 }, (_, i) => ({ id: i+1, class: "implement", state: "changes_requested", title: "rework" })) }, first, { cols: 1, now: 1100 });
+  const desk = sparse.desks[0]!;
+  expect(sparse.width).toBeGreaterThanOrEqual(desk.x+desk.w);
+  expect(sparse.rooms[0]!.y).toBeGreaterThan(desk.y+desk.h);
+  expect(sparse.rooms.find(room => room.id === "work")).toMatchObject({ filterState: "work", overflow: 2 });
+});
+
+test("explicit unattributed turns suppress bubbles while legacy snapshots retain fallback (#264 merge)", () => {
+  const tasks = [{ id: 1, state: "in_progress", class: "implement", title: "work", owner: "codex" }];
+  const model = (peer: object) => officeModel({ status: { peers: { codex: { state: "busy", ...peer } } }, tasks }, null, { cols: 1, now: 1000 });
+  expect(model({}).desks[0]!.bubble).toBe("#1 implement");
+  expect(model({ turn: { since: 1, attribution: "unattributed" } }).desks[0]!.bubble).toBe("");
+  expect(model({ turn: { since: 1, attribution: "pii" } }).desks[0]!.bubble).toBe("");
+});
+
+test("conflict and cohort warnings survive a large overlap cap without reordering small snapshots (#264 merge)", () => {
+  const links = [...Array.from({ length: 28 }, (_, i) => ({ kind: "overlap", tasks: [i+1, i+2], peers: ["codex", "claude"] })), { kind: "conflict", tasks: [1,2], peers: ["codex", "claude"] }, { kind: "cohort", tasks: [1,2], peers: ["codex", "claude"] }];
+  const model = officeModel({ status: { peers: {} }, tasks: [], links }, null, { cols: 1, now: 1000 });
+  expect(model.links).toHaveLength(24);
+  expect(model.links.some(link => link.kind === "conflict")).toBe(true);
+  expect(model.links.some(link => link.kind === "cohort")).toBe(true);
+});
+
+
+test("a sparse rightmost sticky desk remains inside a narrow office view (#264 merge)", () => {
+  const first = officeModel({status:{peers:Object.fromEntries(["claude","codex","kimi","pi","local"].map(id=>[id,{state:"idle"}]))},tasks:[]},null,{cols:1,now:1000});
+  const sparse = officeModel({status:{peers:{pi:{state:"idle"}}},tasks:[]},first,{cols:1,now:1100});
+  const desk=sparse.desks[0]!;expect(sparse.width).toBeGreaterThanOrEqual(desk.x+desk.w);
+});
