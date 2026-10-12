@@ -5,7 +5,7 @@ import { PALETTE, paint } from "../src/cli/console-state.ts";
 
 test("board columns cover every task state and preserve unknown states without reading text (#263)", () => {
   const states = ["backlog", "proposed", "in_progress", "changes_requested", "in_review", "approved", "future"];
-  const tasks = states.map((state, i) => ({ id: i + 1, state, get title() { throw new Error("private text read"); }, get detail() { throw new Error("private text read"); }, get history() { throw new Error("private text read"); } }));
+  const tasks = states.map((state, i) => ({ id: i + 1, state, started: !["backlog", "proposed"].includes(state), get title() { throw new Error("private text read"); }, get detail() { throw new Error("private text read"); }, get history() { throw new Error("private text read"); } }));
   const model = boardColumns(tasks, {});
   expect(model.columns.map(column => column.label)).toEqual(["Backlog", "To Do", "In Progress", "Review / QA", "Done"]);
   expect(model.columns.map(column => column.ready.map(card => card.id))).toEqual([[1], [2], [3, 4], [5], [6]]);
@@ -51,4 +51,10 @@ test("peer palette is shared with terminal output and CSS and handles prototype-
     expect(paint([{ text: peer, tone: style.tone }], false)).toBe(peer);
   }
   for (const peer of ["constructor", "__proto__", "qwen", "jcode", "custom"]) expect(peerStyle(peer)).toBe(PEER_PALETTE.other);
+});
+
+
+test("board return controls refuse started and unknown-history ownerless proposals (#263)", () => {
+  const model = boardColumns([{ id: 1, state: "proposed", started: false }, { id: 2, state: "proposed", started: true }, { id: 3, state: "proposed" }], {});
+  expect(model.columns[1]?.ready.map(card => card.returnable)).toEqual([true, false, false]);
 });

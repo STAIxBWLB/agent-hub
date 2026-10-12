@@ -1,7 +1,7 @@
 /** Only structural public fields enter the board model; never titles, details or history. */
 export interface BoardCardInput {
   id: number; state: string; owner?: string | null; reviewer?: string | null;
-  deps?: readonly number[]; reserved?: string | null; urgent?: boolean; priority?: number;
+  deps?: readonly number[]; reserved?: string | null; urgent?: boolean; priority?: number; started?: boolean;
 }
 export interface BoardPeerInput { state?: string; attached?: boolean; rostered?: boolean; needsReview?: number; }
 export interface BoardCardState {
@@ -40,7 +40,7 @@ export function boardColumns(tasks: readonly BoardCardInput[], peers: Readonly<R
     const priority = task.urgent === true ? 0 : Number.isInteger(task.priority) && task.priority! >= 0 && task.priority! <= 3 ? task.priority! : 2;
     const card: BoardCardState = { id: task.id, column: column.id, priority, starred: priority <= 1, waiting,
       assignable: ["proposed", "in_progress", "changes_requested"].includes(task.state),
-      pull: task.state === "backlog", returnable: task.state === "proposed" && !task.owner };
+      pull: task.state === "backlog", returnable: task.state === "proposed" && !task.owner && task.started === false };
     (waiting.length ? column.waiting : column.ready).push(card);
   }
   return { columns, unknown };

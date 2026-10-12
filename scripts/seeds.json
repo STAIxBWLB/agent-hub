@@ -1304,6 +1304,14 @@
       "replacement": "card.pull",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "older snapshots cannot silently offer a requested backlog task or expose unsupported pull controls (#263)"
+    },
+    {
+      "id": "board-started-return-floor",
+      "file": "src/ui/task-board.ts",
+      "search": "&& task.started === false",
+      "replacement": "",
+      "testFile": "test/task-board.test.ts",
+      "testName": "board return controls refuse started and unknown-history ownerless proposals (#263)"
     }
   ]
 }

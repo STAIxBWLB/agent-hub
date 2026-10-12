@@ -42,7 +42,7 @@ import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
 import { Briefs } from "../memory/brief.ts";
-import { Board, taskProposalAt, CLASSES, type Task, type TaskClass } from "./board.ts";
+import { Board, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
@@ -2956,7 +2956,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
