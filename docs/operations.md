@@ -2595,3 +2595,33 @@ silently turn Add to Backlog into an immediate offer. PII cards retain their
 public stub; legend entries contain ids/counts, never task prose. Editable
 planning priority/rank, releases, dates, planner grooming/undo and GitHub import
 remain subsequent #263 slices. This source slice is not a native planner cycle.
+
+
+## Planning and phased releases (#263, source verification pending)
+
+Use `ahub backlog list` to read public staged work, then `ahub backlog plan <id>
+<revision> <fields-json> <reason>` to set rank, priority (0-3), release id, planned
+start/due UTC milliseconds or pin. `pin` accepts true/false; `undo` needs the
+current revision and latest eligible edit. The dashboard provides local-time
+date fields, task/release filters and lanes, and Reload current values when an
+edit is stale. A person's order, pins and frozen scopes protect planner changes.
+
+Create a phase with `ahub release new <name> <goal> <order>`, inspect `list` or
+`show`, and set planned start/cut/ship with `plan <name> <revision> <dates-json>`.
+`activate`, `freeze`, `ship` and `drop` need its current revision. Only a person
+freezes, ships, drops or edits frozen scope. Ship records the first ship time
+only after every member is approved or moved out; it runs no tag or publish.
+The dashboard shows phase progress, blocking dependencies, dates and remaining
+work. Actual task dates come from execution/review/approval history, never input.
+
+Configured planners read `hub_backlog_list` and `hub_release_list`, edit with
+`hub_backlog_plan`, and undo their own latest eligible change with
+`hub_backlog_undo`. Catalog guidance or a caller-supplied role grants no authority.
+PII cards stay stubs, reasons are screened/withheld in public history, and planning
+telemetry records ids/changed fields without prose. #247 task records carry
+optional release, priority, plannedStart and due, retaining unknown legacy data.
+
+Dependency/reservation planning, split/pull WIP limits, batched incoming notices
+and optional one-way GitHub import remain subsequent implementation. Current
+source checks and desktop/phone visual validation are pending; native planner
+work across two releases remains unverified. No installed/live behavior claimed.

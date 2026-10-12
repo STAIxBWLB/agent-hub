@@ -859,6 +859,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let checksClosed = false; // set on stop: a check still queued then must not start and outlive the hub
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
   const tasks: Tasks = new Tasks({
+    recordPlanning: change => event({ type: "planning", ...change }),
     profile: profileName(config.profile),
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
@@ -1102,7 +1103,7 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
     if ((h.event === "proposed" || h.event === "backlog pulled" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
-    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
+    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(t.planningRevision ? { release: t.release ?? null, priority: t.signals.includes("urgent") ? 0 : t.priority ?? null, plannedStart: t.plannedStart ?? null, due: t.due ?? null } : {}), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
     if ((h.event === "proposed" || h.event === "backlog pulled") && projections.enabled && turnLog) {
       const created = taskProposalAt(t);
@@ -1425,7 +1426,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -1450,6 +1451,14 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
     switch (op) {
+      case "hub_backlog_list":
+        return JSON.stringify(tasks.backlogList(by));
+      case "hub_release_list":
+        return JSON.stringify(tasks.releaseList(by));
+      case "hub_backlog_plan":
+        return JSON.stringify(tasks.publicView(await tasks.planBacklog(by, { id: a.id, revision: a.revision, fields: a.fields, reason: a.reason })));
+      case "hub_backlog_undo":
+        return JSON.stringify(tasks.publicView(await tasks.undoPlanning(by, a.id, a.revision)));
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
         if (t.state === "backlog") return line(t);
@@ -1519,6 +1528,14 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (by !== USER) throw new Error(`${op} is a console command`);
     switch (op) {
+      case "release_new":
+        return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
+      case "release_change": {
+        const release = board.releases().find(release => release.name === a.name);
+        if (!release) throw new PreEffectToolRefusal("no such release");
+        if (!a.fields || typeof a.fields !== "object" || Array.isArray(a.fields) || Object.hasOwn(a.fields, "id") || Object.hasOwn(a.fields, "revision")) throw new PreEffectToolRefusal("invalid release fields");
+        return JSON.stringify(tasks.changeRelease(by, { ...a.fields, id: release.id, revision: a.revision }));
+      }
       case "backlog_pull":
       case "backlog_return":
         return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
@@ -2947,6 +2964,8 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       status: { peers: peerView },
       boardCapabilities: { backlog: true },
+      planningCapabilities: { enabled: true },
+      releases: tasks.releaseList(USER),
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,
         permissionMode: "permissionNote" in peer && peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
@@ -2956,7 +2975,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
@@ -3265,6 +3284,18 @@ export async function startDaemon(opts: DaemonOptions) {
         const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner, ...(a.backlog === true ? { backlog: true } : {}) });
         return { ok: true, text: result };
       }
+      case "planning":
+      case "planning_undo": {
+        if (!taskId()) return bad;
+        await taskOp(USER, a.action === "planning" ? "hub_backlog_plan" : "hub_backlog_undo", { id: a.id, revision: a.revision, fields: a.fields, reason: a.reason });
+        return { ok: true, text: "Task planning updated." };
+      }
+      case "release_new":
+        await taskOp(USER, "release_new", { name: a.name, goal: a.goal, order: a.order });
+        return { ok: true, text: "Release created." };
+      case "release_change":
+        await taskOp(USER, "release_change", { name: a.name, revision: a.revision, fields: a.fields });
+        return { ok: true, text: "Release updated." };
       case "backlog_pull":
       case "backlog_return":
         return taskId() ? { ok: true, text: await taskOp(USER, a.action, { id: a.id }) } : bad;

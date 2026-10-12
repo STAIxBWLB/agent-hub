@@ -1045,9 +1045,39 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   backlog: async () => {
-    const [sub, id] = args;
-    if (args.length !== 2 || !["pull", "return"].includes(sub ?? "") || !/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog pull|return <id>; add with ahub task propose --backlog");
-    console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
+    const [sub, id, revision, value, ...reason] = args;
+    if (sub === "list" && args.length === 1) return console.log(await taskOp("hub_backlog_list", {}));
+    if (sub === "add" && args.length >= 3) return console.log(await taskOp("hub_task_propose", { class: id, title: args.slice(2).join(" "), backlog: true }));
+    if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");
+    if (["pull", "return"].includes(sub ?? "") && args.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
+    if (!/^\d+$/.test(revision ?? "")) fail("planning revision is required");
+    if (sub === "undo" && args.length === 3) return console.log(await taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
+    if (!["plan", "pin"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
+    let fields: unknown;
+    try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
+    catch { return fail("planning fields must be JSON"); }
+    if (sub === "pin" && value !== "true" && value !== "false") fail("pin must be true or false");
+    console.log(await taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
+  },
+
+  release: async () => {
+    const [sub, name, revision, value] = args;
+    if (sub === "list" && args.length === 1) return console.log(await taskOp("hub_release_list", {}));
+    if (sub === "show" && name && args.length === 2) {
+      const releases = JSON.parse(await taskOp("hub_release_list", {})) as { name: string }[];
+      const release = releases.find(release => release.name === name);
+      if (!release) fail("no such release");
+      return console.log(JSON.stringify(release, null, 2));
+    }
+    if (sub === "new" && name && revision && args.length === 4 && /^\d+$/.test(value ?? "")) return console.log(await taskOp("release_new", { name, goal: revision, order: Number(value) }));
+    if (!name || !/^\d+$/.test(revision ?? "")) fail("usage: ahub release new <name> <goal> <order>|list|show <name>|plan <name> <revision> <dates-json>|activate|freeze|ship|drop <name> <revision>");
+    const states: Record<string, string> = { activate: "active", freeze: "frozen", ship: "shipped", drop: "dropped" };
+    let fields: unknown;
+    if (sub === "plan" && value && args.length === 4) {
+      try { fields = JSON.parse(value); } catch { return fail("release dates must be JSON"); }
+    } else if (sub && Object.hasOwn(states, sub) && args.length === 3) fields = { state: states[sub] };
+    else return fail("invalid release command");
+    console.log(await taskOp("release_change", { name, revision: Number(revision), fields }));
   },
 
   board: async () => {

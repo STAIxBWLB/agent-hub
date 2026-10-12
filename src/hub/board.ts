@@ -226,7 +226,7 @@ export class Board {
     const moves: Record<ReleaseState, ReleaseState[]> = { planning: ["active", "dropped"], active: ["frozen", "dropped"], frozen: ["shipped", "dropped"], shipped: [], dropped: [] };
     if (next.state !== release.state && !moves[release.state].includes(next.state)) throw new Error("invalid release transition");
     const dates = [next.plannedStart, next.cut, next.ship].filter((date): date is number => date !== null);
-    if (dates.some(date => !Number.isSafeInteger(date) || date <= 0) || dates.some((date, i) => i > 0 && dates[i-1]! > date)) throw new Error("invalid release planned dates");
+    if (dates.some(date => !Number.isSafeInteger(date) || date <= 0 || date > 8_640_000_000_000_000) || dates.some((date, i) => i > 0 && dates[i-1]! > date)) throw new Error("invalid release planned dates");
     const result = this.db.query("UPDATE releases SET state=?,planned_start=?,cut=?,ship=?,activated_at=?,frozen_at=?,shipped_at=?,updated=?,revision=revision+1 WHERE id=? AND revision=?")
       .run(next.state, next.plannedStart, next.cut, next.ship, release.activatedAt ?? (next.state === "active" ? now : null), release.frozenAt ?? (next.state === "frozen" ? now : null), release.shippedAt ?? (next.state === "shipped" ? now : null), now, id, revision);
     if (result.changes !== 1) throw new Error("release revision changed");

@@ -36,7 +36,7 @@
     {
       "id": "pii-public-view",
       "file": "src/hub/tasks.ts",
-      "search": "if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? \"unknown\" } } : {}), title: \"[pii]\", detail: \"[pii]\" };",
+      "search": "if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? \"unknown\" } } : {}), title: \"[pii]\", detail: \"[pii]\" };",
       "replacement": "if (false) return { ...rest, refs: {}, plan: {}, title: \"[pii]\", detail: \"[pii]\" };",
       "testFile": "test/tasks.test.ts",
       "testName": "a PII task stays on-prem: local only, private envelopes, console review, redacted views, nothing to claude-mem"
@@ -1552,6 +1552,62 @@
       "replacement": "&& true",
       "testFile": "test/task-board.test.ts",
       "testName": "board return controls refuse started and unknown-history ownerless proposals (#263)"
+    },
+    {
+      "id": "planning-configured-role",
+      "file": "src/hub/tasks.ts",
+      "search": "if (by !== USER && !this.d.roles?.[by]?.includes(\"planner\"))",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planning validates the whole patch and persists revision dates priority and release (#263)"
+    },
+    {
+      "id": "planning-pinned-floor",
+      "file": "src/hub/tasks.ts",
+      "search": " || task.pinned || Object.hasOwn(patch, \"pinned\")",
+      "replacement": " || Object.hasOwn(patch, \"pinned\")",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "planning-person-order",
+      "file": "src/hub/tasks.ts",
+      "search": "task.history.some(entry => entry.by === USER && entry.planning?.fields.includes(\"rank\"))",
+      "replacement": "false",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "planning-frozen-scope",
+      "file": "src/hub/tasks.ts",
+      "search": "if (by !== USER && release.state === \"frozen\")",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "release-approval-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "input.state === \"shipped\" && this.d.board.list().some(task => task.release === release.id && task.state !== \"approved\")",
+      "replacement": "false",
+      "testFile": "test/planning.test.ts",
+      "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
+    },
+    {
+      "id": "planning-actual-approval",
+      "file": "src/hub/planning.ts",
+      "search": "doneAt: approved ?? reviewerlessDone",
+      "replacement": "doneAt: first([\"done\"])",
+      "testFile": "test/planning.test.ts",
+      "testName": "actual task dates use execution review and approval evidence rather than typed plans or notes (#263)"
+    },
+    {
+      "id": "research-planning-metadata",
+      "file": "src/hub/research.ts",
+      "search": "if (Object.hasOwn(e, field)) a[field] = e[field];",
+      "replacement": "if (false) a[field] = e[field];",
+      "testFile": "test/planning-surfaces.test.ts",
+      "testName": "research planning metadata preserves unknown legacy values and reset generations (#263)"
     }
   ]
 }

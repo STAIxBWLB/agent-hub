@@ -24,6 +24,7 @@ import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifec
 export type TaskAssignmentRole = "owner" | "reviewer";
 
 export interface TasksDeps {
+  recordPlanning?: (change: { by: string; task?: number; release?: number; fields: string[]; revision: number }) => void;
   board: Board;
   bus: Bus;
   routing: () => Routing;
@@ -351,6 +352,7 @@ export class Tasks {
       ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note", h.withheld) }),
       ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
       ...(h.owner === undefined ? {} : { owner: h.owner }),
+      ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
@@ -522,8 +524,26 @@ export class Tasks {
     }
   }
 
+  private planningRecorded(change: { by: string; task?: number; release?: number; fields: string[]; revision: number }): void {
+    try { this.d.recordPlanning?.(change); } catch { /* telemetry never changes a durable result */ }
+  }
+
   private planningAuthority(by: PeerId): void {
     if (by !== USER && !this.d.roles?.[by]?.includes("planner")) throw new PreEffectToolRefusal("planning requires a person or configured planner role");
+  }
+
+  backlogList(by: PeerId): Record<string, unknown>[] {
+    this.planningAuthority(by);
+    return this.d.board.list("backlog").map(task => this.publicView(task));
+  }
+  releaseList(by: PeerId): Record<string, unknown>[] {
+    this.planningAuthority(by);
+    const tasks = this.d.board.list();
+    return this.d.board.releases().map(release => ({ ...release,
+      name: this.nameable(release.name) ? release.name : "[withheld]",
+      goal: this.nameable(release.goal) ? release.goal : "[withheld]",
+      tasks: tasks.filter(task => task.release === release.id).map(task => ({ id: task.id, state: task.state, deps: task.deps ?? [] })),
+    }));
   }
 
   async planBacklog(by: PeerId, input: { id: number; revision: number; fields: unknown; reason: string }): Promise<Task> {
@@ -550,7 +570,11 @@ export class Tasks {
     };
     const task = validate(), withheld = await this.withholds("note", input.reason, task);
     validate(); // a person may have changed planning or frozen a release while the screen ran
-    try { return this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld); }
+    try {
+      const updated = this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld);
+      this.planningRecorded({ by, task: task.id, fields: Object.keys(patch), revision: updated.planningRevision! });
+      return updated;
+    }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
   }
 
@@ -567,7 +591,9 @@ export class Tasks {
     const text = input.name + "\n" + input.goal;
     if (!this.nameable(text) || this.screenOn() && (await this.screenCall(text)).label !== "clear") throw new PreEffectToolRefusal("release text was not cleared for public planning");
     if (this.d.board.releases().some(release => release.name === input.name)) throw new PreEffectToolRefusal("release name already exists");
-    return this.d.board.newRelease(input.name, input.goal.trim(), input.order);
+    const release = this.d.board.newRelease(input.name, input.goal.trim(), input.order);
+    this.planningRecorded({ by, release: release.id, fields: ["created"], revision: release.revision });
+    return release;
   }
 
   changeRelease(by: PeerId, input: { id: number; revision: number; state?: ReleaseState; plannedStart?: number | null; cut?: number | null; ship?: number | null }): Release {
@@ -579,7 +605,11 @@ export class Tasks {
     if (input.state === "shipped" && this.d.board.list().some(task => task.release === release.id && task.state !== "approved")) throw new PreEffectToolRefusal("every release task must be approved or moved out before ship");
     const { id, revision, ...patch } = input;
     if (!Object.keys(patch).length || Object.keys(patch).some(key => !["state", "plannedStart", "cut", "ship"].includes(key))) throw new PreEffectToolRefusal("unknown or empty release fields");
-    try { return this.d.board.updateRelease(id, patch, revision); }
+    try {
+      const updated = this.d.board.updateRelease(id, patch, revision);
+      this.planningRecorded({ by, release: id, fields: Object.keys(patch), revision: updated.revision });
+      return updated;
+    }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
   }
 

@@ -69,3 +69,14 @@ test("actual task dates use execution review and approval evidence rather than t
   expect(actualTaskDates({ history: [], state: "backlog", reviewer: null })).toEqual({ startedAt: null, reviewAt: null, doneAt: null });
   expect(() => planningPatch({ startedAt: 1 })).toThrow("unknown");
 });
+
+
+test("planning dates refuse values outside UTC Date range before persistence (#263)", async () => {
+  const { board, tasks } = rig();
+  const task = await tasks.propose(USER, { title: "future", class: "implement", backlog: true });
+  await expect(tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { due: 8_640_000_000_000_001 }, reason: "bad date" })).rejects.toThrow("invalid planning field");
+  expect(board.get(task.id)?.planningRevision).toBeUndefined();
+  const release = await tasks.newRelease(USER, { name: "next", goal: "Deliver", order: 0 });
+  expect(() => tasks.changeRelease(USER, { id: release.id, revision: 0, ship: 8_640_000_000_000_001 })).toThrow("invalid release planned dates");
+  expect(board.release(release.id)?.revision).toBe(0);
+});

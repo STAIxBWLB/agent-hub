@@ -32,7 +32,7 @@ export function planningPatch(input: unknown): PlanningPatch {
       if (typeof value !== "boolean") throw new Error("pinned must be a boolean");
       result.pinned = value;
     } else {
-      if (value !== null && (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "release" || key === "plannedStart" || key === "due" ? 1 : 0) || (key === "priority" && value > 3))) throw new Error(`invalid planning field ${key}`);
+      if (value !== null && (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "release" || key === "plannedStart" || key === "due" ? 1 : 0) || (key === "priority" && value > 3) || (["plannedStart", "due"].includes(key) && value > 8_640_000_000_000_000))) throw new Error(`invalid planning field ${key}`);
       result[key] = value as number | null;
     }
   }

@@ -1613,3 +1613,13 @@ Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.
 - Native planner grooming into two releases, planned/actual date measurement and
   GitHub import remain unverified or unimplemented in later source slices. No
   release, installation, account experiment or live activation is implied.
+
+
+## Planning and release controls (#263)
+
+Source/fixture coverage is in planning.test.ts and planning-surfaces.test.ts:
+legacy/restart persistence, revision/role/pin/person order/frozen scope/undo/ship,
+actual task dates, CLI marker authority, public PII and research reset identities.
+All current platform/201-seed checks remain pending. Desktop/phone rendering and
+native planner grooming into two releases are unverified; no real account run,
+tag, publish, install or live activation was performed.

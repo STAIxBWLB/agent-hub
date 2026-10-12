@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
+
 - Add five-column dashboard task cards, ready/waiting split, shared peer colors, agent legend/lanes and scoped drag/button assignment and Backlog staging controls (#263).
 - Add person-only bounded merge-order and release-readiness evidence through CLI, console and both dashboard modes; retain unknown/native gates and never merge or publish from a report (#257).
 
