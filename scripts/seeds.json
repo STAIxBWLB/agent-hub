@@ -1924,8 +1924,8 @@
     {
       "id": "attention-plain-config-warning",
       "file": "src/cli/console.ts",
-      "search": "state.mode === \"panels\" && !plain",
-      "replacement": "state.mode === \"panels\"",
+      "search": "if (state.mode === \"panels\" && !plain) notify(state, pet.notice, Date.now(), \"attention\");",
+      "replacement": "if (state.mode === \"panels\") notify(state, pet.notice, Date.now(), \"attention\");",
       "testFile": "test/pet-config.test.ts",
       "testName": "requested panels print unknown config warnings when the terminal falls back to plain"
     }
