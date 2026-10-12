@@ -204,5 +204,5 @@ test("native fallback preamble records explicit empty preparation for unavailabl
 
 
 test("dashboard role metadata retains separate current and pending catalog guidance (#295)",async()=>{
- const f=await fixture(),status=(await f.client.request({t:"status"})).status;const snapshot=await f.client.request({t:"ui_action",instanceId:status.instanceId,action:{action:"snapshot"}});expect(snapshot.ok).toBe(true);expect(snapshot.status.roleInfo).toEqual(status.roleInfo);expect(snapshot.status.peers.codex).toEqual(status.peers.codex);
+ const f=await fixture(),status=(await f.client.request({t:"status"})).status;const snapshot=await f.client.request({t:"ui_snapshot"});expect(snapshot.ok).toBe(true);expect(snapshot.status.roleInfo).toEqual(status.roleInfo);expect(snapshot.status.peers.codex).toEqual(status.peers.codex);
 });
