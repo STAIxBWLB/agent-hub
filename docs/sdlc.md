@@ -22,7 +22,7 @@ The repository uses feature branches and PRs. Release PRs require merge commits 
 
 ## Configuration and persistence contract
 
-.agenthub/sdlc.toml contains mode off|advise|enforce and a bounded ordered stage list, using the built-in stages above by default. The initial loader fixes the built-in stage, gate and actor mapping; custom stage/gate definitions remain pending. Unknown stages/gates, duplicate stages, cycles, unbounded lists and unknown keys are refused with a field-level reason. A project file may define guidance/gates, but it does not expand capabilities or permissions.
+.agenthub/sdlc.toml contains mode off|advise|enforce and a bounded ordered stage list, using the built-in stages above by default. The loader validates built-in mappings and bounded custom stage/gate/actor definitions; custom guidance does not grant authority. Unknown stages/gates, duplicate stages, cycles, unbounded lists and unknown keys are refused with a field-level reason. A project file may define guidance/gates, but it does not expand capabilities or permissions.
 
 Task lifecycle fields store stage, issue/PR identity, observed head, reviewed head, local-gate head/result and bounded check/readback metadata. Legacy rows read with no lifecycle metadata. Every change goes through Tasks and records its actor; adapters/tools/CLI never write Board directly. Readback timestamps identify observations, not a freshness promise. Persist no task text in lifecycle receipts; public output uses the existing PII stub and publicTitle/publicView.
 
@@ -40,7 +40,7 @@ The #252 gsd-lite option remains guidance, bounded predecessor edges and criteri
 
 ## Delivery and verification state
 
-The initial implementation adds built-in configuration validation, optional board receipts, fake-gh stale-head/required-check tests, Tasks transition gates and CLI/console/dashboard projections. Custom stage/gate definitions, full merge-queue and release-readiness presentation, a dependency-editing/import workflow and a live advise cycle remain pending. The bounded checklist guidance slice below is implemented separately. A native/account cycle must be recorded separately; no merge or release is implied by this document.
+The initial implementation adds built-in configuration validation, optional board receipts, fake-gh stale-head/required-check tests, Tasks transition gates and CLI/console/dashboard projections. Bounded custom stage/gate definitions and read-only merge-queue/release-source reports are implemented in the source slices below. Dependency editing/import and the actual native advise-through-merge/release cycle remain pending. The bounded checklist guidance slice below is implemented separately. A native/account cycle must be recorded separately; no merge or release is implied by this document.
 
 ## Initial commands
 
@@ -58,7 +58,7 @@ A person records ids and a claimed local receipt with `ahub sdlc record 12 '{"re
 - Each criterion has a bounded `id`, boolean `required`, `result` verified|failed|unverified and up to eight hashed refs. Accepted refs are `sha256:<64-hex>`, or `artifact|check|source:<ASCII-reference>@<64-hex>`. Whole phase JSON is at most 32 KiB. The hub never fetches those refs or treats a model's claim as a deterministic check. Verified outcomes are reviewer claims, separately labelled from fresh GitHub checks.
 - Required failed/unverified criteria, unfinished child tasks, changed/unavailable dependencies and missing/stale checklist heads make phase readiness false. In advise/off, board transitions retain their existing behavior; readiness can remain false after a historical approval. Enforce adds phase blockers only to the existing approval transition. Entering review remains possible while criteria are unverified, so the reviewer can inspect and record them.
 - `ahub sdlc status <id>` and `explain` expose the same workflow/phase projection used by the console and dashboard; `ahub route explain` names active workflow guidance. `ahub sdlc export <id>` emits sanitized ids, states, criteria/hashes and two SHA-256 values: `stateHash` hashes that exact projection, `sourceHash` hashes the normalized effective lifecycle configuration (not a code/build attestation). Private exports contain a stub and no phase refs. Exports are read-only derived views and cannot be imported as task authority.
-- Full GSD import, dependency editing, custom lifecycle gates, release readiness and the native advise cycle remain pending. No automatic advance, merge, release, permission change or experiment is included. The default versus gsd-lite #251 comparison is not run during the solo implementation.
+- Full GSD import, dependency editing, native acceptance and the actual advise-through-merge/release cycle remain pending. Bounded custom gates and the read-only release-source report are implemented below. No automatic advance, merge, release, permission change or experiment is included. The default versus gsd-lite #251 comparison is not run during the solo implementation.
 
 Example reviewer receipt (task 2 already depends on task 1):
 
@@ -121,4 +121,50 @@ actor = "person"
 after = ["approve"]
 ```
 
-These ids are guidance/receipt destinations. Publish neither merges nor releases. Full release readiness, bidirectional GSD import and research measurements remain separate slices.
+These ids are guidance/receipt destinations. Publish neither merges nor releases. The read-only source-readiness report is implemented below. Native acceptance/release permission, bidirectional GSD import and research measurements remain unverified or pending.
+
+
+# Structured documentation readiness evidence (#257)
+
+The package-owned scripts/check-docs.mjs accepts --json with the same normal/--require-fresh verdict as its human output. Metadata includes the observed head, validated package version and sorted document identities with fresh/stale/nonancestor/unknown state, stamp, covered commit count and dirty flag when known. Invalid/error payload text is excluded from machine output; an error count and fresh=false retain uncertainty. Git readbacks disable repository-configured helpers and bound subprocess time/output. No stamp, version, tag or release is written. This evidence is a release-readiness input, not proof of prose review or native acceptance.
+
+The release reader additionally requests --committed: manifest, README and package metadata come from the captured HEAD, and dirty documentation/evidence files block freshness. A working-tree restamp cannot certify a commit that still contains stale stamps. The ordinary checker continues to support working-tree review before those stamps are committed.
+
+# Read-only merge queue contract (#257)
+
+Queue reads fetch PR numbers and bounded head/check/review/thread/file-count metadata, never remote titles or bodies. Up to16 open PRs and8 external dependency reads share a20second budget. Every linked local receipt must satisfy the existing approval floor on that current head; draft/unknown status, missing file coverage and unlinked/private work remain blocked. Same-target path intersections return counts without names. Task after edges provide the only dependency order; open predecessor PRs block current readiness, unresolved touching order asks the person, cycles/truncation remain incomplete. A board approval never substitutes for a merged-commit receipt. No queue operation changes dependencies, owns work, merges or writes GitHub.
+
+A truncated open-PR list blocks every row because omitted PRs may change the touching order. Version advancement uses SemVer precedence, including prereleases; build metadata alone is not an advance.
+
+Missing/incomplete file evidence, an unknown target branch or a private PR also prevents conflict coverage for other rows. Their readiness stays blocked without reading the private PR.
+
+Queue completeness requires both full file coverage and verified target branches, even when all file pages have been returned.
+
+Touching PRs without explicit task dependency order, and their dependent PRs, appear in unordered rather than the ordered result until the person resolves them. Independent disjoint work can still be ordered. Truncated or unknown touching coverage supplies no order; a late board revision also discards the entire previously derived order.
+
+After intervening remote PR reads, a final bounded identity-list read must match the initial open set; changes or unavailable readback invalidate readiness and order. Empty/private-only snapshots perform no intervening remote evidence reads. Repository identity matching is case-insensitive for both holders and dependencies.
+
+Those snapshots include every PR head, which must remain unchanged and match its observed evidence. Documentation dirtiness uses staged-tree metadata, untracked names and raw blob hashing rather than git status, so clean/process filters are never invoked. Gitlinks, large files or unsupported filesystem evidence remain unverified; transformed bytes are not declared equivalent by executing a configured helper.
+
+Snapshot target branch names and target commit identities must also stay unchanged and match the evidence used to compute file conflicts. A retarget or advancing base invalidates the report even with an unchanged PR head.
+
+# Read-only release report contract (#257)
+
+Report reads bind the observed local head, committed package version, published release tag and matching local/remote commit identity. Only a verified tag ancestor defines the bounded first-parent commit list. The package-owned JSON doc checker must report freshness at that same head; open/unknown native issue metadata remains a blocker. Source readiness never certifies native acceptance or permits publication, and a changed head invalidates the report. No body, issue title, task text, version bump, restamp, tag or release mutation is included.
+
+Merged PR identities are resolved from those post-tag commits in batches of at most 100, with at most 10 associated PRs per commit and the same shared read deadline. Repository lifetime PR counts cannot truncate the report. Missing, mismatched or paginated associations remain unknown; direct commits may have no associated PR.
+
+The predecessor is the newest non-draft entry from GitHub's descending release list, which includes prereleases. The stable-only "latest release" endpoint is not used; an RC can anchor the next RC's tag and commit coverage.
+
+
+# Delivery readback commands and surfaces (#257)
+
+`ahub sdlc queue <owner/repository>` and `ahub sdlc release <owner/repository> [live-issue...]` issue console-only readbacks. They also run through the existing console command path. The dashboard's Delivery evidence section uses labelled inputs and read-only buttons, textContent output and existing project/instance/generation fences; switching projects discards old reports and input. The report never changes task state or grants a permission. Private document names are removed at the Tasks public projection. Ledger issue state remains metadata, never native-success proof or release permission.
+
+The all-project manager forwards both delivery reads through the same scoped console connection with a 30-second cap, beyond their shared 20-second read budget. Stale/unknown project or instance identities and unknown operations remain refused.
+
+After dashboard authentication, those two delivery operations get a 35-second HTTP idle limit so Bun's ordinary 10-second limit cannot cut the report early. Other actions keep the ordinary limit.
+
+The connection idle setting is not a guaranteed 10-second deadline for an active handler. The actual HTTP fixture records that an ordinary action also completes after 11.5 seconds; that legacy behavior is retained. The owner approved correcting only the newly added test's mistaken ordinary-action failure expectation. Manager control request caps are separate from HTTP connection idle behavior. Delivery HTTP results omit the internal control-request rid.
+
+- Runtime doc checker ships explicitly in the npm tarball and package verification asserts its presence. Merge queue phase readiness derives each holder's current board phase view under gsd-lite; absent or blocked phases remain unknown/blocked.

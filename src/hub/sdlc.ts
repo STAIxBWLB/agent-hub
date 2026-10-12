@@ -31,6 +31,10 @@ export interface PrEvidence {
   unresolved: number | null;
   pendingReviews: number | null;
   paths: string[];
+  pathsComplete?: boolean;
+  draft?: boolean;
+  base?: string;
+  baseHead?: string;
   mergeCommit?: string;
 }
 const sha = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
@@ -154,7 +158,7 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     return { name, state } as PrEvidence["checks"][number];
   });
   const paths = p.files.map((f: Record<string, unknown>) => { if (typeof f.path !== "string" || !f.path || f.path.length > 1000) throw new Error("PR readback: invalid file identity"); return f.path; });
-  return { head: p.headRefOid, state: p.state, checks, paths,
+  return { head: p.headRefOid, state: p.state, checks, paths, pathsComplete: Number.isSafeInteger(p.changedFiles) && p.changedFiles >= 0 && p.changedFiles === paths.length, ...(typeof p.isDraft === "boolean" ? { draft: p.isDraft } : {}), ...(typeof p.baseRefName === "string" && p.baseRefName && p.baseRefName.length <= 200 && !/[\x00-\x1f\x7f]/.test(p.baseRefName) ? { base: p.baseRefName } : {}), ...(sha(p.baseRefOid) ? { baseHead: p.baseRefOid } : {}),
     review: p.reviewDecision === "APPROVED" ? "approved" : p.reviewDecision === "CHANGES_REQUESTED" ? "changes_requested" : "unknown",
     pendingReviews: Array.isArray(p.reviewRequests) && p.reviewRequests.length <= 100 && p.reviewRequests.every((r: unknown) => !!r && typeof r === "object") ? p.reviewRequests.length : null,
     unresolved: Number.isSafeInteger(p.unresolvedThreads) && p.unresolvedThreads >= 0 ? p.unresolvedThreads : null,
@@ -211,13 +215,13 @@ export function touchingPrs(prs: { pr: number; paths: string[] }[]): { before: n
   return conflicts;
 }
 
-export type SdlcGh = (args: string[]) => Promise<{ code: number; stdout: string }>;
+export type SdlcGh = (args: string[], timeoutMs?: number) => Promise<{ code: number; stdout: string }>;
 /** Read-only, fixed argv. Output and time are bounded; diagnostics never expose credentials or remote text. */
-export const sdlcGh: SdlcGh = args => new Promise((resolve) => {
+export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000) => new Promise((resolve) => {
   const child = spawn("gh", args, { env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
   let stdout = "", failed = false;
   const stop = () => { failed = true; void stopOwnedProcess(child, { group: true }).catch(() => {}); };
-  const timer = setTimeout(stop, 10_000);
+  const timer = setTimeout(stop, Math.max(1, Math.min(10_000, timeoutMs)));
   child.stdout?.setEncoding("utf8");
   child.stdout?.on("data", chunk => { if (failed) return; stdout += chunk.toString(); if (Buffer.byteLength(stdout) > 256 * 1024) { stdout = ""; stop(); } });
   child.once("error", () => { failed = true; clearTimeout(timer); resolve({ code: 1, stdout: "" }); });
@@ -227,7 +231,7 @@ export const sdlcGh: SdlcGh = args => new Promise((resolve) => {
 export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh): Promise<PrEvidence | undefined> {
   if (!repo(receipt.repo) || !id(receipt.pr)) return undefined;
   try {
-    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,mergeCommit"]);
+    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,changedFiles,mergeCommit,isDraft,baseRefName,baseRefOid"]);
     if (view.code !== 0) return undefined;
     const [owner, name] = receipt.repo.split("/");
     const threads = await run(["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}}}", "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${receipt.pr}`]);
