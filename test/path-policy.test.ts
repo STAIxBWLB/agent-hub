@@ -126,3 +126,12 @@ test("private files never reach automatic facts, including unrelated directory s
   facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: join(dir, "data/private/PRIVATE_FILE_MARKER.txt"), kind: { type: "update" }, diff: "+PRIVATE_CHANGED_MARKER" }] });
   const after = facts.due("claude"); expect(JSON.stringify(after) ?? "").not.toContain("PRIVATE_CHANGED_MARKER"); expect(JSON.stringify(after) ?? "").not.toContain("PRIVATE_FILE_MARKER");
 });
+
+test("read-only hardlink identity refusal is stable for the protected original and its ordinary alias (#259)", () => {
+  const dir = root(); mkdirSync(join(dir, "data/raw"), { recursive: true }); writeFileSync(join(dir, "data/raw/input.json"), "original"); linkSync(join(dir, "data/raw/input.json"), join(dir, "alias.json"));
+  for (const path of ["data/raw/input.json", "alias.json"]) {
+    expect(() => guardPath({ cwd: dir, deny: [], readOnly: ["data/raw"] }, path, "write")).toThrow("hardlinked");
+    expect(guardPath({ cwd: dir, deny: [], readOnly: ["data/raw"] }, path, "read")).toBeDefined();
+  }
+  expect(readFileSync(join(dir, "data/raw/input.json"), "utf8")).toBe("original");
+});

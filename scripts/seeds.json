@@ -1184,6 +1184,14 @@
       "replacement": "lifecycleStages: undefined,",
       "testFile": "test/lifecycle-native.test.ts",
       "testName": "daemon forwards its active custom lifecycle schema to the actual LocalPeer provider request (#257)"
+    },
+    {
+      "id": "readonly-hardlink-identity-priority",
+      "file": "src/local/tools.ts",
+      "search": "  if (mode === \"write\" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error(\"hardlinked write target cannot be verified with data.readonly\");\n  if (mode === \"write\" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error(\"target is protected by data.readonly\");",
+      "replacement": "  if (mode === \"write\" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error(\"target is protected by data.readonly\");\n  if (mode === \"write\" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error(\"hardlinked write target cannot be verified with data.readonly\");",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "read-only hardlink identity refusal is stable for the protected original and its ordinary alias (#259)"
     }
   ]
 }
