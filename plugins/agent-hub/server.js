@@ -16182,6 +16182,7 @@ var package_default = {
     "src",
     "plugins",
     "templates",
+    "scripts/check-docs.mjs",
     "docs",
     "README.md",
     "LICENSE",
