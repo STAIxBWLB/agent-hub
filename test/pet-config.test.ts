@@ -99,7 +99,7 @@ test("unknown pet configuration is visible immediately in panels without switchi
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ pet: { character: "PRIVATE_MARKER" } }));
   let output = "", signal = () => {};
   const terminal: ConsoleTerminal = { columns: 100, rows: 24, isTTY: true, write: text => { output += text; }, raw: () => {}, onData: () => () => {}, onSignal: fn => { signal = fn; return () => {}; }, onResize: () => () => {} };
-  const client = { request: async <T>() => ({} as T), send: () => {}, close: () => {}, onPush: undefined, onClose: undefined };
+  const client = { request: async () => ({}), send: () => {}, close: () => {}, onPush: () => {}, onClose: () => {} };
   const running = runConsole({ cwd, stateDir: cwd, client, terminal, panels: true, color: false });
   try {
     expect(output).toContain("Unknown pet option; using stai line defaults for that option.");
