@@ -28,7 +28,8 @@ const BINARIES: Record<string, { name: AddonName; version?: RegExp }> = { ripwir
 const identities = new Map<string, Promise<string | null | false>>();
 const PROBE_MS = 2000;
 
-export interface ToolingSources { home?: string; cwd?: string; path?: string }
+/** `env` supplies CLAUDE_CONFIG_DIR and CODEX_HOME, the runtimes' own config roots (the hub's environment by default). */
+export interface ToolingSources { home?: string; cwd?: string; path?: string; env?: Record<string, string | undefined> }
 
 const json = (file: string): Record<string, unknown> | undefined => {
   try { const v = JSON.parse(readFileSync(file, "utf8")); return v && typeof v === "object" ? v as Record<string, unknown> : undefined; } catch { return undefined; }
@@ -36,13 +37,13 @@ const json = (file: string): Record<string, unknown> | undefined => {
 /** A version string as data, never anything longer or stranger. */
 const version = (v: unknown): string | null => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null;
 
-function claudePlugins(home: string, cwd: string | undefined): Addon[] {
+function claudePlugins(root: string, cwd: string | undefined): Addon[] {
   const enabled = new Map<string, boolean>();
-  for (const file of [join(home, ".claude", "settings.json"), ...(cwd ? [join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")] : [])]) {
+  for (const file of [join(root, "settings.json"), ...(cwd ? [join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")] : [])]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object") for (const [key, on] of Object.entries(map)) enabled.set(key, on === true);
   }
-  const installed = (json(join(home, ".claude", "plugins", "installed_plugins.json"))?.plugins ?? {}) as Record<string, { scope?: string; projectPath?: string; version?: unknown }[]>;
+  const installed = (json(join(root, "plugins", "installed_plugins.json"))?.plugins ?? {}) as Record<string, { scope?: string; projectPath?: string; version?: unknown }[]>;
   const out: Addon[] = [];
   for (const [key, on] of enabled) {
     if (!on) continue;
@@ -55,9 +56,9 @@ function claudePlugins(home: string, cwd: string | undefined): Addon[] {
   return out;
 }
 
-function codexPlugins(home: string): Addon[] {
+function codexPlugins(root: string): Addon[] {
   let text: string;
-  try { text = readFileSync(join(home, ".codex", "config.toml"), "utf8"); } catch { return []; }
+  try { text = readFileSync(join(root, "config.toml"), "utf8"); } catch { return []; }
   const found = new Map<string, string>(); // plugin name -> marketplace
   // `[plugins."name@market"]` with no `enabled = false` below it, and plugins whose hooks Codex was told to trust.
   for (const m of text.matchAll(/^\[plugins\."([^"@]+)@([^"]+)"\]\s*\n((?:(?!\[)[^\n]*\n?)*)/gm)) if (!/^\s*enabled\s*=\s*false\b/m.test(m[3] ?? "")) found.set(m[1]!, m[2]!);
@@ -67,7 +68,7 @@ function codexPlugins(home: string): Addon[] {
     const name = PLUGINS.get(plugin);
     if (!name) continue;
     let versions: string[] = [];
-    try { versions = readdirSync(join(home, ".codex", "plugins", "cache", market, plugin)); } catch { /* no cache: version unknown */ }
+    try { versions = readdirSync(join(root, "plugins", "cache", market, plugin)); } catch { /* no cache: version unknown */ }
     out.push({ name, version: versions.length === 1 ? version(versions[0]) : null });
   }
   return out;
@@ -123,8 +124,9 @@ export async function detectTooling(peer: string, src: ToolingSources = {}): Pro
   const home = src.home ?? homedir();
   const found = new Map<AddonName, Addon>();
   const add = (a: Addon) => { if (!found.has(a.name) || (found.get(a.name)!.version === null && a.version !== null)) found.set(a.name, a); };
-  if (peer === "claude") claudePlugins(home, src.cwd).forEach(add);
-  if (peer === "codex") codexPlugins(home).forEach(add);
+  const env = src.env ?? process.env;
+  if (peer === "claude") claudePlugins(env.CLAUDE_CONFIG_DIR?.trim() || join(home, ".claude"), src.cwd).forEach(add);
+  if (peer === "codex") codexPlugins(env.CODEX_HOME?.trim() || join(home, ".codex")).forEach(add);
   const path = src.path ?? process.env.PATH ?? "";
   for (const [bin, spec] of Object.entries(BINARIES)) {
     const file = onPath(bin, path);

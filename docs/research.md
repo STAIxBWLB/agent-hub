@@ -95,10 +95,11 @@ Another project's measures: `ahub --project <dir> research`.
 ## Add-ons (#248)
 
 The hub writes a `tooling` event each time a peer attaches: the add-ons it works with, by name and version only, read
-from this machine's inventory. Claude Code: `enabledPlugins` in `~/.claude/settings.json` and the project's
+from this machine's inventory (Claude Code's root is `CLAUDE_CONFIG_DIR` when the hub's environment sets it, else
+`~/.claude`; Codex's is `CODEX_HOME`, else `~/.codex`). Claude Code: `enabledPlugins` in its `settings.json` and the project's
 `.claude/settings.json` and `.claude/settings.local.json` (later wins), with the version from
-`~/.claude/plugins/installed_plugins.json` (a user install, or one for this project). Codex: `[plugins."<name>@..."]`
-sections in `~/.codex/config.toml` that are not `enabled = false`, and plugins whose hooks it trusts, with the version
+`plugins/installed_plugins.json` (a user install, or one for this project). Codex: `[plugins."<name>@..."]`
+sections in its `config.toml` that are not `enabled = false`, and plugins whose hooks it trusts, with the version
 from its plugin cache when there is exactly one. Every peer: `ripwire` on PATH (version unknown), and the first `dot` on PATH
 when `dot --version` answers as the dotfiles CLI (`dot version X`, resource admission; Graphviz's `dot` does not count),
 asked once per binary per process, without input, in the background (the hub never waits on it), and killed if it

@@ -39,20 +39,20 @@ test("detection reads names and versions from the closed list, per runtime, and 
   const graphviz = temp("graphviz"), admit = temp("admit");
   writeFileSync(join(graphviz, "dot"), "#!/bin/sh\necho 'dot - graphviz version 12.1.0' >&2\nexit 1\n"); chmodSync(join(graphviz, "dot"), 0o755);
   writeFileSync(join(admit, "dot"), "#!/bin/sh\necho 'dot version 2.70.38 (59a6cc7)'\n"); chmodSync(join(admit, "dot"), 0o755);
-  expect(await detectTooling("pi", { home, path: graphviz })).toEqual([]);
-  expect(await detectTooling("pi", { home, path: [admit, graphviz].join(":") })).toEqual([{ name: "dot-admit", version: "2.70.38" }]);
-  expect(await detectTooling("pi", { home, path: [graphviz, admit].join(":") })).toEqual([]); // the first on PATH is the one a shell runs
+  expect(await detectTooling("pi", { env: {}, home, path: graphviz })).toEqual([]);
+  expect(await detectTooling("pi", { env: {}, home, path: [admit, graphviz].join(":") })).toEqual([{ name: "dot-admit", version: "2.70.38" }]);
+  expect(await detectTooling("pi", { env: {}, home, path: [graphviz, admit].join(":") })).toEqual([]); // the first on PATH is the one a shell runs
   // A disabled plugin, a project-scoped install for another project and a plugin outside the list do not count.
-  expect(await detectTooling("claude", { home, cwd: "/project", path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ponytail", version: null }, { name: "ripwire", version: null }]);
-  expect(await detectTooling("codex", { home, path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ripwire", version: null }]);
+  expect(await detectTooling("claude", { env: {}, home, cwd: "/project", path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ponytail", version: null }, { name: "ripwire", version: null }]);
+  expect(await detectTooling("codex", { env: {}, home, path: bin })).toEqual([{ name: "claude-mem", version: "13.29.0" }, { name: "ripwire", version: null }]);
   // Peers without a plugin inventory see only what is on PATH.
-  expect(await detectTooling("kimi", { home, path: bin })).toEqual([{ name: "ripwire", version: null }]);
-  expect(await detectTooling("pi", { home, path: "" })).toEqual([]);
+  expect(await detectTooling("kimi", { env: {}, home, path: bin })).toEqual([{ name: "ripwire", version: null }]);
+  expect(await detectTooling("pi", { env: {}, home, path: "" })).toEqual([]);
   // The project's own settings switch a plugin for this project.
   const project = temp("project");
   mkdirSync(join(project, ".claude"));
   writeFileSync(join(project, ".claude", "settings.local.json"), JSON.stringify({ enabledPlugins: { "claude-mem@thedotmack": false } }));
-  expect((await detectTooling("claude", { home, cwd: project, path: "" })).map((a) => a.name)).toEqual(["ponytail"]);
+  expect((await detectTooling("claude", { env: {}, home, cwd: project, path: "" })).map((a) => a.name)).toEqual(["ponytail"]);
   // Plugins named like Object.prototype members are outside the closed list (review of #351).
   const odd = temp("odd");
   mkdirSync(join(odd, ".claude", "plugins"), { recursive: true });
@@ -60,22 +60,25 @@ test("detection reads names and versions from the closed list, per runtime, and 
   writeFileSync(join(odd, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: { "constructor@x": [{ scope: "user" }], "toString@y": [{ scope: "user" }], "ponytail@ponytail": [{ scope: "user", version: "4.10.0" }] } }));
   mkdirSync(join(odd, ".codex"));
   writeFileSync(join(odd, ".codex", "config.toml"), `[plugins."constructor@x"]\nenabled = true\n`);
-  expect(await detectTooling("claude", { home: odd, path: "" })).toEqual([{ name: "ponytail", version: "4.10.0" }]);
-  expect(await detectTooling("codex", { home: odd, path: "" })).toEqual([]);
+  expect(await detectTooling("claude", { home: odd, path: "", env: {} })).toEqual([{ name: "ponytail", version: "4.10.0" }]);
+  expect(await detectTooling("codex", { home: odd, path: "", env: {} })).toEqual([]);
+  // The runtimes' own config roots win over the home directory (review of #351).
+  expect(await detectTooling("claude", { home: temp("empty-home"), path: "", env: { CLAUDE_CONFIG_DIR: join(odd, ".claude") } })).toEqual([{ name: "ponytail", version: "4.10.0" }]);
+  expect(await detectTooling("codex", { home: odd, path: "", env: { CODEX_HOME: join(home, ".codex") } })).toEqual(await detectTooling("codex", { home, path: "", env: {} }));
   // No inventory at all is no add-on, never an error.
-  expect(await detectTooling("claude", { home: temp("empty"), path: "" })).toEqual([]);
-  for (const peer of ["claude", "codex", "kimi"]) expect(JSON.stringify(await detectTooling(peer, { home, cwd: "/project", path: bin }))).not.toContain(MARKER);
+  expect(await detectTooling("claude", { env: {}, home: temp("empty"), path: "" })).toEqual([]);
+  for (const peer of ["claude", "codex", "kimi"]) expect(JSON.stringify(await detectTooling(peer, { env: {}, home, cwd: "/project", path: bin }))).not.toContain(MARKER);
   // A `dot` that ignores SIGTERM and never answers is not admission, and the probe ends at its deadline (review of #351).
   const stuck = temp("stuck");
   writeFileSync(join(stuck, "dot"), "#!/bin/sh\ntrap '' TERM\nexec sleep 30\n"); chmodSync(join(stuck, "dot"), 0o755);
   const started = Date.now();
-  expect(await detectTooling("pi", { home, path: stuck })).toEqual([]);
+  expect(await detectTooling("pi", { env: {}, home, path: stuck })).toEqual([]);
   expect(Date.now() - started).toBeLessThan(5000);
   // A `dot` that answers but leaves a descendant holding its output: the answer counts and the whole group is stopped.
   const forks = temp("forks"), marker = `ahub-probe-${process.pid}-${Date.now()}`;
   writeFileSync(join(forks, "dot"), `#!/bin/sh\nperl -e 'sleep 20' ${marker} &\necho 'dot version 3.0.1'\n`); chmodSync(join(forks, "dot"), 0o755);
   const t0 = Date.now();
-  expect(await detectTooling("pi", { home, path: forks })).toEqual([{ name: "dot-admit", version: "3.0.1" }]);
+  expect(await detectTooling("pi", { env: {}, home, path: forks })).toEqual([{ name: "dot-admit", version: "3.0.1" }]);
   expect(Date.now() - t0).toBeLessThan(5000);
   await Bun.sleep(200);
   expect(Bun.spawnSync(["pgrep", "-f", marker]).exitCode).not.toBe(0); // nothing of the probe is left
@@ -91,12 +94,12 @@ test("research records carry each working peer's latest fingerprint, and a peer 
   const { home, bin } = inventory({ claude: { "claude-mem@thedotmack": true } });
   exe(bin, "ripwire");
   const events: StampedEvent[] = [
-    { v: 1, at: at(), type: "tooling", peer: "codex", addons: await detectTooling("codex", { home, path: bin }) },
+    { v: 1, at: at(), type: "tooling", peer: "codex", addons: await detectTooling("codex", { env: {}, home, path: bin }) },
     { v: 1, at: at(), type: "tooling", peer: "claude", addons: [] },
     task(1, "proposed", "proposed", null),
     task(1, "assigned", "in_progress", "codex"),
     // claude re-attaches with claude-mem on before it reviews: its latest fingerprint counts.
-    { v: 1, at: at(), type: "tooling", peer: "claude", addons: await detectTooling("claude", { home, cwd: "/p", path: "" }) },
+    { v: 1, at: at(), type: "tooling", peer: "claude", addons: await detectTooling("claude", { env: {}, home, cwd: "/p", path: "" }) },
     { v: 1, at: at(), type: "tokens", peer: "kimi", n: 5, task: 1, attribution: "delivery" }, // kimi has no fingerprint
     task(1, "approved", "approved", "codex"),
   ];
