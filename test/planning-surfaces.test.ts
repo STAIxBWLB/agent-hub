@@ -74,7 +74,7 @@ test("research planning metadata preserves unknown legacy values and reset gener
 
 test("planning events retain saved priority and unknown urgent metadata (#263)", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-planning-priority-")), stateDir = join(root, ".agenthub/state");
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, batch_ms: 0 } });
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, batch_ms: 0 } });
   const person = await ControlClient.connect(stateDir, { role: "console" });
   try {
     expect(await person.request({ t: "task", op: "hub_task_propose", args: { title: "urgent future", class: "implement", backlog: true, urgent: true } })).toMatchObject({ ok: true });
