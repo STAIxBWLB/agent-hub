@@ -4065,6 +4065,9 @@ export async function startDaemon(opts: DaemonOptions) {
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
       await Promise.allSettled([...starting.values()]);
+      // A fingerprint still being detected belongs in the research records written below; its peer must still be
+      // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).
+      await Promise.allSettled([...detecting]);
       const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()).concat(sidecar ? [sidecar.stop()] : []));
       // A peer whose stop rejects must not strand the daemon (issue #56): its failure is
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
@@ -4073,7 +4076,6 @@ export async function startDaemon(opts: DaemonOptions) {
       await egress?.close();
       await piReceipts?.close();
       collectClaudeUsage();
-      await Promise.allSettled([...detecting]); // a fingerprint still being detected belongs in the records written now
       for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
       conductorHolds.close();

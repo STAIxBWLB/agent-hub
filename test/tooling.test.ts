@@ -74,6 +74,12 @@ test("detection reads names and versions from the closed list, per runtime, and 
   const started = Date.now();
   expect(await detectTooling("pi", { env: {}, home, path: stuck })).toEqual([]);
   expect(Date.now() - started).toBeLessThan(5000);
+  // A `dot` that floods its output is cut off at a few kilobytes, not read for the whole deadline (review of #351).
+  const flood = temp("flood");
+  writeFileSync(join(flood, "dot"), "#!/bin/sh\nexec yes 'dot version 9.9.9'\n"); chmodSync(join(flood, "dot"), 0o755);
+  const f0 = Date.now();
+  expect(await detectTooling("pi", { env: {}, home, path: flood })).toEqual([]);
+  expect(Date.now() - f0).toBeLessThan(1500);
   // A `dot` that answers but leaves a descendant holding its output: the answer counts and the whole group is stopped.
   const forks = temp("forks"), marker = `ahub-probe-${process.pid}-${Date.now()}`;
   writeFileSync(join(forks, "dot"), `#!/bin/sh\nperl -e 'sleep 20' ${marker} &\necho 'dot version 3.0.1'\n`); chmodSync(join(forks, "dot"), 0o755);

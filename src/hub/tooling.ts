@@ -26,7 +26,7 @@ const CLAUDE_ONLY = new Map<string, AddonName>([["codex@openai-codex", "codex-pl
 const BINARIES: Record<string, { name: AddonName; version?: RegExp }> = { ripwire: { name: "ripwire" }, dot: { name: "dot-admit", version: /^dot version (\S+)/ } };
 /** By resolved path and modification time: one version call per binary per process. */
 const identities = new Map<string, Promise<string | null | false>>();
-const PROBE_MS = 2000;
+const PROBE_MS = 2000, PROBE_BYTES = 4096;
 
 /** `env` supplies CLAUDE_CONFIG_DIR and CODEX_HOME, the runtimes' own config roots (the hub's environment by default). */
 export interface ToolingSources { home?: string; cwd?: string; path?: string; env?: Record<string, string | undefined> }
@@ -108,7 +108,8 @@ function identify(file: string, pattern: RegExp): Promise<string | null | false>
       try {
         child = spawn(file, ["--version"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
         child.unref();
-        child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
+        // A version line is short: a program that keeps writing is not the one asked for, and is not read further.
+        child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); if (out.length > PROBE_BYTES) finish(false); });
         child.on("error", () => finish(false));
         // The version line is written before the program exits; a moment for the pipe to deliver it.
         child.on("exit", () => setTimeout(() => { const m = pattern.exec(out.trim()); finish(m ? version(m[1]) : false); }, 50));
