@@ -131,3 +131,12 @@ The package-owned scripts/check-docs.mjs accepts --json with the same normal/--r
 # Read-only merge queue contract (#257)
 
 Queue reads fetch PR numbers and bounded head/check/review/thread/file-count metadata, never remote titles or bodies. Up to16 open PRs and8 external dependency reads share a20second budget. Every linked local receipt must satisfy the existing approval floor on that current head; draft/unknown status, missing file coverage and unlinked/private work remain blocked. Same-target path intersections return counts without names. Task after edges provide the only dependency order; open predecessor PRs block current readiness, unresolved touching order asks the person, cycles/truncation remain incomplete. A board approval never substitutes for a merged-commit receipt. No queue operation changes dependencies, owns work, merges or writes GitHub.
+
+# Read-only release report contract (#257)
+
+Report reads bind the observed local head, committed package version, published release tag and matching local/remote commit identity. Only a verified tag ancestor defines the bounded first-parent commit list. The package-owned JSON doc checker must report freshness at that same head; open/unknown native issue metadata remains a blocker. Source readiness never certifies native acceptance or permits publication, and a changed head invalidates the report. No body, issue title, task text, version bump, restamp, tag or release mutation is included.
+
+
+# Delivery readback commands and surfaces (#257)
+
+`ahub sdlc queue <owner/repository>` and `ahub sdlc release <owner/repository> [live-issue...]` issue console-only readbacks. They also run through the existing console command path. The dashboard's Delivery evidence section uses labelled inputs and read-only buttons, textContent output and existing project/instance/generation fences; switching projects discards old reports and input. The report never changes task state or grants a permission. Private document names are removed at the Tasks public projection. Ledger issue state remains metadata, never native-success proof or release permission.

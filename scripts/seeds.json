@@ -1192,6 +1192,46 @@
       "replacement": "  if (mode === \"write\" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error(\"target is protected by data.readonly\");\n  if (mode === \"write\" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error(\"hardlinked write target cannot be verified with data.readonly\");",
       "testFile": "test/path-policy.test.ts",
       "testName": "read-only hardlink identity refusal is stable for the protected original and its ordinary alias (#259)"
+    },
+    {
+      "id": "delivery-person-order",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "const ordered = reaches(left.pr, right.pr) || reaches(right.pr, left.pr);",
+      "replacement": "const ordered = true;",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "merge queue uses explicit dependency order and never guesses precedence from touching paths (#257)"
+    },
+    {
+      "id": "delivery-file-coverage",
+      "file": "src/hub/sdlc-queue.ts",
+      "search": "if (!read.pathsComplete) row.blockers.push",
+      "replacement": "if (false) row.blockers.push",
+      "testFile": "test/sdlc-queue.test.ts",
+      "testName": "queue stale heads incomplete files private and unlinked work remain blocked (#257)"
+    },
+    {
+      "id": "release-remote-tag-identity",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "remote !== commit",
+      "replacement": "false",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release mismatched tags stale docs old version open native ledger and changing heads remain blocked (#257)"
+    },
+    {
+      "id": "release-head-readback-fence",
+      "file": "src/hub/sdlc-release.ts",
+      "search": "last.code !== 0 || last.stdout.trim() !== head",
+      "replacement": "false",
+      "testFile": "test/sdlc-release.test.ts",
+      "testName": "release mismatched tags stale docs old version open native ledger and changing heads remain blocked (#257)"
+    },
+    {
+      "id": "delivery-board-readback-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "if (before !== after) { report.complete = false;",
+      "replacement": "if (false) { report.complete = false;",
+      "testFile": "test/sdlc-delivery-surfaces.test.ts",
+      "testName": "queue board revision fence invalidates late evidence instead of offering stale merge readiness (#257)"
     }
   ]
 }

@@ -1,3 +1,5 @@
+import { readMergeQueue } from "./sdlc-queue.ts";
+import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
@@ -1142,6 +1144,23 @@ export class Tasks {
     }
     if (next.reviewedHead !== task.sdlc?.reviewedHead) this.mine(task, by, "reviewer", true);
     return this.d.board.update(task.id, by, "lifecycle", { sdlc: next });
+  }
+
+  async deliveryQueue(repo: string) {
+    const before = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
+    const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc }));
+    const report = await readMergeQueue(repo, this.d.sdlc?.config() ?? sdlcConfig(undefined), links, this.d.sdlc?.gh);
+    const after = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
+    if (before !== after) { report.complete = false; for (const row of report.rows) { row.ready = false; row.blockers.push("board changed during delivery readback"); } }
+    return report;
+  }
+  async releaseReadiness(repo: string, liveIssues: number[]) {
+    const report = await readReleaseReadiness(this.d.cwd, repo, liveIssues, { gh: this.d.sdlc?.gh });
+    if (report.documents) report.documents.documents = report.documents.documents.map(d => {
+      if (d.path && (!this.nameable(d.path) || matchesPolicy(this.d.cwd, d.path, this.d.piiPaths ?? [], true))) { const { path: _privatePath, ...metadata } = d; return metadata; }
+      return d;
+    });
+    return report;
   }
 
   private workflowView(task: Task) {
