@@ -74,3 +74,10 @@ contracts match both fixtures. A new independent original-baseline assertion
 retains the existingd83 assertion unchanged. Assignment-notice byte comparison
 is still separate and unverified; AC3 is not marked complete from role strings
 alone. Native/visual consumption and role-effect measurement remain unverified.
+
+
+The original assignment fixture uses a review task with explicit owner and
+review.local_allowed=true so all five historical peers are valid recipients.
+It preserves the 1cbbc57 message text/facts/acceptance instruction without catalog
+or task guidance, using the same routing choice for both implementations.
+This fixture is authored but its current-head execution remains pending.
