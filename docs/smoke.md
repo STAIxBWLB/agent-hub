@@ -1682,3 +1682,10 @@ recovery runners, status privacy/role separation, signed file ownership and CLI
 output without a token or connection. Full immutable-head platform/seed/review
 gates remain pending. Native light/dark terminal, tmux, glyph and account readback
 is unverified; no release, installation or live hub activation ran.
+
+## Attention status follow-up (#280)
+
+Regression fixtures cover reserved pseudo-peer ownership, preserved person
+reviews, selected SQL columns and actual status reads with unreadable unrelated
+JSON payloads. The focused tests pass; immutable-head platform/255-guard proof
+is pending. Native/account/artwork/dashboard legs remain unverified.
