@@ -100,6 +100,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     else delete a.tooling[peer]; // a fingerprint of an earlier attachment does not describe this work: unknown until one comes
   };
   for (const e of events) {
+    if (e.type === "hub_start") { online.clear(); continue; } // a crash writes no offline: a new run is a new attachment
     if (e.type === "state") {
       if (e.state === "offline") online.delete(e.peer);
       else if (!online.has(e.peer)) { online.add(e.peer); attach.set(e.peer, (attach.get(e.peer) ?? 0) + 1); }

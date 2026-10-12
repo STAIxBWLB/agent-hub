@@ -110,6 +110,11 @@ test("research records carry each working peer's latest fingerprint, and a peer 
     task(8, "proposed", "proposed", null), task(8, "assigned", "in_progress", "codex", null), turn(8, "kimi"), state("kimi", "offline"), state("kimi", "idle"), turn(8, "kimi"),
     task(8, "done", "approved", "codex", null)];
   expect(taskRecords(stale, "proj", writer)[0]!.tooling?.kimi).toBeUndefined();
+  // A crash writes no offline: a new hub run still starts a new attachment (review of #351).
+  const crash: StampedEvent[] = [state("qwen", "busy"), task(9, "proposed", "proposed", null), task(9, "assigned", "in_progress", "codex", null), turn(9, "qwen"),
+    task(9, "done", "approved", "codex", null), { v: 1, at: at(), type: "hub_start", instance: "run-2" }, state("qwen", "idle"),
+    { v: 1, at: at(), type: "tooling", peer: "qwen", addons: [{ name: "ripwire", version: null }] }];
+  expect(taskRecords(crash, "proj", writer)[0]!.tooling).toBeUndefined();
   const [six, seven] = taskRecords(windows, "proj", writer);
   expect(six!.tooling).toBeUndefined(); // worked before any fingerprint of its attachment existed
   expect(seven!.tooling).toEqual({ pi: [] }); // its last work was in the later attachment

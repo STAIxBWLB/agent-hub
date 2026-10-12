@@ -30,6 +30,8 @@ export type HubEvent =
   | { type: "progress"; peer: string; task: number; severity: number; spinning: number; exploring: number; production: number }
   | { type: "stuck"; peer: string; task: number; category: "repetition" | "false_progress" | "drift" | "desperation" | "capability_gap"; streak: number; latched: boolean }
   | { type: "capability"; peer: string; state: "verified" | "lost"; via?: string }
+  /** A hub run began: every peer is detached until its next state event (#248: attachments never span a crash). */
+  | { type: "hub_start"; instance: string }
   /** #248: the add-ons a peer works with, names and versions from a closed list, at each attach. */
   | { type: "tooling"; peer: string; addons: import("./tooling.ts").Addon[] }
   | { type: "split"; task: number; where?: "routing" | "cohort"; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
