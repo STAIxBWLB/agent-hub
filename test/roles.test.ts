@@ -88,3 +88,9 @@ test("ACP catalog preamble is included only in the first delivered prompt of a s
   const prompts = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line));
   expect(prompts[0]).toContain("analyst [research, shipped"); expect(prompts[1]).not.toContain("Catalog roles (");
 });
+
+
+test("five default role contracts retain the original 1cbbc57 baseline bytes (#295)",()=>{
+ const expected:Record<string,string>=JSON.parse(readFileSync(join(import.meta.dir,"fixtures/role-contracts-1cbbc57.json"),"utf8"));
+ expect(Object.keys(expected).sort()).toEqual(["claude","codex","kimi","local","pi"]);for(const [peer,text]of Object.entries(expected))expect(roleContract(peer)).toBe(text);
+});

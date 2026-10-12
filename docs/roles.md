@@ -65,3 +65,12 @@ Board cards show the stored task guidance id, including on private task stubs,
 without role text or extra authority. Dashboard snapshots retain separate peer
 role metadata so current flow/catalog and pending session guidance use the same
 source as status. Current source/native/visual verification remains pending.
+
+
+Baseline reconciliation, 2026-10-13: ROLE_TEXT and roleContract source blocks
+are byte-identical at original1cbbc57 and laterd83cb8dd; the latter changes only
+default role construction to the peer catalog. The five original rendered
+contracts match both fixtures. A new independent original-baseline assertion
+retains the existingd83 assertion unchanged. Assignment-notice byte comparison
+is still separate and unverified; AC3 is not marked complete from role strings
+alone. Native/visual consumption and role-effect measurement remain unverified.
