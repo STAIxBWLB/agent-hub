@@ -48,3 +48,27 @@ test("board snapshot derives legend from live status and only authenticated cons
     expect(JSON.stringify(masked)).not.toContain(marker);
   } finally { tools?.close(); console_?.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
+
+
+test("dashboard release actions forward public ids through the authenticated HTTP path (#263)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-release-dashboard-")), stateDir = join(root, "state");
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, batch_ms: 0 } });
+  const person = await ControlClient.connect(stateDir, { role: "console" });
+  try {
+    const opened = await person.request({ t: "ui" }), url = new URL(opened.url), origin = url.origin;
+    const session = await fetch(origin + "/session", { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+    expect(session.status).toBe(200);
+    const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+    const post = async (path: string, body: unknown = {}) => (await fetch(origin + "/" + path, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify(body) })).json();
+    expect(await post("action", { action: "release_new", name: "next", goal: "safe goal", order: 0 })).toMatchObject({ ok: true });
+    const snapshot = await post("snapshot"), id = snapshot.releases[0].id;
+    expect(await post("action", { action: "release_change", id, revision: 0, fields: { state: "active" } })).toMatchObject({ ok: true });
+    expect(await post("action", { action: "release_change", id, revision: 1, fields: { plannedStart: 100, cut: 200, ship: 300 } })).toMatchObject({ ok: true });
+    expect(await post("action", { action: "release_change", id, revision: 2, fields: { state: "frozen" } })).toMatchObject({ ok: true });
+    expect(await post("action", { action: "release_change", id, revision: 3, fields: { state: "shipped" } })).toMatchObject({ ok: true });
+    expect((await post("snapshot")).releases[0]).toMatchObject({ id, state: "shipped", plannedStart: 100, cut: 200, ship: 300, revision: 4 });
+    expect(await post("action", { action: "release_new", name: "later", goal: "safe goal", order: 1 })).toMatchObject({ ok: true });
+    const later = (await post("snapshot")).releases.find((release: { name: string }) => release.name === "later");
+    expect(await post("action", { action: "release_change", id: later.id, revision: 0, fields: { state: "dropped" } })).toMatchObject({ ok: true });
+  } finally { person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
