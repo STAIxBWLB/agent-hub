@@ -41,7 +41,7 @@ test("glyph and size floors preserve printable fallback and fixed footer geometr
 
 test("advertised character choices cycle all four alternatives and off without workflow effects", () => {
   let state={...initialConsoleState(),petEnabled:true,petChoices:CHARACTER_IDS,petCharacter:"stai" as CharacterId};
-  for (const expected of ["gyul","lantern","cursor-cat","boxbot",undefined,"stai"]) {
+  for (const expected of ["gyul","lantern","cursor-cat","boxbot",undefined,"stai"] as const) {
     const next=reduceConsole(state,"P",0);expect(next.effects).toEqual([]);expect(next.state.petEnabled?next.state.petCharacter:undefined).toBe(expected);state=next.state as typeof state;
   }
   const typing={...state,editing:true,input:"P"};expect(reduceConsole(typing,"P",0).state.petCharacter).toBe(typing.petCharacter);
