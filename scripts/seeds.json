@@ -2704,6 +2704,14 @@
       "replacement": "...(parent.role && cls === parent.class ? { role: taskRole(parent.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd))?.id } : {})",
       "testFile": "test/planner-split.test.ts",
       "testName": "split retains stored task role ids when current catalog guidance disappears"
+    },
+    {
+      "id": "planner-normal-return-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": "...(restoreReservation ? { reserved: pulled.planning!.previous.reserved ?? null } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "ordinary backlog return restores pre-planner reservation provenance"
     }
   ]
 }
