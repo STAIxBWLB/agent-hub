@@ -17,7 +17,7 @@ export interface ImportResult { read: number; added: number; skipped: { model: n
  * the projects in `chain` (claude-mem files them under the repository's basename). Model answers, PII-pattern text and secret-looking text are skipped.
  * Idempotent: an observation always maps to the same entry.
  */
-export function importClaudeMem(store: MemoryStore, opts: { project: string; chain: string[]; isPii: (text: string) => boolean; db?: string; limit?: number }): ImportResult {
+export function importClaudeMem(store: MemoryStore, opts: { project: string; chain: string[]; isPii: (text: string) => boolean; nodes?: (text: string) => string[]; db?: string; limit?: number }): ImportResult {
   const file = opts.db ?? join(homedir(), ".claude-mem", "claude-mem.db");
   if (!existsSync(file)) throw new Error(`no claude-mem store at ${file}`);
   const db = new Database(file, { readonly: true });
@@ -26,7 +26,10 @@ export function importClaudeMem(store: MemoryStore, opts: { project: string; cha
   try {
     const rows = db.query("SELECT id, project, title, text, narrative, created_at_epoch, metadata FROM observations WHERE metadata LIKE '%\"peer\"%' ORDER BY id LIMIT ?")
       .all(opts.limit ?? 10_000) as { id: number; project: string | null; title: string | null; text: string | null; narrative: string | null; created_at_epoch: number | null; metadata: string | null }[];
-    const project = opts.project, names = new Set(opts.chain);
+    // The hub files its claude-mem notes under the repository's own name (the chain's last); the names above it are other
+    // projects (a superproject) whose notes and privacy policy are not this one's. ponytail: claude-mem keys projects by
+    // basename, so two unrelated repositories with one name still share it.
+    const project = opts.project, names = new Set(opts.chain.slice(-1));
     for (const r of rows) {
       result.read++;
       let meta: Record<string, unknown>;
@@ -41,7 +44,9 @@ export function importClaudeMem(store: MemoryStore, opts: { project: string; cha
       const kind: Kind = KINDS.includes(meta.kind as Kind) ? meta.kind as Kind : "finding";
       const at = new Date(r.created_at_epoch ?? 0).toISOString();
       const { added } = store.importNote({ op: "note", project, scope: "project", tier: "long", kind, peer: meta.peer.slice(0, 32), ...(title ? { title } : {}), text,
-        about: typeof meta.task === "number" ? [`task:${project}#${meta.task}`] : [], source: "claude-mem" }, at);
+        // No task node: claude-mem keeps no proposal time, so a bare task number would join unrelated tasks. The text's
+        // own paths and symbols place the note in the graph.
+        about: opts.nodes?.(`${title}\n${text}`) ?? [], source: "claude-mem" }, at);
       if (added) result.added++;
     }
   } finally { db.close(); }

@@ -31,17 +31,23 @@ test("claude-mem import copies the hub's notes of this project once, never model
   add("app", "call", "phone 900101-1234567 back", { peer: "codex", kind: "finding" });
   add("app", "creds", "token: abcdefgh12345678", { peer: "codex", kind: "finding" });
   add("other", "elsewhere", "another repo's note", { peer: "codex", kind: "decision" });
+  add("work", "superproject", "the superproject's note, under its own policy", { peer: "codex", kind: "decision" });
   add("app", "native observation", "captured by a hook, not a hub note", null);
   db.close();
   const before = Bun.file(file).size;
   const s = open();
   const isPii = (t: string) => /\d{6}-\d{7}/.test(t);
-  const r = importClaudeMem(s, { project: "github.com/o/app", chain: ["work", "app"], isPii, db: file });
-  expect(r).toMatchObject({ read: 6, added: 2, skipped: { project: 1, model: 1, pii: 1, secret: 1 } });
+  const nodes = (text: string) => text.includes("parser") ? ["symbol:parse@src/csv.ts"] : [];
+  const r = importClaudeMem(s, { project: "github.com/o/app", chain: ["work", "app"], isPii, nodes, db: file });
+  expect(r).toMatchObject({ read: 7, added: 2, skipped: { project: 2, model: 1, pii: 1, secret: 1 } }); // only the repository's own name, not the chain above it
   const got = s.list();
   expect(got.map((v) => v.text).sort()).toEqual(["regex split fails on quotes", "the parser owns quoting"]);
   expect(got.every((v) => v.tier === "long" && v.source === "claude-mem" && v.project === "github.com/o/app")).toBe(true);
-  expect(got.find((v) => v.kind === "fail")!.about).toEqual(["task:github.com/o/app#3"]);
+  expect(got.find((v) => v.kind === "fail")!.about).toEqual(["symbol:parse@src/csv.ts"]); // the text's own nodes, never a bare task number
+  // The same observation imported on another machine is the same entry.
+  const other = open();
+  importClaudeMem(other, { project: "github.com/o/app", chain: ["app"], isPii, nodes, db: file });
+  expect(other.list().map((v) => v.id).sort()).toEqual(got.map((v) => v.id).sort());
   // A second import adds nothing, and claude-mem's file is unchanged.
   expect(importClaudeMem(s, { project: "github.com/o/app", chain: ["work", "app"], isPii, db: file }).added).toBe(0);
   expect(Bun.file(file).size).toBe(before);

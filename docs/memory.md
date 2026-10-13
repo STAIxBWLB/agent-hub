@@ -205,9 +205,12 @@ person's rewrite of that history.
 
 `ahub memory import claude-mem [--db <path>] [--limit N]` (a person's) copies the hub's own notes from claude-mem
 (observations whose metadata names a `peer`: `hub_remember` and the hub's task notes) into long-term hub memory as
-`source: claude-mem`, for this project (claude-mem files them under the repository's name). Model answers from
-`ahub ask --remember`, text matching a PII pattern and secret-looking text are skipped. claude-mem's database is opened
-read-only and never changed; an observation always maps to the same entry, so importing again adds nothing.
+`source: claude-mem`, for this project only (claude-mem files them under the repository's own name; a superproject's
+notes stay out, and two unrelated repositories with one name share it). Model answers from `ahub ask --remember`, text
+matching a PII pattern, text about a path the project's `pii.paths` makes private and secret-looking text are skipped. An
+imported note is placed in the graph by the paths and symbols in its text (claude-mem keeps no task proposal time).
+claude-mem's database is opened read-only and never changed; an observation always maps to the same entry, on any
+machine, so importing again adds nothing.
 
 ## Measuring it
 

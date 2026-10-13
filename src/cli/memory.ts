@@ -1,4 +1,4 @@
-import { GOAL_STATES, KINDS, looksSecret, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "../memory/store.ts";
+import { extractNodes, GOAL_STATES, KINDS, looksSecret, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "../memory/store.ts";
 import { syncMemory, type SyncOptions } from "../memory/sync.ts";
 import { importClaudeMem } from "../memory/import.ts";
 import { currentRouting, detectSignals } from "../hub/routing.ts";
@@ -91,7 +91,9 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
         if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
         const routing = currentRouting(cwd);
         const policy = privatePaths(); // a note about a private path never reaches the synced log
-        const r = importClaudeMem(store, { project: memoryProjectKey(cwd), chain: projectChain(cwd), isPii: (text) => detectSignals({ title: text, detail: "", refs: {} }, routing, cwd).includes("pii") || mentionsPrivatePath(text, [], policy, cwd), ...(db ? { db } : {}), ...(limit ? { limit: Number(limit) } : {}) });
+        const key = memoryProjectKey(cwd), deny = loadConfigSafe(cwd)?.local.deny ?? [];
+        const nodes = (text: string) => extractNodes(text, { cwd, project: key, repo: key.startsWith("github.com/") ? key.slice("github.com/".length) : key, deny });
+        const r = importClaudeMem(store, { project: key, chain: projectChain(cwd), nodes, isPii: (text) => detectSignals({ title: text, detail: "", refs: {} }, routing, cwd).includes("pii") || mentionsPrivatePath(text, [], policy, cwd), ...(db ? { db } : {}), ...(limit ? { limit: Number(limit) } : {}) });
         if (json) return JSON.stringify(r, null, 2);
         return `imported ${r.added} of ${r.read} hub notes from claude-mem as long-term entries (skipped: ${r.skipped.project} other projects, ${r.skipped.model} model answers, ${r.skipped.pii} PII, ${r.skipped.secret} secret-looking; the rest were already here)`;
       }

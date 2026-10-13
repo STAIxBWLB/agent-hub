@@ -56,7 +56,7 @@ export const GOAL_STATES = ["open", "active", "blocked", "done", "dropped"] as c
 export type GoalState = (typeof GOAL_STATES)[number];
 export const DEFAULT_LEASE_MS = 4 * 3600_000;
 /** Bumped when the index's tables change: an index with another version is dropped and rebuilt from the logs. */
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3; // 3: suggest, confirm and reject ops (an older index skipped them)
 export const SUGGESTED = ["contradicts", "same_topic"] as const;
 export type Suggested = (typeof SUGGESTED)[number];
 export interface Suggestion { id: string; at: string; from: string; to: string; rel: Suggested; status: "suggested" | "confirmed" | "rejected" }
@@ -241,9 +241,12 @@ export class MemoryStore {
    * the same id, so a second import writes nothing. Returns the id and whether it was new.
    */
   importNote(n: NoteInput, at: string): { id: string; added: boolean } {
-    const body = { schema: MEMORY_SCHEMA, at, machine: this.machine.id, ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
+    // A fixed machine: the same observation imported on two machines is one entry once they sync.
+    const body = { schema: MEMORY_SCHEMA, at, machine: "claude-mem", ...n, text: n.text.slice(0, MAX_TEXT), ...(n.title ? { title: n.title.slice(0, MAX_TITLE) } : {}) } as Omit<Entry, "id">;
     const id = entryId(body);
-    if (this.db.query("SELECT 1 FROM entries WHERE id = ?").get(id)) return { id, added: false };
+    // The observation, not the nodes derived from it (they follow the repository's files), says whether it is here already.
+    const known = this.db.query("SELECT id FROM entries WHERE id = ? OR (source = 'claude-mem' AND project = ? AND at = ? AND text = ?)").get(id, n.project, at, n.text.slice(0, MAX_TEXT)) as { id: string } | null;
+    if (known) return { id: known.id, added: false };
     appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
     return { id, added: true };
   }
