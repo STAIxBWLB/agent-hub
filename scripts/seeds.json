@@ -2136,6 +2136,14 @@
       "replacement": "if (s.notice || s.confirm?.type === \"permission_default\") left[2]",
       "testFile": "test/pet-characters.test.ts",
       "testName": "expired notices restore selected approval ids and expiry in expanded pet footers"
+    },
+    {
+      "id": "pet-dashboard-live-approval-blink",
+      "file": "src/ui/index.html",
+      "search": "snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval')",
+      "replacement": "snapshot.pet.blink!==false && value.state==='waiting'",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard blinking requires a live approval rather than a pending default"
     }
   ]
 }

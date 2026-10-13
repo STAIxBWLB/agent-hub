@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import { CHARACTERS } from "../src/pet/characters.ts";
 import { petPixels } from "../src/pet/pixels.ts";
-import { needs } from "../src/ui/needs.ts";
+import { needs, type NeedsInput } from "../src/ui/needs.ts";
 import { Board } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -64,3 +64,11 @@ test("real dashboard snapshot projects structural attention without publishing i
   expect((await client.request({t:"status"})).status).not.toHaveProperty("attentionInput");expect(JSON.parse(readFileSync(join(stateDir,"status.json"),"utf8"))).not.toHaveProperty("attentionInput");
  }finally{client.close();await daemon.stop();rmSync(root,{recursive:true,force:true})}
 },20000);
+
+test("dashboard blinking requires a live approval rather than a pending default",()=>{
+ const f=fixture();const draw=(input:NeedsInput,blink=true)=>{f.context.draw({pet:{enabled:true,character:"stai",blink},attention:input});return f.get("pet-container").children[0]!};
+ const pending=draw({...attention(),defaults:[{peer:"codex"}]});expect(pending.attrs.class).not.toContain("pet-waiting");expect(pending.children[0]!.children).toHaveLength(1);
+ const live={...attention(),approvals:[{id:"approval-live",expiresAt:3000}]};const waiting=draw(live);expect(waiting.attrs.class).toContain("pet-waiting");expect(waiting.children[0]!.children).toHaveLength(2);
+ const disabled=draw(live,false);expect(disabled.attrs.class).not.toContain("pet-waiting");expect(disabled.children[0]!.children).toHaveLength(1);
+ const expired=draw({...attention(),approvals:[{id:"approval-expired",expiresAt:900}]});expect(expired.attrs.class).not.toContain("pet-waiting");expect(expired.children[0]!.children).toHaveLength(1);
+});

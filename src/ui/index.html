@@ -636,11 +636,12 @@ function renderPetAttention(snapshot) {
   const title=value?.act?'('+value.act+') agent-hub':petBaseTitle;if(document.title!==title)document.title=title;
   if(!value)return;
   const character=petCharacters[snapshot.pet.character],frame=character.frames.blocks[value.state].full,model=petPixels(frame);
-  const button=el('button',undefined,'pet-control'+(value.state==='waiting' && snapshot.pet.blink!==false?' pet-waiting':''));button.type='button';
+  const blink = snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval');
+  const button=el('button',undefined,'pet-control'+(blink?' pet-waiting':''));button.type='button';
   const label=character.name+': '+value.state+', '+value.act+' action, '+value.watch+' watch';button.setAttribute('aria-label',label);button.addEventListener('click',reachPetNeed);
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 '+model.width+' '+model.height);svg.setAttribute('class','pet-art');svg.setAttribute('aria-hidden','true');
   const accent=character.accent?.full;
-  const poses=value.state==='waiting' && snapshot.pet.blink!==false?[['pet-open',model],['pet-blink',petPixels(character.frames.blocks.waitingBlink.full)]]:[['pet-open',model]];
+  const poses=blink?[['pet-open',model],['pet-blink',petPixels(character.frames.blocks.waitingBlink.full)]]:[['pet-open',model]];
   for(const [cls,pose] of poses){const group=document.createElementNS('http://www.w3.org/2000/svg','g');group.setAttribute('class',cls);
     for(const [x,y] of pose.pixels){const pixel=document.createElementNS('http://www.w3.org/2000/svg','rect');pixel.setAttribute('x',String(x));pixel.setAttribute('y',String(y));pixel.setAttribute('width','1');pixel.setAttribute('height','1');pixel.setAttribute('class',accent && Math.floor(y/8)===accent.row && Math.floor(x/5)>=accent.start && Math.floor(x/5)<accent.start+accent.length?'pet-pixel pet-accent':'pet-pixel');group.append(pixel);}svg.append(group);}
   button.append(svg,el('span',value.state+' / '+value.act+' action'+(value.watch?' +'+value.watch+' watch':'')));target.append(button);

@@ -1728,3 +1728,8 @@ After the optional dashboard title initializer was isolated from missing DOM
 capabilities, the unchanged Settings/role/Office regressions and new pet suite
 passed61/0 with139938 assertions. This fixes the full Linux gate's three helper
 initialization failures in production code; final platform/seed proof is pending.
+
+Dashboard blink now requires a live approval item, not merely waiting state
+(which also includes pending defaults). The actual pet suite passed6/0 with
+138742 assertions across defaults, live approvals, expired approvals and blink-off;
+a mutation guard covers this distinction. Full current-head proof is pending.
