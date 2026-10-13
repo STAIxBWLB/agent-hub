@@ -658,6 +658,11 @@ export class DeliveryJournal {
     ) as Record<string, unknown>[];
     return rows.map(parseDelivery);
   }
+  unresolved(peer: string): JournalDelivery[] {
+    this.ensureOpen();
+    const rows = this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(this.projectId, peer) as Record<string, unknown>[];
+    return rows.map(parseDelivery);
+  }
   resolve(
     id: string,
     revision: number,
