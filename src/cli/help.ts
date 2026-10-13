@@ -103,6 +103,9 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub bench compare <run|arm>... [--suite <name>] [--mixed] [--json]", "compare arms of one suite with 95% bootstrap intervals; inconclusive below 5 counted attempts per arm"],
     ["ahub bench export [--format jsonl|csv]", "benchmark records for outside analysis: ids, outcomes and counts, never suite text"],
     ["ahub check-path <file> [--peer <id>]", "other owners' open tasks that claim or changed a file"],
+    ["ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] [--json]", "the hub's own memory for this project: decisions, contracts, fails and findings, short- and long-term (docs/memory.md)"],
+    ["ahub memory search <words> | show <id> | graph <id|node> [--hops 1|2] [--json]", "find entries, read one with its provenance, or list its graph neighbourhood"],
+    ["ahub memory promote|demote|forget <id> | supersede <old> <new> | rebuild", "a person's changes to memory: move an entry between tiers, forget it, mark it superseded, or rebuild the index from the logs"],
   ]],
   ["Hooks", [
     ["ahub check-path --hook", "check-path as a Claude Code PreToolUse hook (templates/claude-hooks.json); never blocks"],
