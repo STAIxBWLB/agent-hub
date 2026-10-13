@@ -1729,11 +1729,12 @@ passed23/0 with235 assertions. The bus pull omitted a stale batch and the next
 notice contained only the remaining backlog id. Current full gates remain
 pending; no native grooming or live-account claim.
 
-Additional notice source work targets per-recipient retries and overflow retention.
-The focused group currently has24 pass/1 fail: its new multi-planner fixture also
-receives a legitimate Pi assignment, so the intended notice-only setup needs
-owner approval for fixture-planner-only.patch. A separate no-worker diagnostic
+Per-recipient retry and overflow source fixes passed26/0 with255 assertions
+once the owner approved the notice-only fixture. A separate no-worker diagnostic
 verified first2 ids, one consumed copy, stale0, retry1 to Pi, repeated Claude0.
-The new supported off-roster reservation case has actual isolated green -> named
-assertion detected proof, replacing the guard's earlier shadowed test target.
-Current full gates and the additional fixture exceptions remain pending.
+Roster, per-recipient retry and overflow guards each have actual isolated green
+-> named assertion detected proof. The owner also approved realPath normalization
+in three CLI fixtures, retaining every earlier assertion and identity validation.
+The descendant integration group passed53/0 with368 assertions, including real
+fake-account CLI pull/split/import and five-peer notice baselines. Full current
+platform/seed/review and native account verification remain pending.
