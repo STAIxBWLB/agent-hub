@@ -2552,6 +2552,14 @@
       "replacement": "...{}",
       "testFile": "test/planner-pull.test.ts",
       "testName": "ordinary backlog return restores pre-planner reservation provenance"
+    },
+    {
+      "id": "planner-pending-wip-editor",
+      "file": "src/ui/index.html",
+      "search": "const current=row.pending!==undefined ? row.pending : row.value;",
+      "replacement": "const current=row.value;",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "dashboard WIP editor saves pending restart values including zero and inheritance"
     }
   ]
 }
