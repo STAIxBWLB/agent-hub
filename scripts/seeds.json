@@ -2984,6 +2984,14 @@
       "replacement": "t.history.at(-1)",
       "testFile": "test/ask.test.ts",
       "testName": "ask evidence skips memory bookkeeping and preserves note privacy"
+    },
+    {
+      "id": "github-import-staging-deadline",
+      "file": "src/hub/tasks.ts",
+      "search": "        (created ? imported : existing).push(task.id);\n        if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };",
+      "replacement": "        (created ? imported : existing).push(task.id);",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake reports confirmed partial progress after late final staging"
     }
   ]
 }

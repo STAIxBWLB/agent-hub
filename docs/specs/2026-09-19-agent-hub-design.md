@@ -2788,3 +2788,5 @@ The outer dashboard HTTP request for backlog_split receives a per-request idle b
 Split reasons retain deterministic privacy from both initial validation and final revalidation, including inherited parent privacy. Later routing policy removal cannot expose an already-withheld reason in public history.
 
 Ask evidence ignores body-free memory-reference bookkeeping when selecting the latest task event and note. The selected meaningful note retains its PII and withheld provenance under the existing on-campus boundary.
+
+GitHub intake rechecks its total staging deadline after every awaited proposal, including the final issue. A late confirmed write returns its ID with partial=true and complete=false; it is not represented as an unconfirmed write or rolled back.
