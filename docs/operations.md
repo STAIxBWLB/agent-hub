@@ -2901,3 +2901,5 @@ capacity. Parent-only memory notes do not prevent unused child undo; child
 reference markers remain protected. Split-part plan schemas follow the selected
 project profile. Terminal tables preserve the visible read for stages and use
 a fresh peer status read on the same authenticated connection.
+
+Integer WIP editors retain a saved pending value, including zero and inheritance, before hub restart. GitHub intake accepts dot-prefixed repository names within the existing bounded owner/repository identity. Split undo also refuses children referenced by another task's persisted phase checklist.
