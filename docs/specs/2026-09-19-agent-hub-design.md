@@ -1363,6 +1363,8 @@ qualification. Primary and fallback dispatches have independent outcomes.
 
 ## Task idle sweep (#186, 2026-10-09)
 
+Body-free memory-reference markers do not count as owner or reviewer activity: they preserve the inactivity threshold and the current sweep ladder activity index.
+
 `Tasks.sweep(now)` owns a deterministic, default-off between-turn sweep. It
 classifies proposed tasks with an owner as unaccepted assignments, in-progress
 tasks with an idle owner as idle-owner findings, and in-review tasks with a
