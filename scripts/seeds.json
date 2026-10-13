@@ -2544,6 +2544,14 @@
       "replacement": "false && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
       "testFile": "test/task-sweep.test.ts",
       "testName": "planner idle sweep keeps its final attempt until owner capacity is available"
+    },
+    {
+      "id": "planner-normal-return-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": "...(restoreReservation ? { reserved: pulled.planning!.previous.reserved ?? null } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "ordinary backlog return restores pre-planner reservation provenance"
     }
   ]
 }
