@@ -186,3 +186,16 @@ test("task card accessible name announces catalog guidance",()=>{
  const {api,snapshot,peers,get,all}=page();const task={...snapshot.tasks[0]!,role:"backend-engineer"};api.draw({...snapshot,tasks:[task]},peers,Object.keys(peers));
  const card=all(get("tasks")).find(node=>node.tag==="article");expect(card?.getAttribute("aria-label")).toContain("Task guidance: backend-engineer (grants no authority)");
 });
+
+test("release audit previews disclose exact totals when IDs are bounded", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const source = html.slice(html.indexOf("let planningEdit ="), html.indexOf("function peerMark("));
+  const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
+  const snapshot = { tasks: [], releases: [{ id: 1, name: "phase", goal: "safe", state: "planning", revision: 0, afterCut: [1, 2], afterCutCount: 40, afterCutUnknown: [3], afterCutUnknownCount: 50 }], planningCapabilities: { enabled: true } };
+  const el = (_tag: string, text?: string) => { const node = new Node(); node.textContent = text ?? ""; return node; };
+  const api = runInNewContext(`const $=get;let boardViewState={snapshot};${source};({render:renderPlanning})`, { get, snapshot, el, badge: (text: string) => el("span", text), boardContext: () => ({ projectId: "a" }), sameBoardContext: () => true, update: (id: string, _value: unknown, render: (node: Node) => void) => render(get(id)), empty: () => {}, boardButton: () => new Node() });
+  api.render(snapshot);
+  const text = get("releases").children.flatMap(row => row.children.map(node => node.textContent)).join("\n");
+  expect(text).toContain("Approved after cut outside this release: #1, #2 (showing 2 of 40)");
+  expect(text).toContain("Timing relative to release cut unknown: #3 (showing 1 of 50)");
+});

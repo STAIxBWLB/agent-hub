@@ -63,3 +63,39 @@ test("release without a cut reports every outside approval as unknown",async()=>
  try{await tasks.newRelease(USER,{name:"phase",goal:"safe",order:0});const ids:number[]=[];for(const event of ["done","legacy completion"]){const row=board.propose(USER,{title:event,class:"implement"});board.update(row.id,USER,"accepted",{state:"in_progress",owner:"codex"});board.update(row.id,USER,event,{state:"approved"});ids.push(row.id)}board.propose(USER,{title:"unfinished",class:"implement"});expect(tasks.releaseList(USER)[0]?.afterCut).toBeNull();expect(tasks.releaseList(USER)[0]?.afterCutUnknown).toEqual(ids);
  }finally{bus.closeJournal();board.close();rmSync(root,{recursive:true,force:true})}
 });
+
+
+test("release audit snapshots bound previews and scan each task history once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-release-audit-")), board = new Board(":memory:"), bus = new Bus({ batchMs: 0 });
+  const tasks = new Tasks({ board, bus, cwd: root, project: "audit", routing: () => loadRouting(root), notify: () => {} });
+  try {
+    const releases: { id: number }[] = [];
+    for (let i = 0; i < 16; i++) releases.push(await tasks.newRelease(USER, { name: "release-" + i, goal: "safe", order: i }));
+    tasks.changeRelease(USER, { id: releases[0]!.id, revision: 0, cut: 1 });
+    tasks.changeRelease(USER, { id: releases[1]!.id, revision: 0, cut: 2 });
+    const own: number[] = [];
+    for (let i = 0; i < 96; i++) {
+      const row = board.propose(USER, { title: "audit work", class: "implement" });
+      if (i < 8) { board.plan(row.id, USER, { release: releases[0]!.id }, 0); own.push(row.id); }
+      board.update(row.id, USER, "accepted", { state: "in_progress", owner: "codex" });
+      board.update(row.id, USER, i % 4 === 0 ? "legacy completion" : "done", { state: "approved" });
+    }
+    const rows = board.list(); let reads = 0;
+    for (const row of rows) {
+      const history = row.history.map(entry => entry.event === "done" ? { ...entry, at: 2 } : entry);
+      Object.defineProperty(row, "history", { get: () => { reads++; return history; } });
+    }
+    board.list = () => rows;
+    const result = tasks.releaseList(USER);
+    const first = result.find(row => row.id === releases[0]!.id)!;
+    expect(first.afterCutCount).toBe(66); expect(first.afterCutUnknownCount).toBe(22);
+    expect(first.afterCut).toHaveLength(32); expect(first.afterCutUnknown).toHaveLength(22);
+    expect((first.afterCut as number[]).some(id => own.includes(id))).toBe(false);
+    expect(first.tasks).toHaveLength(8);
+    expect(result.find(row => row.id === releases[1]!.id)?.afterCut).toEqual([]);
+    const unset = result.find(row => row.id === releases[2]!.id)!;
+    expect(unset.afterCut).toBeNull(); expect(unset.afterCutUnknownCount).toBe(96); expect(unset.afterCutUnknown).toHaveLength(32);
+    expect(reads).toBeLessThanOrEqual(rows.length * 6);
+    expect(result.every(row => (row.afterCutUnknown as number[]).length <= 32 && (row.afterCut === null || (row.afterCut as number[]).length <= 32))).toBe(true);
+  } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
+});
