@@ -778,7 +778,7 @@ export class Tasks {
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || by !== USER && parent.pinned) throw new PreEffectToolRefusal("split changed, pinned or already started");
       const release = parent.release == null ? undefined : this.d.board.release(parent.release);
       if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
-      const catalog = this.d.catalog ?? loadRoleCatalog(this.d.cwd), profile = parent.profile ?? this.d.profile ?? "dev";
+      const catalog = this.d.catalog ?? loadRoleCatalog(this.d.cwd), profile = parent.profile ?? "dev";
       const drafts = rows.map((part, index) => {
         if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
         const given = part.class ?? parent.profileClass ?? parent.class;
