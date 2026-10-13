@@ -2108,7 +2108,7 @@
     {
       "id": "planning-reservation-supported",
       "file": "src/hub/tasks.ts",
-      "search": "if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !Object.hasOwn(this.d.routing().peers, patch.reserved))",
+      "search": "if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved))",
       "replacement": "if (false)",
       "testFile": "test/planning.test.ts",
       "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
