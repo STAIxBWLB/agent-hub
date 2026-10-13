@@ -2633,3 +2633,21 @@ the board at actual delivery. A batch containing pulled/removed work is discarde
 before reaching the planner; its remaining backlog ids join the next batch. This
 floor also applies during the legacy stale-notice delivery experiment. No task
 text is copied and no routing/ownership state changes.
+## Amendment: claude-mem import, suggested edges and the memory measurement (#258, phase 3)
+
+`ahub memory import claude-mem` (a person's) copies claude-mem observations whose metadata names a `peer` into
+long-term hub memory as `source: claude-mem`, opening claude-mem's database read-only and skipping model answers,
+PII-pattern and secret-looking text; ids are deterministic, so a re-import adds nothing. `memory.suggest_edges` (off by
+default) lets the hub's model suggest `contradicts` / `same_topic` between a new entry and up to six near ones, checked
+against that closed list and stored as `hub-model` suggestions; they are drawn dashed and excluded from briefs, recall
+and `ahub ask` until a person confirms them. Measurement: `memory_brief` events (counts), research records' `briefs`
+and the report's by-memory-brief split, and `ahub bench run --memory off|claude-mem|native|both` arms checked against
+the project's settings. Whether hub memory helps stays a research result, not an acceptance claim.
+
+
+Planner notice retries are per recipient. A stale copy requeues current backlog
+ids only for the planner whose copy was discarded; a planner that already read
+its original copy is not sent the retry. Queue overflow returns that recipient's
+ids to pending state on the existing bus event, including immediate eviction
+during publication. Pending ids are removed before publication so overflow can
+restore them; no extra timer, route, ownership change or task text is introduced.

@@ -76,7 +76,11 @@ Edges are deterministic and fixed when the entry is written, so a rebuild never 
 
 - `part_of` (board task to long-term task) and `depends_on` (between long-term tasks), from the links below.
 
-Model-suggested edges come in phase 3 of #258.
+- Model-suggested edges, off by default (`"memory": { "suggest_edges": true }`): after a note is saved, the hub's model
+  (the same route as digest condensation) names `contradicts` or `same_topic` between it and up to six near entries.
+  Its answer is read line by line against that closed list and stored as a suggestion by `hub-model` (`suggest`,
+  `confirm`, `reject` entries). Suggestions are drawn dashed on the dashboard and are never evidence: briefs, recall and
+  `ahub ask` ignore them until a person confirms one (`ahub memory confirm <id>`); a rejected one disappears.
 
 ## Long-term tasks
 
@@ -196,6 +200,29 @@ ahub memory rebuild
 
 A forgotten long-term entry stays in the log file and in the sync remote's git history; removing it from there is a
 person's rewrite of that history.
+
+## Importing from claude-mem
+
+`ahub memory import claude-mem [--db <path>] [--limit N]` (a person's) copies the hub's own notes from claude-mem
+(observations whose metadata names a `peer`: `hub_remember` and the hub's task notes) into long-term hub memory as
+`source: claude-mem`, for this project only (claude-mem files them under the repository's own name; a superproject's
+notes stay out, and two unrelated repositories with one name share it). Model answers from `ahub ask --remember`, text
+matching a PII pattern, text about a path the project's `pii.paths` makes private and secret-looking text are skipped. An
+imported note is placed in the graph by the paths and symbols in its text (claude-mem keeps no task proposal time).
+claude-mem's database is opened read-only and never changed; an observation always maps to the same entry, on any
+machine, so importing again adds nothing.
+
+## Measuring it
+
+Whether hub memory helps is measured, not assumed (#258 AC11, with #248):
+
+- Each task brief writes a `memory_brief` event with counts only (hub-memory items, fails among them, claude-mem
+  items); research records keep `briefs` (`delivered`, `withFail`), and `ahub research` splits approved tasks into
+  "a fail note in its brief", "brief without a fail note" and "no brief recorded" (first pass, rework, check failures).
+- `ahub bench run --memory off|claude-mem|native|both` declares an arm's memory and refuses a hub that runs with other
+  settings; compare the arms with `ahub bench compare`.
+- Whether an agent retried an approach a fail note had ruled out cannot be read from ids and counts. A task whose brief
+  carried a fail note and was still sent back or failed a check is a candidate, to read by hand.
 
 ## Privacy
 

@@ -1775,7 +1775,7 @@
       "search": "if (patch.reserved && !this.d.bus.isRostered(patch.reserved))",
       "replacement": "if (false)",
       "testFile": "test/planning.test.ts",
-      "testName": "backlog planning validates dependency cycles reservations and atomic undo (#263)"
+      "testName": "supported off-roster reservations are refused before any planning write"
     },
     {
       "id": "planning-dependency-started-floor",
@@ -1844,8 +1844,8 @@
     {
       "id": "planner-notice-bounded",
       "file": "src/hub/tasks.ts",
-      "search": "[...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64)",
-      "replacement": "[...this.incomingBacklog].sort((a, b) => a - b)",
+      "search": "[...pending].sort((a, b) => a - b).slice(0, 64)",
+      "replacement": "[...pending].sort((a, b) => a - b)",
       "testFile": "test/planning-notices.test.ts",
       "testName": "planner notice batches are bounded and recover staged work on restart (#263)"
     },
@@ -2232,6 +2232,22 @@
       "replacement": "false",
       "testFile": "test/planning-notices.test.ts",
       "testName": "queued planner batches omit pulled ids at delivery and rebatch remaining backlog"
+    },
+    {
+      "id": "planner-notice-recipient-retry",
+      "file": "src/hub/tasks.ts",
+      "search": "this.addPlannerBacklog(peer, current);",
+      "replacement": "for (const id of current) this.incomingBacklog.add(id);",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "a stale planner copy rebatches only for its recipient without repeating another planner's turn"
+    },
+    {
+      "id": "planner-notice-overflow-retry",
+      "file": "src/hub/tasks.ts",
+      "search": "if (ids.length <= 64 && ids.every(id => Number.isSafeInteger(id) && id > 0)) this.addPlannerBacklog(e.peer, ids);",
+      "replacement": "if (false) this.addPlannerBacklog(e.peer, ids);",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "an immediately evicted planner notice retains its ids until queue capacity is available"
     }
   ]
 }
