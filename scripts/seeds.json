@@ -2511,7 +2511,7 @@
       "search": "const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== \"manual\" || opts.roster);",
       "replacement": "const plannedMove = opts.planner;",
       "testFile": "test/planner-pull.test.ts",
-      "testName": "automatic offline rerouting of planner pulls respects destination WIP"
+      "testName": "automatic rescreen admission retains planner WIP after privacy clears"
     },
     {
       "id": "planner-person-reservation-undo",
