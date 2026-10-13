@@ -1097,7 +1097,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     const options = outputOptions();
     const { one, rest } = takeFlags(args, ["--release", "--release-id"], []);
-    if (one["--release"] && one["--release-id"] || one["--release-id"] !== undefined && !/^[1-9]\d*$/.test(one["--release-id"])) fail("choose --release <name> or --release-id <positive id>");
+    if (one["--release"] !== undefined && !one["--release"].trim() || one["--release"] !== undefined && one["--release-id"] !== undefined || one["--release-id"] !== undefined && !/^[1-9]\d*$/.test(one["--release-id"])) fail("choose --release <nonempty name> or --release-id <positive id>");
     const release = one["--release-id"] ? "#"+one["--release-id"] : one["--release"];
     let boardStatus: any;
     if (release) { const hub = await connect(); try { const reply = await hub.request({ t: "status" }); boardStatus = reply.status; if (!supportsBoardReleaseFilter(boardStatus)) fail("running hub does not support release filters; use a compatible daemon"); } finally { hub.close(); } }
@@ -1111,6 +1111,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (ready || state || release) {
       try { allTasks = JSON.parse(await taskOp("hub_task_list", byColumn ? { columnMetadata: true } : {}, true)) as any[]; }
       catch (error) {
+        if (byColumn) fail("board column dependency context unavailable; retry with a complete snapshot");
         allTasks = null;
         console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\n\t]/g, " ")}` }], false));
       }

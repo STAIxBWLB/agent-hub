@@ -6,6 +6,11 @@ import {DEFAULT_CONFIG,startDaemon} from "../src/hub/daemon.ts";
 import {ControlClient} from "../src/hub/control-client.ts";
 const ENTRY=join(import.meta.dir,"../src/cli/main.ts");
 async function cli(root:string,args:string[]){const file=join(root,`cli-${crypto.randomUUID()}.ts`);writeFileSync(file,`for(const key of Object.keys(process.env))if(key.startsWith("AGENTHUB_")||["CODEX_THREAD_ID","CLAUDECODE","CLAUDE_CODE_SESSION_ID"].includes(key))delete process.env[key];process.env.AGENTHUB_HOME=${JSON.stringify(join(root,"home"))};process.argv=[process.execPath,${JSON.stringify(ENTRY)},...${JSON.stringify(args)}];await import(${JSON.stringify(ENTRY)});`);const child=Bun.spawn([process.execPath,file],{cwd:root,stdin:"ignore",stdout:"pipe",stderr:"pipe"}),timer=setTimeout(()=>child.kill("SIGKILL"),5000);try{const [code,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);return {code,stdout,stderr};}finally{clearTimeout(timer);}}
+test("empty explicit release filters fail without broadening the requested board",async()=>{
+ const root=mkdtempSync(join(tmpdir(),"ahub-empty-release-"));
+ try{for(const value of ["","  "]){const result=await cli(root,["board","--release",value,"--json"]);expect(result.code).toBe(1);expect(result.stderr).toContain("nonempty name");expect(result.stdout).toBe("");}}
+ finally{rmSync(root,{recursive:true,force:true});}
+},20000);
 test("board release filters and columns are readonly and retain agent backlog floors (#263)",async()=>{
  const root=mkdtempSync(join(tmpdir(),"ahub-board-flags-")),stateDir=join(root,".agenthub/state"),daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},batch_ms:0}}),person=await ControlClient.connect(stateDir,{role:"console"}),peer=await ControlClient.connect(stateDir,{role:"tools",peer:"codex"});
  try{

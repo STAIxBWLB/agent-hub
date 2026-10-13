@@ -195,6 +195,15 @@ export class Board {
   statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
     return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
   }
+  statusReservations(): string[] {
+    return (this.db.query("SELECT DISTINCT reserved FROM tasks WHERE state NOT IN ('approved', 'backlog') AND reserved IS NOT NULL ORDER BY reserved").all() as { reserved: string }[]).map(row => row.reserved);
+  }
+  plannerWip(peer: string, except?: number): number {
+    const row = this.db.query(`SELECT COUNT(*) AS n FROM tasks WHERE state NOT IN ('approved', 'backlog') AND (? IS NULL OR id != ?) AND
+      (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND
+        json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1))`).get(except ?? null, except ?? null, peer, peer) as { n: number };
+    return row.n;
+  }
 
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */
   counts(): Record<string, number> {
@@ -261,18 +270,20 @@ export class Board {
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
 
-  splitBacklog(id: number, by: PeerId, revision: number, parts: (Parameters<Board["propose"]>[1] & { fields?: PlanningFields; afterParts?: number[] })[], note: string, withheld = false): { parent: Task; children: Task[] } {
+  splitBacklog(id: number, by: PeerId, revision: number, parts: (Parameters<Board["propose"]>[1] & { fields?: PlanningFields; afterParts?: number[]; screeningNote?: string })[], note: string, withheld = false): { parent: Task; children: Task[] } {
     return this.atomic(() => {
       const parent = this.get(id);
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || parts.length < 2 || parts.length > 8) throw new Error("split changed or invalid");
       const children: Task[] = [];
       for (const part of parts) {
-        const deps = [...new Set([...(part.deps ?? []), ...(part.afterParts ?? []).map(index => { const child = children[index]; if (!child) throw new Error("split dependencies must name an earlier part"); return child.id; })])];
+        const inherited = part.afterParts?.length ? (part.deps ?? []).filter(dep => !parent.deps?.includes(dep)) : part.deps ?? [];
+        const deps = [...new Set([...inherited, ...(part.afterParts ?? []).map(index => { const child = children[index]; if (!child) throw new Error("split dependencies must name an earlier part"); return child.id; })])];
         let child = this.propose(by, { ...part, deps, backlog: true });
+        if (part.screeningNote !== undefined) child = this.update(child.id, HUB, "screened", {}, part.screeningNote);
         if (part.fields && Object.keys(part.fields).length) child = this.plan(child.id, by, part.fields, 0, note, withheld);
         children.push(child);
       }
-      const deps = [...new Set([...(parent.deps ?? []), ...children.map(child => child.id)])];
+      const deps = children.map(child => child.id);
       const updated = this.plan(id, by, { deps }, revision, note, withheld);
       const entry = updated.history.at(-1)!;
       entry.planning!.split = { children: children.map(child => ({ id: child.id, revision: child.planningRevision ?? 0, history: child.history.length })) };
