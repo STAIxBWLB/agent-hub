@@ -770,7 +770,15 @@ export class Tasks {
         const task = await this.propose(USER, { title: issue.title, detail: issue.detail, class: cls, backlog: true }, issue.source, () => { created = true; });
         (created ? imported : existing).push(task.id);
         if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };
-      } catch { return { imported, existing, partial: true, complete: false, unconfirmed: true }; }
+      } catch {
+        if (created) {
+          try {
+            const saved = this.d.board.imported(issue.source.repo, issue.source.issue);
+            if (saved) { if (!imported.includes(saved.id)) imported.push(saved.id); if (saved.state === "backlog") this.incomingBacklog.add(saved.id); return { imported, existing, partial: true, complete: false }; }
+          } catch { /* A failed readback leaves the committed identity unconfirmed. */ }
+        }
+        return { imported, existing, partial: true, complete: false, unconfirmed: true };
+      }
     }
     return { imported, existing, partial: page.partial, complete: !page.partial };
   }
