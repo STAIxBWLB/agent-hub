@@ -591,12 +591,16 @@ export class Tasks {
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
       if (this.waitsFor(task).length) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
       const priority = task.priority ?? (task.signals.includes("urgent") ? 0 : 2);
-      if (priority === 0 && this.d.board.list("backlog").some(other => {
-        if (other.id === task.id || this.prerequisiteOf(other, task.id) || (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) !== 0 || other.rank == null || !other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) return false;
-        const ancestors = this.d.board.list().filter(goal => goal.state !== "approved" && this.prerequisiteOf(goal, task.id) && (goal.priority ?? (goal.signals.includes("urgent") ? 0 : 2)) === 0 && goal.rank != null && goal.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")));
-        const order = [{ rank: task.rank ?? Number.MAX_SAFE_INTEGER, id: task.id }, ...ancestors.map(goal => ({ rank: goal.rank!, id: goal.id }))].sort((a,b) => a.rank-b.rank || a.id-b.id)[0]!;
-        return other.rank < order.rank || other.rank === order.rank && other.id < order.id;
-      })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
+      if (priority === 0) {
+        const goals = this.d.board.list().filter(goal => goal.state !== "approved" && (goal.priority ?? (goal.signals.includes("urgent") ? 0 : 2)) === 0 && goal.rank != null && goal.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")));
+        const effectiveOrder = (candidate: Task) => goals.filter(goal => goal.id === candidate.id || this.prerequisiteOf(goal, candidate.id)).map(goal => ({ rank: goal.rank!, id: goal.id })).sort((a,b) => a.rank-b.rank || a.id-b.id)[0];
+        const order = effectiveOrder(task) ?? { rank: task.rank ?? Number.MAX_SAFE_INTEGER, id: task.id };
+        if (this.d.board.list("backlog").some(other => {
+          if (other.id === task.id || this.prerequisiteOf(other, task.id) || (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) !== 0) return false;
+          const competing = effectiveOrder(other);
+          return !!competing && (competing.rank < order.rank || competing.rank === order.rank && competing.id < order.id);
+        })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
+      }
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
       const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved")) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
@@ -782,7 +786,7 @@ export class Tasks {
       const drafts = rows.map((part, index) => {
         if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
         const given = part.class ?? parent.profileClass ?? parent.class;
-        const storedProfile = profile === (this.d.profile ?? "dev") ? this.d.profileData ?? profile : profile;
+        const storedProfile = !parent.profile ? "dev" : profile === (this.d.profile ?? "dev") ? this.d.profileData ?? profile : profile;
         let cls: TaskClass;
         try { cls = part.class === undefined ? parent.class : profileClass(given as string, storedProfile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
         const after = part.after ?? [], afterParts = part.afterParts ?? [];
@@ -802,7 +806,7 @@ export class Tasks {
     const initial = validate(), screening = this.screenOn();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const attempt = Promise.all([
-      Promise.all(initial.drafts.map(part => screening && !this.isPii(initial.parent) ? this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined)),
+      Promise.all(initial.drafts.map(part => screening && !this.isPii(initial.parent) && !this.isPii({ signals: this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }) }) ? this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined)),
       this.withholds("note", reason, initial.parent),
     ]);
     let screened: Awaited<typeof attempt>;
