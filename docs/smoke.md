@@ -1699,3 +1699,8 @@ resize fallback, keyboard-modal ownership, prompt preservation and unchanged
 config bytes. The focused console/config/geometry/runtime group passed138/0
 with23808 assertions. Immutable-head platform/seed/review proof is pending.
 Light/dark physical terminal, tmux and ambiguous-wide block glyphs are unverified.
+
+The expanded-footer follow-up group passed7/0 with6687 assertions: primary
+stream rows survive alternate panels and are cleared before queued events return;
+expired notices restore the selected approval id and expiry. No earlier assertion
+was removed. Native terminal/tmux proof and final full gates remain pending.

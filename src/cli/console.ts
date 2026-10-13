@@ -117,19 +117,22 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       lastAct = attention.act;
     }
     if (plain) return;
+    const returningToStream = state.mode === "stream" && inAlternate;
     if (state.mode === "panels" && !inAlternate) { terminal.write("\x1b[r\x1b[?1049h\x1b[2J"); inAlternate = true; }
     else if (state.mode === "stream" && inAlternate) {
       terminal.write(`\x1b[?1049l\x1b[1;${rows - consoleFooterRows(state, columns, rows)}r`); inAlternate = false;
-      if (droppedStream) writeStream({ text: `${plural(droppedStream, "older panel-mode event")} omitted from console memory; inspect hub.log for the full stream.` });
-      for (const event of pendingStream) writeStream(event);
-      pendingStream = []; droppedStream = 0;
     }
     const footerStart = rows - consoleFooterRows(state, columns, rows) + 1;
     if (state.mode === "stream" && priorStreamFooterStart !== undefined && priorStreamFooterStart < footerStart) {
       for (let row = priorStreamFooterStart; row < footerStart; row++) terminal.write(`\x1b[${row};1H\x1b[2K`);
     }
-    priorStreamFooterStart = state.mode === "stream" ? footerStart : undefined;
+    if (state.mode === "stream") priorStreamFooterStart = footerStart;
     terminal.write(state.mode === "stream" ? `\x1b[1;${rows - consoleFooterRows(state, columns, rows)}r` : "\x1b[r");
+    if (returningToStream) {
+      if (droppedStream) writeStream({ text: `${plural(droppedStream, "older panel-mode event")} omitted from console memory; inspect hub.log for the full stream.` });
+      for (const event of pendingStream) writeStream(event);
+      pendingStream = []; droppedStream = 0;
+    }
     const lines = renderConsoleLines(state, columns, rows);
     const start = rows - lines.length + 1;
     for (const [index, line] of lines.entries()) { terminal.write(`\x1b[${start + index};1H\x1b[2K`); terminal.write(paint(line, color)); }

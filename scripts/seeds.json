@@ -2076,7 +2076,7 @@
     {
       "id": "pet-expanded-prose-floor",
       "file": "src/cli/console-state.ts",
-      "search": "if (s.notice || s.confirm?.type === \"permission_default\") left[2]",
+      "search": "if (noticeShown || s.confirm?.type === \"permission_default\") left[2]",
       "replacement": "if (false) left[2]",
       "testFile": "test/pet-characters.test.ts",
       "testName": "expanded pet rows never carry notice or default-source prose"
@@ -2096,6 +2096,22 @@
       "replacement": "false",
       "testFile": "test/pet-console-runtime.test.ts",
       "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
+    },
+    {
+      "id": "pet-panels-primary-boundary",
+      "file": "src/cli/console.ts",
+      "search": "if (state.mode === \"stream\") priorStreamFooterStart = footerStart;",
+      "replacement": "priorStreamFooterStart = state.mode === \"stream\" ? footerStart : undefined;",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "primary stream footer boundary survives alternate panels with the pet turned off"
+    },
+    {
+      "id": "pet-notice-expiry-detail",
+      "file": "src/cli/console-state.ts",
+      "search": "if (noticeShown || s.confirm?.type === \"permission_default\") left[2]",
+      "replacement": "if (s.notice || s.confirm?.type === \"permission_default\") left[2]",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expired notices restore selected approval ids and expiry in expanded pet footers"
     }
   ]
 }

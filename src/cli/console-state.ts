@@ -672,7 +672,7 @@ const more = (line: Span[], text?: string): Span[] => [span("(more)".padEnd(Bun.
 export function consoleFooterRows(s: ConsoleState, columns: number, rows: number): number {
   return s.petEnabled ? petFooterRows(petSize(s.petSize, columns, rows)) : 4;
 }
-function decoratePetFooter(s: ConsoleState, columns: number, rows: number, now: number, rule: Span[], footer: Span[][]): Span[][] {
+function decoratePetFooter(s: ConsoleState, columns: number, rows: number, now: number, rule: Span[], footer: Span[][], noticeShown: boolean): Span[][] {
   if (!s.petEnabled) return [rule, ...footer];
   const value = consoleNeeds(s, now), character = s.petCharacter ?? "stai", size = petSize(s.petSize, columns, rows);
   const tone: Tone = value.state === "blocked" ? "failure" : value.act ? "attention" : "muted";
@@ -685,7 +685,7 @@ function decoratePetFooter(s: ConsoleState, columns: number, rows: number, now: 
   const available = columns - width - 1, caption = characterAttentionLine(value, character, now, false).slice(6);
   const left: Span[][] = [[span(caption, tone)], footer[0]!, footer[1]!];
   // Notices and source paths stay in their existing views, never beside an expanded character.
-  if (s.notice || s.confirm?.type === "permission_default") left[2] = [span(`${s.approvals.length} approvals / ${value.act} action / ${value.watch} watch`, tone)];
+  if (noticeShown || s.confirm?.type === "permission_default") left[2] = [span(`${s.approvals.length} approvals / ${value.act} action / ${value.watch} watch`, tone)];
   for (let index = 0; index < height - 3; index++) {
     const item = value.items[index];
     left.push(item ? [span([item.kind, item.peer, item.id].filter(part => part !== undefined).join(" "), item.level === "act" ? "attention" : "muted")] : []);
@@ -736,7 +736,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (!noticeShown && defaultSource === undefined && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
       footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
     }
-    return decoratePetFooter(s, columns, rows, now, rule, footer);
+    return decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown);
   }
   const progress = taskProgress(s.tasks);
   const height = rows - 2 - consoleFooterRows(s, columns, rows);
@@ -783,5 +783,5 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     }
   }
   const body = lines.slice(0, height); while (body.length < height) body.push([]);
-  return [header(s, columns), rule, ...body, ...decoratePetFooter(s, columns, rows, now, rule, footer)];
+  return [header(s, columns), rule, ...body, ...decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown)];
 }

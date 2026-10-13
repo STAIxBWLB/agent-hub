@@ -54,3 +54,11 @@ test("expanded pet rows never carry notice or default-source prose", () => {
     expect(lines.map(line=>paint(line,false)).join("\n")).not.toContain("PRIVATE_");
   }
 });
+
+test("expired notices restore selected approval ids and expiry in expanded pet footers",()=>{
+ for(const size of ["mini","full"] as PetSize[]){
+  const state={...initialConsoleState(true),petEnabled:true,petSize:size,notice:"PRIVATE_EXPIRED_NOTICE",noticeAt:0,approvalId:"approval-123",approvals:[{id:"approval-123",peer:"codex",title:"PRIVATE_APPROVAL_TITLE",expiresAt:60000,options:[]}]};
+  const footer=renderConsoleLines(state,120,40,10001).slice(-consoleFooterRows(state,120,40)).map(line=>paint(line,false)).join("\n");
+  expect(footer).toContain("codex approval-123");expect(footer).toContain("left");expect(footer).not.toContain("PRIVATE_");
+ }
+});

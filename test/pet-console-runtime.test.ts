@@ -26,3 +26,12 @@ test("actual console advertises all characters while full footer resize and off 
     expect(requests.every(t=>["status","budget"].includes(t))).toBe(true);
   }finally{stop();await running;rmSync(root,{recursive:true});}
 });
+
+test("primary stream footer boundary survives alternate panels with the pet turned off",async()=>{
+ const root=mkdtempSync(join(tmpdir(),"ahub-pet-panels-"));mkdirSync(join(root,".agenthub"));writeFileSync(join(root,".agenthub/config.json"),JSON.stringify({pet:{size:"full",glyphs:"ascii"}}));
+ let output="",key=(_value:string)=>{},stop=()=>{};
+ const terminal:ConsoleTerminal={columns:120,rows:40,isTTY:true,write:text=>{output+=text},raw:()=>{},onData:fn=>{key=fn;return()=>{}},onSignal:fn=>{stop=fn;return()=>{}},onResize:()=>()=>{}};
+ const client={request:async()=>({}),send:()=>{},close:()=>{},onPush:(_message:unknown)=>{},onClose:()=>{}};
+ const running=runConsole({cwd:root,stateDir:root,terminal,client,color:false});
+ try{expect(output).toContain("\x1b[1;31r");key("\t");for(let n=0;n<5;n++)key("P");client.onPush({t:"notice",line:"PANEL_EVENT_MARKER"});output="";key("\t");expect(output).toContain("\x1b[?1049l");for(let row=32;row<=36;row++)expect(output).toContain(`\x1b[${row};1H\x1b[2K`);expect(output).toContain("PANEL_EVENT_MARKER");expect(output.indexOf("\x1b[36;1H\x1b[2K")).toBeLessThan(output.indexOf("PANEL_EVENT_MARKER"))}finally{stop();await running;rmSync(root,{recursive:true})}
+});
