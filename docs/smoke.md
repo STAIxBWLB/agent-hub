@@ -1700,3 +1700,8 @@ reservation normalization/unsupported-id rejection and returned-work notices.
 The previous full262 guard job reached its 10-minute CI limit; the job cap is
 now20 minutes, with all named assertion and per-test/watchdog limits unchanged.
 Current immutable-head265 proof is pending.
+
+The actual queued planner notice regression and prior grooming/conductor group
+passed23/0 with235 assertions. The bus pull omitted a stale batch and the next
+notice contained only the remaining backlog id. Current full gates remain
+pending; no native grooming or live-account claim.
