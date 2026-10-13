@@ -51,8 +51,12 @@ export interface RunHeader {
   /** Task ids in run order, so a running run can name the attempt in progress. */
   order: string[];
   /** #248: the add-on state the arm declared, checked against the attached peers before the run started. */
-  condition?: { addons: Partial<Record<AddonName, "on" | "off">> };
+  condition?: { addons?: Partial<Record<AddonName, "on" | "off">>; memory?: MemoryMode };
 }
+/** #258 AC11: which memory the hub ran with: none, claude-mem only, its own store only, or both. */
+export const MEMORY_MODES = ["off", "claude-mem", "native", "both"] as const;
+export type MemoryMode = (typeof MEMORY_MODES)[number];
+export const memoryMode = (m: { enabled: boolean; native?: boolean }): MemoryMode => m.enabled ? (m.native ? "both" : "claude-mem") : m.native ? "native" : "off";
 export type Outcome = "pass" | "fail" | "timeout" | "error";
 /** Closed list: a reason never quotes a command or its output. */
 export type AttemptError = "setup failed" | "setup timeout" | "propose refused" | "hub stopped" | "verify timeout" | "reset failed" | "interrupted";

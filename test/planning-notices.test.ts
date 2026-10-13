@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { USER, type Envelope } from "../src/hub/envelope.ts";
+import { USER, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 
@@ -17,11 +17,11 @@ class NoticePeer extends BasePeer {
 }
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-function rig() {
+function rig(options: { secondPlanner?: boolean; queueCap?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-planner-notices-")), board = new Board(join(dir, "hub.db"));
-  const bus: Bus = new Bus({ batchMs: 0, rostered: peer => peer !== "kimi", relevant: (peer, env) => tasks.relevant(peer, env) });
-  const roles = { claude: ["planner"], codex: ["implementer"], kimi: ["planner"] };
-  const deps = { board, bus, roles, routing: () => loadRouting(dir), cwd: dir, project: "notices", notify: () => {} };
+  const bus: Bus = new Bus({ batchMs: 0, ...(options.queueCap === undefined ? {} : { queueCap: options.queueCap }), rostered: peer => peer !== "kimi", relevant: (peer, env) => tasks.relevant(peer, env) });
+  const roles = { claude: ["planner"], codex: ["implementer"], kimi: ["planner"], ...(options.secondPlanner ? { pi: ["planner"] } : {}) };
+  const deps = { board, bus, roles, routing: () => { const routing = loadRouting(dir); if (options.secondPlanner) routing.classes.implement.peers = []; return routing; }, cwd: dir, project: "notices", notify: () => {} };
   const tasks = new Tasks(deps), notices: Envelope[] = [];
   bus.tap(event => { if (event.t === "envelope" && event.env.body.startsWith("Backlog items ")) notices.push(event.env); });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -79,4 +79,18 @@ test("queued planner batches omit pulled ids at delivery and rebatch remaining b
  await tasks.moveBacklog(USER,first.id,true);expect(bus.pull("claude")).toEqual([]);expect(bus.queued("claude")).toBe(0);
  expect(tasks.flushPlannerNotices()).toBe(1);const delivered=bus.pull("claude")!;expect(delivered).toHaveLength(1);expect(delivered[0]!.refs?.backlog).toEqual([second.id]);expect(delivered[0]!.body).not.toContain(`#${first.id}`);expect(delivered[0]!.body).not.toContain("private");
  await tasks.moveBacklog(USER,second.id,true);expect(tasks.flushPlannerNotices()).toBe(0);
+});
+
+test("a stale planner copy rebatches only for its recipient without repeating another planner's turn",async()=>{
+ const {tasks,bus}=rig({secondPlanner:true});for(const id of ["claude","pi"]){const peer=new NoticePeer(id);bus.add(peer);await peer.start();peer.busy()}
+ const first=await tasks.propose(USER,{title:"first staged",class:"implement",backlog:true});const second=await tasks.propose(USER,{title:"second staged",class:"implement",backlog:true});
+ expect(tasks.flushPlannerNotices()).toBe(2);expect(bus.pull("claude")).toHaveLength(1);await tasks.moveBacklog(USER,first.id,true);expect(bus.pull("pi")).toEqual([]);
+ expect(tasks.flushPlannerNotices()).toBe(1);expect(bus.pull("claude")).toEqual([]);const copy=bus.pull("pi")!;expect(copy).toHaveLength(1);expect(copy[0]!.to).toEqual(["pi"]);expect(copy[0]!.refs?.backlog).toEqual([second.id]);expect(tasks.flushPlannerNotices()).toBe(0);
+});
+
+test("an immediately evicted planner notice retains its ids until queue capacity is available",async()=>{
+ const {tasks,bus}=rig({queueCap:1});const peer=new NoticePeer("claude");bus.add(peer);await peer.start();peer.busy();bus.pause("claude");
+ const task=await tasks.propose(USER,{title:"staged after pressure",class:"implement",backlog:true});bus.publish(newEnvelope(USER,"important existing work",{to:["claude"],priority:"important"}));
+ expect(tasks.flushPlannerNotices()).toBe(1);expect(bus.queued("claude")).toBe(1);bus.resume("claude");expect(bus.pull("claude")![0]!.body).toBe("important existing work");
+ expect(tasks.flushPlannerNotices()).toBe(1);const copy=bus.pull("claude")!;expect(copy).toHaveLength(1);expect(copy[0]!.refs?.backlog).toEqual([task.id]);expect(tasks.flushPlannerNotices()).toBe(0);
 });

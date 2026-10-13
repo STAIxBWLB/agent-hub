@@ -2,6 +2,17 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Hub memory (#258)
+
+Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).
+
+- [ ] Real sync between two physical machines through a private GitHub remote over SSH: entries, a forget, a lease and a conflict each visible on the other side.
+- [ ] `gh` reports a public test remote and the sync refuses it.
+- [ ] `ahub memory import claude-mem` against the live claude-mem store of this machine: counts and skipped classes, claude-mem unchanged.
+- [ ] `memory.suggest_edges: true` with the hub's model reachable: suggestions appear, are drawn dashed, and stay out of briefs until confirmed.
+- [ ] Dashboard Memory section and Long-term tasks tab in a browser, light and dark, at phone width.
+- [ ] AC11 arms on a bench project (`--memory off`, `claude-mem`, `native`), 5 repeats each, and two weeks of research records with `briefs`.
+
 ## Office view (#264, phases 1-4)
 
 Not run live yet (unverified). Phases 1-4 ship the office with its Off/Flat/
@@ -1729,3 +1740,12 @@ The actual queued planner notice regression and prior grooming/conductor group
 passed23/0 with235 assertions. The bus pull omitted a stale batch and the next
 notice contained only the remaining backlog id. Current full gates remain
 pending; no native grooming or live-account claim.
+
+Additional notice source work targets per-recipient retries and overflow retention.
+The focused group currently has24 pass/1 fail: its new multi-planner fixture also
+receives a legitimate Pi assignment, so the intended notice-only setup needs
+owner approval for fixture-planner-only.patch. A separate no-worker diagnostic
+verified first2 ids, one consumed copy, stale0, retry1 to Pi, repeated Claude0.
+The new supported off-roster reservation case has actual isolated green -> named
+assertion detected proof, replacing the guard's earlier shadowed test target.
+Current full gates and the additional fixture exceptions remain pending.

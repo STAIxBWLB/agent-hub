@@ -62,6 +62,7 @@ while the store keeps the older records.
 | `models` | model routes and served models of the attributed requests |
 | `writer` | the release and `live` or `backfill` |
 | `tooling` | #248: for each peer that worked on the task (owner, reviewer, a peer with attributed turns or tokens), the add-ons from the `tooling` event of the attachment it last worked in (an attachment runs from a `state` event that brings the peer online to the next `offline`; detection may settle after the work started): `{ name, version }` from the closed list `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`, `dot-admit`; version null when unknown. A peer missing here is unknown; records built from events written before #248 have no field |
+| `briefs` | #258: task briefs handed over for the task (`delivered`) and how many carried a hub-memory fail note (`withFail`), from `memory_brief` events; absent when none was recorded |
 | `peers` | with `tooling`: every peer with an event attributed to the task (a turn, tokens, a route), fingerprinted or not, so a peer without a fingerprint makes the task unknown for an add-on rather than off |
 
 ## Label record (`kind: "label"`)
@@ -83,7 +84,9 @@ person can run it (agent shells are refused), and only while research is on. The
 - first-pass rate: `firstPass` over approved tasks;
 - rework: changes requested per approved task;
 - check-failure rate: failed checks over checks run (`checkFailed / (checkFailed + checkPassed)`);
-- tokens and wall time per approved task, median and p90 (linear interpolation between ranks).
+- tokens and wall time per approved task, median and p90 (linear interpolation between ranks);
+- by memory brief (#258): the same measures for tasks whose brief carried a hub-memory fail note, a brief without one,
+  and no brief recorded (shown once any record has a brief).
 
 They are computed each time from the records; nothing derived is stored. `ahub research export [--format jsonl|csv]
 [--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, class, pii,

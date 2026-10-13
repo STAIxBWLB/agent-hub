@@ -7,9 +7,10 @@ import { ControlClient } from "../hub/control-client.ts";
 import { readEvents } from "../hub/events.ts";
 import { hubGitArgv, hubGitEnv } from "../hub/git.ts";
 import { taskRecords } from "../hub/research.ts";
-import { appendBench, BENCH_SCHEMA, parseSuite, suiteHash, type Attempt, type AttemptError, type AttemptMetrics, type Fingerprint, type Outcome, type SuiteTask } from "../hub/bench.ts";
+import { appendBench, BENCH_SCHEMA, memoryMode, type MemoryMode, parseSuite, suiteHash, type Attempt, type AttemptError, type AttemptMetrics, type Fingerprint, type Outcome, type SuiteTask } from "../hub/bench.ts";
 import { hubHome, realPath } from "../hub/project.ts";
 import { processSignature } from "../pi/process-signature.ts";
+import { loadConfig } from "../hub/daemon.ts";
 import { addonState, detectTooling, type Addon, type AddonName } from "../hub/tooling.ts";
 import { VERSION } from "../version.ts";
 
@@ -27,8 +28,10 @@ export interface BenchIo {
   log(line: string): void;
   /** #248: the add-ons a peer works with; `detectTooling` on this machine unless a test supplies its own. */
   tooling?(peer: string): Addon[] | Promise<Addon[]>;
+  /** #258: the memory settings the project's hub runs with; the project config unless a test supplies them. */
+  memoryConfig?(): { enabled: boolean; native?: boolean };
 }
-export interface BenchOptions { cwd: string; stateDir: string; suitePath: string; arm: string; repeat: number; addons?: Partial<Record<AddonName, "on" | "off">>; only?: string[]; home?: string; pollMs?: number; verifyTimeoutMs?: number; setupTimeoutMs?: number; settleMs?: number; stopped?: () => boolean }
+export interface BenchOptions { cwd: string; stateDir: string; suitePath: string; arm: string; repeat: number; addons?: Partial<Record<AddonName, "on" | "off">>; memory?: MemoryMode; only?: string[]; home?: string; pollMs?: number; verifyTimeoutMs?: number; setupTimeoutMs?: number; settleMs?: number; stopped?: () => boolean }
 
 const fail = (message: string): never => { throw new Error(message); };
 
@@ -207,8 +210,13 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
       const found = addonState(name, fingerprint.peers.map((p) => p.addons));
       if (found !== want) throw new Error(`the arm declares ${name} ${want}, but the attached peers have it ${found}; change their setup or the declaration (nothing was run)`);
     }
+    // #258 AC11: the memory the project's hub runs with (its config, read at hub start) must be the arm's.
+    // ponytail: read from the project config, not the running hub; a config edited since the hub started reads wrong.
+    const runsWith = opts.memory ? memoryMode((io.memoryConfig ?? (() => loadConfig(opts.cwd).memory))()) : undefined;
+    if (opts.memory && runsWith !== opts.memory) throw new Error(`the arm declares memory ${opts.memory}, but this project's hub runs with ${runsWith}; change memory.enabled / memory.native and restart the hub, or the declaration (nothing was run)`);
+    const condition = { ...(addons.length ? { addons: Object.fromEntries(addons.sort(([a], [b]) => a.localeCompare(b))) } : {}), ...(opts.memory ? { memory: opts.memory } : {}) };
     appendBench({ schema: BENCH_SCHEMA, kind: "run", run, suite: suite.name, suiteHash: suiteHash(suiteText), arm: opts.arm, fingerprint, version: VERSION,
-      ...(addons.length ? { condition: { addons: Object.fromEntries(addons.sort(([a], [b]) => a.localeCompare(b))) } } : {}),
+      ...(Object.keys(condition).length ? { condition } : {}),
       startedAt: new Date(io.now()).toISOString(), tasks: tasks.length, repeats: opts.repeat, order: tasks.map((t) => t.id), runner: { pid: process.pid, signature: processSignature(process.pid) ?? null } }, home);
     io.log(`bench run ${run}: ${suite.name} [${opts.arm}], ${tasks.length} task${tasks.length === 1 ? "" : "s"} x ${opts.repeat}`);
     let stopped: "timeout" | "interrupted" | "error" | undefined;
