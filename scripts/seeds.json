@@ -2744,6 +2744,14 @@
       "replacement": "const current=row.value;",
       "testFile": "test/planner-wip-settings.test.ts",
       "testName": "dashboard WIP editor saves pending restart values including zero and inheritance"
+    },
+    {
+      "id": "planner-declined-redo-readiness",
+      "file": "src/hub/tasks.ts",
+      "search": "\"declined\", { ...([\"in_progress\", \"changes_requested\"].includes(task.state) ?",
+      "replacement": "\"declined\", { ...(task.state === \"in_progress\" ?",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "declined planner redo returns to To Do and resumes after alternative WIP clears"
     }
   ]
 }
