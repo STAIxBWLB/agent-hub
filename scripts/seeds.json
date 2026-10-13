@@ -428,8 +428,8 @@
     {
       "id": "kimi-launch-override-detach",
       "file": "src/hub/daemon.ts",
-      "search": "if (sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming) clearKimiAdmission();",
-      "replacement": "if (false && sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming) clearKimiAdmission();",
+      "search": "if (sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();",
+      "replacement": "if (false && sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();",
       "testFile": "test/kimi-tui.test.ts",
       "testName": "a one-launch Kimi TUI override ends at detach and failed launch cleanup (#316)"
     },
@@ -3204,8 +3204,16 @@
     {
       "id": "sdlc-owner-relink-pr",
       "file": "src/hub/tasks.ts",
-      "search": "if (next.reviewedHead !== undefined && next.reviewedHead !== task.sdlc?.reviewedHead)",
+      "search": "if (next.reviewedHead !== undefined && (next.reviewedHead !== task.sdlc?.reviewedHead || (suppliedHead && artifactChanged)))",
       "replacement": "if (next.reviewedHead !== task.sdlc?.reviewedHead)",
+      "testFile": "test/sdlc.test.ts",
+      "testName": "the owner relinks a PR after a reviewed head was recorded; only the reviewer records a head (#382)"
+    },
+    {
+      "id": "sdlc-supplied-head-new-pr",
+      "file": "src/hub/tasks.ts",
+      "search": "|| (suppliedHead && artifactChanged)))",
+      "replacement": "|| false))",
       "testFile": "test/sdlc.test.ts",
       "testName": "the owner relinks a PR after a reviewed head was recorded; only the reviewer records a head (#382)"
     }
