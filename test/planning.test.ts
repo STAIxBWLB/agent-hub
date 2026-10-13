@@ -143,7 +143,9 @@ test("planning normalizes real reservations and rejects unsupported pseudo peers
   const {board,tasks}=rig();
   const task=await tasks.propose(USER,{title:"peer normalization",class:"implement",backlog:true});
   for(const reserved of ["user","hub","digest","not-registered","bad peer",{},123]) {
-    await expect(tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved},reason:"invalid reservation"})).rejects.toThrow();
+    const attempt=tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved},reason:"invalid reservation"});
+    await expect(attempt).rejects.toThrow();
+    await expect(attempt).rejects.toBeInstanceOf(PreEffectToolRefusal);
     expect(board.get(task.id)).toEqual(task);
   }
   const planned=await tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved:" Codex "},reason:"normalize owner"});
