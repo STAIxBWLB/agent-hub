@@ -183,7 +183,7 @@ function cleanPlan(input: unknown, profile: ProfileSelection = "dev"): TaskPlan 
 /** A plan as one line for other owners; the whole plan is on the board. */
 const planText = (plan: TaskPlan = {}) => ALL_PLAN_KEYS.filter((k) => plan[k]?.length).map((k) => `${k.replace("_", " ")}: ${plan[k]!.join("; ")}`).join(" | ");
 /** What the PII screen reads of a task (#198): the text the patterns are checked against. */
-const screenText = (t: { title: string; detail: string; plan?: TaskPlan }) => [t.title, t.detail, planText(t.plan)].join("\n");
+const screenText = (t: { title: string; detail: string; plan?: TaskPlan; external?: Task["external"] }) => [t.title, t.detail, planText(t.plan), t.external?.repo, t.external?.url].filter(value => value !== undefined).join("\n");
 /** Re-screens of one task whose verdict was unknown, per hub run (#198). */
 const RESCREEN_MAX = 10;
 

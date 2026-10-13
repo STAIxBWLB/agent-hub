@@ -39,3 +39,11 @@ test("GitHub import returns confirmed partial progress instead of claiming faile
  const result=await tasks.importGitHub(USER,{repo:"owner/repo",label:"ready"},async()=>({code:0,stdout:JSON.stringify([issue(1),issue(2)])}));
  expect(result).toMatchObject({imported:[1],existing:[],partial:true,complete:false,unconfirmed:true});expect(board.list()).toHaveLength(1);
 });
+
+test("GitHub external identity remains screened on a later unknown verdict retry",async()=>{
+ const f=rig();f.routing.signals.pii_screen="local";let first=true;const seen:string[]=[];
+ const tasks=new Tasks({board:f.board,bus:f.bus,cwd:f.dir,project:"import",routing:()=>f.routing,notify:()=>{},piiScreen:async text=>{seen.push(text);if(first){first=false;return {label:"unknown",miss:"failed",ms:0}}return text.includes("sensitive-owner")?{label:"pii",category:"name",ms:0}:{label:"clear",ms:0}}});
+ const result=await tasks.importGitHub(USER,{repo:"sensitive-owner/repo",label:"ready"},async()=>({code:0,stdout:JSON.stringify([{...issue(1),url:"https://github.com/sensitive-owner/repo/issues/1"}])}));
+ await tasks.moveBacklog(USER,result.imported[0]!,true);await tasks.rescreen();
+ expect(seen).toHaveLength(2);expect(seen[1]).toContain("sensitive-owner");const task=f.board.get(result.imported[0]!)!;expect(tasks.isPii(task)).toBe(true);expect(tasks.publicView(task)).not.toHaveProperty("external");
+});
