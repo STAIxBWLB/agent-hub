@@ -252,7 +252,7 @@
     {
       "id": "roster-empty-status",
       "file": "src/hub/daemon.ts",
-      "search": "    return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
+      "search": "    return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
       "replacement": "    return [...ids];",
       "testFile": "test/roster.test.ts",
       "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
@@ -1874,6 +1874,38 @@
       "testName": "redacted release labels retain stable mutation and console lookup identity (#263)"
     },
     {
+      "id": "planner-pull-capacity",
+      "file": "src/hub/tasks.ts",
+      "search": "return this.wip(peer, task.id) >= this.wipLimit(peer)",
+      "replacement": "return false",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
+    },
+    {
+      "id": "planner-pull-after-screen",
+      "file": "src/hub/tasks.ts",
+      "search": "const current = validate();",
+      "replacement": "const current = initial;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull rechecks capacity pins and dependency approval after screening (#263)"
+    },
+    {
+      "id": "planner-pull-person-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task.reserved && reservation?.by === USER && assignment.owner !== task.reserved)",
+      "replacement": "if (false)",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
+    },
+    {
+      "id": "planner-pull-person-order",
+      "file": "src/hub/tasks.ts",
+      "search": "if (priority === 0 && this.d.board.list(\"backlog\").some",
+      "replacement": "if (false && this.d.board.list(\"backlog\").some",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
+    },
+    {
       "id": "dashboard-release-id-forwarding",
       "file": "src/hub/daemon.ts",
       "search": "await taskOp(USER, \"release_change\", { id: a.id, name: a.name, revision: a.revision, fields: a.fields });",
@@ -1882,12 +1914,76 @@
       "testName": "dashboard release actions forward public ids through the authenticated HTTP path (#263)"
     },
     {
+      "id": "planner-offer-capacity-recheck",
+      "file": "src/hub/tasks.ts",
+      "search": "const plannerFull = plannedMove ? this.plannerFull(task) : [];",
+      "replacement": "const plannerFull: string[] = [];",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner offers recheck reserved capacity and refuse another peer's slot (#263)"
+    },
+    {
+      "id": "planner-settings-integer-range",
+      "file": "src/hub/settings.ts",
+      "search": "raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)",
+      "replacement": "false",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "planner WIP settings use bounded integers and the existing local registry write (#263)"
+    },
+    {
+      "id": "planner-pull-role-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    this.planningAuthority(by);",
+      "replacement": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    void by;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
+    },
+    {
+      "id": "planner-pull-explicit-capability",
+      "file": "src/ui/index.html",
+      "search": "boardViewState?.snapshot.planningCapabilities?.wipPull===true",
+      "replacement": "boardViewState?.snapshot.planningCapabilities?.enabled===true",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "WIP pull controls require an explicit capability and carry the task revision (#263)"
+    },
+    {
       "id": "planning-original-utc-precision",
       "file": "src/ui/index.html",
       "search": "if(loaded && loaded.text===value)return loaded.utc;",
       "replacement": "if(false)return loaded.utc;",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "planning date editors retain original UTC precision and parse changed local values (#263)"
+    },
+    {
+      "id": "planner-readiness-preserves-undo",
+      "file": "src/hub/board.ts",
+      "search": "return task.history.findLast(item => item.by !== HUB || item.event !== \"ready\");",
+      "replacement": "return task.history.at(-1);",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "unoffered planner pull can undo after a hub readiness marker (#263)"
+    },
+    {
+      "id": "planner-original-person-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": " ?? (task.history[0]?.event === \"backlogged\" ? task.history[0] : undefined)",
+      "replacement": " ?? undefined",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
+    },
+    {
+      "id": "planner-layered-wip-limits",
+      "file": "src/hub/daemon.ts",
+      "search": "if (wipLayers.length) file.tasks =",
+      "replacement": "if (false) file.tasks =",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "machine-local WIP settings retain every other shared peer capacity (#263)"
+    },
+    {
+      "id": "planner-pull-only-reservation-preview",
+      "file": "src/hub/tasks.ts",
+      "search": "candidates: [task.reserved], namedOwner: task.reserved",
+      "replacement": "candidates: [task.reserved]",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
     },
     {
       "id": "release-label-public-identity",
@@ -2376,6 +2472,102 @@
       "replacement": "for (const peer of configured) if (false) {",
       "testFile": "test/planning-notices.test.ts",
       "testName": "newly configured planners receive existing backlog without repeating earlier planners"
+    },
+    {
+      "id": "planner-wip-raises-authority",
+      "file": "src/hub/settings.ts",
+      "search": "applies: \"hub start\", risk: \"raises\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
+      "replacement": "applies: \"hub start\", risk: \"safe\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "ordinary WIP settings can disable admission but cannot raise or uncover capacity"
+    },
+    {
+      "id": "planner-decline-slot-release",
+      "file": "src/hub/tasks.ts",
+      "search": "...(planned ? { reserved: null } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "declined planner pulls release the old WIP slot and reroute when another peer attaches"
+    },
+    {
+      "id": "planner-reserved-status-row",
+      "file": "src/hub/daemon.ts",
+      "search": "new Set([...bus.knownPeers(), ...reservations])",
+      "replacement": "new Set(bus.knownPeers())",
+      "testFile": "test/planner-pull-surfaces.test.ts",
+      "testName": "restarted ownerless pull reservations retain an unattached peer WIP status row"
+    },
+    {
+      "id": "planner-normal-status-wip",
+      "file": "src/cli/output.ts",
+      "search": "if (data.taskWip) for (const [peer, value] of Object.entries(data.taskWip))",
+      "replacement": "if (false) for (const [peer, value] of Object.entries(data.taskWip!))",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "normal status text includes planner WIP and capacity for retained peers"
+    },
+    {
+      "id": "planner-automatic-reroute-capacity",
+      "file": "src/hub/tasks.ts",
+      "search": "const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== \"manual\" || opts.roster);",
+      "replacement": "const plannedMove = opts.planner;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "automatic rescreen admission retains planner WIP after privacy clears"
+    },
+    {
+      "id": "planner-person-reservation-undo",
+      "file": "src/hub/tasks.ts",
+      "search": " && ![\"backlog pulled\", \"backlog returned\"].includes(entry.event)",
+      "replacement": " && true",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "person reservation survives planner pull undo and a second pull"
+    },
+    {
+      "id": "planner-accepted-offline-preflight",
+      "file": "src/hub/tasks.ts",
+      "search": "excludeOwners: this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], ...this.health()",
+      "replacement": "excludeOwners: [], ...this.health()",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
+    },
+    {
+      "id": "planner-reviewer-owner-capacity",
+      "file": "src/hub/routing.ts",
+      "search": "role === \"owner\" && opts.excludeOwners?.includes(peer)",
+      "replacement": "opts.excludeOwners?.includes(peer)",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner owner capacity never removes the required reviewer"
+    },
+    {
+      "id": "planner-idle-final-admission",
+      "file": "src/hub/tasks.ts",
+      "search": "finding.step === 3 && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "replacement": "false && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "testFile": "test/task-sweep.test.ts",
+      "testName": "planner idle sweep keeps its final attempt until owner capacity is available"
+    },
+    {
+      "id": "planner-normal-return-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": "...(restoreReservation ? { reserved: pulled.planning!.previous.reserved ?? null } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "ordinary backlog return restores pre-planner reservation provenance"
+    },
+    {
+      "id": "planner-pending-wip-editor",
+      "file": "src/ui/index.html",
+      "search": "const current=row.pending!==undefined ? row.pending : row.value;",
+      "replacement": "const current=row.value;",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "dashboard WIP editor saves pending restart values including zero and inheritance"
+    },
+    {
+      "id": "planner-declined-redo-readiness",
+      "file": "src/hub/tasks.ts",
+      "search": "\"declined\", { ...([\"in_progress\", \"changes_requested\"].includes(task.state) ?",
+      "replacement": "\"declined\", { ...(task.state === \"in_progress\" ?",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "declined planner redo returns to To Do and resumes after alternative WIP clears"
     }
   ]
 }

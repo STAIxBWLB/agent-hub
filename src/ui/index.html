@@ -299,6 +299,9 @@ function settingRow(row, raise) {
       select.value = current[index] || ''; actions.append(select); return select;
     });
     read = () => choices.map(select => select.value).filter(Boolean);
+  } else if (row.type === 'integer') {
+    const input=el('input');input.type='number';input.id=id;input.step='1';input.min=String(row.min ?? 0);input.max=String(row.max ?? Number.MAX_SAFE_INTEGER);const current=row.pending!==undefined ? row.pending : row.value;input.value=current===null ? '' : String(current);input.placeholder='Empty inherits';
+    read=()=>input.value==='' ? null : Number(input.value);actions.append(input);
   } else if (row.type === 'peers') {
     const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(row.value) ? row.value.join(', ') : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
     read = () => { const list = input.value.split(',').map((value) => value.trim()).filter(Boolean); return list.length ? list : null; };
@@ -532,6 +535,7 @@ function taskCard(task, card, stage, ids) {
 
   const controls = el('div', undefined, 'actions');
   if (card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Pull into To Do', {action:'backlog_pull',id:task.id}));
+  if (card.pull && boardViewState?.snapshot.planningCapabilities?.wipPull===true) controls.append(boardButton('Pull within WIP', {action:'planner_pull',id:task.id,revision:task.planningRevision ?? 0,reason:'person requested a WIP-constrained pull'}));
   if (card.returnable && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Return to Backlog', {action:'backlog_return',id:task.id}));
   if (card.assignable && ids.length) {
     const expected=boardContext(), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;
@@ -568,7 +572,7 @@ function renderBoard(snapshot, peers, ids) {
       const data=(snapshot.boardLegend || []).find(item=>item.peer===id), row=el('div',undefined,'agent-slot');
       row.append(peerMark(id),el('p',String(peers[id].state || 'unknown'),'meta'));
       const wip=data && Number.isSafeInteger(data.wip) && data.wip>=0 ? data.wip : 'unknown';
-      row.append(el('p','WIP '+wip+' / permission '+(data?.permissionMode || 'unknown'),'meta'));
+      row.append(el('p','WIP '+wip+(Number.isSafeInteger(data?.wipLimit) ? '/'+data.wipLimit : '')+' / permission '+(data?.permissionMode || 'unknown'),'meta'));
       if (Array.isArray(data?.activeTasks) && data.activeTasks.length) row.append(el('p','Active tasks: '+data.activeTasks.map(id=>'#'+id).join(', '),'meta'));
       const filter=el('button','View '+id);filter.type='button';filter.addEventListener('click',()=>{if(!boardViewState)return;peerFilter.value=id;renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});row.append(filter);
       if (eligible.includes(id)) dropTarget(row,card=>card.assignable,{action:'assign',peer:id});

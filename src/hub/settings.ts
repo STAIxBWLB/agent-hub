@@ -16,12 +16,13 @@ import { OVERLAY_FILE, overlayToml, parseOverlay, parseRouting, routingText, typ
  */
 export const SETTING_PEERS = SUPPORTED_PEERS;
 /** `null` removes the machine-local value, so the shared file's or the default applies again. */
-export type SettingValue = string | boolean | string[] | null;
+export type SettingValue = string | boolean | number | string[] | null;
 export interface SettingDef {
   key: string;
   group: "Permissions" | "Start" | "Routing" | "Switches" | "Roster" | "Roles";
   label: string;
-  type: "enum" | "boolean" | "peers" | "roles";
+  type: "enum" | "boolean" | "peers" | "roles" | "integer";
+  min?: number; max?: number;
   /** The closed values of an enum; a route setting takes the project's own route ids instead. */
   values?: readonly string[];
   /** `runtime` lives in the running hub only; the others are the machine-local file that holds the value. */
@@ -30,7 +31,7 @@ export interface SettingDef {
   applies: "live" | "peer start" | "hub start";
   /** `raises`: only a settings session or a person's terminal may set it, except to `floor`. */
   risk: "safe" | "raises";
-  floor?: string | boolean;
+  floor?: string | boolean | number;
   /** Where the value sits inside its file (or, for `runtime`, the peer). */
   path: readonly string[];
 }
@@ -44,6 +45,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
   { key: `routing.classes.${name}.pi_backend`, group: "Routing", label: `${name}: Pi backend`, type: "enum", values: ["dgx", "mlx"], store: "routing", applies: "live", risk: "raises", path: ["classes", name, "pi_backend"] },
 ];
 export const SETTINGS: readonly SettingDef[] = [
+  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "hub start", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "peer start", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
@@ -80,6 +82,10 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
     if (def.store === "runtime") throw new Error(`${def.key} has no stored value to remove`);
     return null;
   }
+  if (def.type === "integer") {
+    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)) throw new Error(`${def.key} takes an integer from ${def.min ?? 0} to ${def.max ?? Number.MAX_SAFE_INTEGER}`);
+    return raw;
+  }
   if (def.type === "boolean") {
     if (typeof raw !== "boolean") throw new Error(`${def.key} takes true or false`);
     return raw;
@@ -101,6 +107,7 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
 /** A terminal's text for a value: `inherit` removes the machine-local value, a peers setting takes a comma list. */
 export function parseSettingText(def: SettingDef, text: string): unknown {
   if (text === "inherit") return null;
+  if (def.type === "integer") return /^(0|[1-9]\d*)$/.test(text) ? Number(text) : text;
   if (def.type === "boolean") return text === "true" ? true : text === "false" ? false : text;
   if (def.type === "peers" || def.type === "roles") return text.split(",").map((p) => p.trim()).filter(Boolean);
   return text;
@@ -110,7 +117,8 @@ export const settingText = (value: unknown): string => value === null || value =
 /** `ordinary`: a dashboard session from `ahub ui`. `settings`: one from `ahub ui --settings`. `terminal`: `ahub settings`. */
 export type SettingAuthority = "ordinary" | "settings" | "terminal";
 /** Why this authority may not set this value, or undefined. Removing a stored value can raise, so it counts as one. */
-export function settingRefusal(def: SettingDef, value: SettingValue, authority: SettingAuthority): string | undefined {
+export function settingRefusal(def: SettingDef | string, value: SettingValue, authority: SettingAuthority): string | undefined {
+  if (typeof def === "string") return def || "invalid setting definition";
   if (def.risk === "safe" || authority !== "ordinary") return undefined;
   if (value !== null && value === def.floor) return undefined;
   return `${def.key} can widen what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings in a terminal`;
@@ -343,10 +351,10 @@ export function ignoredLine(ignored: readonly string[] | undefined, def: Setting
   });
 }
 export interface SettingRow {
-  key: string; group: SettingDef["group"]; label: string; type: SettingDef["type"]; values?: readonly string[];
+  key: string; group: SettingDef["group"]; label: string; type: SettingDef["type"]; values?: readonly string[]; min?: number; max?: number;
   /** The file a write goes to, or "this hub run". */
   file: string;
-  applies: SettingDef["applies"]; risk: SettingDef["risk"]; floor?: string | boolean;
+  applies: SettingDef["applies"]; risk: SettingDef["risk"]; floor?: string | boolean | number;
   /** What is in force now; null when nothing sets it. */
   value: SettingValue;
   /** Which file the value in force comes from. */
@@ -379,9 +387,9 @@ export function settingRows(input: {
   const local = raw(CONFIG_LOCAL), shared = raw("config.json");
   const projectRouting = existsSync(join(input.cwd, ".agenthub", "routing.toml"));
   const routes = [...Object.keys(input.routing.routes), ...Object.keys(input.routing.hub_routes ?? {})];
-  const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
+  const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
   return SETTINGS.map((def): SettingRow => {
-    const base = { key: def.key, group: def.group, label: def.label, type: def.type, applies: def.applies, risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
+    const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(def.type === "integer" ? { min: def.min, max: def.max } : {}), applies: def.applies, risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
       ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!) } : {}) };
     if (def.store === "runtime") {
       const mode = input.mode(def.path[0]!);

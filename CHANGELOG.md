@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add planner WIP slot admission and bounded pending-pull undo, configured capacity through existing settings, and tool/CLI/dashboard/status wiring (#263).
+
 - Extend backlog planning with bounded acyclic dependencies and rostered reservations, retaining revision-fenced undo and unstarted-work floors (#263).
 
 - Project shared body-free attention into the dashboard header with built-in SVG characters, accessible counts and navigation-only activation (#280).

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import type { PeerId } from "./envelope.ts";
+import { HUB, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import type { SdlcReceipt } from "./sdlc.ts";
@@ -42,7 +42,7 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
-  planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields };
+  planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true };
 }
 export interface Task extends PlanningFields {
   planningRevision?: number;
@@ -82,6 +82,10 @@ export function taskHasStarted(task: Pick<Task, "history">): boolean {
 export function taskProposalAt(task: Pick<Task, "history">): number | undefined {
   return task.history.find(entry => entry.event === "proposed" || entry.event === "backlog pulled")?.at;
 }
+/** Readiness carries out a pending pull; ownership or other later changes still fence undo. */
+export function planningUndoEntry(task: Pick<Task, "history">): HistoryEntry | undefined {
+  return task.history.findLast(item => item.by !== HUB || item.event !== "ready");
+}
 
 /** The moves the state machine allows. `accept` and `done` are transitions, not states: they carried no behaviour of their own. */
 const MOVES: Record<TaskState, TaskState[]> = {
@@ -89,7 +93,7 @@ const MOVES: Record<TaskState, TaskState[]> = {
   proposed: ["in_progress", "backlog"],
   in_progress: ["in_review", "approved", "proposed"], // approved: class without a reviewer; proposed: owner declined or was taken off
   in_review: ["approved", "changes_requested"],
-  changes_requested: ["in_progress"],
+  changes_requested: ["in_progress", "proposed"], // proposed: declined redo waits for reassignment
   approved: [],
 };
 
@@ -168,6 +172,15 @@ export class Board {
   statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
     return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
   }
+  statusReservations(): string[] {
+    return (this.db.query("SELECT DISTINCT reserved FROM tasks WHERE state NOT IN ('approved', 'backlog') AND reserved IS NOT NULL ORDER BY reserved").all() as { reserved: string }[]).map(row => row.reserved);
+  }
+  plannerWip(peer: string, except?: number): number {
+    const row = this.db.query(`SELECT COUNT(*) AS n FROM tasks WHERE state NOT IN ('approved', 'backlog') AND (? IS NULL OR id != ?) AND
+      (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND
+        json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1))`).get(except ?? null, except ?? null, peer, peer) as { n: number };
+    return row.n;
+  }
 
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */
   counts(): Record<string, number> {
@@ -209,6 +222,28 @@ export class Board {
     const result = this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
       .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
     if (result.changes !== 1) throw new Error("planning revision changed");
+    const updated = this.get(id)!; this.changed(updated, entry); return updated;
+  }
+
+  /** A planner reserves a routing slot without claiming or dispatching the work. */
+  pullPlanned(id: number, by: PeerId, reserved: PeerId, revision: number, note: string, withheld = false): Task {
+    const task = this.get(id);
+    if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || taskHasStarted(task)) throw new Error("planner pull changed or already started");
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
+    const result = this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
+      .run(reserved, JSON.stringify([...task.history, entry]), now, id, revision);
+    if (result.changes !== 1) throw new Error("planner pull changed");
+    const updated = this.get(id)!; this.changed(updated, entry); return updated;
+  }
+
+  /** No owner or execution evidence may be taken back by planning undo. */
+  undoPlannedPull(id: number, by: PeerId, revision: number): Task {
+    const task = this.get(id), pull = task ? planningUndoEntry(task)?.planning : undefined;
+    if (!task || task.state !== "proposed" || task.owner || taskHasStarted(task) || (task.planningRevision ?? 0) !== revision || !pull?.pull || pull.revision !== revision) throw new Error("planner pull undo changed or already offered");
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog returned", note: `undo planner pull revision ${revision}` };
+    const result = this.db.query("UPDATE tasks SET state='backlog',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='proposed' AND owner IS NULL")
+      .run(pull.previous.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
+    if (result.changes !== 1) throw new Error("planner pull undo changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
 

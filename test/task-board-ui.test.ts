@@ -127,6 +127,15 @@ test("project reset clears release creation draft before switching projects (#26
   expect(get("release-name").value).toBe("");expect(get("release-goal").value).toBe("");expect(get("release-order").value).toBe("0");
 });
 
+test("WIP pull controls require an explicit capability and carry the task revision (#263)", () => {
+  const {api,get,all,calls,peers,snapshot}=page();
+  api.draw({...snapshot,planningCapabilities:{enabled:true}},peers,Object.keys(peers));
+  expect(all(get("tasks")).filter(node=>node.tag==="button"&&node.textContent==="Pull within WIP")).toHaveLength(0);
+  api.draw({...snapshot,planningCapabilities:{enabled:true,wipPull:true},tasks:snapshot.tasks.map(task=>({...task,planningRevision:7}))},peers,Object.keys(peers));
+  const button=all(get("tasks")).find(node=>node.tag==="button"&&node.textContent==="Pull within WIP");expect(button).toBeDefined();button!.emit("click");
+  expect(calls.at(-1)).toMatchObject({action:"planner_pull",id:1,revision:7});
+});
+
 
 test("planning date editors retain original UTC precision and parse changed local values (#263)", () => {
   const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8"),source=html.slice(html.indexOf("const loadedPlanningDates ="),html.indexOf("const dateText ="));

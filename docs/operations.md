@@ -2747,6 +2747,28 @@ Dashboard release actions use public numeric ids even when labels are withheld;
 the screened public projection. Source verification remains pending.
 
 
+## Planner WIP pull (#263, verification pending)
+
+`hub_backlog_pull` takes id, current planning revision and a bounded reason. A
+configured planner with assignment capability reserves a ready To Do slot using
+current routing, roster, class, quota and health constraints. It refuses pins,
+unapproved dependencies, frozen scope and overriding person P0 order/reservations.
+The person uses `ahub backlog pull-ready <id> <revision> <reason>` or Pull within
+WIP on a card. Explicit manual pull/assignment retain their existing authority.
+
+Capacity defaults to one per peer. `ahub settings set tasks.wip_limits.codex 2`
+uses the existing machine-local registry path; integers0..32 apply at hub start,
+with0 disabling planner admission for that peer. Stored pending values and
+effective runtime limits remain distinct. Status and the agent legend count
+owned unfinished work plus unowned planner-pull reservations.
+
+Pending unowned, unstarted pull can be undone at its latest owned revision via
+`hub_backlog_undo` or the existing planning undo control, restoring its earlier
+reservation. Normal release routing offers work only while that reserved peer
+still has capacity; no other peer inherits its slot. Native/visual verification,
+full exact-head source gates, split and one-way import remain outstanding.
+
+
 Planned-date editors preserve loaded UTC milliseconds until their displayed
 value changes, including repeated local wall times during a clock change. Local
 inputs retain seconds/milliseconds and support HTML date years without truncating
@@ -2825,3 +2847,7 @@ With mini/full characters, active console notices remain visible away from the
 character: panel body rows show the bounded wrapped notice, and stream mode
 prints each fresh notice once through the existing local stream. Footer prose
 exclusion and fixed prompt/footer geometry remain. No new request or timer.
+
+Automatic reroutes of planner-pulled work retain WIP and delivery-hold admission
+during offline, budget, roster and idle recovery. Explicit manual assignments
+retain their existing override authority.

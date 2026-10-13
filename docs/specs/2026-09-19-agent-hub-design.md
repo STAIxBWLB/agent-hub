@@ -2546,6 +2546,22 @@ ownership or execution state changes. Planned reservation edits participate in
 the conductor's latest ownership-decision check, preserving a person's decision
 when the hub later carries it out. Full proof remains pending.
 
+
+## Planner pull admission and undo (#263, in progress)
+
+Planner pull reserves a bounded per-peer WIP slot and moves ready backlog work
+into To Do through Tasks. A proposed planner-pull reservation counts as WIP
+before assignment; its own slot is excluded while the normal routing path offers
+it to that reserved peer. Capacity and recovery/review holds are checked again
+at offer time. Default capacity is one per peer; machine-local integer limits
+0..32 use the existing settings registry and loader.
+
+Pull requires current revision and a screened reason, unstarted/unowned/unpinned
+backlog, approved dependencies and unfrozen scope. Person P0 order and explicit
+reservations remain protected. Board saves the pull provenance and previous
+reservation in one CAS. The latest eligible pull can return to backlog only
+while unowned and unstarted, restoring its previous reservation; it never claims
+to cancel a dispatched native turn. Native/visual proof remains unverified.
 ## Console attention foundation (#280, in progress)
 
 The self-contained needs(input,now) model receives structural console-owned
@@ -2701,3 +2717,5 @@ stays bound until a distinct replacement is selected; only these temporary
 listeners are closed, including on binding failure. Selection is bounded by
 the number of excluded ports plus one. Explicit control-port behavior and
 existing Origin/token/native ownership refusals remain unchanged.
+
+Declining rework in changes_requested returns it to proposed before rerouting, just as declining in_progress work does. The Board permits that transition; the Tasks owner/person authority remains required. Planner-pulled work without destination WIP is retried from To Do once capacity becomes available.
