@@ -2758,3 +2758,5 @@ stays bound until a distinct replacement is selected; only these temporary
 listeners are closed, including on binding failure. Selection is bounded by
 the number of excluded ports plus one. Explicit control-port behavior and
 existing Origin/token/native ownership refusals remain unchanged.
+
+Split child external-use checks include persisted SDLC phase checklist task ids and predecessor ids, as well as Tasks dependency edges. An undo preserves referenced children and the original board when it refuses.
