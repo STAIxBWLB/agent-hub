@@ -1363,6 +1363,8 @@ qualification. Primary and fallback dispatches have independent outcomes.
 
 ## Task idle sweep (#186, 2026-10-09)
 
+Body-free memory-reference markers do not count as owner or reviewer activity: they preserve the inactivity threshold and the current sweep ladder activity index.
+
 `Tasks.sweep(now)` owns a deterministic, default-off between-turn sweep. It
 classifies proposed tasks with an owner as unaccepted assignments, in-progress
 tasks with an idle owner as idle-owner findings, and in-review tasks with a
@@ -2301,6 +2303,7 @@ the queue.
 ## Amendment: offline ACP approval fencing and lexical scoped-path checks (#311, #322)
 
 - ACP cancels new permission requests while offline or waiting for watchdog cancellation, before consulting either approver. Pending permissions carry abort signals to the daemon approval registry and are withdrawn on watchdog cancellation, offline transitions and stop. Late answers cannot grant them; a restarted session may request approval normally.
+- An acknowledged ACP permission-mode change waits for watchdog cancellation cleanup only when that prompt response has already been observed. A mode acknowledgement while the prompt is still unreported returns without declaring it idle or delaying cancellation diagnostics. Native prompt cleanup releases the gate; its existing bounded deadline, stop and transport loss also release it, preserving offline and stale-turn fences.
 - Pi and local write/edit approval passes the original path separately from the `guardPath` real target, through every wrapper. Scoped automatic grants require both project-relative forms to avoid protected names. A protected directory symlinked into an ordinary project directory and an ordinary alias into a protected directory both require a person. `realPath` and the post-approval target check remain the authority for effects. Explicit approval and never-ask keep their meaning.
 
 ## Amendment: further scoped-grant exclusions and instruction option (#323)
@@ -2562,6 +2565,32 @@ reservations remain protected. Board saves the pull provenance and previous
 reservation in one CAS. The latest eligible pull can return to backlog only
 while unowned and unstarted, restoring its previous reservation; it never claims
 to cancel a dispatched native turn. Native/visual proof remains unverified.
+
+
+## Backlog split contract (#263, in progress)
+
+The manager split deadline includes the shared 8-second screening bound, the
+hub SQLite busy wait and a five-second margin. A missing answer is unconfirmed
+and requires task readback before retry. Stored parent role IDs remain guidance
+metadata when the current catalog entry is unavailable; they confer no authority.
+
+Task-scoped memory note/link attempts record one body-free board-history marker
+before external persistence. Split undo preserves that fence even when memory
+is disabled or unavailable; failed attempts conservatively retain the child.
+
+Splitting keeps the original card as integration/acceptance responsibility and
+adds two to eight unoffered child cards as prerequisites. Existing prerequisites
+and conservative privacy/phase planning are retained. Per-part dependencies may
+name existing tasks or earlier parts; no child may transitively depend on its
+parent. Tasks screens and revalidates the entire bounded request before writing.
+Board commits all children, parent edges and undo provenance in one transaction;
+change callbacks run only after commit.
+
+Latest eligible owned split undo restores original edges and deletes only unused
+unchanged unstarted backlog children, refusing later edits, owners, execution or
+external references. Role, revision, pin/person and frozen scope floors remain.
+Public projections expose child ids without private prior values. Source/native
+verification remains pending; no live operation or release process is implied.
 ## Console attention foundation (#280, in progress)
 
 The self-contained needs(input,now) model receives structural console-owned
@@ -2718,4 +2747,18 @@ listeners are closed, including on binding failure. Selection is bounded by
 the number of excluded ports plus one. Explicit control-port behavior and
 existing Origin/token/native ownership refusals remain unchanged.
 
+Split child external-use checks include persisted SDLC phase checklist task ids and predecessor ids, as well as Tasks dependency edges. An undo preserves referenced children and the original board when it refuses.
+
 Declining rework in changes_requested returns it to proposed before rerouting, just as declining in_progress work does. The Board permits that transition; the Tasks owner/person authority remains required. Planner-pulled work without destination WIP is retried from To Do once capacity becomes available.
+
+Split undo preserves children referenced by persisted task-scoped execution budgets. The person may disable the budget through the existing budget action before undoing otherwise-unused children; a run-scoped budget alone is not a child reference.
+
+Split screening retains the initial deterministic child and inherited parent privacy signals across asynchronous screening and final policy revalidation. Removing a routing pattern while a screen is pending cannot publish an unscreened private child or invent a new screening verdict.
+
+Final deterministic split signals also determine classification provenance. A pattern added during a pending model screen records regex-private history/telemetry instead of retaining an obsolete clear model verdict; inherited parent privacy remains distinct.
+
+The outer dashboard HTTP request for backlog_split receives a per-request idle bound above the manager forwarding deadline, derived from the shared screen and hub database bounds plus margin. Other actions retain their existing HTTP policy. The boundary regression observes actual native timeout allocation; Bun 1.4.2 pending-handler idle expiry is not assumed.
+
+Split reasons retain deterministic privacy from both initial validation and final revalidation, including inherited parent privacy. Later routing policy removal cannot expose an already-withheld reason in public history.
+
+Ask evidence ignores body-free memory-reference bookkeeping when selecting the latest task event and note. The selected meaningful note retains its PII and withheld provenance under the existing on-campus boundary.

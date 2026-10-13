@@ -42,7 +42,7 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
-  planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true };
+  planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
 }
 export interface Task extends PlanningFields {
   planningRevision?: number;
@@ -84,7 +84,7 @@ export function taskProposalAt(task: Pick<Task, "history">): number | undefined 
 }
 /** Readiness carries out a pending pull; ownership or other later changes still fence undo. */
 export function planningUndoEntry(task: Pick<Task, "history">): HistoryEntry | undefined {
-  return task.history.findLast(item => item.by !== HUB || item.event !== "ready");
+  return task.history.findLast(item => item.event !== "memory reference started" && (item.by !== HUB || item.event !== "ready"));
 }
 
 /** The moves the state machine allows. `accept` and `done` are transitions, not states: they carried no behaviour of their own. */
@@ -102,10 +102,23 @@ const JSON_COLS = ["refs", "plan", "deps", "signals", "history", "sdlc"] as cons
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
   private readonly db: Database;
+  private pendingChanges: { task: Task; entry: HistoryEntry }[] | undefined;
   /** Every recorded change, as it lands (telemetry, issue #40). */
   onChange?: (task: Task, entry: HistoryEntry) => void;
   private changed(task: Task, entry: HistoryEntry): void {
+    if (this.pendingChanges) { this.pendingChanges.push({ task, entry }); return; }
     try { this.onChange?.(task, entry); } catch { /* never throw after a board write */ }
+  }
+  /** Multi-row changes become observable only once their transaction commits. */
+  private atomic<T>(write: () => T): T {
+    if (this.pendingChanges) throw new Error("nested board transaction is not supported");
+    const changes: { task: Task; entry: HistoryEntry }[] = [];
+    this.pendingChanges = changes;
+    let result: T;
+    try { result = this.db.transaction(write)(); }
+    finally { this.pendingChanges = undefined; }
+    for (const change of changes) this.changed(change.task, change.entry);
+    return result;
   }
 
   constructor(path: string) {
@@ -245,6 +258,46 @@ export class Board {
       .run(pull.previous.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
     if (result.changes !== 1) throw new Error("planner pull undo changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
+  }
+
+  splitBacklog(id: number, by: PeerId, revision: number, parts: (Parameters<Board["propose"]>[1] & { fields?: PlanningFields; afterParts?: number[]; screeningNote?: string })[], note: string, withheld = false): { parent: Task; children: Task[] } {
+    return this.atomic(() => {
+      const parent = this.get(id);
+      if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || parts.length < 2 || parts.length > 8) throw new Error("split changed or invalid");
+      const children: Task[] = [];
+      for (const part of parts) {
+        const inherited = part.afterParts?.length ? (part.deps ?? []).filter(dep => !parent.deps?.includes(dep)) : part.deps ?? [];
+        const deps = [...new Set([...inherited, ...(part.afterParts ?? []).map(index => { const child = children[index]; if (!child) throw new Error("split dependencies must name an earlier part"); return child.id; })])];
+        let child = this.propose(by, { ...part, deps, backlog: true });
+        if (part.screeningNote !== undefined) child = this.update(child.id, HUB, "screened", {}, part.screeningNote);
+        if (part.fields && Object.keys(part.fields).length) child = this.plan(child.id, by, part.fields, 0, note, withheld);
+        children.push(child);
+      }
+      const deps = children.map(child => child.id);
+      const updated = this.plan(id, by, { deps }, revision, note, withheld);
+      const entry = updated.history.at(-1)!;
+      entry.planning!.split = { children: children.map(child => ({ id: child.id, revision: child.planningRevision ?? 0, history: child.history.length })) };
+      this.db.query("UPDATE tasks SET history=? WHERE id=?").run(JSON.stringify(updated.history), id);
+      const notification = this.pendingChanges?.findLast(change => change.task.id === id && change.entry.planning?.revision === revision + 1);
+      if (notification) { notification.task = updated; notification.entry = entry; }
+      return { parent: this.get(id)!, children };
+    });
+  }
+
+  undoBacklogSplit(id: number, by: PeerId, revision: number): Task {
+    return this.atomic(() => {
+      const parent = this.get(id), entry = parent ? planningUndoEntry(parent) : undefined, split = entry?.planning?.split;
+      if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || !split || entry?.planning?.revision !== revision) throw new Error("split undo changed");
+      const ids = new Set(split.children.map(child => child.id));
+      for (const saved of split.children) {
+        const child = this.get(saved.id);
+        if (!child || child.state !== "backlog" || child.owner || taskHasStarted(child) || (child.planningRevision ?? 0) !== saved.revision || child.history.length !== saved.history) throw new Error("split child changed or started");
+      }
+      if (this.list().some(task => task.id !== id && !ids.has(task.id) && (task.deps?.some(dep => ids.has(dep)) || task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))))) throw new Error("split children are referenced by other work");
+      const restored = this.plan(id, by, { deps: entry!.planning!.previous.deps ?? [] }, revision, `undo split revision ${revision}`);
+      for (const child of ids) this.db.query("DELETE FROM tasks WHERE id=?").run(child);
+      return restored;
+    });
   }
 
   newRelease(name: string, goal: string, order: number): Release {

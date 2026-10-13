@@ -1900,8 +1900,8 @@
     {
       "id": "planner-pull-person-order",
       "file": "src/hub/tasks.ts",
-      "search": "if (priority === 0 && this.d.board.list(\"backlog\").some",
-      "replacement": "if (false && this.d.board.list(\"backlog\").some",
+      "search": "if (priority === 0) {",
+      "replacement": "if (false) {",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
     },
@@ -1956,7 +1956,7 @@
     {
       "id": "planner-readiness-preserves-undo",
       "file": "src/hub/board.ts",
-      "search": "return task.history.findLast(item => item.by !== HUB || item.event !== \"ready\");",
+      "search": "return task.history.findLast(item => item.event !== \"memory reference started\" && (item.by !== HUB || item.event !== \"ready\"));",
       "replacement": "return task.history.at(-1);",
       "testFile": "test/planner-pull.test.ts",
       "testName": "unoffered planner pull can undo after a hub readiness marker (#263)"
@@ -1986,12 +1986,60 @@
       "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
     },
     {
+      "id": "split-parent-cycle",
+      "file": "src/hub/tasks.ts",
+      "search": "if (dependency === id) throw new PreEffectToolRefusal(\"split dependency reaches its parent\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"split dependency reaches its parent\");",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split rejects cyclic input and later child edits or external references (#263)"
+    },
+    {
+      "id": "split-after-commit-observation",
+      "file": "src/hub/board.ts",
+      "search": "if (this.pendingChanges) { this.pendingChanges.push({ task, entry }); return; }",
+      "replacement": "if (false) { this.pendingChanges!.push({ task, entry }); return; }",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "backlog split commits a child DAG and undo provenance without partial callbacks (#263)"
+    },
+    {
+      "id": "split-external-reference-floor",
+      "file": "src/hub/board.ts",
+      "search": "task.deps?.some(dep => ids.has(dep))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo refuses child references and invalid late writes stay atomic (#263)"
+    },
+    {
       "id": "release-label-public-identity",
       "file": "src/ui/index.html",
       "search": "label:'#'+release.id+' '+release.name",
       "replacement": "label:release.name",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "redacted release options retain distinguishable public ids (#263)"
+    },
+    {
+      "id": "split-person-prerequisite-order",
+      "file": "src/hub/tasks.ts",
+      "search": "if (id === prerequisite) return true;",
+      "replacement": "if (id === prerequisite) return false;",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "person P0 integration order allows its split prerequisites first (#263)"
+    },
+    {
+      "id": "split-plan-pii-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!",
+      "replacement": "signals: [...new Set([...this.signalsFor(part)",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split plans containing PII are private before any observer or public response (#263)"
+    },
+    {
+      "id": "split-prerequisite-effective-rank",
+      "file": "src/hub/tasks.ts",
+      "search": "goal.id === candidate.id || this.prerequisiteOf(goal, candidate.id)",
+      "replacement": "goal.id === candidate.id",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split prerequisites inherit the higher-ranked P0 goal ahead of unrelated work (#263)"
     },
     {
       "id": "needs-approval-expiry",
@@ -2506,12 +2554,84 @@
       "testName": "normal status text includes planner WIP and capacity for retained peers"
     },
     {
+      "id": "split-final-scope-undo",
+      "file": "src/hub/tasks.ts",
+      "search": "taskHasStarted(task) || release && [\"shipped\", \"dropped\"].includes(release.state) || by !== USER",
+      "replacement": "taskHasStarted(task) || false || by !== USER",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo refuses dropped scope even for a person and refuses durable goal links"
+    },
+    {
+      "id": "split-child-screen-history",
+      "file": "src/hub/board.ts",
+      "search": "if (part.screeningNote !== undefined) child =",
+      "replacement": "if (false) child =",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split screens parts and reason concurrently and atomically retains each child verdict"
+    },
+    {
+      "id": "split-parent-transitive-cap",
+      "file": "src/hub/board.ts",
+      "search": "const deps = children.map(child => child.id);",
+      "replacement": "const deps = [...(parent.deps ?? []), ...children.map(child => child.id)];",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split keeps sixty-four parent prerequisites transitively within every edge cap"
+    },
+    {
+      "id": "split-custom-profile-marker",
+      "file": "src/hub/tasks.ts",
+      "search": "...(parent.profile === \"dev\" ? { customProfile: true as const } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split preserves custom dev metadata and stored research aliases across profile changes"
+    },
+    {
+      "id": "split-stored-profile-resolution",
+      "file": "src/hub/tasks.ts",
+      "search": "const storedProfile = !parent.profile ? \"dev\" : profile === (this.d.profile ?? \"dev\") ? this.d.profileData ?? profile : profile;",
+      "replacement": "const storedProfile = this.d.profileData ?? this.d.profile ?? \"dev\";",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split preserves custom dev metadata and stored research aliases across profile changes"
+    },
+    {
+      "id": "split-proposed-parent-p0",
+      "file": "src/hub/tasks.ts",
+      "search": "this.d.board.list().filter(goal => goal.state !== \"approved\" && (goal.priority",
+      "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && (goal.priority",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
+    },
+    {
+      "id": "split-child-memory-reference",
+      "file": "src/hub/tasks.ts",
+      "search": "[...children].some(key => this.d.store!.store.hasTask(key))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains legacy native entries without a board reference marker"
+    },
+    {
+      "id": "split-inherited-pii-source",
+      "file": "src/hub/tasks.ts",
+      "search": "inherited ? { item, label: \"pii\", source: \"inherited\" }",
+      "replacement": "inherited ? { item, label: \"pii\", source: \"regex\" }",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "private parent split records inherited PII without invented regex verdicts"
+    },
+    {
       "id": "planner-automatic-reroute-capacity",
       "file": "src/hub/tasks.ts",
       "search": "const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== \"manual\" || opts.roster);",
       "replacement": "const plannedMove = opts.planner;",
       "testFile": "test/planner-pull.test.ts",
       "testName": "automatic rescreen admission retains planner WIP after privacy clears"
+    },
+    {
+      "id": "split-memory-reference-marker",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task) this.markMemoryReference(task, by);",
+      "replacement": "if (false) this.markMemoryReference(task!, by);",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains memory references when the native store is unavailable"
     },
     {
       "id": "planner-person-reservation-undo",
@@ -2530,6 +2650,22 @@
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
     },
     {
+      "id": "split-parent-memory-undo",
+      "file": "src/hub/board.ts",
+      "search": "item.event !== \"memory reference started\" && (item.by !== HUB || item.event !== \"ready\")",
+      "replacement": "(item.by !== HUB || item.event !== \"ready\")",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains parent-only memory while removing unused children"
+    },
+    {
+      "id": "split-profile-plan-schema",
+      "file": "src/hub/hub-tools.ts",
+      "search": "if (customProfile && tool.name === \"hub_backlog_split\")",
+      "replacement": "if (false && tool.name === \"hub_backlog_split\")",
+      "testFile": "test/planner-split-surfaces.test.ts",
+      "testName": "split nested plan schema follows the selected project profile"
+    },
+    {
       "id": "planner-reviewer-owner-capacity",
       "file": "src/hub/routing.ts",
       "search": "role === \"owner\" && opts.excludeOwners?.includes(peer)",
@@ -2546,12 +2682,60 @@
       "testName": "planner idle sweep keeps its final attempt until owner capacity is available"
     },
     {
+      "id": "split-manager-forward-deadline",
+      "file": "src/hub/manager.ts",
+      "search": "else if (input.action === \"backlog_split\") nominalMs = BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000;",
+      "replacement": "else if (input.action === \"backlog_split\") nominalMs = 10_000;",
+      "testFile": "test/manager.test.ts",
+      "testName": "unified split accepts a confirmed response beyond the generic action deadline"
+    },
+    {
+      "id": "split-manager-unconfirmed-reply",
+      "file": "src/hub/manager.ts",
+      "search": "[\"start_peer\", \"backlog_split\"].includes(String(input.action))",
+      "replacement": "input.action === \"start_peer\"",
+      "testFile": "test/manager.test.ts",
+      "testName": "unified split missed reply is unconfirmed and requires task readback before retry"
+    },
+    {
+      "id": "split-stale-role-guidance",
+      "file": "src/hub/tasks.ts",
+      "search": "...(parent.role && cls === parent.class ? { role: parent.role } : {})",
+      "replacement": "...(parent.role && cls === parent.class ? { role: taskRole(parent.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd))?.id } : {})",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split retains stored task role ids when current catalog guidance disappears"
+    },
+    {
       "id": "planner-normal-return-reservation",
       "file": "src/hub/tasks.ts",
       "search": "...(restoreReservation ? { reserved: pulled.planning!.previous.reserved ?? null } : {})",
       "replacement": "...{}",
       "testFile": "test/planner-pull.test.ts",
       "testName": "ordinary backlog return restores pre-planner reservation provenance"
+    },
+    {
+      "id": "split-memory-check-bookkeeping",
+      "file": "src/hub/tasks.ts",
+      "search": "new Set([\"answer\", \"reviewer changed\", \"idle sweep\", \"memory reference started\"])",
+      "replacement": "new Set([\"answer\", \"reviewer changed\", \"idle sweep\"])",
+      "testFile": "test/tasks.test.ts",
+      "testName": "task memory bookkeeping does not discard a passing completion check"
+    },
+    {
+      "id": "split-memory-ready-bookkeeping",
+      "file": "src/hub/tasks.ts",
+      "search": "const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned =",
+      "replacement": "const last = t.history.at(-1)?.event, planned =",
+      "testFile": "test/tasks.test.ts",
+      "testName": "task memory bookkeeping retains dependent readiness after recovery"
+    },
+    {
+      "id": "split-phase-checklist-reference",
+      "file": "src/hub/board.ts",
+      "search": "task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains children referenced by another task phase checklist"
     },
     {
       "id": "planner-pending-wip-editor",
@@ -2568,6 +2752,70 @@
       "replacement": "\"declined\", { ...(task.state === \"in_progress\" ?",
       "testFile": "test/planner-pull.test.ts",
       "testName": "declined planner redo returns to To Do and resumes after alternative WIP clears"
+    },
+    {
+      "id": "split-child-execution-budget-reference",
+      "file": "src/hub/tasks.ts",
+      "search": "Array.isArray(budgets) && budgets.some(budget => budget.kind === \"task\" && budget.taskId !== undefined && childIds.has(budget.taskId))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo preserves child execution budgets until the person disables them"
+    },
+    {
+      "id": "split-initial-deterministic-privacy",
+      "file": "src/hub/tasks.ts",
+      "search": "...initialPrivacy[index]!, ...initialParentPrivacy,",
+      "replacement": "...[],",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split retains initial deterministic privacy after routing changes during screening"
+    },
+    {
+      "id": "split-final-deterministic-provenance",
+      "file": "src/hub/tasks.ts",
+      "search": "deterministicPrivate[index] ? undefined : verdict",
+      "replacement": "verdict",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split records final deterministic privacy instead of an earlier clear screen"
+    },
+    {
+      "id": "split-outer-http-deadline",
+      "file": "src/hub/ui.ts",
+      "search": "else if (input.action === \"backlog_split\") server.timeout(req, Math.ceil((BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000) / 1000) + 5);",
+      "replacement": "else if (input.action === \"backlog_split\") {}",
+      "testFile": "test/ui.test.ts",
+      "testName": "split HTTP applies a bounded per-request deadline without changing ordinary actions"
+    },
+    {
+      "id": "acp-mode-cancellation-barrier",
+      "file": "src/adapters/acp.ts",
+      "search": "if (this.cancelWait?.reported) await this.cancelWait.released;",
+      "replacement": "/* seeded: skip reported cancellation cleanup */",
+      "testFile": "test/acp.test.ts",
+      "testName": "ACP mode acknowledgement cannot outpace cancellation gate release"
+    },
+    {
+      "id": "memory-reference-sweep-quiet",
+      "file": "src/hub/task-sweep.ts",
+      "search": "while (activity >= 0 && (task.history[activity]?.sweep || task.history[activity]?.event === \"memory reference started\")) activity--;",
+      "replacement": "while (activity >= 0 && task.history[activity]?.sweep) activity--;",
+      "testFile": "test/task-sweep.test.ts",
+      "testName": "memory reference bookkeeping preserves sweep thresholds and ladder activity"
+    },
+    {
+      "id": "split-reason-policy-provenance",
+      "file": "src/hub/tasks.ts",
+      "search": "const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld || initialReasonPrivate || this.isPii(current.parent) || !this.nameable(reason));",
+      "replacement": "const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split reason retains deterministic privacy across routing policy changes"
+    },
+    {
+      "id": "ask-memory-reference-evidence",
+      "file": "src/hub/ask.ts",
+      "search": "t.history.findLast(entry => entry.event !== \"memory reference started\")",
+      "replacement": "t.history.at(-1)",
+      "testFile": "test/ask.test.ts",
+      "testName": "ask evidence skips memory bookkeeping and preserves note privacy"
     }
   ]
 }

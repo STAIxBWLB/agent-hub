@@ -1,4 +1,4 @@
-import { actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
+import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
@@ -117,7 +117,7 @@ const DEMOTE_AT = 1.5;
 const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
-const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep"]);
+const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 
 /**
  * Thrown when an assignment's board write is saved but a publish or notify after it failed (#297): the move is
@@ -256,8 +256,8 @@ export class Tasks {
     return (await this.d.piiScreen?.(text).catch(() => undefined)) ?? { label: "unknown", miss: "failed", ms: 0 };
   }
 
-  private recordScreen(task: number | undefined, item: ScreenItem, v: PiiVerdict | undefined): void {
-    const record: ScreenRecord = !v
+  private recordScreen(task: number | undefined, item: ScreenItem, v: PiiVerdict | undefined, inherited = false): void {
+    const record: ScreenRecord = inherited ? { item, label: "pii", source: "inherited" } : !v
       ? { item, label: "pii", source: "regex" }
       : { item, label: v.label === "clear" ? "clear" : "pii", source: v.label === "unknown" ? "unknown" : "screen", ...(v.category ? { category: v.category } : {}), ...(v.miss ? { miss: v.miss } : {}), ms: v.ms };
     try {
@@ -375,7 +375,7 @@ export class Tasks {
       ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note", h.withheld) }),
       ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
       ...(h.owner === undefined ? {} : { owner: h.owner }),
-      ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields } } : {}),
+      ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
@@ -566,6 +566,11 @@ export class Tasks {
   wip(peer: PeerId, except?: number): number {
     return this.d.board.plannerWip(peer, except);
   }
+  private prerequisiteOf(task: Task, prerequisite: number): boolean {
+    const pending = [...(task.deps ?? [])], seen = new Set<number>();
+    while (pending.length) { const id = pending.pop()!; if (id === prerequisite) return true; if (seen.has(id)) continue; seen.add(id); pending.push(...(this.d.board.get(id)?.deps ?? [])); }
+    return false;
+  }
   private plannerFull(task: Task): PeerId[] {
     return Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; });
   }
@@ -586,7 +591,16 @@ export class Tasks {
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
       if (this.waitsFor(task).length) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
       const priority = task.priority ?? (task.signals.includes("urgent") ? 0 : 2);
-      if (priority === 0 && this.d.board.list("backlog").some(other => other.id !== task.id && (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) === 0 && other.rank != null && other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")) && (other.rank < (task.rank ?? Number.MAX_SAFE_INTEGER) || other.rank === task.rank && other.id < task.id))) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
+      if (priority === 0) {
+        const goals = this.d.board.list().filter(goal => goal.state !== "approved" && (goal.priority ?? (goal.signals.includes("urgent") ? 0 : 2)) === 0 && goal.rank != null && goal.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")));
+        const effectiveOrder = (candidate: Task) => goals.filter(goal => goal.id === candidate.id || this.prerequisiteOf(goal, candidate.id)).map(goal => ({ rank: goal.rank!, id: goal.id })).sort((a,b) => a.rank-b.rank || a.id-b.id)[0];
+        const order = effectiveOrder(task) ?? { rank: task.rank ?? Number.MAX_SAFE_INTEGER, id: task.id };
+        if (this.d.board.list("backlog").some(other => {
+          if (other.id === task.id || this.prerequisiteOf(other, task.id) || (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) !== 0) return false;
+          const competing = effectiveOrder(other);
+          return !!competing && (competing.rank < order.rank || competing.rank === order.rank && competing.id < order.id);
+        })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
+      }
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
       const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved") && !["backlog pulled", "backlog returned"].includes(entry.event)) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
@@ -711,6 +725,21 @@ export class Tasks {
     this.planningAuthority(by);
     const task = this.d.board.get(id), entry = task ? planningUndoEntry(task) : undefined;
     if (!task || !entry?.planning || entry.planning.revision !== revision || (task.planningRevision ?? 0) !== revision || by !== USER && entry.by !== by) throw new PreEffectToolRefusal("planning undo is stale or not owned");
+    if (entry.planning.split) {
+      const release = task.release == null ? undefined : this.d.board.release(task.release);
+      if (task.state !== "backlog" || task.owner || taskHasStarted(task) || release && ["shipped", "dropped"].includes(release.state) || by !== USER && (task.pinned || release?.state === "frozen")) throw new PreEffectToolRefusal("split undo is no longer eligible");
+      if (entry.planning.split.children.some(saved => this.d.board.get(saved.id)?.history.some(item => item.event === "memory reference started"))) throw new PreEffectToolRefusal("split children are referenced by persistent long-term memory");
+      const childIds = new Set(entry.planning.split.children.map(child => child.id)), budgets = this.d.executionBudget?.status();
+      if (Array.isArray(budgets) && budgets.some(budget => budget.kind === "task" && budget.taskId !== undefined && childIds.has(budget.taskId))) throw new PreEffectToolRefusal("split children are referenced by execution budgets");
+      if (this.d.store) {
+        try { this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
+        const children = new Set(entry.planning.split.children.map(child => this.d.board.get(child.id)).filter((child): child is Task => !!child).map(child => this.memoryKey(child)));
+        if ([...children].some(key => this.d.store!.store.hasTask(key)) || this.d.store.store.goals().some(goal => goal.links.some(link => children.has(link.task)))) throw new PreEffectToolRefusal("split children are referenced by long-term tasks");
+      }
+      const restored = this.d.board.undoBacklogSplit(id, by, revision);
+      this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: restored.planningRevision! });
+      return restored;
+    }
     if (entry.planning.pull) {
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.state !== "proposed" || task.owner || taskHasStarted(task) || by !== USER && (task.pinned || release && ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull undo is no longer eligible");
@@ -720,6 +749,69 @@ export class Tasks {
       return returned;
     }
     return this.planBacklog(by, { id, revision, fields: entry.planning.previous, reason: `undo planning revision ${revision}` });
+  }
+
+  async splitBacklog(by: PeerId, input: { id: number; revision: number; parts: unknown; reason: string }): Promise<{ parent: Task; children: Task[] }> {
+    this.planningAuthority(by);
+    const { id, revision } = input;
+    if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(revision) || revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("split needs an id, revision and bounded reason");
+    const reason = input.reason.trim();
+    let parts: unknown;
+    try { parts = structuredClone(input.parts); } catch { throw new PreEffectToolRefusal("split parts must be cloneable data"); }
+    if (!Array.isArray(parts) || parts.length < 2 || parts.length > 8) throw new PreEffectToolRefusal("split needs two to eight parts");
+    const rows = parts as Record<string, unknown>[];
+    const validate = () => {
+      const parent = this.d.board.get(id);
+      if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || by !== USER && parent.pinned) throw new PreEffectToolRefusal("split changed, pinned or already started");
+      const release = parent.release == null ? undefined : this.d.board.release(parent.release);
+      if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
+      const profile = parent.profile ?? "dev";
+      const drafts = rows.map((part, index) => {
+        if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
+        const given = part.class ?? parent.profileClass ?? parent.class;
+        const storedProfile = !parent.profile ? "dev" : profile === (this.d.profile ?? "dev") ? this.d.profileData ?? profile : profile;
+        let cls: TaskClass;
+        try { cls = part.class === undefined ? parent.class : profileClass(given as string, storedProfile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+        const after = part.after ?? [], afterParts = part.afterParts ?? [];
+        if (!Array.isArray(after) || after.length > 64 || after.some(dep => !Number.isSafeInteger(dep) || dep <= 0) || new Set(after).size !== after.length || !Array.isArray(afterParts) || afterParts.length > 8 || afterParts.some(dep => !Number.isSafeInteger(dep) || dep < 0 || dep >= index) || new Set(afterParts).size !== afterParts.length) throw new PreEffectToolRefusal("split dependencies must name existing tasks or earlier parts");
+        const deps = [...new Set([...(parent.deps ?? []), ...after as number[]])], pending = [...deps], seen = new Set<number>();
+        const direct = afterParts.length ? deps.filter(dep => !parent.deps?.includes(dep)) : deps;
+        if (direct.length + afterParts.length > 64) throw new PreEffectToolRefusal("split child dependencies exceed the 64-edge cap");
+        while (pending.length) { const dependency = pending.pop()!; if (dependency === id) throw new PreEffectToolRefusal("split dependency reaches its parent"); if (seen.has(dependency)) continue; seen.add(dependency); const task = this.d.board.get(dependency); if (!task) throw new PreEffectToolRefusal("split dependency is missing"); pending.push(...(task.deps ?? [])); }
+        const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, storedProfile);
+        const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: parent.role } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
+        const fields: PlanningFields = {};
+        for (const key of ["priority", "release", "plannedStart", "due"] as const) if (parent[key] !== undefined) fields[key] = parent[key];
+        return { ...draft, fields };
+      });
+      return { parent, drafts };
+    };
+    const initial = validate(), screening = this.screenOn();
+    const initialPrivacy = initial.drafts.map(part => this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }).filter(signal => signal === "pii" || signal === "pii_path"));
+    const initialPrivate = initialPrivacy.map(signals => this.isPii({ signals })), initialParentPrivate = this.isPii(initial.parent);
+    const initialParentPrivacy = initial.parent.signals.filter(signal => signal === "pii" || signal === "pii_path");
+    const initialReasonPrivate = initialParentPrivate || !this.nameable(reason);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const attempt = Promise.all([
+      Promise.all(initial.drafts.map((part, index) => screening && !initialParentPrivate && !initialPrivate[index] ? this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined)),
+      this.withholds("note", reason, initial.parent),
+    ]);
+    let screened: Awaited<typeof attempt>;
+    try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), BACKLOG_SPLIT_SCREEN_TIMEOUT_MS); })]); }
+    finally { if (deadline !== undefined) clearTimeout(deadline); }
+    const [screenedVerdicts, withheld] = screened, current = validate();
+    const finalSignals = current.drafts.map(part => this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }));
+    const deterministicPrivate = finalSignals.map((signals, index) => initialPrivate[index] || this.isPii({ signals }));
+    const verdicts = screenedVerdicts.map((verdict, index) => deterministicPrivate[index] ? undefined : verdict);
+    const inherited = current.drafts.map((_part, index) => (initialParentPrivate || this.isPii(current.parent)) && !deterministicPrivate[index]);
+    const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!, ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
+    const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld || initialReasonPrivate || this.isPii(current.parent) || !this.nameable(reason));
+    for (const [index, child] of result.children.entries()) {
+      this.incomingBacklog.add(child.id);
+      if (screening) { this.recordScreen(child.id, "task", verdicts[index], inherited[index]); if (verdicts[index]?.label === "unknown") this.releaseNotice(`task #${child.id}: the PII screen gave no verdict (${verdicts[index]!.miss}); it is handled as a PII task`); }
+    }
+    this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: result.parent.planningRevision! });
+    return result;
   }
 
   async newRelease(by: PeerId, input: { name: string; goal: string; order: number }): Promise<Release> {
@@ -846,10 +938,11 @@ export class Tasks {
   }
 
   /** Where a screened task's `pii` signal came from, on its history and in events (issue #198); no verdict is a console line by id. */
+  private screenNote(v: PiiVerdict | undefined): string { return !v ? "pii: regex" : v.label === "clear" ? "clear" : v.label === "pii" ? `pii: screen, ${v.category}` : `pii: unknown, ${v.miss}`; }
   private screenedTask(task: Task, v: PiiVerdict | undefined): Task {
     this.recordScreen(task.id, "task", v);
     if (v?.label === "unknown") this.d.notify(`task #${task.id}: the PII screen gave no verdict (${v.miss}); it is handled as a PII task`);
-    const note = !v ? "pii: regex" : v.label === "clear" ? "clear" : v.label === "pii" ? `pii: screen, ${v.category}` : `pii: unknown, ${v.miss}`;
+    const note = this.screenNote(v);
     return this.d.board.update(task.id, HUB, "screened", {}, note);
   }
 
@@ -1387,7 +1480,7 @@ export class Tasks {
    */
   async releaseReady(): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
-      const last = t.history.at(-1)?.event, planned = this.plannerPullRecord(t)?.pull === true;
+      const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
       if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || t.owner || this.offered.has(t.id) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
       if (planned && !this.plannerAssignment(t, true).owner) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
@@ -2118,6 +2211,7 @@ export class Tasks {
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
+    if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
     if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
@@ -2141,10 +2235,14 @@ export class Tasks {
     if (g.state === "done" || g.state === "dropped") throw new PreEffectToolRefusal(`goal: that long-term task is ${g.state}`);
     return g;
   }
-  /** Record that a board task is part of a long-term task; never for a PII task. Fail-open after the board write. */
+  /** Fence deletion before external memory writes; one marker survives store absence. */
+  private markMemoryReference(task: Task, by: PeerId): void {
+    if (!this.d.board.get(task.id)?.history.some(entry => entry.event === "memory reference started")) this.d.board.update(task.id, by, "memory reference started", {});
+  }
+  /** Record a long-term link, never for PII; failures remain notices. */
   private linkNative(task: Task, goal: GoalView, by: PeerId): string {
     if (this.isPii(task)) { this.releaseNotice(`task #${task.id} is not linked to a long-term task: nothing about a PII task enters hub memory`); return "not linked (PII task)"; }
-    try { this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
+    try { this.markMemoryReference(task, by); this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
     catch (e) { this.releaseNotice(`task #${task.id}: the link to long-term task ${goal.id.slice(0, 8)} was not saved (${(e as Error).message})`); return "not linked"; }
   }
   /** A person links a board task of this project to a long-term task (`ahub goal link`). */
@@ -2171,6 +2269,7 @@ export class Tasks {
       // A short-term note on a task already approved (before hub memory existed, or late): the task is settled first, so
       // the note gets its own deadline and is never taken for a source waiting for promotion.
       if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) st.store.settle(this.memoryKey(task), by);
+      if (task) this.markMemoryReference(task, by);
       const id = st.store.note({ op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" }, horizon === "short");
       st.onNote?.(id);
       return { id, tier };
@@ -2225,7 +2324,10 @@ export class Tasks {
     const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
     this.saveNative(by, kind, text, title, task);
-    if (this.d.memory) void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
+    if (this.d.memory) {
+      try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
+      void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
+    }
   }
 
   private tell(task: Task, body: string, pii: boolean): void {

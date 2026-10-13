@@ -1,3 +1,5 @@
+import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { boardColumns } from "../ui/task-board.ts";
 import { PEER_PALETTE, peerPaletteCss } from "../ui/peer-palette.ts";
 import { PEER_START_RETRY_MS } from "./start-mode.ts";
@@ -132,6 +134,7 @@ export function startDashboard(options: DashboardOptions) {
       }
       try {
         if (input.action === "sdlc_queue" || input.action === "sdlc_release") server.timeout(req, 35);
+        else if (input.action === "backlog_split") server.timeout(req, Math.ceil((BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000) / 1000) + 5);
         return json(await options.action(input, sessionOf(cookie)));
       } catch {
         // Exceptions may quote private task text or backend details. Never echo them to the page.

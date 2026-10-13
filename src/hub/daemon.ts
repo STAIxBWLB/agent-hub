@@ -1554,7 +1554,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -1588,6 +1588,11 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_backlog_pull":
         need("assign", "pull and route backlog work");
         return JSON.stringify(tasks.publicView(await tasks.pullPlanned(by, { id: a.id, revision: a.revision, reason: a.reason })));
+      case "hub_backlog_split": {
+        need("propose", "split backlog work");
+        const split = await tasks.splitBacklog(by, { id: a.id, revision: a.revision, parts: a.parts, reason: a.reason });
+        return JSON.stringify({ parent: tasks.publicView(split.parent, true), children: split.children.map(child => tasks.publicView(child)) });
+      }
       case "hub_backlog_undo":
         return JSON.stringify(tasks.publicView(await tasks.undoPlanning(by, a.id, a.revision)));
       case "hub_task_propose": {
@@ -3207,7 +3212,7 @@ export async function startDaemon(opts: DaemonOptions) {
       pet,
       status: { peers: peerView, taskWip: attentionStatus.taskWip },
       boardCapabilities: { backlog: true },
-      planningCapabilities: { enabled: true, wipPull: true },
+      planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,
@@ -3529,6 +3534,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner, ...(a.backlog === true ? { backlog: true } : {}) });
         return { ok: true, text: result };
       }
+      case "backlog_split":
+        if (!taskId()) return bad;
+        await taskOp(USER, "hub_backlog_split", { id: a.id, revision: a.revision, parts: a.parts, reason: a.reason });
+        return { ok: true, text: "Parts staged; the original task retains integration and acceptance." };
       case "planner_pull":
         if (!taskId()) return bad;
         await taskOp(USER, "hub_backlog_pull", { id: a.id, revision: a.revision, reason: a.reason });

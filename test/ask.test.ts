@@ -185,3 +185,21 @@ test("a PII-matching note on an ordinary task is evidence only on campus", async
   expect(here.pii).toBe(true);
   expect(here.evidence.find((e) => e.id === "task #1")!.text).toContain("900101");
 });
+
+
+test("ask evidence skips memory bookkeeping and preserves note privacy", async () => {
+  for (const onCampus of [false, true]) {
+    const { deps } = setup(undefined, { memory: false, onCampus });
+    deps.board.update(1, "codex", "done", {}, "private completion detail", { withheld: true });
+    deps.board.update(1, "hub", "memory reference started", {});
+    const result = await gather("switchyard", deps);
+    const row = result.evidence.find(item => item.id === "task #1")!;
+    expect(row.text).toContain("last: done by codex");
+    expect(row.text).not.toContain("memory reference started");
+    expect(row.text.includes("private completion detail")).toBe(onCampus);
+    deps.board.update(1, "claude", "reviewed", {}, "public review detail");
+    deps.board.update(1, "hub", "memory reference started", {});
+    const ordinary = await gather("switchyard", deps);
+    expect(ordinary.evidence.find(item => item.id === "task #1")!.text).toContain("last: reviewed by claude (public review detail)");
+  }
+});
