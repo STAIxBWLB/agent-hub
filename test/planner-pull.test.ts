@@ -170,3 +170,55 @@ test("declined planner redo returns to To Do and resumes after alternative WIP c
  const local=new PullPeer("local");bus.add(local);await local.start();const busy=await tasks.propose(USER,{title:"occupied local",class:"implement",owner:"local"});tasks.accept("local",busy.id);capacity.claude=0;await tasks.decline("codex",task.id,"cannot redo");expect(board.get(task.id)).toMatchObject({state:"proposed",owner:null,reserved:null});await tasks.releaseReady();expect(board.get(task.id)?.owner).toBeNull();
  await tasks.done("local",busy.id,"done");await tasks.review("claude",busy.id,"approved");await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("local");
 });
+
+for (const source of ["backlog owner", "planning reservation"] as const) {
+  for (const reserved of [null, "local", "codex"] as const) {
+    test(`planner cannot ${reserved === null ? "clear" : reserved === "codex" ? "reassert" : "replace"} a person's ${source} before pull (#378)`, async () => {
+      const { tasks, board, bus, capacity } = await rig();
+      const local = new PullPeer("local"); bus.add(local); await local.start();
+      let task = await tasks.propose(USER, { title: "person reserved work", class: "implement", backlog: true, ...(source === "backlog owner" ? { owner: "codex" } : {}) });
+      if (source === "planning reservation") task = await tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { reserved: "codex" }, reason: "person selected owner" });
+      const revision = task.planningRevision ?? 0;
+      capacity.codex = 0;
+      await expect(tasks.pullPlanned("claude", { id: task.id, revision, reason: "try available peer" })).rejects.toThrow("person's reservation");
+      await expect(tasks.planBacklog("claude", { id: task.id, revision, fields: { reserved }, reason: "groom the reservation" })).rejects.toThrow("person's reservation");
+      expect(board.get(task.id)).toEqual(task);
+      await expect(tasks.pullPlanned("claude", { id: task.id, revision, reason: "retry available peer" })).rejects.toThrow("person's reservation");
+    });
+  }
+}
+
+for (const returnToBacklog of ["undo", "person return"] as const) {
+  test(`person reservation remains protected from grooming after planner pull ${returnToBacklog} (#378)`, async () => {
+    const { tasks, board, bus, capacity } = await rig();
+    const local = new PullPeer("local"); bus.add(local); await local.start();
+    const task = await tasks.propose(USER, { title: "restore person reservation", class: "implement", backlog: true, owner: "codex" });
+    await tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "ready" });
+    const restored = returnToBacklog === "undo" ? await tasks.undoPlanning("claude", task.id, 1) : await tasks.moveBacklog(USER, task.id, false);
+    expect(restored).toMatchObject({ state: "backlog", owner: null, reserved: "codex" });
+    const revision = restored.planningRevision ?? 0;
+    capacity.codex = 0;
+    await expect(tasks.planBacklog("claude", { id: task.id, revision, fields: { reserved: null }, reason: "clear restored reservation" })).rejects.toThrow("person's reservation");
+    expect(board.get(task.id)).toEqual(restored);
+    await expect(tasks.pullPlanned("claude", { id: task.id, revision, reason: "try another owner" })).rejects.toThrow("person's reservation");
+  });
+}
+
+test("planner-owned reservations remain editable and a person can override or clear them (#378)", async () => {
+  const { tasks, board, bus, capacity } = await rig();
+  const local = new PullPeer("local"); bus.add(local); await local.start();
+  let task = await tasks.propose(USER, { title: "planner chooses owner", class: "implement", backlog: true });
+  for (const reserved of ["codex", "codex", null, "local"] as const) {
+    task = await tasks.planBacklog("claude", { id: task.id, revision: task.planningRevision ?? 0, fields: { reserved }, reason: "planner grooming" });
+    expect(task.reserved).toBe(reserved);
+  }
+  task = await tasks.planBacklog(USER, { id: task.id, revision: task.planningRevision!, fields: { reserved: "codex" }, reason: "person override" });
+  expect(task.reserved).toBe("codex");
+  task = await tasks.planBacklog(USER, { id: task.id, revision: task.planningRevision!, fields: { reserved: null }, reason: "person releases reservation" });
+  expect(task.reserved).toBeNull();
+  task = await tasks.planBacklog("claude", { id: task.id, revision: task.planningRevision!, fields: { reserved: "codex" }, reason: "planner chooses again" });
+  capacity.codex = 0;
+  const pulled = await tasks.pullPlanned("claude", { id: task.id, revision: task.planningRevision!, reason: "planner reservation can use fallback" });
+  expect(pulled).toMatchObject({ state: "proposed", owner: null, reserved: "local" });
+  expect(board.get(task.id)?.reserved).toBe("local");
+});

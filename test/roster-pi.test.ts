@@ -8,6 +8,7 @@ import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { rosterPiFixture } from "./fakes/pi-roster-tui.ts";
+import { Bus } from "../src/hub/bus.ts";
 
 for (const idle of [true, false]) test(`daemon Pi roster removal preserves its personal owner and return verifies ${idle ? "idle" : "busy"} before dispatch (#315)`, async () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-roster-pi-"))), previous = process.env.AGENTHUB_HOME;
@@ -151,4 +152,46 @@ test("controlled recovery refuses a removed personal Pi owner until the person e
     client.close(); await f.cleanup(); await daemon.stop(); rmSync(root, { recursive: true, force: true });
     if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
   }
+});
+
+for (const lifecycle of ["start", "settled", "legacy settled"] as const) test(`Pi roster return rejects a snapshot overtaken by ${lifecycle} and a fresh retry delivers once (#378)`, async () => {
+  const f = await rosterPiFixture();
+  const bus = new Bus({ batchMs: 0 });
+  const messages: string[] = [], delivered: string[] = [];
+  bus.add(f.peer); bus.pause("pi");
+  f.peer.onMessage = body => messages.push(body);
+  bus.onDelivered = (peer, envs) => { if (peer === "pi") delivered.push(...envs.map(env => env.id)); };
+  try {
+    await f.peer.detachForRoster();
+    if (lifecycle !== "start") await f.post("/event", { type: "agent_start", generation: 1 });
+    const queued = newEnvelope(USER, "work held through snapshot retry", { to: ["pi"] });
+    bus.publish(queued); bus.resume("pi");
+    const metadata = f.peer.recoveryMetadata(), signature = processSignature(f.owner.pid);
+    const returning = f.peer.resumeFromRoster().catch((error: Error) => error);
+    const snapshot = await f.next(); expect(snapshot.type).toBe("get_session_state");
+    // The native snapshot was captured before this independently delivered lifecycle event.
+    await f.post("/event", lifecycle === "start"
+      ? { type: "agent_start", generation: 1 }
+      : { type: "agent_settled", ...(lifecycle === "settled" ? { generation: 1 } : {}), text: "personal answer" });
+    await f.ack(snapshot, { sessionId: f.sessionId, sessionFile: f.sessionFile, idle: lifecycle === "start" });
+    expect(await returning).toBeInstanceOf(Error);
+    expect(f.peer.state).toBe("offline"); expect(f.peer.acceptingTools).toBe(false);
+    expect(f.peer.recoveryMetadata()).toEqual(metadata); expect(processSignature(f.owner.pid)).toBe(signature);
+    expect(f.peer.tuiLaunch).toBe(f.launch); expect(messages).toEqual([]); expect(delivered).toEqual([]);
+    expect(bus.queued("pi")).toBe(1); expect((f.peer as any).tuiQueue).toEqual([]);
+    expect((await f.post("/tool", { name: "write", toolCallId: "stale-snapshot", sessionId: f.sessionId, generation: 1 })).status).toBe(409);
+    // No intervening lifecycle event invalidates this new snapshot.
+    await f.resume(lifecycle !== "start");
+    if (lifecycle === "start") {
+      expect(f.peer.state).toBe("busy"); expect(f.peer.acceptingTools).toBe(false);
+      expect(bus.queued("pi")).toBe(1); expect((f.peer as any).tuiQueue).toEqual([]);
+      await f.post("/event", { type: "agent_settled", generation: 1, text: "personal answer" });
+    }
+    const prompt = await f.next(); expect(prompt.type).toBe("prompt"); expect(prompt.message).toContain(queued.body);
+    await f.ack(prompt);
+    await f.post("/event", { type: "agent_start", generation: 2 });
+    await f.post("/event", { type: "agent_settled", generation: 2, text: "hub answer" });
+    expect(messages).toEqual(["hub answer"]); expect(delivered).toEqual([queued.id]);
+    expect(bus.queued("pi")).toBe(0); expect(f.peer.state).toBe("idle"); expect((f.peer as any).tuiQueue).toEqual([]);
+  } finally { bus.closeJournal(); await f.cleanup(); }
 });

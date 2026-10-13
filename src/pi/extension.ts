@@ -23,6 +23,9 @@ let shellSeq = 0;
 let forcedFailure = "";
 let turnGeneration = 0;
 let sessionId = "";
+let pendingPromptId: string | undefined;
+let activePromptId: string | undefined;
+let settlement: Promise<void> | undefined;
 const maxSteps = Number(process.env.AGENTHUB_PI_MAX_STEPS ?? 30);
 let shutdown: (() => void) | undefined;
 let runtimeCtx: any;
@@ -66,7 +69,30 @@ async function poll(pi: ExtensionAPI): Promise<void> {
       if (!command) continue;
       try {
         if (command.type === "prompt" || command.type === "steer") {
+          if (command.type === "prompt") {
+            // Let our settled callback return to native Pi before the normal queued successor starts.
+            if (settlement) {
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              try { await Promise.race([settlement, new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); })]); }
+              finally { clearTimeout(timer); }
+            }
+            if (settlement || runtimeCtx?.isIdle?.() !== true || (command.sessionId !== undefined && command.sessionId !== sessionId) || (command.generation !== undefined && command.generation !== turnGeneration)) {
+              await post("/ack", { id: command.id, ok: false, error: "Pi prompt was not inserted because its native session is no longer idle at the expected generation", refusal: { kind: "prompt_not_started", promptId: command.id, sessionId, generation: turnGeneration } });
+              continue;
+            }
+            // Pinned Pi 1.0.1 starts _runAgentPrompt synchronously before its first await.
+            // Keep this check and insertion in one JS turn; snapshots cannot reserve native idleness.
+            pendingPromptId = command.id;
+          }
           pi.sendMessage({ customType: "agent-hub", content: String(command.message ?? ""), display: true }, { triggerTurn: command.type === "prompt", deliverAs: command.type === "steer" ? "steer" : "followUp" });
+          if (command.type === "prompt" && runtimeCtx?.isIdle?.() !== false) {
+            // Another extension's async settled hook can make native Pi defer this insertion.
+            // Our callback barrier is not an atomic native reservation: keep that effect uncertain.
+            if (pendingPromptId === command.id) pendingPromptId = undefined;
+            if (activePromptId === command.id) activePromptId = undefined;
+            await post("/ack", { id: command.id, ok: false, error: "Pi prompt insertion did not synchronously claim a native turn", refusal: { kind: "prompt_uncertain", promptId: command.id, sessionId, generation: turnGeneration } });
+            continue;
+          }
         } else if (command.type === "get_session_state") {
           const entries = runtimeCtx.sessionManager.getEntries();
           await post("/ack", { id: command.id, ok: true, result: {
@@ -94,7 +120,7 @@ async function poll(pi: ExtensionAPI): Promise<void> {
           }
         }
         await post("/ack", { id: command.id, ok: true });
-      } catch (error) { await post("/ack", { id: command.id, ok: false, error: (error as Error).message }); }
+      } catch (error) { if (pendingPromptId === command.id) pendingPromptId = undefined; await post("/ack", { id: command.id, ok: false, error: (error as Error).message }); }
     } catch { await new Promise((resolve) => setTimeout(resolve, 250)); }
   }
 }
@@ -117,7 +143,7 @@ export default function(pi: ExtensionAPI): void {
     const state = ctx.sessionManager.getHeader();
     sessionId = String(state?.id ?? "");
     try {
-      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: typeof ctx.abort === "function" });
+      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: typeof ctx.abort === "function", fencedPrompt: true });
       if (claimed?.ok === false) { ctx.shutdown?.(); return; }
     } catch (error) { ctx.shutdown?.(); throw error; }
     if (!pollStarted) { pollStarted = true; void poll(pi); }
@@ -127,7 +153,7 @@ export default function(pi: ExtensionAPI): void {
     const text = message?.content?.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("")?.trim();
     const failed = !!forcedFailure || message?.stopReason === "error";
     const cancelled = !forcedFailure && message?.stopReason === "aborted";
-    await post("/event", { type: "agent_end", generation: turnGeneration, text: text ?? "", failed, cancelled, ...(failed ? { error: forcedFailure || message?.errorMessage || message?.stopReason } : {}) });
+    await post("/event", { type: "agent_end", generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}), text: text ?? "", failed, cancelled, ...(failed ? { error: forcedFailure || message?.errorMessage || message?.stopReason } : {}) });
   });
   pi.on("message_end", async (event: any) => {
     const tokens = assistantTokens(event.message);
@@ -142,7 +168,8 @@ export default function(pi: ExtensionAPI): void {
     lastActivity = now;
     try { await post("/event", { type: "activity" }); } catch { /* shutdown owns bridge cleanup */ }
   });
-  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; await post("/event", { type: "agent_start", generation: turnGeneration }); });
+  // Native retries/continuations emit more starts before the one logical agent_settled.
+  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; activePromptId = pendingPromptId ?? activePromptId; pendingPromptId = undefined; await post("/event", { type: "agent_start", generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}) }); });
   pi.on("model_select", async (_event: any, ctx: any) => { if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.shutdown?.(); });
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return { systemPrompt: event.systemPrompt }; }
@@ -157,10 +184,18 @@ export default function(pi: ExtensionAPI): void {
     return undefined;
   });
   pi.on("agent_settled", async (_event: any, ctx: any) => {
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    settlement = current;
     const entries = ctx.sessionManager?.getEntries?.() ?? [];
     const message = entries.slice().reverse().find((entry: any) => entry.type === "message" && entry.message?.role === "assistant")?.message;
     const text = message?.content?.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("")?.trim();
-    await post("/event", { type: "agent_settled", generation: turnGeneration, ...(text ? { text } : {}) });
+    try { await post("/event", { type: "agent_settled", generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}), ...(text ? { text } : {}) }); }
+    finally {
+      activePromptId = undefined;
+      // Release after this callback returns, not inside its awaited POST continuation.
+      setTimeout(() => { if (settlement === current) settlement = undefined; release(); }, 0);
+    }
   });
   pi.on("user_bash", async (event: any) => {
     const generation = turnGeneration, callSessionId = sessionId;

@@ -628,6 +628,47 @@ test("review of #352: a long-lived store reads what another process wrote, with 
   expect(daemon.list().map((v) => v.id)).toEqual([id]);
 }, 15_000);
 
+for (const anotherReader of [false, true]) {
+  for (const change of ["goal", "goal state", "goal link", "lease", "suggestion", "suggestion verdict"] as const) {
+    test(`review of #378: deferred ${change} is indexed by the next ${anotherReader ? "other store's" : "writer's"} relevant read`, () => {
+      const home = temp("deferred-goals"), clock = { t: Date.parse("2026-10-01T00:00:00Z") };
+      const writer = store(home, clock);
+      const goalInput = { project: "work/app", scope: "project" as const, title: "ship memory", milestones: [], dependsOn: [], actor: "user" };
+      let goal = change === "goal" ? "" : writer.goal(goalInput);
+      const a = writer.note(note({ tier: "long", text: "first decision" }));
+      const b = writer.note(note({ tier: "long", text: "second decision" }));
+      let suggestion = change === "suggestion verdict" ? writer.suggest(a, b, "same_topic")! : "";
+      const reader = anotherReader ? store(home, clock) : writer;
+      const task = "work/app#3@1";
+      const lock = new Database(join(home, "memory", "index.db"));
+      lock.run("BEGIN IMMEDIATE");
+      try {
+        // The public mutation succeeds because its log line persists, but the index update times out.
+        switch (change) {
+          case "goal": goal = writer.goal(goalInput); break;
+          case "goal state": writer.goalState(goal, "active", "user"); break;
+          case "goal link": writer.goalLink(goal, task, "user"); break;
+          case "lease": expect(writer.take(goal, "user")).toMatchObject({ ok: true }); break;
+          case "suggestion": suggestion = writer.suggest(a, b, "same_topic")!; break;
+          case "suggestion verdict": writer.judge(suggestion, "confirm", "user"); break;
+        }
+      } finally { lock.run("COMMIT"); lock.close(); }
+      // No note/list read or explicit refresh may repair the index before the relevant surface reads it.
+      switch (change) {
+        case "goal": expect(reader.goalOf(goal)?.title).toBe("ship memory"); break;
+        case "goal state": expect(reader.goalOf(goal)?.state).toBe("active"); break;
+        case "goal link": expect(reader.goalsOfTask(task).map((g) => g.id)).toEqual([goal]); break;
+        case "lease": expect(reader.goalOf(goal)?.lease.holder).toBe(writer.machine.id); break;
+        case "suggestion": expect(reader.suggestions()).toMatchObject([{ id: suggestion, status: "suggested" }]); break;
+        case "suggestion verdict": expect(reader.suggestions()).toMatchObject([{ id: suggestion, status: "confirmed" }]); break;
+      }
+      const indexed = reader.dump();
+      reader.rebuild();
+      expect(reader.dump()).toBe(indexed);
+    }, 15_000);
+  }
+}
+
 test("review of #352: every promotion goes through the screen: a note it keeps stays short-term, another project's waits", () => {
   const home = temp("keepshort"), clock = { t: Date.parse("2026-10-01T00:00:00Z") };
   const s = store(home, clock, (v) => v.project !== "work/app" ? "skip" : v.text.includes("data/exports") ? "keep" : "promote");
