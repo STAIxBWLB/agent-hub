@@ -2744,6 +2744,14 @@
       "replacement": "const plannedMove = opts.planner;",
       "testFile": "test/planner-pull.test.ts",
       "testName": "automatic offline rerouting of planner pulls respects destination WIP"
+    },
+    {
+      "id": "board-visible-stage-snapshot",
+      "file": "src/cli/output.ts",
+      "search": "if (ready.length) out.push(...renderBoard(ready.map(card => byId.get(card.id)), columns, now, full, context));",
+      "replacement": "if (ready.length) out.push(...renderBoard(ready.map(card => byId.get(card.id)), columns, now, full, allTasks));",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "filtered terminal stages retain the visible snapshot alongside column placement"
     }
   ]
 }
