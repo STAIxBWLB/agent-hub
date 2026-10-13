@@ -612,7 +612,7 @@ function renderBoard(snapshot, peers, ids) {
     const unknown=model.unknown.filter(id=>visibleIds.has(id));if(unknown.length) target.append(el('p','Unsupported task states: '+unknown.map(id=>'#'+id).join(', '),'board-unknown'));
   });
 }
-const petBaseTitle = document.title;
+const petBaseTitle = typeof document === 'undefined' ? 'agent-hub | Local dashboard' : document.title;
 let petSignature = '', petFirst;
 function reachPetNeed() {
   if (!snapshotValid || !petFirst) return;

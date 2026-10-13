@@ -1723,3 +1723,8 @@ The expanded-footer follow-up group passed7/0 with6687 assertions: primary
 stream rows survive alternate panels and are cleared before queued events return;
 expired notices restore the selected approval id and expiry. No earlier assertion
 was removed. Native terminal/tmux proof and final full gates remain pending.
+
+After the optional dashboard title initializer was isolated from missing DOM
+capabilities, the unchanged Settings/role/Office regressions and new pet suite
+passed61/0 with139938 assertions. This fixes the full Linux gate's three helper
+initialization failures in production code; final platform/seed proof is pending.
