@@ -2907,3 +2907,5 @@ Integer WIP editors retain a saved pending value, including zero and inheritance
 Declining rework returns changes_requested to To Do before rerouting. When a planner-pulled task has no eligible destination capacity, it remains ownerless in To Do and is retried after capacity clears, preserving the declined-owner exclusion.
 
 With no release cut, outside approved tasks are reported under unknown cut evidence, including tasks with a known approval time. A child task execution budget also prevents split undo until the person disables that budget.
+
+Split children retain their initial deterministic and inherited privacy signals across awaited screening. A routing-pattern reload cannot remove those captured signals from an unscreened child at final validation.
