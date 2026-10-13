@@ -117,7 +117,7 @@ const DEMOTE_AT = 1.5;
 const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
-const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep"]);
+const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 
 /**
  * Thrown when an assignment's board write is saved but a publish or notify after it failed (#297): the move is
@@ -1471,7 +1471,7 @@ export class Tasks {
    */
   async releaseReady(): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
-      const last = t.history.at(-1)?.event, planned = this.plannerPullRecord(t)?.pull === true;
+      const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
       if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || t.owner || this.offered.has(t.id) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
       if (planned && !this.plannerAssignment(t, true).owner) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like

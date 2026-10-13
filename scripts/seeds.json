@@ -2695,7 +2695,7 @@
       "search": "[\"start_peer\", \"backlog_split\"].includes(String(input.action))",
       "replacement": "input.action === \"start_peer\"",
       "testFile": "test/manager.test.ts",
-      "testName": "unified split timeout is unconfirmed and requires task readback before retry"
+      "testName": "unified split missed reply is unconfirmed and requires task readback before retry"
     },
     {
       "id": "split-stale-role-guidance",
@@ -2712,6 +2712,22 @@
       "replacement": "...{}",
       "testFile": "test/planner-pull.test.ts",
       "testName": "ordinary backlog return restores pre-planner reservation provenance"
+    },
+    {
+      "id": "split-memory-check-bookkeeping",
+      "file": "src/hub/tasks.ts",
+      "search": "new Set([\"answer\", \"reviewer changed\", \"idle sweep\", \"memory reference started\"])",
+      "replacement": "new Set([\"answer\", \"reviewer changed\", \"idle sweep\"])",
+      "testFile": "test/tasks.test.ts",
+      "testName": "task memory bookkeeping does not discard a passing completion check"
+    },
+    {
+      "id": "split-memory-ready-bookkeeping",
+      "file": "src/hub/tasks.ts",
+      "search": "const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned =",
+      "replacement": "const last = t.history.at(-1)?.event, planned =",
+      "testFile": "test/tasks.test.ts",
+      "testName": "task memory bookkeeping retains dependent readiness after recovery"
     }
   ]
 }
