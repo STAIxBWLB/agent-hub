@@ -2854,3 +2854,36 @@ the board at actual delivery. A batch containing pulled/removed work is discarde
 before reaching the planner; its remaining backlog ids join the next batch. This
 floor also applies during the legacy stale-notice delivery experiment. No task
 text is copied and no routing/ownership state changes.
+
+## Console character choices (#280)
+
+`pet.character` selects stai (default), gyul, lantern, cursor-cat or boxbot.
+`pet.size` selects line (default), mini or full. Mini needs100 columns; full also
+needs40 rows, and smaller terminals fall back automatically. `P` cycles the
+built-ins and off for the current console only. `?` lists this under Pet, even
+while drawing is off. The command prompt keeps its original row and width.
+
+`pet.glyphs` selects auto/ascii/blocks; unsupported locales and dumb/linux
+terminals retain the ASCII floor. `pet.blink:false` is static. Neither choosing
+nor drawing a character changes authority, config files, task state or polling.
+Explicit `ahub pet` and text status use the configured line face; prompt tokens
+remain character-independent. Native glyph width and tmux are unverified.
+
+## Dashboard attention character (#280)
+
+The dashboard header draws the configured built-in character independently of
+Office. It uses the same structural needs model as status and the console. The
+accessible button names the character, state and action/watch counts; the tab
+title shows the action count. Activating the button scrolls and focuses the exact
+visible approval/task/peer row, or its related section with fixed id-only guidance
+when the row is filtered or unavailable. It performs no action and changes no
+filters. Legacy snapshots without attention keep the widget hidden.
+
+Only a live approval alternates the two waiting poses once per second through
+CSS. `pet.blink:false` and reduced motion retain a static pose. No new timer,
+request, image protocol or character-file load is added. Project reset clears
+the widget and title. Native/browser visual validation remains unverified.
+With mini/full characters, active console notices remain visible away from the
+character: panel body rows show the bounded wrapped notice, and stream mode
+prints each fresh notice once through the existing local stream. Footer prose
+exclusion and fixed prompt/footer geometry remain. No new request or timer.

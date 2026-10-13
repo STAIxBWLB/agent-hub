@@ -14,6 +14,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Extend backlog planning with bounded acyclic dependencies and rostered reservations, retaining revision-fenced undo and unstarted-work floors (#263).
 
+- Project shared body-free attention into the dashboard header with built-in SVG characters, accessible counts and navigation-only activation (#280).
+
+- Add owner-approved STAIx and four alternative built-in characters, bounded mini/full footers, glyph fallback and session character cycling (#280).
+
 - Exclude person/hub-owned work from offline-agent attention and read structural board status facts without decoding task payloads (#280).
 
 - Add global body-free attention status, person review/offline facts, read-only recovery observation and token-free pet/prompt output (#280, phase 3 in progress). Native and full release gates remain unverified.
