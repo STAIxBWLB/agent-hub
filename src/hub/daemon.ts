@@ -3221,7 +3221,7 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       attention: attentionStatus.attentionInput,
       pet,
-      status: { peers: peerView, taskWip: attentionStatus.taskWip },
+      status: { peers: peerView, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),

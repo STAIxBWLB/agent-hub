@@ -177,6 +177,16 @@ test("task cards show public release membership and accessible identity (#263)",
 });
 
 
+test("board task guidance remains visible on a public PII stub without granting actions (#295)",()=>{
+ const {api,get,all,peers,snapshot}=page();api.draw({...snapshot,tasks:[{id:1,state:"backlog",title:"[pii]",detail:"[pii]",class:"implement",role:"backend-engineer"}]},peers,Object.keys(peers));
+ expect(all(get("tasks")).some(node=>node.textContent==="Task guidance: backend-engineer (grants no authority)")).toBe(true);expect(all(get("tasks")).filter(node=>node.tag==="button"&&node.textContent==="Assign")).toHaveLength(0);
+});
+
+test("task card accessible name announces catalog guidance",()=>{
+ const {api,snapshot,peers,get,all}=page();const task={...snapshot.tasks[0]!,role:"backend-engineer"};api.draw({...snapshot,tasks:[task]},peers,Object.keys(peers));
+ const card=all(get("tasks")).find(node=>node.tag==="article");expect(card?.getAttribute("aria-label")).toContain("Task guidance: backend-engineer (grants no authority)");
+});
+
 test("release audit previews disclose exact totals when IDs are bounded", () => {
   const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
   const source = html.slice(html.indexOf("let planningEdit ="), html.indexOf("function peerMark("));

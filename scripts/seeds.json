@@ -2114,6 +2114,22 @@
       "testName": "release filtering requires an explicit compatible daemon capability (#263)"
     },
     {
+      "id": "role-board-task-guidance",
+      "file": "src/ui/index.html",
+      "search": "if(task.role){const guidance='Task guidance: '+task.role+' (grants no authority)';row.append(el('p',guidance,'meta'));row.setAttribute('aria-label',row.getAttribute('aria-label')+', '+guidance);}",
+      "replacement": "if(false)row.append(el('p','Task guidance: '+task.role+' (grants no authority)','meta'));",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "board task guidance remains visible on a public PII stub without granting actions (#295)"
+    },
+    {
+      "id": "role-dashboard-metadata",
+      "file": "src/hub/daemon.ts",
+      "search": "roleInfo: attentionStatus.roleInfo",
+      "replacement": "roleInfo: {}",
+      "testFile": "test/role-settings.test.ts",
+      "testName": "dashboard role metadata retains separate current and pending catalog guidance (#295)"
+    },
+    {
       "id": "board-column-started-projection",
       "file": "src/hub/daemon.ts",
       "search": "...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {})",
