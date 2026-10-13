@@ -135,7 +135,8 @@ export class TextProjections {
       });
       // ponytail: in-memory for this process, cleared at 1024 keys; persist it if restarts make retries costly.
       const failure = () => { if (deadline === undefined) { if (this.failed.size >= 1024) this.failed.clear(); this.failed.add(key); } return new Error("conversion failed"); };
-      if (result.error || result.status !== 0) throw failure();
+      if (result.error) throw new Error("conversion helper failed"); // a spawn or helper failure may be transient: not remembered
+      if (result.status !== 0) throw failure();
       const converted = JSON.parse(result.stdout) as { ok?: boolean; text?: string };
       if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\0")) throw failure();
       verify?.();

@@ -3208,6 +3208,14 @@
       "replacement": "return false ||",
       "testFile": "test/path-policy.test.ts",
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
+    },
+    {
+      "id": "policy-exact-lowercase-or-folded",
+      "file": "src/hub/path-policy.ts",
+      "search": "within(path.toLowerCase(), root.toLowerCase()) || within(foldSegment(path), foldSegment(root));",
+      "replacement": "within(foldSegment(path), foldSegment(root));",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
     }
   ]
 }

@@ -16,9 +16,11 @@ export function policyRealPath(path: string): string {
   while (!existing(ancestor)) { const parent = dirname(ancestor); if (parent === ancestor) throw new Error("path cannot be resolved"); ancestor = parent; }
   return join(realPath(ancestor), relative(ancestor, path));
 }
-// Folded like a case-insensitive disk opens names: NFD/NFC, compatibility forms, long s and ignorable code points.
-const beneath = (path: string, root: string) => { path = foldSegment(path); root = foldSegment(root); return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep); };
-const lowerBeneath = (path: string, root: string) => { path = path.toLowerCase(); root = root.toLowerCase(); return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep); };
+const within = (path: string, root: string) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+// Either spelling protects, as for globs: lowercase as before, or folded like a case-insensitive disk opens names (NFD/NFC,
+// compatibility forms, long s, ignorable code points). Folding is not a function of the lowercase form for every name.
+const beneath = (path: string, root: string) => within(path.toLowerCase(), root.toLowerCase()) || within(foldSegment(path), foldSegment(root));
+const lowerBeneath = (path: string, root: string) => within(path.toLowerCase(), root.toLowerCase());
 export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
