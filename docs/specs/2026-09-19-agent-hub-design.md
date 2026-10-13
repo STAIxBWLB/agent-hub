@@ -2792,3 +2792,5 @@ Ask evidence ignores body-free memory-reference bookkeeping when selecting the l
 GitHub intake rechecks its total staging deadline after every awaited proposal, including the final issue. A late confirmed write returns its ID with partial=true and complete=false; it is not represented as an unconfirmed write or rolled back.
 
 After a confirmed GitHub task insertion, failure in later bookkeeping triggers canonical source-identity readback. A recovered row is returned among imported IDs with partial=true/complete=false; unavailable readback remains unconfirmed. A recovered backlog row is queued for the planner notice even when earlier bookkeeping prevented the normal enqueue.
+
+The per-issue intake failure boundary includes existing-row lookup and profile preparation as well as proposal staging, so a later lookup failure retains prior confirmed IDs in the partial response.

@@ -96,3 +96,13 @@ test("GitHub confirmed recovery retains the planner backlog notice", async () =>
   expect(f.tasks.flushPlannerNotices()).toBe(1);
   expect(f.tasks.flushPlannerNotices()).toBe(0);
 });
+
+
+test("GitHub intake retains progress when a later identity lookup fails", async () => {
+  const f = rig(), lookup = f.board.imported.bind(f.board);
+  f.board.imported = (repo, number) => { if (number === 2) throw new Error("identity lookup unavailable"); return lookup(repo, number); };
+  const result = await f.tasks.importGitHub(USER, { repo: "owner/repo", label: "ready" }, async () => ({ code: 0, stdout: JSON.stringify([issue(1), issue(2)]) })).catch(() => null);
+  expect(result).not.toBeNull();
+  expect(result).toEqual({ imported: [1], existing: [], partial: true, complete: false, unconfirmed: true });
+  expect(f.board.list()).toHaveLength(1);
+});

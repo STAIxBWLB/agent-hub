@@ -3024,6 +3024,14 @@
       "replacement": "/* seeded: omit recovered backlog notification */",
       "testFile": "test/github-import-tasks.test.ts",
       "testName": "GitHub confirmed recovery retains the planner backlog notice"
+    },
+    {
+      "id": "github-import-lookup-progress",
+      "file": "src/hub/tasks.ts",
+      "search": "      let created = false;\n      try {\n        const prior = this.d.board.imported(issue.source.repo, issue.source.issue);\n        if (prior) { existing.push(prior.id); continue; }\n        const classes = profileData(this.d.profileData ?? this.d.profile ?? \"dev\").classes;\n        const cls = Object.keys(classes).find(name => classes[name] === \"implement\") ?? Object.keys(classes)[0];",
+      "replacement": "      const prior = this.d.board.imported(issue.source.repo, issue.source.issue);\n      if (prior) { existing.push(prior.id); continue; }\n      let created = false;\n      const classes = profileData(this.d.profileData ?? this.d.profile ?? \"dev\").classes;\n      const cls = Object.keys(classes).find(name => classes[name] === \"implement\") ?? Object.keys(classes)[0];\n      try {",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake retains progress when a later identity lookup fails"
     }
   ]
 }
