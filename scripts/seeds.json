@@ -2019,7 +2019,7 @@
     },
     {
       "id": "pet-config-off",
-      "file": "src/cli/pet-config.ts",
+      "file": "src/pet/config.ts",
       "search": "if (value === false) return",
       "replacement": "if (value === true) return",
       "testFile": "test/pet-config.test.ts",
@@ -2199,7 +2199,7 @@
       "search": "value.trim().toLowerCase()",
       "replacement": "value",
       "testFile": "test/planning.test.ts",
-      "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
+      "testName": "normalized reservation succeeds through the planning pipeline with a named outcome assertion"
     },
     {
       "id": "planning-reservation-supported",
@@ -2280,6 +2280,182 @@
       "replacement": "for (const peer of planners) {",
       "testFile": "test/planning-notices.test.ts",
       "testName": "configured off-roster planners retain incoming ids until roster admission returns"
+    },
+    {
+      "id": "pet-size-full-floor",
+      "file": "src/pet/frame.ts",
+      "search": "requested === \"full\" && columns >= 100 && rows >= 40",
+      "replacement": "requested === \"full\" && columns >= 100",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "glyph and size floors preserve printable fallback and fixed footer geometry"
+    },
+    {
+      "id": "pet-glyph-locale-floor",
+      "file": "src/pet/frame.ts",
+      "search": "/utf-?8/i.test(locale) && !!env.TERM && ![\"dumb\", \"linux\"].includes(env.TERM)",
+      "replacement": "true",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "glyph and size floors preserve printable fallback and fixed footer geometry"
+    },
+    {
+      "id": "pet-prompt-full-width",
+      "file": "src/cli/console-state.ts",
+      "search": "return [...result, footer[2]!];",
+      "replacement": "return [...result, fitLine(footer[2]!, available)];",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "glyph and size floors preserve printable fallback and fixed footer geometry"
+    },
+    {
+      "id": "pet-choice-cycle",
+      "file": "src/cli/console-state.ts",
+      "search": "const choices = s.petChoices;",
+      "replacement": "const choices = undefined;",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "advertised character choices cycle all four alternatives and off without workflow effects"
+    },
+    {
+      "id": "pet-expanded-prose-floor",
+      "file": "src/cli/console-state.ts",
+      "search": "if (noticeShown || s.confirm?.type === \"permission_default\") left[2]",
+      "replacement": "if (false) left[2]",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expanded pet rows never carry notice or default-source prose"
+    },
+    {
+      "id": "pet-live-console-choices",
+      "file": "src/cli/console.ts",
+      "search": "state.petChoices = CHARACTER_IDS;",
+      "replacement": "state.petChoices = undefined;",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
+    },
+    {
+      "id": "pet-stream-footer-shrink",
+      "file": "src/cli/console.ts",
+      "search": "priorStreamFooterStart < footerStart",
+      "replacement": "false",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
+    },
+    {
+      "id": "pet-panels-primary-boundary",
+      "file": "src/cli/console.ts",
+      "search": "if (state.mode === \"stream\") priorStreamFooterStart = footerStart;",
+      "replacement": "priorStreamFooterStart = state.mode === \"stream\" ? footerStart : undefined;",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "primary stream footer boundary survives alternate panels with the pet turned off"
+    },
+    {
+      "id": "pet-notice-expiry-detail",
+      "file": "src/cli/console-state.ts",
+      "search": "if (noticeShown || s.confirm?.type === \"permission_default\") left[2]",
+      "replacement": "if (s.notice || s.confirm?.type === \"permission_default\") left[2]",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expired notices restore selected approval ids and expiry in expanded pet footers"
+    },
+    {
+      "id": "pet-line-glyph-selection",
+      "file": "src/cli/console-state.ts",
+      "search": "characterAttentionLine(value, character, now, s.petBlink, true, s.petGlyphs)",
+      "replacement": "characterAttentionLine(value, character, now, s.petBlink)",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "console line glyph mode selects distinct trusted catalog output without moving the prompt"
+    },
+    {
+      "id": "pet-expanded-panel-notice",
+      "file": "src/cli/console-state.ts",
+      "search": "const noticeLines = noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== \"line\" ?",
+      "replacement": "const noticeLines = false ?",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expanded pets keep active notices in panel body and away from character footer"
+    },
+    {
+      "id": "pet-expanded-stream-notice",
+      "file": "src/cli/console.ts",
+      "search": "if (key !== lastExpandedNotice) { lastExpandedNotice = key;",
+      "replacement": "if (false) { lastExpandedNotice = key;",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "expanded stream pets print notice feedback once without putting prose in the footer"
+    },
+    {
+      "id": "pet-expanded-notice-capacity",
+      "file": "src/cli/console-state.ts",
+      "search": "const height = bodyHeight - noticeLines.length;",
+      "replacement": "const height = bodyHeight;",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expanded panel notices reserve wrapped rows before placing the selected peer"
+    },
+    {
+      "id": "pet-dashboard-unchanged",
+      "file": "src/ui/index.html",
+      "search": "if(signature===petSignature)return;",
+      "replacement": "if(false)return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet uses shared body-free needs and pixels without rewriting an unchanged snapshot"
+    },
+    {
+      "id": "pet-dashboard-stale-navigation",
+      "file": "src/ui/index.html",
+      "search": "if (!snapshotValid || !petFirst) return;",
+      "replacement": "if (!petFirst) return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet activation reaches the exact visible need or heading and never invokes an action"
+    },
+    {
+      "id": "pet-dashboard-status-input-floor",
+      "file": "src/hub/daemon.ts",
+      "search": "...(includeAttentionInput ? { attentionInput } : {})",
+      "replacement": "...{ attentionInput }",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "real dashboard snapshot projects structural attention without publishing its input in status"
+    },
+    {
+      "id": "pet-dashboard-live-approval-blink",
+      "file": "src/ui/index.html",
+      "search": "snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval')",
+      "replacement": "snapshot.pet.blink!==false && value.state==='waiting'",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard blinking requires a live approval rather than a pending default"
+    },
+    {
+      "id": "pet-dashboard-review-eye-mask",
+      "file": "src/pet/pixels.ts",
+      "search": "font[glyph]?.[y]?.[x]",
+      "replacement": "font[glyph.toUpperCase()]?.[y]?.[x]",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard review eyes retain a distinct lowercase mask and the leaf uses an existing theme tone"
+    },
+    {
+      "id": "pet-dashboard-leaf-tone",
+      "file": "src/ui/index.html",
+      "search": ".pet-accent{fill:var(--amber)}",
+      "replacement": ".pet-accent{fill:var(--accent)}",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard leaf resolves to a declared attention palette variable"
+    },
+    {
+      "id": "pet-dashboard-default-peer-focus",
+      "file": "src/ui/index.html",
+      "search": "item.kind === 'delivery' || item.kind === 'default' ? peerRows.get(item.peer)",
+      "replacement": "item.kind === 'delivery' ? peerRows.get(item.peer)",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pending defaults focus their visible peer row with an unavailable-row fallback"
+    },
+    {
+      "id": "pet-dashboard-punctuation-mask",
+      "file": "src/pet/pixels.ts",
+      "search": "font[glyph]?.[y]?.[x] === \"1\"",
+      "replacement": "!\"/-\\\\'\".includes(glyph) && font[glyph]?.[y]?.[x] === \"1\"",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard rasterizes every shipped non-space block glyph and preserves STAI raised arms"
+    },
+    {
+      "id": "control-port-peer-exclusion",
+      "file": "src/hub/listen.ts",
+      "search": "if (!reserved.has(candidate.port ?? -1)) return candidate;",
+      "replacement": "if (true) return candidate;",
+      "testFile": "test/listen.test.ts",
+      "testName": "automatic control allocation keeps requested peer ports occupied until a distinct replacement exists"
     }
   ]
 }
