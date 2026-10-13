@@ -2628,3 +2628,10 @@ and `ahub ask` until a person confirms them. Measurement: `memory_brief` events 
 and the report's by-memory-brief split, and `ahub bench run --memory off|claude-mem|native|both` arms checked against
 the project's settings. Whether hub memory helps stays a research result, not an acceptance claim.
 
+
+Planner notice retries are per recipient. A stale copy requeues current backlog
+ids only for the planner whose copy was discarded; a planner that already read
+its original copy is not sent the retry. Queue overflow returns that recipient's
+ids to pending state on the existing bus event, including immediate eviction
+during publication. Pending ids are removed before publication so overflow can
+restore them; no extra timer, route, ownership change or task text is introduced.

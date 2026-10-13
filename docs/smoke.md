@@ -1716,3 +1716,12 @@ The actual queued planner notice regression and prior grooming/conductor group
 passed23/0 with235 assertions. The bus pull omitted a stale batch and the next
 notice contained only the remaining backlog id. Current full gates remain
 pending; no native grooming or live-account claim.
+
+Additional notice source work targets per-recipient retries and overflow retention.
+The focused group currently has24 pass/1 fail: its new multi-planner fixture also
+receives a legitimate Pi assignment, so the intended notice-only setup needs
+owner approval for fixture-planner-only.patch. A separate no-worker diagnostic
+verified first2 ids, one consumed copy, stale0, retry1 to Pi, repeated Claude0.
+The new supported off-roster reservation case has actual isolated green -> named
+assertion detected proof, replacing the guard's earlier shadowed test target.
+Current full gates and the additional fixture exceptions remain pending.
