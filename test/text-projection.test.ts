@@ -152,6 +152,10 @@ test.skipIf(process.platform !== "darwin")("a converter reads only its input sna
   // a read_allow entry that encloses the project still leaves the project unreadable to the converter
   const enclosing=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state-enclosing"),config:projectionConfig({".docx":[converter,"{input}"]}),readAllow:[dirname(dir)]});
   expect(enclosing.project(file)?.text).toBe("public body\n");
+  // an interpreter given a relative project script that reads its working directory still converts
+  mkdirSync(join(dir,"tools")); writeFileSync(join(dir,"tools/conv.mjs"),"import { readFileSync } from \"node:fs\";\nprocess.cwd();\nprocess.stdout.write(readFileSync(process.argv[2]));\n");
+  const relative=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state-relative"),config:projectionConfig({".docx":[process.execPath,"tools/conv.mjs","{input}"]})});
+  expect(relative.project(file)?.text).toBe("public body\n");
 });
 
 test.skipIf(process.platform !== "darwin")("a failed conversion of unchanged bytes is not retried on every facts read", () => {

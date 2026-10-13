@@ -1615,7 +1615,7 @@ export class Tasks {
       if (next.phase && !this.isPii(task) && !this.nameable(JSON.stringify(next.phase))) throw new PreEffectToolRefusal("phase metadata matches a PII pattern; use private work");
       if (next.phase) validatePhaseLinks(task, next.phase, id => this.d.board.get(id), t => this.isPii(t));
     }
-    // Recording a head is the reviewer's; a head dropped because the PR or issue changed is not a recording, and a
+    // Recording a head is the reviewer's; a head dropped because the repo or PR changed is not a recording, and a
     // head supplied with a new PR identity is one even when its value is unchanged (#382).
     const suppliedHead = !!input && typeof input === "object" && (input as { reviewedHead?: unknown }).reviewedHead !== undefined;
     const artifactChanged = next.repo !== task.sdlc?.repo || next.pr !== task.sdlc?.pr;

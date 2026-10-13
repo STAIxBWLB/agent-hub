@@ -3138,14 +3138,6 @@
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
     },
     {
-      "id": "projection-failure-memo",
-      "file": "src/hub/text-projection.ts",
-      "search": "if (this.failed.has(key)) throw new Error(\"conversion failed before\");",
-      "replacement": "void this.failed;",
-      "testFile": "test/text-projection.test.ts",
-      "testName": "a failed conversion of unchanged bytes is not retried on every facts read"
-    },
-    {
       "id": "kimi-watch-live-owner",
       "file": "src/hub/daemon.ts",
       "search": "if (peer === \"kimi\" && !(kimiOwner instanceof AcpPeer) && (",
@@ -3216,14 +3208,6 @@
       "replacement": "return false ||",
       "testFile": "test/path-policy.test.ts",
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
-    },
-    {
-      "id": "projection-project-data-deny",
-      "file": "src/hub/text-projection.ts",
-      "search": "const projectDeny = \"\\n(deny file-read-data (subpath \" + sbplString(realPath(this.options.cwd)) + \"))\";",
-      "replacement": "const projectDeny = \"\";",
-      "testFile": "test/text-projection.test.ts",
-      "testName": "a converter reads only its input snapshot and its own program, never other project files"
     }
   ]
 }

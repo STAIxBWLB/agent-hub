@@ -18,6 +18,7 @@ export function policyRealPath(path: string): string {
 }
 // Folded like a case-insensitive disk opens names: NFD/NFC, compatibility forms, long s and ignorable code points.
 const beneath = (path: string, root: string) => { path = foldSegment(path); root = foldSegment(root); return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep); };
+const lowerBeneath = (path: string, root: string) => { path = path.toLowerCase(); root = root.toLowerCase(); return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep); };
 export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
@@ -75,7 +76,8 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
     if (states.has(pattern.length)) return beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual));
     if (patternScope(pattern, states, relative(real, actual), includeParents)) return true;
     if (!existing(dir)) return false;
-    if (!beneath(real, root)) throw new Error("policy glob discovery outside project");
+    // Unfolded: a sibling whose folded spelling looks like the project is outside it, and discovery there fails closed.
+    if (!lowerBeneath(real, root)) throw new Error("policy glob discovery outside project");
     const info = statSync(dir);
     if (!info.isDirectory()) return false;
     if (depth > 32 || ancestors.has(real) || budget.entries > 4096) throw new Error("policy glob discovery unavailable");

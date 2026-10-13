@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 import { homedir, tmpdir } from "node:os";
 import { sbplString } from "../local/deny.ts";
@@ -25,12 +25,12 @@ export function projectionConfig(raw: unknown): ProjectionConfig {
 export interface ProjectedText { inputHash: string; rawHash: string; rawBlob: string; configHash: string; text: string }
 const hash = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 /** The program and script files an argv runs, resolved as the converter will see them. */
-function programFiles(cwd: string, argv: string[]): { file: string; size: number; mtimeMs: number; ctimeMs: number }[] {
-  const out: { file: string; size: number; mtimeMs: number; ctimeMs: number }[] = [];
+function programFiles(cwd: string, argv: string[]): { index: number; file: string; size: number; mtimeMs: number; ctimeMs: number }[] {
+  const out: { index: number; file: string; size: number; mtimeMs: number; ctimeMs: number }[] = [];
   for (const [index, arg] of argv.entries()) {
-    if (index !== 0 && !/\.(?:sh|py|js|ts|rb)$/.test(arg)) continue;
+    if (index !== 0 && !/\.(?:sh|py|js|mjs|cjs|ts|rb|pl)$/.test(arg)) continue;
     const choices = isAbsolute(arg) ? [arg] : index === 0 && !arg.includes("/") ? (process.env.PATH ?? "/usr/bin:/bin").split(":").slice(0, 32).map(dir => join(dir, arg)) : [resolve(cwd, arg)];
-    for (const file of choices) try { const st = statSync(file); if (!st.isFile()) continue; out.push({ file, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs }); break; } catch { /* another PATH entry */ }
+    for (const file of choices) try { const st = statSync(file); if (!st.isFile()) continue; out.push({ index, file, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs }); break; } catch { /* another PATH entry */ }
   }
   return out;
 }
@@ -117,12 +117,20 @@ export class TextProjections {
       scratch = realPath(mkdtempSync(join(tmpdir(), "ahub-projection-input-"))); const snapshot = join(scratch, "input" + ext);
       writeFileSync(snapshot, bytes, { mode: 0o400 });
       // A read_allow entry may enclose the project. Seatbelt lets a later rule win only for the operation it names, so the
-      // deny and the literal grants after it both name file-read-data; metadata stays readable for getcwd.
-      const projectDeny = "\n(deny file-read-data (subpath " + sbplString(realPath(this.options.cwd)) + "))";
-      const programs = programFiles(this.options.cwd, argv).map(p => "\n(allow file-read* file-read-data process-exec (literal " + sbplString(realPath(p.file)) + "))").join("");
+      // deny and the literal grants after it both name file-read-data. The converter runs in its scratch directory (getcwd
+      // needs that directory's data), with its program and script arguments resolved to absolute paths.
+      const root = realPath(this.options.cwd), projectDeny = "\n(deny file-read-data (subpath " + sbplString(root) + "))";
+      const resolved = programFiles(this.options.cwd, argv);
+      // A module loader lists the directories above its script: grant those listings (not their files) up to the root.
+      const listings = new Set<string>();
+      for (const program of resolved) for (let dir = dirname(realPath(program.file)); dir.startsWith(root + "/") || dir === root; dir = dirname(dir)) { listings.add(dir); if (dir === root) break; }
+      const programs = resolved.map(p => "\n(allow file-read* file-read-data process-exec (literal " + sbplString(realPath(p.file)) + "))").join("")
+        + [...listings].map(dir => "\n(allow file-read-data (literal " + sbplString(dir) + "))").join("")
+        + "\n(allow file-read* file-read-data (literal " + sbplString(scratch) + "))";
+      const absolute = new Map(resolved.map(p => [p.index, p.file]));
       const result = spawnSync(process.execPath, [join(import.meta.dir, "projection-exec.ts")], {
-        cwd: this.options.cwd, timeout: deadline === undefined ? 8000 : Math.ceil(Math.max(1, Math.min(8000, deadline - performance.now()))), maxBuffer: MAX_TEXT * 2, encoding: "utf8",
-        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + projectDeny + "\n(allow file-read* file-read-data (literal " + sbplString(snapshot) + "))" + programs, argv: argv.map(arg => arg === "{input}" ? snapshot : arg), ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.min(5000, deadline - performance.now() - 100)) }) }),
+        cwd: scratch, timeout: deadline === undefined ? 8000 : Math.ceil(Math.max(1, Math.min(8000, deadline - performance.now()))), maxBuffer: MAX_TEXT * 2, encoding: "utf8",
+        input: JSON.stringify({ cwd: scratch, sandbox: this.sandbox + projectDeny + "\n(allow file-read* file-read-data (literal " + sbplString(snapshot) + "))" + programs, argv: argv.map((arg, index) => arg === "{input}" ? snapshot : absolute.get(index) ?? arg), ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.min(5000, deadline - performance.now() - 100)) }) }),
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: "en_US.UTF-8", TERM: "dumb" },
       });
       // ponytail: in-memory for this process, cleared at 1024 keys; persist it if restarts make retries costly.
