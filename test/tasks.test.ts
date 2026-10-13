@@ -3152,3 +3152,10 @@ test("dashboard cohort links revalidate tasks that become private after cohort c
   board.update(first.id, "hub", "screened", { signals: [...first.signals, "pii_path"] });
   expect(tasks.cohortLinks()).toEqual([]);expect(tasks.overlapLinks()).toEqual([]);
 });
+
+test("task memory bookkeeping does not discard a passing completion check",async()=>{
+ const {tasks,board,release}=await checked({code:0,timedOut:false,tail:"pass"});const task=await tasks.propose("codex",{title:"quiet memory check",class:"implement",owner:"codex"});await tasks.done("codex",task.id,"done");await tasks.remember(USER,{text:"task memo",task:task.id});release();await until(()=>!tasks.isChecking(task.id));expect(board.get(task.id)?.state).toBe("in_review");expect(board.get(task.id)?.history.some(entry=>entry.event==="check finished late")).toBe(false);
+});
+test("task memory bookkeeping retains dependent readiness after recovery",async()=>{
+ const {tasks,board}=await setup();const parent=await tasks.propose("claude",{title:"dependency",class:"implement"}),child=await tasks.propose("claude",{title:"dependent",class:"implement",after:[parent.id]});await tasks.done(board.get(parent.id)!.owner!,parent.id,"done");board.update(parent.id,HUB,"approved",{state:"approved"});await tasks.remember(USER,{text:"dependent memo",task:child.id});await tasks.releaseReady();expect(board.get(child.id)?.owner).not.toBeNull();
+});
