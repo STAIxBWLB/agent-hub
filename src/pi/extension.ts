@@ -168,7 +168,8 @@ export default function(pi: ExtensionAPI): void {
     lastActivity = now;
     try { await post("/event", { type: "activity" }); } catch { /* shutdown owns bridge cleanup */ }
   });
-  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; activePromptId = pendingPromptId; pendingPromptId = undefined; await post("/event", { type: "agent_start", generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}) }); });
+  // Native retries/continuations emit more starts before the one logical agent_settled.
+  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; activePromptId = pendingPromptId ?? activePromptId; pendingPromptId = undefined; await post("/event", { type: "agent_start", generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}) }); });
   pi.on("model_select", async (_event: any, ctx: any) => { if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.shutdown?.(); });
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return { systemPrompt: event.systemPrompt }; }

@@ -2826,3 +2826,7 @@ must not consume a hub audience or receipt. Only a verified command/session-boun
 pre-effect refusal permits safe requeue; uncertain delivery stays held. Roster
 rejoin without this extension capability is refused, requiring a current native
 session instead of assuming that an older extension provides the fence.
+
+Prompt lineage lasts until logical `agent_settled`: native retry, compaction or
+continuation starts inside that run retain the same command id. A later personal
+run has no hub command lineage.

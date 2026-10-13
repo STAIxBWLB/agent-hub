@@ -3120,6 +3120,14 @@
       "replacement": "if (false) {",
       "testFile": "test/pi-prompt-admission.test.ts",
       "testName": "real Pi extension treats a deferred native insertion as uncertain and never lends its lineage to a personal start (#379)"
+    },
+    {
+      "id": "pi-logical-prompt-retry-lineage",
+      "file": "src/pi/extension.ts",
+      "search": "activePromptId = pendingPromptId ?? activePromptId; pendingPromptId = undefined;",
+      "replacement": "activePromptId = pendingPromptId; pendingPromptId = undefined;",
+      "testFile": "test/pi-prompt-continuation.test.ts",
+      "testName": "real Pi extension keeps prompt lineage across native retry starts until logical settlement (#379)"
     }
   ]
 }
