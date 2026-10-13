@@ -2020,8 +2020,8 @@
     {
       "id": "split-person-prerequisite-order",
       "file": "src/hub/tasks.ts",
-      "search": "this.prerequisiteOf(other, task.id) ||",
-      "replacement": "false ||",
+      "search": "if (id === prerequisite) return true;",
+      "replacement": "if (id === prerequisite) return false;",
       "testFile": "test/planner-split.test.ts",
       "testName": "person P0 integration order allows its split prerequisites first (#263)"
     },
@@ -2840,6 +2840,54 @@
       "replacement": "false && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
       "testFile": "test/task-sweep.test.ts",
       "testName": "planner idle sweep keeps its final attempt until owner capacity is available"
+    },
+    {
+      "id": "split-manager-forward-deadline",
+      "file": "src/hub/manager.ts",
+      "search": "else if (input.action === \"backlog_split\") nominalMs = BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000;",
+      "replacement": "else if (input.action === \"backlog_split\") nominalMs = 10_000;",
+      "testFile": "test/manager.test.ts",
+      "testName": "unified split accepts a confirmed response beyond the generic action deadline"
+    },
+    {
+      "id": "split-manager-unconfirmed-timeout",
+      "file": "src/hub/manager.ts",
+      "search": "[\"start_peer\", \"backlog_split\"].includes(String(input.action))",
+      "replacement": "input.action === \"start_peer\"",
+      "testFile": "test/manager.test.ts",
+      "testName": "unified split missed reply is unconfirmed and requires task readback before retry"
+    },
+    {
+      "id": "split-stale-role-guidance",
+      "file": "src/hub/tasks.ts",
+      "search": "...(parent.role && cls === parent.class ? { role: parent.role } : {})",
+      "replacement": "...(parent.role && cls === parent.class ? { role: taskRole(parent.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd))?.id } : {})",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split retains stored task role ids when current catalog guidance disappears"
+    },
+    {
+      "id": "planner-normal-return-reservation",
+      "file": "src/hub/tasks.ts",
+      "search": "...(restoreReservation ? { reserved: pulled.planning!.previous.reserved ?? null } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "ordinary backlog return restores pre-planner reservation provenance"
+    },
+    {
+      "id": "split-memory-check-bookkeeping",
+      "file": "src/hub/tasks.ts",
+      "search": "new Set([\"answer\", \"reviewer changed\", \"idle sweep\", \"memory reference started\"])",
+      "replacement": "new Set([\"answer\", \"reviewer changed\", \"idle sweep\"])",
+      "testFile": "test/tasks.test.ts",
+      "testName": "task memory bookkeeping does not discard a passing completion check"
+    },
+    {
+      "id": "split-memory-ready-bookkeeping",
+      "file": "src/hub/tasks.ts",
+      "search": "const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned =",
+      "replacement": "const last = t.history.at(-1)?.event, planned =",
+      "testFile": "test/tasks.test.ts",
+      "testName": "task memory bookkeeping retains dependent readiness after recovery"
     }
   ]
 }

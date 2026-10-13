@@ -1,5 +1,5 @@
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
-import { actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
+import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
@@ -118,7 +118,7 @@ const DEMOTE_AT = 1.5;
 const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
-const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep"]);
+const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 
 /**
  * Thrown when an assignment's board write is saved but a publish or notify after it failed (#297): the move is
@@ -786,7 +786,7 @@ export class Tasks {
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || by !== USER && parent.pinned) throw new PreEffectToolRefusal("split changed, pinned or already started");
       const release = parent.release == null ? undefined : this.d.board.release(parent.release);
       if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
-      const catalog = this.d.catalog ?? loadRoleCatalog(this.d.cwd), profile = parent.profile ?? "dev";
+      const profile = parent.profile ?? "dev";
       const drafts = rows.map((part, index) => {
         if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
         const given = part.class ?? parent.profileClass ?? parent.class;
@@ -800,7 +800,7 @@ export class Tasks {
         if (direct.length + afterParts.length > 64) throw new PreEffectToolRefusal("split child dependencies exceed the 64-edge cap");
         while (pending.length) { const dependency = pending.pop()!; if (dependency === id) throw new PreEffectToolRefusal("split dependency reaches its parent"); if (seen.has(dependency)) continue; seen.add(dependency); const task = this.d.board.get(dependency); if (!task) throw new PreEffectToolRefusal("split dependency is missing"); pending.push(...(task.deps ?? [])); }
         const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, storedProfile);
-        const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: taskRole(parent.role, cls, catalog)?.id } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
+        const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: parent.role } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
         const fields: PlanningFields = {};
         for (const key of ["priority", "release", "plannedStart", "due"] as const) if (parent[key] !== undefined) fields[key] = parent[key];
         return { ...draft, fields };
@@ -814,7 +814,7 @@ export class Tasks {
       this.withholds("note", reason, initial.parent),
     ]);
     let screened: Awaited<typeof attempt>;
-    try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), 8000); })]); }
+    try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), BACKLOG_SPLIT_SCREEN_TIMEOUT_MS); })]); }
     finally { if (deadline !== undefined) clearTimeout(deadline); }
     const [verdicts, withheld] = screened, current = validate();
     const inherited = current.drafts.map(part => this.isPii(current.parent) && !this.isPii({ signals: this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }) }));
@@ -944,7 +944,9 @@ export class Tasks {
     if (!task) throw new PreEffectToolRefusal(`no task #${n}`);
     if (task.state !== (pull ? "backlog" : "proposed") || task.owner) throw new PreEffectToolRefusal(`task #${n}: ${pull ? "only backlog may be pulled" : "only ownerless proposed work may return to backlog"}`);
     if (!pull && taskHasStarted(task)) throw new PreEffectToolRefusal(`task #${n}: started work cannot return to backlog`);
-    const next = this.d.board.update(n, by, pull ? "backlog pulled" : "backlog returned", { state: pull ? "proposed" : "backlog", owner: null, reviewer: null });
+    const pulled = task.history.findLast(entry => entry.event === "backlog pulled" || entry.event === "backlog returned");
+    const restoreReservation = !pull && pulled?.planning?.pull && !task.history.slice(task.history.lastIndexOf(pulled) + 1).some(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved"));
+    const next = this.d.board.update(n, by, pull ? "backlog pulled" : "backlog returned", { state: pull ? "proposed" : "backlog", owner: null, reviewer: null, ...(restoreReservation ? { reserved: pulled.planning!.previous.reserved ?? null } : {}) });
     this.offered.delete(n);
     if (!pull) { this.incomingBacklog.add(n); return next; }
     const waits = this.waitsFor(next);
@@ -1497,7 +1499,7 @@ export class Tasks {
    */
   async releaseReady(): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
-      const last = t.history.at(-1)?.event, planned = this.plannerPullRecord(t)?.pull === true;
+      const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
       if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || t.owner || this.offered.has(t.id) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
       if (planned && !this.plannerAssignment(t, true).owner) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like

@@ -2566,6 +2566,11 @@ to cancel a dispatched native turn. Native/visual proof remains unverified.
 
 ## Backlog split contract (#263, in progress)
 
+The manager split deadline includes the shared 8-second screening bound, the
+hub SQLite busy wait and a five-second margin. A missing answer is unconfirmed
+and requires task readback before retry. Stored parent role IDs remain guidance
+metadata when the current catalog entry is unavailable; they confer no authority.
+
 Task-scoped memory note/link attempts record one body-free board-history marker
 before external persistence. Split undo preserves that fence even when memory
 is disabled or unavailable; failed attempts conservatively retain the child.

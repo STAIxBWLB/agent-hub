@@ -1,3 +1,5 @@
+import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -158,14 +160,15 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
         const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
         let nominalMs = 10_000;
         if (input.action === "start_peer") nominalMs = MAX_COMMAND_MS + 5_000;
+        else if (input.action === "backlog_split") nominalMs = BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000;
         else if (deliveryRead) nominalMs = 30_000;
         const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
         const result = await client.request(input.action === "snapshot"
           ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}) }
           : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
         // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
-        if (input.action === "start_peer" && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
-          const text = "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
+        if (["start_peer", "backlog_split"].includes(String(input.action)) && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
+          const text = input.action === "backlog_split" ? "Split result is unconfirmed. Reload the task before retrying; the hub may still commit its children." : "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
           return { ok: false, unconfirmed: true, text, error: text };
         }
         if (deliveryRead) { const { rid: _transportId, ...report } = result; return report; }
