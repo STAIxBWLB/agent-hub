@@ -2552,6 +2552,54 @@
       "replacement": "if (false) for (const [peer, value] of Object.entries(data.taskWip!))",
       "testFile": "test/planner-wip-settings.test.ts",
       "testName": "normal status text includes planner WIP and capacity for retained peers"
+    },
+    {
+      "id": "split-final-scope-undo",
+      "file": "src/hub/tasks.ts",
+      "search": "taskHasStarted(task) || release && [\"shipped\", \"dropped\"].includes(release.state) || by !== USER",
+      "replacement": "taskHasStarted(task) || false || by !== USER",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo refuses dropped scope even for a person and refuses durable goal links"
+    },
+    {
+      "id": "split-child-screen-history",
+      "file": "src/hub/board.ts",
+      "search": "if (part.screeningNote !== undefined) child =",
+      "replacement": "if (false) child =",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split screens parts and reason concurrently and atomically retains each child verdict"
+    },
+    {
+      "id": "split-parent-transitive-cap",
+      "file": "src/hub/board.ts",
+      "search": "const deps = children.map(child => child.id);",
+      "replacement": "const deps = [...(parent.deps ?? []), ...children.map(child => child.id)];",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split keeps sixty-four parent prerequisites transitively within every edge cap"
+    },
+    {
+      "id": "split-custom-profile-marker",
+      "file": "src/hub/tasks.ts",
+      "search": "...(parent.profile === \"dev\" ? { customProfile: true as const } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split preserves custom dev metadata and stored research aliases across profile changes"
+    },
+    {
+      "id": "split-stored-profile-resolution",
+      "file": "src/hub/tasks.ts",
+      "search": "const storedProfile = profile === (this.d.profile ?? \"dev\") ? this.d.profileData ?? profile : profile;",
+      "replacement": "const storedProfile = this.d.profileData ?? this.d.profile ?? \"dev\";",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split preserves custom dev metadata and stored research aliases across profile changes"
+    },
+    {
+      "id": "split-proposed-parent-p0",
+      "file": "src/hub/tasks.ts",
+      "search": "this.d.board.list().filter(goal => goal.state !== \"approved\" && this.prerequisiteOf(goal, task.id)",
+      "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && this.prerequisiteOf(goal, task.id)",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
     }
   ]
 }

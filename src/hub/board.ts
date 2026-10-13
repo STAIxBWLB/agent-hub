@@ -260,18 +260,20 @@ export class Board {
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
 
-  splitBacklog(id: number, by: PeerId, revision: number, parts: (Parameters<Board["propose"]>[1] & { fields?: PlanningFields; afterParts?: number[] })[], note: string, withheld = false): { parent: Task; children: Task[] } {
+  splitBacklog(id: number, by: PeerId, revision: number, parts: (Parameters<Board["propose"]>[1] & { fields?: PlanningFields; afterParts?: number[]; screeningNote?: string })[], note: string, withheld = false): { parent: Task; children: Task[] } {
     return this.atomic(() => {
       const parent = this.get(id);
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || parts.length < 2 || parts.length > 8) throw new Error("split changed or invalid");
       const children: Task[] = [];
       for (const part of parts) {
-        const deps = [...new Set([...(part.deps ?? []), ...(part.afterParts ?? []).map(index => { const child = children[index]; if (!child) throw new Error("split dependencies must name an earlier part"); return child.id; })])];
+        const inherited = part.afterParts?.length ? (part.deps ?? []).filter(dep => !parent.deps?.includes(dep)) : part.deps ?? [];
+        const deps = [...new Set([...inherited, ...(part.afterParts ?? []).map(index => { const child = children[index]; if (!child) throw new Error("split dependencies must name an earlier part"); return child.id; })])];
         let child = this.propose(by, { ...part, deps, backlog: true });
+        if (part.screeningNote !== undefined) child = this.update(child.id, HUB, "screened", {}, part.screeningNote);
         if (part.fields && Object.keys(part.fields).length) child = this.plan(child.id, by, part.fields, 0, note, withheld);
         children.push(child);
       }
-      const deps = [...new Set([...(parent.deps ?? []), ...children.map(child => child.id)])];
+      const deps = children.map(child => child.id);
       const updated = this.plan(id, by, { deps }, revision, note, withheld);
       const entry = updated.history.at(-1)!;
       entry.planning!.split = { children: children.map(child => ({ id: child.id, revision: child.planningRevision ?? 0, history: child.history.length })) };
