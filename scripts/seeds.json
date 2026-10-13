@@ -2776,6 +2776,14 @@
       "replacement": "peer], ...this.health()",
       "testFile": "test/planner-pull.test.ts",
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
+    },
+    {
+      "id": "board-plain-visible-stage-snapshot",
+      "file": "src/cli/output.ts",
+      "search": "taskProgress(boardColumnContext(tasks, allTasks))",
+      "replacement": "taskProgress(allTasks)",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "filtered plain board stages preserve visible rows from the first read"
     }
   ]
 }
