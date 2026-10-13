@@ -2268,7 +2268,7 @@
     {
       "id": "planner-notice-unsettled-coalescing",
       "file": "src/hub/bus.ts",
-      "search": "...(this.journal?.unresolved(id).flatMap(row => row.originals) ?? [])",
+      "search": "...(this.journal?.unresolved(id).filter(row => row.state !== \"queued\").flatMap(row => row.originals) ?? [])",
       "replacement": "...[]",
       "testFile": "test/planning-notices.test.ts",
       "testName": "planner recovery coalesces unsettled journal originals without a queued copy"
@@ -2456,6 +2456,22 @@
       "replacement": "if (true) return candidate;",
       "testFile": "test/listen.test.ts",
       "testName": "automatic control allocation keeps requested peer ports occupied until a distinct replacement exists"
+    },
+    {
+      "id": "planner-notice-evicted-queued-row",
+      "file": "src/hub/bus.ts",
+      "search": ".filter(row => row.state !== \"queued\")",
+      "replacement": ".filter(() => true)",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "evicted retried journal notices do not suppress backlog rediscovery on restart"
+    },
+    {
+      "id": "planner-notice-new-role-seeding",
+      "file": "src/hub/tasks.ts",
+      "search": "for (const peer of configured) if (!this.knownPlanners.has(peer)) {",
+      "replacement": "for (const peer of configured) if (false) {",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "newly configured planners receive existing backlog without repeating earlier planners"
     }
   ]
 }
