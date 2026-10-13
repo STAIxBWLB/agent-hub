@@ -6,7 +6,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { projectProfile, resolveProfile } from "../src/hub/profiles.ts";
-import { MemoryStore } from "../src/memory/store.ts";
+import { MemoryStore, taskKey } from "../src/memory/store.ts";
 import type { PiiVerdict, ScreenRecord } from "../src/hub/inference.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -163,4 +163,16 @@ test("private parent split records inherited PII without invented regex verdicts
  const f=rig(),records:ScreenRecord[]=[];const tasks=new Tasks({...f.deps,routing:()=>({...f.deps.routing(),signals:{...f.deps.routing().signals,pii_screen:"local"}}),piiScreen:async()=>({label:"unknown",miss:"failed",ms:2}),recordScreen:record=>records.push(record)});
  const parent=await tasks.propose(USER,{title:"public words",class:"implement",backlog:true});const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});
  for(const child of result.children){expect(child.history.find(entry=>entry.event==="screened")?.note).toBe("pii: inherited");expect(records.find(record=>record.task===child.id)).toEqual({task:child.id,item:"task",label:"pii",source:"inherited"});}
+});
+
+
+test("split undo retains memory references when the native store is unavailable",async()=>{
+ const f=rig(),store=new MemoryStore({home:join(f.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...f.deps,store:{store,project:"split",repo:"owner/repo"}}),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});
+ const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});await tasks.remember(USER,{text:"child note",task:result.children[0]!.id});
+ const withoutStore=new Tasks(f.deps);await expect(withoutStore.undoPlanning(USER,parent.id,1)).rejects.toThrow("memory");expect(f.board.get(result.children[0]!.id)).toBeDefined();
+});
+test("split undo retains legacy native entries without a board reference marker",async()=>{
+ const f=rig(),store=new MemoryStore({home:join(f.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...f.deps,store:{store,project:"split",repo:"owner/repo"}}),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});
+ const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});store.note({op:"note",project:"split",scope:"project",tier:"short",kind:"finding",peer:USER,text:"legacy child note",task:taskKey("split",result.children[0]!)});
+ await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced");expect(f.board.get(result.children[0]!.id)).toBeDefined();
 });

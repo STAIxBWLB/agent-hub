@@ -133,3 +133,14 @@ test("automatic offline rerouting of planner pulls respects destination WIP",asy
  await tasks.releaseFromGone("codex",1);expect(board.get(task.id)?.owner).toBe("codex");
  await tasks.assignTo(task.id,"local");expect(board.get(task.id)?.owner).toBe("local");
 });
+
+test("person reservation survives planner pull undo and a second pull",async()=>{
+ const {tasks,bus,capacity}=await rig();const task=await tasks.propose(USER,{title:"reserved",class:"implement",backlog:true,owner:"codex"});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"first"});const undone=await tasks.undoPlanning("claude",task.id,1);expect(undone.reserved).toBe("codex");
+ capacity.codex=0;const local=new PullPeer("local");bus.add(local);await local.start();await expect(tasks.pullPlanned("claude",{id:task.id,revision:2,reason:"second"})).rejects.toThrow("person's reservation");
+});
+test("accepted planner work remains unchanged when automatic handoffs have no capacity",async()=>{
+ const {tasks,board,bus}=await rig();const task=await tasks.propose(USER,{title:"accepted planned",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});await tasks.releaseReady();tasks.accept("codex",task.id);
+ const local=new PullPeer("local");bus.add(local);await local.start();const busy=board.propose(USER,{title:"occupied",class:"implement"});board.update(busy.id,USER,"assigned",{owner:"local",state:"in_progress"});const before=board.get(task.id);
+ expect(tasks.rosterPreview("codex").find(row=>row.id===task.id)?.to).toBeNull();expect(await tasks.reassignForRoster("codex")).toEqual([]);expect(board.get(task.id)).toEqual(before);
+ expect(await tasks.reassignForPause("codex",undefined)).toEqual([]);expect(board.get(task.id)).toEqual(before);await bus.peers.get("codex")!.stop();expect(await tasks.releaseFromGone("codex",1)).toEqual([]);expect(board.get(task.id)).toEqual(before);
+});

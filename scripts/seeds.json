@@ -1876,8 +1876,8 @@
     {
       "id": "planner-pull-capacity",
       "file": "src/hub/tasks.ts",
-      "search": "const full = Object.keys(states).filter(peer => {\n      const queue = this.d.bus.queueSummary(peer);\n      return this.wip(peer, task.id) >= this.wipLimit(peer)",
-      "replacement": "const full = Object.keys(states).filter(peer => {\n      const queue = this.d.bus.queueSummary(peer);\n      return false",
+      "search": "return this.wip(peer, task.id) >= this.wipLimit(peer)",
+      "replacement": "return false",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
     },
@@ -1916,7 +1916,7 @@
     {
       "id": "planner-offer-capacity-recheck",
       "file": "src/hub/tasks.ts",
-      "search": "const plannerFull = plannedMove ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];",
+      "search": "const plannerFull = plannedMove ? this.plannerFull(task) : [];",
       "replacement": "const plannerFull: string[] = [];",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner offers recheck reserved capacity and refuse another peer's slot (#263)"
@@ -2743,7 +2743,7 @@
       "search": "[...children].some(key => this.d.store!.store.hasTask(key))",
       "replacement": "false",
       "testFile": "test/planner-split.test.ts",
-      "testName": "split undo refuses child-scoped memory entries"
+      "testName": "split undo retains legacy native entries without a board reference marker"
     },
     {
       "id": "split-inherited-pii-source",
@@ -2768,6 +2768,30 @@
       "replacement": "if (ready.length) out.push(...renderBoard(ready.map(card => byId.get(card.id)), columns, now, full, allTasks));",
       "testFile": "test/board-followup.test.ts",
       "testName": "filtered terminal stages retain the visible snapshot alongside column placement"
+    },
+    {
+      "id": "split-memory-reference-marker",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task) this.markMemoryReference(task, by);",
+      "replacement": "if (false) this.markMemoryReference(task!, by);",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains memory references when the native store is unavailable"
+    },
+    {
+      "id": "planner-person-reservation-undo",
+      "file": "src/hub/tasks.ts",
+      "search": " && ![\"backlog pulled\", \"backlog returned\"].includes(entry.event)",
+      "replacement": "",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "person reservation survives planner pull undo and a second pull"
+    },
+    {
+      "id": "planner-accepted-offline-preflight",
+      "file": "src/hub/tasks.ts",
+      "search": "peer, ...(this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [])], ...this.health()",
+      "replacement": "peer], ...this.health()",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
     }
   ]
 }
