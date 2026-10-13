@@ -2832,6 +2832,14 @@
       "replacement": "\"declined\", { ...(task.state === \"in_progress\" ?",
       "testFile": "test/planner-pull.test.ts",
       "testName": "declined planner redo returns to To Do and resumes after alternative WIP clears"
+    },
+    {
+      "id": "split-child-execution-budget-reference",
+      "file": "src/hub/tasks.ts",
+      "search": "Array.isArray(budgets) && budgets.some(budget => budget.kind === \"task\" && budget.taskId !== undefined && childIds.has(budget.taskId))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo preserves child execution budgets until the person disables them"
     }
   ]
 }

@@ -730,6 +730,8 @@ export class Tasks {
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.state !== "backlog" || task.owner || taskHasStarted(task) || release && ["shipped", "dropped"].includes(release.state) || by !== USER && (task.pinned || release?.state === "frozen")) throw new PreEffectToolRefusal("split undo is no longer eligible");
       if (entry.planning.split.children.some(saved => this.d.board.get(saved.id)?.history.some(item => item.event === "memory reference started"))) throw new PreEffectToolRefusal("split children are referenced by persistent long-term memory");
+      const childIds = new Set(entry.planning.split.children.map(child => child.id)), budgets = this.d.executionBudget?.status();
+      if (Array.isArray(budgets) && budgets.some(budget => budget.kind === "task" && budget.taskId !== undefined && childIds.has(budget.taskId))) throw new PreEffectToolRefusal("split children are referenced by execution budgets");
       if (this.d.store) {
         try { this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
         const children = new Set(entry.planning.split.children.map(child => this.d.board.get(child.id)).filter((child): child is Task => !!child).map(child => this.memoryKey(child)));
