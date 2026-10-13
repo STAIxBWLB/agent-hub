@@ -2747,3 +2747,5 @@ existing Origin/token/native ownership refusals remain unchanged.
 Split child external-use checks include persisted SDLC phase checklist task ids and predecessor ids, as well as Tasks dependency edges. An undo preserves referenced children and the original board when it refuses.
 
 Declining rework in changes_requested returns it to proposed before rerouting, just as declining in_progress work does. The Board permits that transition; the Tasks owner/person authority remains required. Planner-pulled work without destination WIP is retried from To Do once capacity becomes available.
+
+Split undo preserves children referenced by persisted task-scoped execution budgets. The person may disable the budget through the existing budget action before undoing otherwise-unused children; a run-scoped budget alone is not a child reference.
