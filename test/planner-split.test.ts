@@ -173,6 +173,6 @@ test("split undo retains memory references when the native store is unavailable"
 });
 test("split undo retains legacy native entries without a board reference marker",async()=>{
  const f=rig(),store=new MemoryStore({home:join(f.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...f.deps,store:{store,project:"split",repo:"owner/repo"}}),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});
- const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});store.note({op:"note",project:"split",scope:"project",tier:"short",kind:"finding",peer:USER,text:"legacy child note",task:taskKey("split",result.children[0]!)});
+ const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});store.note({op:"note",project:"split",scope:"project",tier:"short",kind:"finding",peer:USER,text:"legacy child note",about:[],source:"person",task:taskKey("split",result.children[0]!)});
  await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced");expect(f.board.get(result.children[0]!.id)).toBeDefined();
 });
