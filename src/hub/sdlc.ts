@@ -215,15 +215,16 @@ export function touchingPrs(prs: { pr: number; paths: string[] }[]): { before: n
   return conflicts;
 }
 
-export type SdlcGh = (args: string[], timeoutMs?: number) => Promise<{ code: number; stdout: string }>;
+export type SdlcGh = (args: string[], timeoutMs?: number, cwd?: string, maxOutputBytes?: number) => Promise<{ code: number; stdout: string }>;
 /** Read-only, fixed argv. Output and time are bounded; diagnostics never expose credentials or remote text. */
-export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000) => new Promise((resolve) => {
-  const child = spawn("gh", args, { env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
+export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 256 * 1024) => new Promise((resolve) => {
+  const outputLimit = Number.isSafeInteger(maxOutputBytes) ? Math.min(2 * 1024 * 1024, Math.max(1, maxOutputBytes)) : 256 * 1024;
+  const child = spawn("gh", args, { ...(cwd ? { cwd } : {}), env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
   let stdout = "", failed = false;
   const stop = () => { failed = true; void stopOwnedProcess(child, { group: true }).catch(() => {}); };
   const timer = setTimeout(stop, Math.max(1, Math.min(10_000, timeoutMs)));
   child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", chunk => { if (failed) return; stdout += chunk.toString(); if (Buffer.byteLength(stdout) > 256 * 1024) { stdout = ""; stop(); } });
+  child.stdout?.on("data", chunk => { if (failed) return; stdout += chunk.toString(); if (Buffer.byteLength(stdout) > outputLimit) { stdout = ""; stop(); } });
   child.once("error", () => { failed = true; clearTimeout(timer); resolve({ code: 1, stdout: "" }); });
   child.once("close", code => { clearTimeout(timer); resolve({ code: failed ? 1 : code ?? 1, stdout: failed ? "" : stdout }); });
 });

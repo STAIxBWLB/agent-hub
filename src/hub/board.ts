@@ -1,3 +1,4 @@
+import type { GitHubSource } from "./github-import.ts";
 import { Database } from "bun:sqlite";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, type PeerId } from "./envelope.ts";
@@ -45,6 +46,7 @@ export interface HistoryEntry {
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
 }
 export interface Task extends PlanningFields {
+  external?: GitHubSource;
   planningRevision?: number;
   id: number;
   title: string;
@@ -144,6 +146,9 @@ export class Board {
     }
     // And from before issue #207: existing rows reserve nobody.
     if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
+    if (!have.has("external_repo")) this.db.run("ALTER TABLE tasks ADD COLUMN external_repo TEXT");
+    if (!have.has("external_issue")) this.db.run("ALTER TABLE tasks ADD COLUMN external_issue INTEGER");
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS tasks_external_issue ON tasks(external_repo,external_issue) WHERE external_repo IS NOT NULL AND external_issue IS NOT NULL");
     if (!have.has("sdlc")) this.db.run("ALTER TABLE tasks ADD COLUMN sdlc TEXT");
     if (!have.has("task_role")) this.db.run("ALTER TABLE tasks ADD COLUMN task_role TEXT");
     if (!have.has("project_profile")) this.db.run("ALTER TABLE tasks ADD COLUMN project_profile TEXT");
@@ -160,15 +165,20 @@ export class Board {
 
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; external?: GitHubSource }): Task {
     const now = Date.now();
     const history: HistoryEntry[] = [{ at: now, by, event: t.backlog ? "backlogged" : "proposed" }];
     const { lastInsertRowid } = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null);
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;
+  }
+
+  imported(repo: string, issue: number): Task | undefined {
+    const row = this.db.query("SELECT * FROM tasks WHERE external_repo=? AND external_issue=?").get(repo.toLowerCase(), issue) as Record<string, unknown> | null;
+    return row ? parse(row) : undefined;
   }
 
   get(id: number): Task | undefined {
@@ -369,6 +379,8 @@ function parse(row: Record<string, unknown>): Task {
   }
   if (out.project_profile != null) Object.assign(out, JSON.parse(String(out.project_profile)));
   delete out.project_profile;
+  if (out.external_repo != null && out.external_issue != null) out.external = { provider: "github", repo: String(out.external_repo), issue: Number(out.external_issue), url: `https://github.com/${out.external_repo}/issues/${out.external_issue}` };
+  delete out.external_repo; delete out.external_issue;
   if (out.task_role != null) out.role = out.task_role;
   delete out.task_role;
   if (out.planned_start != null) out.plannedStart = out.planned_start;

@@ -1694,6 +1694,12 @@ Split fixtures cover atomic callbacks/rollback, earlier-part DAGs, cycle refusal
 changed/referenced children, private phase inheritance, P0 prerequisites and
 actual tool/CLI/authenticated HTTP undo. Full current source/native/visual proof
 remains pending; the inherited started fixture exception is still unresolved.
+
+
+GitHub intake fixtures cover fixed read-only selection, page and identity
+validation, persistent/restart/after-screen dedupe, PII source projection,
+confirmed partial progress and person CLI classification. Current full and
+native/visual evidence remain pending. No real-account import ran.
 ## Console attention (#280, phase 1)
 
 Automated coverage targets request ordering, read-only navigation/modal ownership,

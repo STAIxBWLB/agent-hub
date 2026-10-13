@@ -2591,6 +2591,21 @@ unchanged unstarted backlog children, refusing later edits, owners, execution or
 external references. Role, revision, pin/person and frozen scope floors remain.
 Public projections expose child ids without private prior values. Source/native
 verification remains pending; no live operation or release process is implied.
+
+## One-way GitHub backlog intake (#263, in progress)
+
+A person may import open issues selected by a required label and optional
+milestone/repository, using fixed read-only gh argv. The existing reader bounds
+stdout and execution; intake uses a 2 MiB output ceiling for the 33-row sentinel
+page, including worst-case escaped title/body JSON. Other SDLC reads retain
+their 256 KiB default. One page stages at most 32 issues and reports truncation.
+Comma-containing and double-quote-containing labels are refused because gh --label uses CSV-style parsing;
+selection must never silently broaden. The entire returned page must validate before any staging. Repository/issue
+identity is stored persistently and deduplicated across restart and concurrent
+screening. Tasks screens imported content and stages unoffered backlog; links
+are shown only through the central public projection, with no source identity
+exposed for PII cards. No GitHub comment, label, assignment or close is written.
+Current source/native proof remains pending.
 ## Console attention foundation (#280, in progress)
 
 The self-contained needs(input,now) model receives structural console-owned
@@ -2762,3 +2777,9 @@ The outer dashboard HTTP request for backlog_split receives a per-request idle b
 Split reasons retain deterministic privacy from both initial validation and final revalidation, including inherited parent privacy. Later routing policy removal cannot expose an already-withheld reason in public history.
 
 Ask evidence ignores body-free memory-reference bookkeeping when selecting the latest task event and note. The selected meaningful note retains its PII and withheld provenance under the existing on-campus boundary.
+
+GitHub intake rechecks its total staging deadline after every awaited proposal, including the final issue. A late confirmed write returns its ID with partial=true and complete=false; it is not represented as an unconfirmed write or rolled back.
+
+After a confirmed GitHub task insertion, failure in later bookkeeping triggers canonical source-identity readback. A recovered row is returned among imported IDs with partial=true/complete=false; unavailable readback remains unconfirmed. A recovered backlog row is queued for the planner notice even when earlier bookkeeping prevented the normal enqueue.
+
+The per-issue intake failure boundary includes existing-row lookup and profile preparation as well as proposal staging, so a later lookup failure retains prior confirmed IDs in the partial response.

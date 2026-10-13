@@ -330,7 +330,7 @@ function fail(message: string): never {
 async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false): Promise<string> {
   const hub = await connect();
   try {
-    const res = await hub.request({ t: "task", op, args: a });
+    const res = await hub.request({ t: "task", op, args: a }, op === "github_import" ? 60_000 : 30_000);
     if (!res.ok) { if (throwOnError) throw new Error(res.error); audit("refused"); fail(res.error); }
     return res.text;
   } finally { hub.close(); }
@@ -1087,6 +1087,13 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   board: async () => {
+    if (args[0] === "import") {
+      if (args[1] !== "github" || (args.length - 2) % 2 !== 0) fail("usage: ahub board import github --label <label> [--milestone <milestone>] [--repo <owner/repo>]");
+      const selection: Record<string, string> = {};
+      for (let i = 2; i < args.length; i += 2) { const key = args[i]!, value = args[i+1]; if (!["--repo", "--label", "--milestone"].includes(key) || !value || Object.hasOwn(selection, key.slice(2))) fail("invalid GitHub import options"); selection[key.slice(2)] = value; }
+      if (!selection.label) fail("GitHub import requires --label");
+      return console.log(await taskOp("github_import", selection));
+    }
     const options = outputOptions();
     const ready = args.includes("--ready");
     const state = args.find((a) => !a.startsWith("--"));

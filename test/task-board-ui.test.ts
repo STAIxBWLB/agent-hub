@@ -13,6 +13,7 @@ class Node {
   append(...nodes: Node[]) { this.children.push(...nodes); }
   replaceChildren(...nodes: Node[]) { this.children = nodes; this.textContent = ""; }
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
+  getAttribute(key: string) { return this.attrs[key] ?? null; }
   addEventListener(name: string, fn: (event: any) => unknown) { this.handlers.set(name, [...(this.handlers.get(name) ?? []), fn]); }
   emit(name: string, event: any = {}) { for (const fn of this.handlers.get(name) ?? []) fn(event); }
   set innerHTML(_value: string) { throw new Error("unsafe HTML rendering"); }
@@ -166,4 +167,11 @@ test("redacted release options retain distinguishable public ids (#263)", () => 
   const api=runInNewContext(`const $=get;let boardViewState={snapshot};${source};({render:renderPlanning})`,{get,snapshot,el,badge:(text:string)=>el("span",text),boardContext:()=>({projectId:"a"}),sameBoardContext:()=>true,update:()=>{},empty:()=>{},boardButton:()=>new Node()});
   api.render(snapshot);
   for(const id of ["task-release-filter","planning-release","release-edit"])expect(get(id).children.slice(1).map(node=>[node.value,node.textContent])).toEqual([["1","#1 [withheld]"],["2","#2 [withheld]"]]);
+});
+
+
+test("task cards show public release membership and accessible identity (#263)",()=>{
+ const {api,get,all,peers,snapshot}=page();
+ api.draw({...snapshot,releases:[{id:2,name:"[withheld]"}],tasks:snapshot.tasks.map(task=>({...task,release:2}))},peers,Object.keys(peers));
+ const card=all(get("tasks")).find(node=>node.tag==="article")!;expect(all(card).some(node=>node.textContent==="Release #2 [withheld]")).toBe(true);expect(card.attrs['aria-label']).toContain("Release #2 [withheld]");
 });

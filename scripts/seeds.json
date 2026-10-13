@@ -2026,6 +2026,38 @@
       "testName": "person P0 integration order allows its split prerequisites first (#263)"
     },
     {
+      "id": "github-import-readonly-state",
+      "file": "src/hub/github-import.ts",
+      "search": "\"--state\",\"open\"",
+      "replacement": "\"--state\",\"all\"",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub import selects only fixed readonly argv and reports bounded pages (#263)"
+    },
+    {
+      "id": "github-import-url-identity",
+      "file": "src/hub/github-import.ts",
+      "search": "if(row.url.toLowerCase()!==expected.toLowerCase())",
+      "replacement": "if(false)",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub import refuses malformed selections identities duplicates and oversized pages (#263)"
+    },
+    {
+      "id": "github-import-after-screen-dedupe",
+      "file": "src/hub/tasks.ts",
+      "search": "if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }",
+      "replacement": "if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (false) return prior!; }",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub import rechecks persistent identity after asynchronous screening (#263)"
+    },
+    {
+      "id": "github-import-person-cli",
+      "file": "src/cli/identity.ts",
+      "search": "if (command === \"board\" && args[0] === \"import\") return \"console\";",
+      "replacement": "if (false) return \"console\";",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake persists dedupe and PII sources only through public projection (#263)"
+    },
+    {
       "id": "split-plan-pii-floor",
       "file": "src/hub/tasks.ts",
       "search": "signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!",
@@ -2040,6 +2072,22 @@
       "replacement": "goal.id === candidate.id",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites inherit the higher-ranked P0 goal ahead of unrelated work (#263)"
+    },
+    {
+      "id": "github-import-captured-selection",
+      "file": "src/hub/github-import.ts",
+      "search": "\"--label\",label,...(milestone===undefined?[]:[\"--milestone\",milestone])",
+      "replacement": "\"--label\",input.label,...(input.milestone===undefined?[]:[\"--milestone\",input.milestone])",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub import selection is captured before repository resolution awaits (#263)"
+    },
+    {
+      "id": "board-card-release-membership",
+      "file": "src/ui/index.html",
+      "search": "if(task.release!=null){const release=boardViewState?.snapshot.releases?.find",
+      "replacement": "if(false){const release=boardViewState?.snapshot.releases?.find",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "task cards show public release membership and accessible identity (#263)"
     },
     {
       "id": "needs-approval-expiry",
@@ -2554,6 +2602,14 @@
       "testName": "normal status text includes planner WIP and capacity for retained peers"
     },
     {
+      "id": "github-import-source-screen",
+      "file": "src/hub/tasks.ts",
+      "search": "const screenDetail = [text.detail, external?.repo, external?.url].filter(value => value !== undefined && value !== \"\").join(\"\\n\");",
+      "replacement": "const screenDetail = text.detail;",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake screens canonical source identity before exposing external URLs"
+    },
+    {
       "id": "split-final-scope-undo",
       "file": "src/hub/tasks.ts",
       "search": "taskHasStarted(task) || release && [\"shipped\", \"dropped\"].includes(release.state) || by !== USER",
@@ -2602,6 +2658,14 @@
       "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
     },
     {
+      "id": "github-import-escaped-output-bound",
+      "file": "src/hub/github-import.ts",
+      "search": "new TextEncoder().encode(result.stdout).length>2*1024*1024",
+      "replacement": "new TextEncoder().encode(result.stdout).length>256*1024",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake accepts maximum escaped sentinel pages within a bounded reader"
+    },
+    {
       "id": "split-child-memory-reference",
       "file": "src/hub/tasks.ts",
       "search": "[...children].some(key => this.d.store!.store.hasTask(key))",
@@ -2648,6 +2712,14 @@
       "replacement": "excludeOwners: [], ...this.health()",
       "testFile": "test/planner-pull.test.ts",
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
+    },
+    {
+      "id": "github-import-literal-label-floor",
+      "file": "src/hub/github-import.ts",
+      "search": "input.label.includes(\",\")||",
+      "replacement": "false||",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake rejects comma labels before the StringSlice CLI can broaden selection"
     },
     {
       "id": "split-parent-memory-undo",
@@ -2730,6 +2802,14 @@
       "testName": "task memory bookkeeping retains dependent readiness after recovery"
     },
     {
+      "id": "import-dot-prefixed-repository",
+      "file": "src/hub/github-import.ts",
+      "search": "[A-Za-z0-9_.-]{1,100}",
+      "replacement": "[A-Za-z0-9][A-Za-z0-9_.-]{0,99}",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake accepts dot-prefixed repository identity in explicit and resolved selections"
+    },
+    {
       "id": "split-phase-checklist-reference",
       "file": "src/hub/board.ts",
       "search": "task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))",
@@ -2810,12 +2890,52 @@
       "testName": "split reason retains deterministic privacy across routing policy changes"
     },
     {
+      "id": "github-import-quoted-label",
+      "file": "src/hub/github-import.ts",
+      "search": "||input.label.includes('\"')",
+      "replacement": "||false",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake refuses quoted labels before CSV interpretation"
+    },
+    {
       "id": "ask-memory-reference-evidence",
       "file": "src/hub/ask.ts",
       "search": "t.history.findLast(entry => entry.event !== \"memory reference started\")",
       "replacement": "t.history.at(-1)",
       "testFile": "test/ask.test.ts",
       "testName": "ask evidence skips memory bookkeeping and preserves note privacy"
+    },
+    {
+      "id": "github-import-staging-deadline",
+      "file": "src/hub/tasks.ts",
+      "search": "        (created ? imported : existing).push(task.id);\n        if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };",
+      "replacement": "        (created ? imported : existing).push(task.id);",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake reports confirmed partial progress after late final staging"
+    },
+    {
+      "id": "github-import-postwrite-identity",
+      "file": "src/hub/tasks.ts",
+      "search": "if (saved) { if (!imported.includes(saved.id)) imported.push(saved.id); if (saved.state === \"backlog\") this.incomingBacklog.add(saved.id); return { imported, existing, partial: true, complete: false }; }",
+      "replacement": "if (saved) { /* seeded: discard the confirmed identity */ }",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake retains committed identity after later bookkeeping failure"
+    },
+    {
+      "id": "github-import-postwrite-notice",
+      "file": "src/hub/tasks.ts",
+      "search": "if (saved.state === \"backlog\") this.incomingBacklog.add(saved.id);",
+      "replacement": "/* seeded: omit recovered backlog notification */",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub confirmed recovery retains the planner backlog notice"
+    },
+    {
+      "id": "github-import-lookup-progress",
+      "file": "src/hub/tasks.ts",
+      "search": "      let created = false;\n      try {\n        const prior = this.d.board.imported(issue.source.repo, issue.source.issue);\n        if (prior) { existing.push(prior.id); continue; }\n        const classes = profileData(this.d.profileData ?? this.d.profile ?? \"dev\").classes;\n        const cls = Object.keys(classes).find(name => classes[name] === \"implement\") ?? Object.keys(classes)[0];",
+      "replacement": "      const prior = this.d.board.imported(issue.source.repo, issue.source.issue);\n      if (prior) { existing.push(prior.id); continue; }\n      let created = false;\n      const classes = profileData(this.d.profileData ?? this.d.profile ?? \"dev\").classes;\n      const cls = Object.keys(classes).find(name => classes[name] === \"implement\") ?? Object.keys(classes)[0];\n      try {",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake retains progress when a later identity lookup fails"
     }
   ]
 }
