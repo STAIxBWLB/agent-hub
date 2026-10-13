@@ -144,3 +144,12 @@ test("accepted planner work remains unchanged when automatic handoffs have no ca
  expect(tasks.rosterPreview("codex").find(row=>row.id===task.id)?.to).toBeNull();expect(await tasks.reassignForRoster("codex")).toEqual([]);expect(board.get(task.id)).toEqual(before);
  expect(await tasks.reassignForPause("codex",undefined)).toEqual([]);expect(board.get(task.id)).toEqual(before);await bus.peers.get("codex")!.stop();expect(await tasks.releaseFromGone("codex",1)).toEqual([]);expect(board.get(task.id)).toEqual(before);
 });
+
+test("automatic rescreen admission retains planner WIP after privacy clears",async()=>{
+ const dir=mkdtempSync(join(tmpdir(),"ahub-planner-rescreen-")),board=new Board(join(dir,"hub.db")),bus=new Bus({batchMs:0}),routing=loadRouting(dir);let clear=false;
+ const tasks=new Tasks({board,bus,cwd:dir,project:"rescreen",routing:()=>({...routing,signals:{...routing.signals,pii_screen:"local"}}),roles:{claude:["planner"]},notify:()=>{},piiScreen:async()=>clear?{label:"clear",ms:0}:{label:"unknown",miss:"failed",ms:0}});
+ cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});for(const id of ["claude","codex","local"]){const peer=new PullPeer(id);bus.add(peer);await peer.start();}
+ const task=await tasks.propose(USER,{title:"planned unknown",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});
+ for(const owner of ["codex","local"]){const full=board.propose(USER,{title:"occupied",class:"implement"});board.update(full.id,USER,"assigned",{owner,state:"in_progress"});}
+ clear=true;await tasks.rescreen();expect(board.get(task.id)?.signals).not.toContain("pii");expect(board.get(task.id)?.owner).toBeNull();
+});
