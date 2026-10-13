@@ -106,6 +106,11 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
     }
     if (customProfile && tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
     if (customProfile && properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+    if (customProfile && tool.name === "hub_backlog_split") {
+      const parts = properties.parts as { items: { properties: Record<string, unknown> } };
+      const selectedPlan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
+    }
     return { ...tool, ...(customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}), inputSchema: { ...tool.inputSchema, properties } };
   });
 }

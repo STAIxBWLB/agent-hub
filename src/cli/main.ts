@@ -1119,7 +1119,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
     }
     if (byColumn) {
-      const status = boardStatus ?? (await boardHub.request({ t: "status" })).status; if (!status?.peers) fail("peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, status.peers, options.columns, Date.now(), options.full, allTasks), options.color);
+      const status = (await boardHub.request({ t: "status" })).status; if (!status?.peers) fail("peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, status.peers, options.columns, Date.now(), options.full, allTasks), options.color);
     } else printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
     } finally { boardHub.close(); }
   },
