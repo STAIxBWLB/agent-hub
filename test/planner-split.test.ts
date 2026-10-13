@@ -204,3 +204,10 @@ test("split retains initial deterministic privacy after routing changes during s
  const pending=tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"policy-secret"},{title:"ordinary-part"}],reason:"hold reason"});await entered;patterns=[];release();const result=await pending;
  expect(seen.some(text=>text.includes("policy-secret"))).toBe(false);expect(tasks.isPii(result.children[0]!)).toBe(true);expect(tasks.publicView(result.children[0]!).title).toBe("[pii]");expect(JSON.stringify(tasks.publicView(result.children[0]!))).not.toContain("policy-secret");
 });
+
+test("split records final deterministic privacy instead of an earlier clear screen",async()=>{
+ const f=rig();let on=false,patterns:string[]=[],release!:()=>void,arrived!:()=>void;const held=new Promise<void>(resolve=>release=resolve),entered=new Promise<void>(resolve=>arrived=resolve),records:ScreenRecord[]=[];
+ const tasks=new Tasks({...f.deps,routing:()=>{const r=f.deps.routing();return {...r,signals:{...r.signals,pii_screen:on?"local":"off",pii_patterns:patterns}}},recordScreen:record=>records.push(record),piiScreen:async text=>{if(text.includes("new-marker")){arrived();await held}return {label:"clear",ms:7}}});const parent=await tasks.propose(USER,{title:"public parent",class:"implement",backlog:true});on=true;
+ const pending=tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"new-marker"},{title:"ordinary-part"}],reason:"parts"});await entered;patterns=["new-marker"];release();const result=await pending,child=result.children[0]!;
+ expect(tasks.isPii(child)).toBe(true);expect(child.history.find(entry=>entry.event==="screened")?.note).toBe("pii: regex");expect(records.find(record=>record.task===child.id)).toEqual({task:child.id,item:"task",label:"pii",source:"regex"});
+});
