@@ -2919,3 +2919,5 @@ An acknowledged ACP permission-mode change awaits queued cancellation cleanup on
 Task idle sweeps ignore body-free memory-reference bookkeeping when finding the last real activity. Saving a task note or goal link does not postpone an idle notice or restart its escalation ladder.
 
 Split reasons preserve deterministic privacy from both initial and final policy checks, including parent privacy. Once withheld, a reason stays withheld in public history even if routing patterns are later removed.
+
+GitHub import rejects labels containing commas or double quotes before invoking gh, since its CSV-style label parser could otherwise select a different literal label.
