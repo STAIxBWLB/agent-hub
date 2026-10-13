@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
 import { processLiveness } from "../pi/process-signature.ts";
-import { attentionLine } from "./attention.ts";
+import { characterAttentionLine } from "./attention.ts";
+import type { CharacterId } from "../pet/frame.ts";
 import type { NeedItem, NeedsSummary } from "../ui/needs.ts";
 
 const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(value);
@@ -73,10 +74,10 @@ export function readPet(stateDir: string, reader: PetRecoveryReader = recoveryRe
   return petView(status, reader);
 }
 
-export function renderPet(view: PetView, short = false): string {
+export function renderPet(view: PetView, short = false, character: CharacterId = "stai"): string {
   if (short) return view.summary?.act ? `ahub!${view.summary.act}` : "";
   if (!view.summary) return "attention unavailable";
   const value = view.summary;
-  const line = attentionLine({ ...value, items: value.first ? [value.first] : [] }, 0, false, false);
+  const line = characterAttentionLine({ ...value, items: value.first ? [value.first] : [] }, character, 0, false, false);
   return line + (view.unavailable ? " (status unavailable)" : "") + (view.runnerUnknown ? " (runner unknown)" : "");
 }

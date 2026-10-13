@@ -1726,3 +1726,74 @@ in three CLI fixtures, retaining every earlier assertion and identity validation
 The descendant integration group passed53/0 with368 assertions, including real
 fake-account CLI pull/split/import and five-peer notice baselines. Full current
 platform/seed/review and native account verification remain pending.
+
+## Approved character source fixtures (#280, phase 2)
+
+The original STAIx reference and four existing Higgsfield concepts were inspected;
+210 hand-reduced frames satisfy the literal glyph and geometry limits. Actual
+console fixtures exercise all five choices plus off, full scroll geometry,
+resize fallback, keyboard-modal ownership, prompt preservation and unchanged
+config bytes. The focused console/config/geometry/runtime group passed138/0
+with23808 assertions. Immutable-head platform/seed/review proof is pending.
+Light/dark physical terminal, tmux and ambiguous-wide block glyphs are unverified.
+
+## Dashboard character (#280, phase 4 in progress)
+
+Source fixtures cover shared body-free review projection, selected configuration,
+status-input separation, bounded SVG pixels, unchanged-snapshot DOM writes,
+exact-row navigation, missing-row guidance and stale-navigation refusal. Existing
+dashboard authentication/CSP/page-size and Office regressions are retained.
+Current full platform, mutation, browser, mobile, light/dark and reduced-motion
+proof is pending. Native terminal/tmux/account legs remain unverified.
+
+Actual source-only Ego Chromium QA at b54b7c6c exercised STAIx and all four
+selected alternatives. Screenshots were opened and inspected at390x844 and
+1440x1000 in light/dark projections: document widths matched, Enter on the
+review control focused exact task4, and no action callback ran. Reduced motion
+reported no animation, open pose opacity1 and blink pose opacity0. The task
+space finished and the admitted helper exited0. This is fixture/browser proof,
+not a native account or production runtime claim. Served bytes compared against
+phase2 with the same upstream main:146871 before,164034 after (+17163).
+The focused production-boundary correction group passed35/0 (145589 assertions);
+current full platform/seed/review proof remains pending.
+The expanded-footer follow-up group passed7/0 with6687 assertions: primary
+stream rows survive alternate panels and are cleared before queued events return;
+expired notices restore the selected approval id and expiry. No earlier assertion
+was removed. Native terminal/tmux proof and final full gates remain pending.
+
+After the optional dashboard title initializer was isolated from missing DOM
+capabilities, the unchanged Settings/role/Office regressions and new pet suite
+passed61/0 with139938 assertions. This fixes the full Linux gate's three helper
+initialization failures in production code; final platform/seed proof is pending.
+
+Dashboard blink now requires a live approval item, not merely waiting state
+(which also includes pending defaults). The actual pet suite passed6/0 with
+138742 assertions across defaults, live approvals, expired approvals and blink-off;
+a mutation guard covers this distinction. Full current-head proof is pending.
+Line-size console faces now honor the resolved ASCII/block selection, with the
+locale fallback retained and ASCII/CLI defaults unchanged. Actual line glyph,
+geometry, modal and runtime regression group passed19/0 with7165 assertions.
+All five faces stayed100 cells wide without colour escapes. Full gates pending.
+
+The first final265-guard run found a surviving line-glyph seed: shipped ASCII
+and block line faces intentionally have identical bytes. Added a separate
+observable catalog fixture, restored in finally, retaining every earlier assertion.
+Local execution of this additional case is admission-deferred, not a pass;
+current immutable-head full platform/seed proof is pending.
+
+Lowercase review eyes retain a distinct pixel mask, and Gyul leaf pixels use
+the defined amber attention tone in light/dark/system themes. The actual pet
+suite passed7/0 with138010 assertions across all five characters. Two mutation
+guards cover case preservation and the existing theme variable. Final full
+platform/seed/review and updated browser readback remain pending.
+
+The review-eye mask guard has actual admitted isolated green -> named assertion
+failure proof. Leaf-tone coverage now checks the bounded CSS fill value in a
+separate test while retaining the earlier HTML assertions: printing the entire
+HTML on failure contained unrelated runtime diagnostic strings, so the strict
+classifier correctly rejected the previous detection. The bounded leaf test now
+also has actual green -> named assertion detected proof. Full final gates pending.
+Final review found active notices suppressed by expanded footers. Source now
+shows them in panel body or once in the local stream, away from the character.
+Added output/expiry/prompt geometry regressions and two guards. First local
+execution was admission-deferred; final actual proof remains pending.
