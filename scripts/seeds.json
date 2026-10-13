@@ -2116,7 +2116,7 @@
     {
       "id": "role-board-task-guidance",
       "file": "src/ui/index.html",
-      "search": "if(task.role)row.append(el('p','Task guidance: '+task.role+' (grants no authority)','meta'));",
+      "search": "if(task.role){const guidance='Task guidance: '+task.role+' (grants no authority)';row.append(el('p',guidance,'meta'));row.setAttribute('aria-label',row.getAttribute('aria-label')+', '+guidance);}",
       "replacement": "if(false)row.append(el('p','Task guidance: '+task.role+' (grants no authority)','meta'));",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "board task guidance remains visible on a public PII stub without granting actions (#295)"
