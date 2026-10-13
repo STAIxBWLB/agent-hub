@@ -2656,6 +2656,14 @@
       "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && (goal.priority",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
+    },
+    {
+      "id": "github-import-escaped-output-bound",
+      "file": "src/hub/github-import.ts",
+      "search": "new TextEncoder().encode(result.stdout).length>2*1024*1024",
+      "replacement": "new TextEncoder().encode(result.stdout).length>256*1024",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake accepts maximum escaped sentinel pages within a bounded reader"
     }
   ]
 }
