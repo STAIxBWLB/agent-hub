@@ -1592,7 +1592,7 @@ export class Tasks {
     this.mine(task, by, "owner", true);
     // The owner it is declined for goes on the entry, also when the console declines for it: `excluded()` keeps it out (#207).
     const planned = this.plannerPullRecord(task)?.pull === true;
-    const back = this.d.board.update(task.id, by, "declined", { ...(task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner } : {});
+    const back = this.d.board.update(task.id, by, "declined", { ...(["in_progress", "changes_requested"].includes(task.state) ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner } : {});
     if (planned) this.offered.delete(task.id);
     this.d.notify(`task ${this.publicTitle(back)} declined by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
     return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(planned ? { planner: true } : {}) });
