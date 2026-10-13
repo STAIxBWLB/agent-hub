@@ -18,6 +18,7 @@ test("actual console advertises all characters while full footer resize and off 
     output="";key("P");expect(output).toContain("/\\_/\\");
     output="";key("P");expect(output).toContain("o-|------|-o");
     output="";key("P");expect(output).toContain("\x1b[1;36r");
+    for(let row=32;row<=36;row++)expect(output).toContain(`\x1b[${row};1H\x1b[2K`);
     output="";key("P");expect(output).toContain("STAI");
     terminal.columns=80;terminal.rows=24;output="";resize();expect(output).toContain("(O O) z asleep");expect(output).toContain("\x1b[1;20r");
     output="";key("?");expect(output).toContain("P next character/off");
