@@ -2781,7 +2781,7 @@
       "id": "planner-person-reservation-undo",
       "file": "src/hub/tasks.ts",
       "search": " && ![\"backlog pulled\", \"backlog returned\"].includes(entry.event)",
-      "replacement": "",
+      "replacement": " && true",
       "testFile": "test/planner-pull.test.ts",
       "testName": "person reservation survives planner pull undo and a second pull"
     },
