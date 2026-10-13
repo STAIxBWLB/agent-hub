@@ -168,6 +168,11 @@ export class Board {
     return (rows as Record<string, unknown>[]).map(parse);
   }
 
+  /** Structural status facts only; avoid decoding text, plans and growing history on each status write. */
+  statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
+    return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
+  }
+
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */
   counts(): Record<string, number> {
     const rows = this.db.query("SELECT state, COUNT(*) AS n FROM tasks GROUP BY state").all() as { state: string; n: number }[];

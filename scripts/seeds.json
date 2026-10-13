@@ -1992,6 +1992,230 @@
       "replacement": "label:release.name",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "redacted release options retain distinguishable public ids (#263)"
+    },
+    {
+      "id": "needs-approval-expiry",
+      "file": "src/ui/needs.ts",
+      "search": "request.expiresAt > now",
+      "replacement": "true",
+      "testFile": "test/needs.test.ts",
+      "testName": "attention model orders structural needs and watch facts never override state (#280)"
+    },
+    {
+      "id": "needs-watch-not-action",
+      "file": "src/ui/needs.ts",
+      "search": "message.important ? \"act\" : \"watch\"",
+      "replacement": "\"act\"",
+      "testFile": "test/needs.test.ts",
+      "testName": "attention model orders structural needs and watch facts never override state (#280)"
+    },
+    {
+      "id": "attention-choice-owns-key",
+      "file": "src/cli/console-state.ts",
+      "search": "if ((key === \"n\" || key === \"P\") && attentionKeyBlocked) return done();",
+      "replacement": "if (false) return done();",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "attention respects editing, choice, help and confirmation keyboard ownership"
+    },
+    {
+      "id": "pet-config-off",
+      "file": "src/cli/pet-config.ts",
+      "search": "if (value === false) return",
+      "replacement": "if (value === true) return",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "pet config merges local presentation options and false disables all drawing"
+    },
+    {
+      "id": "attention-paste-ack",
+      "file": "src/cli/console.ts",
+      "search": "state.attentionMessages = []; state.attentionSelection = undefined;",
+      "replacement": "state.attentionSelection = undefined;",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "paste acknowledges unread attention and optional bell observes edges and rate limit"
+    },
+    {
+      "id": "attention-bell-rate-limit",
+      "file": "src/cli/console.ts",
+      "search": "Date.now() - lastBell >= 60000",
+      "replacement": "Date.now() - lastBell >= 0",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "paste acknowledges unread attention and optional bell observes edges and rate limit"
+    },
+    {
+      "id": "attention-exact-secondary-row",
+      "file": "src/cli/console-state.ts",
+      "search": "const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);",
+      "replacement": "const selected = rows.findIndex(row => item.id === undefined ? row.peer === item.peer : row.id === item.id);",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "ID-less secondary delivery guidance never selects another queued row for that peer"
+    },
+    {
+      "id": "attention-list-change-cursor",
+      "file": "src/cli/console-state.ts",
+      "search": "const prior = s.attentionFingerprint === fingerprint ? s.attentionSelection ?? -1 : -1;",
+      "replacement": "const prior = s.attentionSelection ?? -1;",
+      "testFile": "test/console-attention.test.ts",
+      "testName": "attention cursor restarts when needs are inserted removed or reordered"
+    },
+    {
+      "id": "attention-inflight-not-action",
+      "file": "src/ui/needs.ts",
+      "search": "const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? status.needsReview! : 0;",
+      "replacement": "const count = Number.isSafeInteger(status.needsReview) && status.needsReview! > 0 ? status.needsReview! : status.heldBy ? 1 : 0;",
+      "testFile": "test/needs.test.ts",
+      "testName": "an in-flight held id without review evidence never creates a person action (#280)"
+    },
+    {
+      "id": "attention-panel-config-warning",
+      "file": "src/cli/console.ts",
+      "search": "if (state.mode === \"panels\" && !plain) notify(state, pet.notice, Date.now(), \"attention\");",
+      "replacement": "if (state.mode === \"panels\") {}",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "unknown pet configuration is visible immediately in panels without switching modes"
+    },
+    {
+      "id": "attention-plain-config-warning",
+      "file": "src/cli/console.ts",
+      "search": "if (state.mode === \"panels\" && !plain) notify(state, pet.notice, Date.now(), \"attention\");",
+      "replacement": "if (state.mode === \"panels\") notify(state, pet.notice, Date.now(), \"attention\");",
+      "testFile": "test/pet-config.test.ts",
+      "testName": "requested panels print unknown config warnings when the terminal falls back to plain"
+    },
+    {
+      "id": "attention-review-person-only",
+      "file": "src/ui/needs.ts",
+      "search": "task.reviewer === \"user\"",
+      "replacement": "true",
+      "testFile": "test/needs-status.test.ts",
+      "testName": "person review and offline ownership use ids and count each offline peer once"
+    },
+    {
+      "id": "attention-recovery-unknown-watch",
+      "file": "src/ui/needs.ts",
+      "search": "input.recovery.running === false ? \"act\" : \"watch\"",
+      "replacement": "\"act\"",
+      "testFile": "test/needs-status.test.ts",
+      "testName": "only an observed absent recovery runner creates a blocked action"
+    },
+    {
+      "id": "pet-runner-unknown-not-absent",
+      "file": "src/cli/pet.ts",
+      "search": "const active = runner !== undefined;",
+      "replacement": "const active = typeof runner === \"number\";",
+      "testFile": "test/pet-read.test.ts",
+      "testName": "recovery overlay replaces a reported watch once and never treats unknown as absent"
+    },
+    {
+      "id": "pet-owner-unknown-not-live",
+      "file": "src/cli/pet.ts",
+      "search": "alive(row.pid, row.pidSignature) === \"live\"",
+      "replacement": "alive(row.pid, row.pidSignature) !== \"gone\"",
+      "testFile": "test/pet-read.test.ts",
+      "testName": "pet reads only a confirmed status owner and binds the process signature"
+    },
+    {
+      "id": "pet-short-no-newline",
+      "file": "src/cli/main.ts",
+      "search": "process.stdout.write(short ? text : text + \"\\n\");",
+      "replacement": "console.log(text);",
+      "testFile": "test/pet-cli.test.ts",
+      "testName": "pet CLI reads a signed status file without a control token or connection"
+    },
+    {
+      "id": "pet-expired-snapshot-unknown",
+      "file": "src/cli/pet.ts",
+      "search": "!expired && Number.isSafeInteger(row.pid)",
+      "replacement": "Number.isSafeInteger(row.pid)",
+      "testFile": "test/pet-expiry.test.ts",
+      "testName": "expired first approval makes file counts unavailable rather than guessing a remaining count"
+    },
+    {
+      "id": "attention-console-items-not-persisted",
+      "file": "src/hub/daemon.ts",
+      "search": "includeAttentionItems ? { attentionItems: attention.items } : {}",
+      "replacement": "true ? { attentionItems: attention.items } : {}",
+      "testFile": "test/daemon.test.ts",
+      "testName": "global attention summary persists while full items stay console-role only (#280)"
+    },
+    {
+      "id": "pet-first-kind-state-consistency",
+      "file": "src/cli/pet.ts",
+      "search": "if (row.state === \"waiting\" && ![\"approval\", \"default\"].includes(first?.kind ?? \"\")) return;",
+      "replacement": "if (false) return;",
+      "testFile": "test/pet-summary-validation.test.ts",
+      "testName": "pet snapshot state and level require a consistent first structural item"
+    },
+    {
+      "id": "attention-approval-register-persist",
+      "file": "src/hub/daemon.ts",
+      "search": "writeStatus(); // an approval can wait without any subsequent bus event",
+      "replacement": "/* seeded missing approval snapshot update */",
+      "testFile": "test/daemon.test.ts",
+      "testName": "approval registration and settlement refresh token-free attention immediately (#280)"
+    },
+    {
+      "id": "attention-approval-settle-persist",
+      "file": "src/hub/daemon.ts",
+      "search": "writeStatus(); // token-free readers must observe withdrawal before settlement callbacks",
+      "replacement": "/* seeded missing approval snapshot update */",
+      "testFile": "test/daemon.test.ts",
+      "testName": "approval registration and settlement refresh token-free attention immediately (#280)"
+    },
+    {
+      "id": "attention-task-transition-persist",
+      "file": "src/hub/daemon.ts",
+      "search": "finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity",
+      "replacement": "finally { /* seeded missing task snapshot update */ }",
+      "testFile": "test/daemon-attention.test.ts",
+      "testName": "task review transitions refresh persisted attention without a native peer"
+    },
+    {
+      "id": "attention-pseudo-owner-not-offline",
+      "file": "src/ui/needs.ts",
+      "search": "id(value) && value !== \"user\" && value !== \"hub\"",
+      "replacement": "id(value)",
+      "testFile": "test/attention-followup.test.ts",
+      "testName": "person and hub owners never create offline-agent needs while person review remains actionable"
+    },
+    {
+      "id": "attention-board-structural-query",
+      "file": "src/hub/board.ts",
+      "search": "SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id",
+      "replacement": "SELECT * FROM tasks WHERE state != 'approved' ORDER BY id",
+      "testFile": "test/attention-followup.test.ts",
+      "testName": "status task facts read only structural columns without decoding stored payloads"
+    },
+    {
+      "id": "attention-status-structural-wiring",
+      "file": "src/hub/daemon.ts",
+      "search": "const taskNeeds = board.statusTasks();",
+      "replacement": "const taskNeeds = board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer }));",
+      "testFile": "test/attention-followup.test.ts",
+      "testName": "real daemon excludes intentionally person-owned work from offline attention"
+    },
+    {
+      "id": "planning-reservation-normalized",
+      "file": "src/hub/planning.ts",
+      "search": "value.trim().toLowerCase()",
+      "replacement": "value",
+      "testFile": "test/planning.test.ts",
+      "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
+    },
+    {
+      "id": "planning-reservation-supported",
+      "file": "src/hub/tasks.ts",
+      "search": "if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved))",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
+    },
+    {
+      "id": "planner-return-notice",
+      "file": "src/hub/tasks.ts",
+      "search": "if (!pull) { this.incomingBacklog.add(n); return next; }",
+      "replacement": "if (!pull) return next;",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "person-returned ownerless work produces a planner notice without a restart (#263)"
     }
   ]
 }

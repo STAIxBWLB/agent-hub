@@ -1677,3 +1677,32 @@ reservation floors, post-screen races, offer-time capacity changes, dependency
 approval and pin refusal, pending-only undo, bounded integer settings/local
 store and actual HTTP/tool/status projections. Current full proof and native
 planner/two-release/desktop/phone readback remain unverified.
+## Console attention (#280, phase 1)
+
+Automated coverage targets request ordering, read-only navigation/modal ownership,
+fixed footer/cursor cells at 80/99/100/120 columns and 24/40 rows, allowlisted
+structural projection, configuration precedence, deadline-only blink and plain
+message acknowledgement. Platform/full seeded gates are pending. Light/dark
+terminal, tmux, colour-off and actual terminal glyph readbacks are unverified;
+this phase renders ASCII only. No native account or live hub was activated.
+
+## Global attention status and CLI (#280, phase 3 in progress)
+
+Source/fixture checks target person review, offline ownership, unknown/absent
+recovery runners, status privacy/role separation, signed file ownership and CLI
+output without a token or connection. Full immutable-head platform/seed/review
+gates remain pending. Native light/dark terminal, tmux, glyph and account readback
+is unverified; no release, installation or live hub activation ran.
+
+## Attention status follow-up (#280)
+
+Regression fixtures cover reserved pseudo-peer ownership, preserved person
+reviews, selected SQL columns and actual status reads with unreadable unrelated
+JSON payloads. The focused tests pass; immutable-head platform/255-guard proof
+is pending. Native/account/artwork/dashboard legs remain unverified.
+
+Latest planner source fixes have an actual focused result of 11 pass/0 fail:
+reservation normalization/unsupported-id rejection and returned-work notices.
+The previous full262 guard job reached its 10-minute CI limit; the job cap is
+now20 minutes, with all named assertion and per-test/watchdog limits unchanged.
+Current immutable-head265 proof is pending.

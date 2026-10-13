@@ -1,5 +1,6 @@
 import { planningWipLimits } from "./planning.ts";
 import { projectedDiff } from "./projected-diff.ts";
+import { needs, type NeedsInput } from "../ui/needs.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
@@ -89,6 +90,8 @@ import { grantablePath, instructionProtection, isPermissionMode, permissionBound
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
+import { extractNodes, MemoryStore, type View as MemoryView } from "../memory/store.ts";
+import { memoryProjectKey, nativeRecall, promotionScreen, withoutPii } from "../memory/recall.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -105,7 +108,8 @@ export interface HubConfig {
   batch_max: number;
   batch_ms: number;
   queue_cap: number;
-  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number };
+  /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval. */
+  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number };
   roster: PeerRoster;
   roles: Record<string, string[]>;
   profile?: ProfileName;
@@ -239,6 +243,12 @@ export function loadConductorPolicy(cwd: string): { roles: Record<string, string
   return { roles, conductor };
 }
 
+/** `memory.short_ttl_days`: a whole number of days from 1 to 3650; anything else would make every short-term deadline invalid. */
+function ttlDays(v: unknown): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > 3650) throw new Error("memory.short_ttl_days must be a whole number of days from 1 to 3650");
+  return v;
+}
+
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
   const appliedPermissionSources: NonNullable<HubConfig["permission_default_sources"]> = {};
@@ -313,7 +323,7 @@ export function loadConfig(cwd: string): HubConfig {
     permission_modes: permissionDefaults(file.permission_modes),
     protect_instruction_files: instructionProtection(file.protect_instruction_files),
     permission_default_sources: appliedPermissionSources,
-    memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
+    memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}) }, // the native store is on with any project config (#258)
     roster: peerRosterConfig(file.roster),
     roles: conductorPolicy.roles,
     conductor: conductorPolicy.conductor,
@@ -789,11 +799,38 @@ export async function startDaemon(opts: DaemonOptions) {
   const memory = new MemoryClient(config.memory.worker_url ?? workerUrl(), 2000, log);
   const chain = projectChain(opts.cwd);
   const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
+  // #258: the hub's own store, machine-wide in ~/.agenthub/memory. Entries are filed under the project's git chain, the
+  // same name on every machine with the same layout. Fail-open: without it the hub works as before.
+  const memoryProject = memoryProjectKey(opts.cwd);
+  let memoryStore: MemoryStore | undefined;
+  if (config.memory.native) {
+    try { memoryStore = new MemoryStore({ ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => currentRouting(opts.cwd, log), () => config.pii?.paths ?? [], (key) => {
+      const m = /#(\d+)@(\d+)$/.exec(key), t = m ? board.get(Number(m[1])) : undefined;
+      return t && String(t.created) === m![2] ? [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])] : [];
+    }) }); const opened = memoryStore; startupCleanup.push(() => opened.close()); }
+    catch (e) { log(`hub memory unavailable: ${(e as Error).message}`); }
+  }
+  // Issues are named by the GitHub repository, taken from the project key (normalized: case, port, URL form).
+  const memoryRepo = memoryProject.startsWith("github.com/") ? memoryProject.slice("github.com/".length) : memoryProject;
+  /**
+   * Notes as they leave for a model (a recall preface, a brief, `ask` evidence) are screened again under the current
+   * policy: a shared note was accepted under another project's patterns, and patterns change. A match is withheld.
+   */
+  const screenMemory = <T extends MemoryView>(vs: T[]): T[] => withoutPii(vs, currentRouting(opts.cwd, log), opts.cwd, config.pii?.paths ?? []);
+  const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
+  /** A task's own nodes: what its title names (an issue, a path), its refs and plan paths, plan symbols, and the task itself. */
+  const taskNodes = (t: { id?: number; created?: number; title?: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }) =>
+    extractNodes(t.title ?? "", { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, paths: [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])], symbols: t.plan?.symbols, ...(t.id !== undefined && t.created !== undefined ? { task: { id: t.id, created: t.created } } : {}) });
 
   /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
   async function ensurePreface(peer: PeerId): Promise<void> {
-    if (!config.memory.enabled || recalled.has(peer)) return;
-    const block = await recallFor(peer, memory, chain, config.memory.inject_tokens);
+    if ((!config.memory.enabled && !memoryStore) || recalled.has(peer)) return;
+    // The hub's own long-term decisions, contracts and fails lead; claude-mem's recent work follows, each with half the budget.
+    let own: string | undefined;
+    try { own = memoryStore ? nativeRecall(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")).slice(0, 30), config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, memoryLine) : undefined; }
+    catch (e) { log(`hub memory recall failed: ${(e as Error).message}`); }
+    const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens) : undefined;
+    const block = [own, theirs].filter(Boolean).join("\n\n");
     if (!block || recalled.has(peer)) return; // nothing yet (worker down, no memory): the peer's next session tries again
     recalled.add(peer);
     bus.preface(peer, block);
@@ -881,7 +918,10 @@ export async function startDaemon(opts: DaemonOptions) {
     routing: () => currentRouting(opts.cwd, log), // routing.toml is edited while the hub runs: re-read on change, last good parse kept
     cwd: opts.cwd,
     project: chain.at(-1)!,
-    ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
+    ...(config.memory.enabled ? { memory } : {}),
+    ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, config.memory.brief_items,
+      memoryStore ? (t) => screenMemory(memoryStore!.related(memoryProject, taskNodes(t), Number.MAX_SAFE_INTEGER)).slice(0, config.memory.brief_items).map((v) => ({ id: `mem:${v.id}`, line: memoryLine(v) })) : undefined) } : {}),
+    ...(memoryStore ? { store: { store: memoryStore, project: memoryProject, repo: memoryRepo, deny: config.local.deny } } : {}),
     notify,
     recordOverlap: (task, owner, others) => event({ type: "overlap", task, owner, others }),
     ...(checksAllowed ? { check: (cls: string, task?: import("./board.ts").Task) => checkCommands[task?.profileClass ?? cls] ?? checkCommands[cls], runCheck: async (command: string) => (checksClosed ? interrupted : runCheck(command, opts.cwd, checkTimeoutS * 1000, runningChecks)) } : {}),
@@ -1806,14 +1846,16 @@ export async function startDaemon(opts: DaemonOptions) {
     return mode === "ask" ? {} : { permissionMode: mode };
   };
   let lastCodexThread: string | undefined;
-  const statusPeerIds = () => {
+  const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
     if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return bus.knownPeers();
-    const open = board.list().filter(task => task.state !== "approved");
     const ids = new Set(bus.knownPeers());
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
     return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
-  const status = () => ({
+  const status = (includeAttentionItems = false) => {
+    const taskNeeds = board.statusTasks();
+    const peerIds = statusPeerIds(taskNeeds);
+    const view = {
     ...(crashReport.length ? { crash: crashReport } : {}),
     projectId,
     instanceId,
@@ -1827,17 +1869,35 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      statusPeerIds().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
-    taskWip: Object.fromEntries(statusPeerIds().map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
-    roleInfo: Object.fromEntries(statusPeerIds().map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id) }])),
+    taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
+    roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id) }])),
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
     tasks: board.counts(),
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
-  });
+    };
+    const peerNeeds: Record<string, NonNullable<NeedsInput["peers"]>[string]> = Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }]));
+    // Lazy legacy peer lists need not contain a persisted owner that is now offline.
+    for (const task of taskNeeds) if (task.owner && task.owner !== USER && task.owner !== HUB && !Object.hasOwn(peerNeeds, task.owner)) {
+      const state = bus.stateOf(task.owner);
+      peerNeeds[task.owner] = { state, attached: !!bus.peers.get(task.owner) && ["idle", "busy", "paused"].includes(state) };
+    }
+    const attention = needs({
+      approvals: [...permissions].map(([id, row]) => ({ id, peer: row.peer, expiresAt: row.expiresAt, since: row.createdAt })),
+      defaults: [...pendingPermissionDefaults.keys()].map(peer => ({ peer })),
+      peers: peerNeeds,
+      storageBlocked: !!bus.storageError,
+      recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
+      tasks: taskNeeds,
+      budget: Object.fromEntries(Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}])),
+    }, Date.now());
+    return { ...view, needs: { act: attention.act, watch: attention.watch, state: attention.state, ...(attention.items[0] ? { first: attention.items[0] } : {}) },
+      ...(includeAttentionItems ? { attentionItems: attention.items } : {}) };
+  };
   // #226: who owns this manifest, beyond a pid that a reboot can hand to another process. Only the file carries it
   // (the status reply is unchanged); readers without it judge the pid alone, as 0.12.20 did.
   const pidSignature = processSignature(process.pid);
@@ -1847,6 +1907,11 @@ export async function startDaemon(opts: DaemonOptions) {
       writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify({ ...status(), ...(pidSignature ? { pidSignature } : {}) }, null, 2)}\n`);
       renameSync(`${file}.${instanceId}.tmp`, file);
     } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
+  };
+  const taskChanged = board.onChange;
+  board.onChange = (task, entry) => {
+    try { taskChanged?.(task, entry); }
+    finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
   };
 
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
@@ -2213,6 +2278,7 @@ export async function startDaemon(opts: DaemonOptions) {
         clearTimeout(timer);
         signal?.removeEventListener("abort", aborted);
         permissions.delete(id); // withdrawal happens before any observer, resolution or late grant
+        writeStatus(); // token-free readers must observe withdrawal before settlement callbacks
         const outcome = option ? "answered" : reason;
         if (surface) permissionAnswerEpochs.set(req.peer, permissionAnswerEpoch(req.peer) + 1);
         observed(surface ? "person" : outcome === "expired" ? "expired" : "aborted");
@@ -2226,6 +2292,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return true;
       };
       permissions.set(id, { push, done, peer: req.peer, ...(publicTool ? { tool: publicTool } : {}), createdAt, expiresAt });
+      writeStatus(); // an approval can wait without any subsequent bus event
       timer = setTimeout(() => done(undefined, undefined, "expired"), timeoutMs);
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
@@ -3000,6 +3067,31 @@ export async function startDaemon(opts: DaemonOptions) {
           arm: rs[0]!.header.arm, runs: rs.length, measures: benchReport(rs).overall })) } };
     } catch { return {}; } // an unreadable store never breaks the dashboard
   }
+  /**
+   * #258: the dashboard's Memory section, read-only: one tier, filtered, with the neighbourhood and detail of the
+   * selected node. The query is validated here; anything malformed reads as no filter. Hub memory never holds PII task
+   * text (Tasks refuses it), and the page shows it inside the loopback session only.
+   */
+  // ponytail: recomputed on every poll from the whole index; cache by index revision if the store grows large.
+  function memoryView(raw: unknown) {
+    if (!memoryStore) return {};
+    try {
+      const q = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+      const text = (v: unknown, max = 200) => typeof v === "string" && v.trim() && v.length <= max ? v.trim() : undefined;
+      const tier = q.tier === "short" || q.tier === "long" ? q.tier : "long";
+      const kind = typeof q.kind === "string" && (["decision", "finding", "contract", "fail"] as string[]).includes(q.kind) ? q.kind as MemoryView["kind"] : undefined;
+      const peer = text(q.peer, 32), machine = text(q.machine, 32), search = text(q.q), node = text(q.node), since = [text(q.since, 40)].find((v) => v !== undefined && !Number.isNaN(Date.parse(v))); // an unreadable since filters nothing
+      const hops = q.hops === 2 ? 2 : 1;
+      const all = memoryStore.list({ project: memoryProject, limit: Number.MAX_SAFE_INTEGER });
+      const rows = memoryStore.list({ project: memoryProject, tier, ...(kind ? { kind } : {}), ...(peer ? { peer } : {}), ...(machine ? { machine } : {}), ...(since ? { since } : {}), ...(search ? { q: search } : {}), limit: 50 });
+      const shape = (v: MemoryView, full = false) => ({ id: v.id, at: v.at, tier: v.tier, kind: v.kind, peer: v.peer, machine: v.machine, project: v.project, scope: v.scope, title: v.title, text: full ? v.text : v.text.slice(0, 600),
+        task: v.task, about: v.about, source: v.source, supersededBy: v.supersededBy, promotedFrom: v.promotedFrom, expiresAt: v.expiresAt });
+      const selected = node?.startsWith("mem:") ? memoryStore.get(node.slice(4), memoryProject) : undefined;
+      return { memory: { tier, counts: { short: all.filter((v) => v.tier === "short").length, long: all.filter((v) => v.tier === "long").length },
+        peers: [...new Set(all.map((v) => v.peer))].sort(), machines: [...new Set(all.map((v) => v.machine))].sort(), machine: memoryStore.machine.id,
+        entries: rows.map((v) => shape(v)), ...(node ? { node, graph: memoryStore.graph(memoryProject, node, hops, 200), ...(selected ? { detail: shape(selected, true) } : {}) } : {}) } };
+    } catch (e) { log(`hub memory view failed: ${(e as Error).message}`); return {}; } // an unreadable store never breaks the dashboard
+  }
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
@@ -3057,6 +3149,7 @@ export async function startDaemon(opts: DaemonOptions) {
       starts: startPlans(),
       roster: rosterView(),
       ...benchView(),
+      ...memoryView(_input?.memory),
     };
   }
 
@@ -4003,11 +4096,11 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "status":
-        return void reply({ t: "status", status: status() });
+        return void reply({ t: "status", status: status(c.role === "console") });
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        return void reply(uiSnapshot(msg.after ?? 0));
+        return void reply(uiSnapshot(msg.after ?? 0, msg.memory !== undefined ? { memory: msg.memory } : undefined));
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
         if (recoveryActive()) return void reply({ ok: false, error: "recovery is holding mutations" });
@@ -4081,6 +4174,14 @@ export async function startDaemon(opts: DaemonOptions) {
           onCampus,
           isPiiText: (q) => currentRouting(opts.cwd, log).constraints.pii === "local_only" && detectSignals({ title: q, detail: "", refs: {} }, currentRouting(opts.cwd, log), opts.cwd).includes("pii"),
           ...(config.memory.enabled ? { memory } : {}),
+          // #258: entries that match the question, then the graph neighbourhood of what they are about.
+          ...(memoryStore ? { native: (keys: string[]) => {
+            const score = (v: MemoryView) => keys.filter((k) => `${v.title ?? ""} ${v.text} ${v.about.join(" ")}`.toLowerCase().includes(k)).length;
+            // Screened before the caps: withheld entries never crowd out readable evidence.
+            const hits = screenMemory(memoryStore!.list({ project: memoryProject, limit: Number.MAX_SAFE_INTEGER })).map((v) => [v, score(v)] as const).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([v]) => v);
+            const near = screenMemory(memoryStore!.related(memoryProject, [...new Set(hits.flatMap((v) => v.about))], Number.MAX_SAFE_INTEGER)).slice(0, 6);
+            return [...hits, ...near].map((v) => ({ id: `mem:${v.id.slice(0, 8)}`, text: memoryLine(v).slice(13) }));
+          } } : {}),
           project: chain.at(-1)!,
           logFile,
           ...(inference ? { inference } : {}),
@@ -4176,6 +4277,7 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.close();
       conductorHolds.close();
       executionBudget.close();
+      memoryStore?.close();
       board.close();
       turnLog?.close();
       server.stop(true);
@@ -4211,6 +4313,9 @@ export async function startDaemon(opts: DaemonOptions) {
   writeStatus(); // #226: no hub.pid any more; status.json carries the pid with its signature
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
+  // #258: approvals whose settle entry a crash cut off are settled now (decisions, contracts and fails reach long-term).
+  try { const settled = tasks.reconcileMemory(); if (settled) log(`hub memory: settled ${settled} approved task${settled === 1 ? "" : "s"} a stop had left unsettled`); }
+  catch (e) { log(`hub memory reconciliation failed: ${(e as Error).message}`); }
   if (crashed) {
     // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
     try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }
