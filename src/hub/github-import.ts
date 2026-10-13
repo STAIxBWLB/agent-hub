@@ -6,7 +6,7 @@ const REPO=/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/;
 const selectionText=(value:unknown):value is string=>typeof value==="string"&&value.trim()===value&&value.length>0&&value.length<=100&&!value.startsWith("-")&&!/\p{Cc}/u.test(value);
 /** Read-only issue intake; the existing reader bounds process time, stdout and diagnostics. */
 export async function readGitHubImport(input: GitHubImportSelection, run: SdlcGh=sdlcGh): Promise<{ issues: GitHubImportIssue[]; partial: boolean; }> {
-  if(!selectionText(input.label)||input.label.includes(",")||input.milestone!==undefined&&!selectionText(input.milestone)||input.repo!==undefined&&!REPO.test(input.repo))throw new Error("invalid GitHub import selection");
+  if(!selectionText(input.label)||input.label.includes(",")||input.label.includes('"')||input.milestone!==undefined&&!selectionText(input.milestone)||input.repo!==undefined&&!REPO.test(input.repo))throw new Error("invalid GitHub import selection");
   const {label,milestone}=input;
   const deadline=performance.now()+10_000;
   const read=async(args:string[])=>{const left=deadline-performance.now();if(left<=0)throw new Error("GitHub import read deadline expired");const result=await run(args,Math.min(left,10_000),undefined,2*1024*1024);if(performance.now()>deadline)throw new Error("GitHub import read deadline expired");if(result.code!==0||new TextEncoder().encode(result.stdout).length>2*1024*1024)throw new Error("GitHub import read failed or exceeded its output bound");return JSON.parse(result.stdout) as unknown;};

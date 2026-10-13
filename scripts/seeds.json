@@ -2984,6 +2984,14 @@
       "replacement": "const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);",
       "testFile": "test/planner-split.test.ts",
       "testName": "split reason retains deterministic privacy across routing policy changes"
+    },
+    {
+      "id": "github-import-quoted-label",
+      "file": "src/hub/github-import.ts",
+      "search": "||input.label.includes('\"')",
+      "replacement": "||false",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake refuses quoted labels before CSV interpretation"
     }
   ]
 }
