@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, relative, resolve, isAbsolute } from "node:path";
 import { realPath } from "./project.ts";
@@ -32,8 +32,18 @@ const PROBE_MS = 2000, PROBE_BYTES = 4096;
 /** `env` supplies CLAUDE_CONFIG_DIR and CODEX_HOME, the runtimes' own config roots (the hub's environment by default). */
 export interface ToolingSources { home?: string; cwd?: string; path?: string; env?: Record<string, string | undefined> }
 
+/** A regular file of at most 1 MiB, opened without blocking: a FIFO or device under a project's `.claude/` reads as absent. */
+const text = (file: string): string | undefined => {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > 1024 * 1024) return undefined;
+    return readFileSync(fd, "utf8");
+  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+};
 const json = (file: string): Record<string, unknown> | undefined => {
-  try { const v = JSON.parse(readFileSync(file, "utf8")); return v && typeof v === "object" ? v as Record<string, unknown> : undefined; } catch { return undefined; }
+  try { const v = JSON.parse(text(file) ?? ""); return v && typeof v === "object" ? v as Record<string, unknown> : undefined; } catch { return undefined; }
 };
 /** A version string as data, never anything longer or stranger. */
 const version = (v: unknown): string | null => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null;
@@ -58,12 +68,13 @@ function claudePlugins(root: string, cwd: string | undefined): Addon[] {
 }
 
 function codexPlugins(root: string): Addon[] {
-  let text: string;
-  try { text = readFileSync(join(root, "config.toml"), "utf8"); } catch { return []; }
-  const found = new Map<string, string>(); // plugin name -> marketplace
-  // `[plugins."name@market"]` with no `enabled = false` below it, and plugins whose hooks Codex was told to trust.
-  for (const m of text.matchAll(/^\[plugins\."([^"@]+)@([^"]+)"\]\s*\n((?:(?!\[)[^\n]*\n?)*)/gm)) if (!/^\s*enabled\s*=\s*false\b/m.test(m[3] ?? "")) found.set(m[1]!, m[2]!);
-  for (const m of text.matchAll(/^\[hooks\.state\."([^"@]+)@([^":]+):/gm)) found.set(m[1]!, m[2]!);
+  const config = text(join(root, "config.toml"));
+  if (config === undefined) return [];
+  const found = new Map<string, string>(), disabled = new Set<string>(); // plugin name -> marketplace
+  // `[plugins."name@market"]` with no `enabled = false` below it, and plugins whose hooks Codex was told to trust
+  // unless their plugin entry disables them: a trust entry outlives the plugin's own switch.
+  for (const m of config.matchAll(/^\[plugins\."([^"@]+)@([^"]+)"\]\s*\n((?:(?!\[)[^\n]*\n?)*)/gm)) if (!/^\s*enabled\s*=\s*false\b/m.test(m[3] ?? "")) found.set(m[1]!, m[2]!); else disabled.add(m[1]! + "@" + m[2]!);
+  for (const m of config.matchAll(/^\[hooks\.state\."([^"@]+)@([^":]+):/gm)) if (!disabled.has(m[1]! + "@" + m[2]!)) found.set(m[1]!, m[2]!);
   const out: Addon[] = [];
   for (const [plugin, market] of found) {
     const name = PLUGINS.get(plugin);
