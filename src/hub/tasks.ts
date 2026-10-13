@@ -787,17 +787,20 @@ export class Tasks {
       return { parent, drafts };
     };
     const initial = validate(), screening = this.screenOn();
+    const initialPrivacy = initial.drafts.map(part => this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }).filter(signal => signal === "pii" || signal === "pii_path"));
+    const initialPrivate = initialPrivacy.map(signals => this.isPii({ signals })), initialParentPrivate = this.isPii(initial.parent);
+    const initialParentPrivacy = initial.parent.signals.filter(signal => signal === "pii" || signal === "pii_path");
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const attempt = Promise.all([
-      Promise.all(initial.drafts.map(part => screening && !this.isPii(initial.parent) && !this.isPii({ signals: this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }) }) ? this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined)),
+      Promise.all(initial.drafts.map((part, index) => screening && !initialParentPrivate && !initialPrivate[index] ? this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined)),
       this.withholds("note", reason, initial.parent),
     ]);
     let screened: Awaited<typeof attempt>;
     try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), BACKLOG_SPLIT_SCREEN_TIMEOUT_MS); })]); }
     finally { if (deadline !== undefined) clearTimeout(deadline); }
     const [verdicts, withheld] = screened, current = validate();
-    const inherited = current.drafts.map(part => this.isPii(current.parent) && !this.isPii({ signals: this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }) }));
-    const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
+    const inherited = current.drafts.map((part, index) => (initialParentPrivate || this.isPii(current.parent)) && !initialPrivate[index] && !this.isPii({ signals: this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }) }));
+    const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
     const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);
     for (const [index, child] of result.children.entries()) {
       this.incomingBacklog.add(child.id);
