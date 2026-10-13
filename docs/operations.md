@@ -2921,3 +2921,5 @@ Task idle sweeps ignore body-free memory-reference bookkeeping when finding the 
 Split reasons preserve deterministic privacy from both initial and final policy checks, including parent privacy. Once withheld, a reason stays withheld in public history even if routing patterns are later removed.
 
 GitHub import rejects labels containing commas or double quotes before invoking gh, since its CSV-style label parser could otherwise select a different literal label.
+
+Ask evidence skips body-free memory-reference markers when selecting the latest task transition and note. The selected note retains the existing withheld and on-campus privacy checks.
