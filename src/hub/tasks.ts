@@ -821,9 +821,12 @@ export class Tasks {
     let screened: Awaited<typeof attempt>;
     try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), BACKLOG_SPLIT_SCREEN_TIMEOUT_MS); })]); }
     finally { if (deadline !== undefined) clearTimeout(deadline); }
-    const [verdicts, withheld] = screened, current = validate();
-    const inherited = current.drafts.map((part, index) => (initialParentPrivate || this.isPii(current.parent)) && !initialPrivate[index] && !this.isPii({ signals: this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }) }));
-    const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
+    const [screenedVerdicts, withheld] = screened, current = validate();
+    const finalSignals = current.drafts.map(part => this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }));
+    const deterministicPrivate = finalSignals.map((signals, index) => initialPrivate[index] || this.isPii({ signals }));
+    const verdicts = screenedVerdicts.map((verdict, index) => deterministicPrivate[index] ? undefined : verdict);
+    const inherited = current.drafts.map((_part, index) => (initialParentPrivate || this.isPii(current.parent)) && !deterministicPrivate[index]);
+    const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!, ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
     const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);
     for (const [index, child] of result.children.entries()) {
       this.incomingBacklog.add(child.id);
