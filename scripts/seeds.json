@@ -2952,6 +2952,14 @@
       "replacement": "/* seeded: skip reported cancellation cleanup */",
       "testFile": "test/acp.test.ts",
       "testName": "ACP mode acknowledgement cannot outpace cancellation gate release"
+    },
+    {
+      "id": "memory-reference-sweep-quiet",
+      "file": "src/hub/task-sweep.ts",
+      "search": "while (activity >= 0 && (task.history[activity]?.sweep || task.history[activity]?.event === \"memory reference started\")) activity--;",
+      "replacement": "while (activity >= 0 && task.history[activity]?.sweep) activity--;",
+      "testFile": "test/task-sweep.test.ts",
+      "testName": "memory reference bookkeeping preserves sweep thresholds and ladder activity"
     }
   ]
 }
