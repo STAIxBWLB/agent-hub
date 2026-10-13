@@ -2504,6 +2504,11 @@ changed fields and previous values. The configured planner role changes only
 unpinned backlog work outside frozen releases and preserves a person's rank.
 Undo refuses an intervening change or another planner's edit.
 
+Planner backlog notices carry at most 64 ids per recipient. Recovery coalesces
+ids already present in that recipient's restored queue. An overflow retains
+only that recipient's pending ids and waits for its queue to change before
+retrying, using the existing scheduler without another timer.
+
 Releases persist planning, active, frozen, shipped and dropped states and planned
 start/cut/ship. Only a person freezes, drops, ships or changes a frozen release.
 Shipping requires every scoped task approved or moved out, records its first
