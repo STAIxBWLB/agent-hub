@@ -2591,7 +2591,8 @@ milestone/repository, using fixed read-only gh argv. The existing reader bounds
 stdout and execution; intake uses a 2 MiB output ceiling for the 33-row sentinel
 page, including worst-case escaped title/body JSON. Other SDLC reads retain
 their 256 KiB default. One page stages at most 32 issues and reports truncation.
-The entire returned page must validate before any staging. Repository/issue
+Comma-containing labels are refused because gh --label uses CSV-style parsing;
+selection must never silently broaden. The entire returned page must validate before any staging. Repository/issue
 identity is stored persistently and deduplicated across restart and concurrent
 screening. Tasks screens imported content and stages unoffered backlog; links
 are shown only through the central public projection, with no source identity
