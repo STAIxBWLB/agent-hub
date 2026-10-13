@@ -2762,7 +2762,7 @@
       "testName": "unified split accepts a confirmed response beyond the generic action deadline"
     },
     {
-      "id": "split-manager-unconfirmed-timeout",
+      "id": "split-manager-unconfirmed-reply",
       "file": "src/hub/manager.ts",
       "search": "[\"start_peer\", \"backlog_split\"].includes(String(input.action))",
       "replacement": "input.action === \"start_peer\"",
