@@ -237,8 +237,12 @@ focuses only; it cannot grant permissions or invoke a mutation.
 
 With a project config, native hub memory is enabled unless `memory.native` is
 false. Append-only segments and their derived index stay in the private hub-home
-memory directory, created with 0700 directory and 0600 file modes. PII-task notes, PII-pattern
-notes and secret-looking text are refused before persistence; promotions are
+memory directory, created with 0700 directory permissions. Note segments and
+`index.db` are explicitly protected with 0600 modes; the code does not set modes
+for SQLite-created WAL/shared-memory sidecars. Those files remain protected by
+the private parent directory, so per-file 0600 is not a sidecar guarantee.
+PII-task notes, PII-pattern notes and secret-looking text are refused before
+persistence; promotions are
 screened again. The index can be rebuilt from segments and does not replace the
 separate claude-mem worker database.
 
