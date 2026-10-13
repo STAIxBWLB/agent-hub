@@ -2872,6 +2872,30 @@
       "replacement": "const last = t.history.at(-1)?.event, planned =",
       "testFile": "test/tasks.test.ts",
       "testName": "task memory bookkeeping retains dependent readiness after recovery"
+    },
+    {
+      "id": "import-dot-prefixed-repository",
+      "file": "src/hub/github-import.ts",
+      "search": "[A-Za-z0-9_.-]{1,100}",
+      "replacement": "[A-Za-z0-9][A-Za-z0-9_.-]{0,99}",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake accepts dot-prefixed repository identity in explicit and resolved selections"
+    },
+    {
+      "id": "split-phase-checklist-reference",
+      "file": "src/hub/board.ts",
+      "search": "task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains children referenced by another task phase checklist"
+    },
+    {
+      "id": "planner-pending-wip-editor",
+      "file": "src/ui/index.html",
+      "search": "const current=row.pending!==undefined ? row.pending : row.value;",
+      "replacement": "const current=row.value;",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "dashboard WIP editor saves pending restart values including zero and inheritance"
     }
   ]
 }

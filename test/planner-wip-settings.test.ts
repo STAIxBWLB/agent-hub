@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,4 +48,17 @@ test("machine-local WIP settings retain every other shared peer capacity (#263)"
   const def=settingDef("tasks.wip_limits.codex");if(typeof def==="string")throw new Error(def);
   expect(writeConfigSetting(root,join(root,"state"),def,4,loadConfig)).toBe(true);expect(loadConfig(root).tasks.wip_limits).toEqual({claude:3,codex:4});
   expect(writeConfigSetting(root,join(root,"state"),def,null,loadConfig)).toBe(true);expect(loadConfig(root).tasks.wip_limits).toEqual({claude:3,codex:2});
+});
+
+test("dashboard WIP editor saves pending restart values including zero and inheritance",async()=>{
+ const html=readFileSync(join(import.meta.dir,"../src/ui/index.html"),"utf8"),code=html.slice(html.indexOf("function settingRow("),html.indexOf("const settingSlots ="));
+ class Node {
+  children:Node[]=[];attrs:Record<string,string>={};listeners:Record<string,()=>unknown>={};dataset:Record<string,string>={};value="";id="";htmlFor="";
+  constructor(public tag:string,public textContent=""){} append(...nodes:Node[]){this.children.push(...nodes)} setAttribute(key:string,value:string){this.attrs[key]=value} addEventListener(key:string,fn:()=>unknown){this.listeners[key]=fn} all():Node[]{return [this,...this.children.flatMap(node=>node.all())]}
+ }
+ for(const pending of [2,0,null,undefined]){
+  const sent:unknown[]=[];const row={key:"tasks.wip_limits.codex",group:"Tasks",label:"codex WIP",type:"integer",value:1,pending,file:"config.local.json",source:"config.local.json",applies:"hub start",risk:"raises",min:0,max:32};
+  const node=runInNewContext(`${code}; settingRow(row,true)`,{row,managerMode:false,snapshotValid:true,settingText:String,el:(tag:string,text?:string)=>new Node(tag,text),badge:(text:string)=>new Node("span",text),action:async(payload:unknown)=>{sent.push(payload)}}) as Node;
+  const expected=pending===undefined ? 1 : pending;expect(node.all().find(n=>n.tag==="input")?.value).toBe(expected===null ? "" : String(expected));await node.all().find(n=>n.tag==="button")!.listeners.click!();expect(sent).toEqual([{action:"setting",key:row.key,value:expected}]);
+ }
 });

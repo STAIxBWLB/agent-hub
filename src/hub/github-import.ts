@@ -2,7 +2,7 @@ import { sdlcGh, type SdlcGh } from "./sdlc.ts";
 export interface GitHubSource { provider: "github"; repo: string; issue: number; url: string; }
 export interface GitHubImportIssue { source: GitHubSource; title: string; detail: string; }
 export interface GitHubImportSelection { repo?: string; label: string; milestone?: string; }
-const REPO=/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+const REPO=/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/;
 const selectionText=(value:unknown):value is string=>typeof value==="string"&&value.trim()===value&&value.length>0&&value.length<=100&&!value.startsWith("-")&&!/\p{Cc}/u.test(value);
 /** Read-only issue intake; the existing reader bounds process time, stdout and diagnostics. */
 export async function readGitHubImport(input: GitHubImportSelection, run: SdlcGh=sdlcGh): Promise<{ issues: GitHubImportIssue[]; partial: boolean; }> {
