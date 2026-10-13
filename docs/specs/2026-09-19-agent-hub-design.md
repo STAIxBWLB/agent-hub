@@ -95,8 +95,11 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
    WebSocket to 127.0.0.1), so the control WS requires a per-run token and both hub
    servers refuse requests that carry an `Origin` header (amended in M1).
 9. Single machine, one hub daemon per project directory. Cross-machine broker is out.
+    (Amended in #258: hub memory is replicated between a person's machines through a git
+    remote; that is memory replication, not a broker, and the bus stays single-machine.)
 10. Shared memory reuses claude-mem as the single store; the hub never runs its own
-    memory database. Native capture stays where it exists (Claude hooks, Codex plugin,
+    memory database. (Amended in #258: the hub owns a long-term store and its graph,
+    `docs/memory.md`; claude-mem stays the optional capture and session-recall source.) Native capture stays where it exists (Claude hooks, Codex plugin,
     Kimi transcript bridge); the hub captures only the local worker and adds
     cross-platform recall, task-scoped briefs and explicit shared notes. Hub tool calls
     are not captured; Tasks alone decides what screened tool text reaches memory.
@@ -2577,3 +2580,19 @@ columns, excluding approved rows, and reused for retained off-roster peer ids an
 attention. No task JSON payload is decoded for this projection. Reserved
 pseudo-peers user and hub never produce offline-agent attention; a task reviewed
 by user still produces its normal review action.
+
+## Amendment: hub memory, tiers and graph (#258, phase 1)
+
+Decision 10 is amended: the hub owns a store of its own in `~/.agenthub/memory/`, machine-wide, and claude-mem stays
+where it is installed as the capture and session-recall source (notes still go to both). Append-only JSONL segments are
+the truth (`log/<machine>.jsonl` long-term, `local/<machine>.jsonl` short-term and never synced); `index.db` is derived,
+content-addressed rows inserted idempotently, so an incremental index equals a rebuild in any order. Notes on an open
+task are short-term; approval copies decision, contract and fail notes to long-term and starts the short-term clock
+(`memory.short_ttl_days`, 14); `hub_remember` takes `horizon` and `scope`. Deterministic edges (refs, plan paths and
+symbols, existing paths in the text, `#N`, `task #N`) are fixed at write time. Task briefs, session-start recall and
+`ahub ask` read the graph first; superseded entries are dropped and a linked fail leads. PII task text never enters the
+store, and secret-looking text is refused. `ahub memory` reads and, for a person, promotes, demotes, forgets, supersedes
+and rebuilds; the dashboard's Memory section is read-only inside the existing CSP. On with any project config
+(`memory.native`). Proposed defaults 1 to 5 of #258 are taken as confirmed by the request to implement it. Machine sync,
+long-term tasks with leases (decision 9's amendment), claude-mem import and model-suggested edges follow in later phases.
+
