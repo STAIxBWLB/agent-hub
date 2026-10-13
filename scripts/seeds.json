@@ -2103,7 +2103,7 @@
       "search": "value.trim().toLowerCase()",
       "replacement": "value",
       "testFile": "test/planning.test.ts",
-      "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
+      "testName": "normalized reservation succeeds through the planning pipeline with a named outcome assertion"
     },
     {
       "id": "planning-reservation-supported",
