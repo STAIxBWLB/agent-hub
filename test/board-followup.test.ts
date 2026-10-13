@@ -40,3 +40,10 @@ test("release cut flags use structured approval and preserve missing cut evidenc
 test("release filtering requires an explicit compatible daemon capability (#263)",()=>{
  expect(supportsBoardReleaseFilter({peers:{},protocol:16})).toBe(false);expect(supportsBoardReleaseFilter({boardReadCapabilities:{releaseFilter:false}})).toBe(false);expect(supportsBoardReleaseFilter({boardReadCapabilities:{releaseFilter:"true"}})).toBe(false);expect(supportsBoardReleaseFilter({boardReadCapabilities:{releaseFilter:true}})).toBe(true);
 });
+
+
+test("filtered terminal stages retain the visible snapshot alongside column placement",()=>{
+ const row={id:1,state:"proposed",title:"visible",class:"implement",signals:[],deps:[],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{},started:false};
+ const first=renderBoardColumns([row],{},120,5000,false,[row]);const later=renderBoardColumns([row],{},120,5000,false,[{...row,state:"approved",owner:"codex",reviewer:"claude"}]);
+ expect(later).toEqual(first);
+});
