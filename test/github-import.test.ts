@@ -29,3 +29,10 @@ test("GitHub intake accepts maximum escaped sentinel pages within a bounded read
 test("GitHub intake rejects comma labels before the StringSlice CLI can broaden selection",async()=>{
  let calls=0;await expect(readGitHubImport({repo:"Owner/Repo",label:"priority, high"},async()=>{calls++;return {code:0,stdout:"[]"}})).rejects.toThrow("selection");expect(calls).toBe(0);
 });
+
+test("GitHub intake accepts dot-prefixed repository identity in explicit and resolved selections",async()=>{
+ for(const explicit of [true,false]){
+  const calls:string[][]=[];const result=await readGitHubImport({label:"ready",...(explicit?{repo:"github/.github"}:{})},async args=>{calls.push(args);return {code:0,stdout:JSON.stringify(args[0]==="repo"?{nameWithOwner:"github/.github"}:[{...issue(1),url:"https://github.com/github/.github/issues/1"}])}}).catch(()=>null);
+  expect(result).not.toBeNull();if(!result)continue;expect(result.issues[0]?.source.repo).toBe("github/.github");expect(calls.at(-1)).toContain("github/.github");expect(calls.every(args=>args[0]==="repo"||args[0]==="issue"&&args[1]==="list")).toBe(true);
+ }
+});
