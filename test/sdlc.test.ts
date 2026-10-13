@@ -47,11 +47,11 @@ test("fake gh readback never fetches remote bodies; head races and incomplete re
   expect(await readSdlcPr(receipt, async () => ({ code: 1, stdout: "credential marker" }))).toBeUndefined();
 });
 
-function rig(mode: SdlcMode, pii = false) {
+function rig(mode: SdlcMode, pii = false, delayMs = 0) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-sdlc-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   let head = A, conclusion = "SUCCESS", calls = 0;
-  const gh: SdlcGh = async args => { calls++; return { code: 0, stdout: JSON.stringify(args[0] === "pr" ? raw(head, conclusion) : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) }; };
+  const gh: SdlcGh = async args => { calls++; if (delayMs) await Bun.sleep(delayMs); return { code: 0, stdout: JSON.stringify(args[0] === "pr" ? raw(head, conclusion) : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) }; };
   const tasks = new Tasks({ board, bus, cwd: dir, project: "test", routing: () => loadRouting(dir), notify: message => notices.push(message), sdlc: { config: () => config(mode), gh } });
   const proposed = board.propose(USER, { title: pii ? "patient 900101-1234567 marker" : "work", class: "implement", ...(pii ? { signals: ["pii"] } : {}) });
   board.update(proposed.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
@@ -102,4 +102,33 @@ test("pending or unavailable GitHub review requests never satisfy the review gat
   for (const reviewRequests of [undefined, null, [{ login: "reviewer" }]]) {
     expect(sdlcStatus(config("enforce"), receipt, parsePrEvidence({ ...raw(), reviewRequests })).blockers).toContain("review requests pending or unknown");
   }
+});
+
+test("advise: overlapping dones record one done after a single readback and one advice notice (#382)", async () => {
+  const single = rig("advise"); single.tasks.recordLifecycle("codex", single.id, { localHead: A, localResult: "failed" });
+  const before = single.calls();
+  await single.tasks.done("codex", single.id, "done");
+  expect(single.calls() - before).toBe(2); // one PR readback: the view and the review threads
+  expect(single.notices.filter(n => n.includes("SDLC review advice")).length).toBe(1);
+  for (const reviewed of [true, false]) {
+    const r = rig("advise", false, 20);
+    if (!reviewed) r.board.update(r.id, USER, "reviewer cleared", { reviewer: null });
+    const results = await Promise.allSettled([r.tasks.done("codex", r.id, "first"), r.tasks.done("codex", r.id, "second")]);
+    expect(results.filter(x => x.status === "fulfilled").length).toBe(1);
+    expect(r.board.get(r.id)!.history.filter(h => h.event === "done").length).toBe(1);
+  }
+});
+
+test("the owner relinks a PR after a reviewed head was recorded; only the reviewer records a head (#382)", async () => {
+  const r = rig("advise");
+  await r.tasks.done("codex", r.id, "done");
+  r.tasks.recordLifecycle(USER, r.id, { reviewedHead: A });
+  expect(r.board.get(r.id)?.sdlc?.reviewedHead).toBe(A);
+  expect(() => r.tasks.recordLifecycle("codex", r.id, { pr: 2 })).not.toThrow();
+  expect(r.board.get(r.id)?.sdlc?.pr).toBe(2); expect(r.board.get(r.id)?.sdlc?.reviewedHead).toBeUndefined();
+  expect(() => r.tasks.recordLifecycle("codex", r.id, { reviewedHead: B })).toThrow();
+  const carried = rig("advise");
+  carried.tasks.recordLifecycle(USER, carried.id, { reviewedHead: A });
+  expect(() => carried.tasks.recordLifecycle("codex", carried.id, { pr: 2, reviewedHead: A })).toThrow("reviewer");
+  expect(carried.board.get(carried.id)?.sdlc?.pr).toBe(1);
 });

@@ -135,3 +135,29 @@ test("read-only hardlink identity refusal is stable for the protected original a
   }
   expect(readFileSync(join(dir, "data/raw/input.json"), "utf8")).toBe("original");
 });
+test("glob policies match decomposed, compatibility and long-s spellings of protected names", async () => {
+  const dir = root(), nfd = "학생자료".normalize("NFD"), accented = "données".normalize("NFD");
+  mkdirSync(join(dir, nfd)); writeFileSync(join(dir, nfd, "a.csv"), "original");
+  mkdirSync(join(dir, accented)); writeFileSync(join(dir, accented, "b.csv"), "original");
+  mkdirSync(join(dir, "data/ſecret"), { recursive: true });
+  expect(matchesPolicy(dir, nfd + "/a.csv", ["학생자료/**"])).toBe(true);
+  expect(matchesPolicy(dir, nfd + "/new.csv", ["학생자료/*.csv"])).toBe(true);
+  expect(matchesPolicy(dir, accented + "/b.csv", ["données/*.csv"])).toBe(true);
+  expect(matchesPolicy(dir, "data/ſecret/x", ["data/sec*"])).toBe(true);
+  expect(matchesPolicy(dir, "other/a.csv", ["학생자료/**"])).toBe(false);
+  mkdirSync(join(dir, "single")); for (const name of ["ß.txt", "ﬁ.txt"]) writeFileSync(join(dir, "single", name), "x");
+  for (const name of ["ß.txt", "ﬁ.txt"]) expect(matchesPolicy(dir, "single/" + name, ["single/?.txt"])).toBe(true); // a fold that expands keeps ? matching
+  // an exact entry keeps matching every spelling it matched before folding (U+0130 then a combining mark reorders)
+  expect(matchesPolicy(dir, "i\u0307\u0338/new.csv", ["\u0130\u0338"])).toBe(true);
+  expect(matchesPolicy(dir, "\u0130\u0338/new.csv", ["i\u0307\u0338"])).toBe(true);
+  // a directory matching the pattern by its folded spelling is still searched for a matching alias below it
+  mkdirSync(join(dir, "other")); mkdirSync(join(dir, "ss")); symlinkSync("../other", join(dir, "ss/ß")); mkdirSync(join(dir, "x")); symlinkSync("../other", join(dir, "x/x"));
+  expect(matchesPolicy(dir, "other/f.csv", ["**/ß"])).toBe(true);
+  expect(matchesPolicy(dir, "other/f.csv", ["**/x"])).toBe(true);
+  // a trailing ** does not walk its whole matched subtree for a path outside it: a cycle there leaves other paths public
+  mkdirSync(join(dir, "bulk")); symlinkSync(".", join(dir, "bulk/loop"));
+  expect(matchesPolicy(dir, "other/f.csv", ["bulk/**"])).toBe(false);
+  const ctx: ToolContext = { cwd: dir, deny: [], readOnly: ["학생자료/**"], sandboxProfile: "", permit: async () => true, send: () => "sent" };
+  expect(await runTool("write", JSON.stringify({ path: nfd + "/a.csv", content: "mutated" }), ctx)).toContain("data.readonly");
+  expect(readFileSync(join(dir, nfd, "a.csv"), "utf8")).toBe("original");
+});

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
 import { projectionConfig, TextProjections } from "../src/hub/text-projection.ts";
@@ -140,4 +140,31 @@ test.skipIf(process.platform!=="darwin")("projection helper termination stops it
     const running=()=>rows().filter(row=>owned.includes(row.pid)&&!row.state.startsWith("Z")).map(row=>row.pid);
     for(let i=0;i<200 && running().length;i++)await Bun.sleep(10);expect(running()).toEqual([]);
   }finally{if(helper.exitCode===null)helper.kill("SIGTERM");await helper.exited;await new Response(helper.stdout).text();await new Response(helper.stderr).text();}
+});
+
+test.skipIf(process.platform !== "darwin")("a converter reads only its input snapshot and its own program, never other project files", () => {
+  const dir=root(), converter=join(dir,"leak.sh"), file=join(dir,"report.docx");
+  mkdirSync(join(dir,"data/private"),{recursive:true}); writeFileSync(join(dir,"data/private/s.txt"),"SECRET-BODY\n");
+  writeFileSync(converter,"#!/bin/sh\n/bin/cat \"$1\"\n/bin/cat \""+join(dir,"data/private/s.txt")+"\" 2>/dev/null\n/bin/cat data/private/s.txt 2>/dev/null\nexit 0\n",{mode:0o755}); writeFileSync(file,"public body\n");
+  const projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":[converter,"{input}"]})});
+  const projected=projections.project(file);
+  expect(projected?.text).toBe("public body\n");
+  // a read_allow entry that encloses the project still leaves the project unreadable to the converter
+  const enclosing=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state-enclosing"),config:projectionConfig({".docx":[converter,"{input}"]}),readAllow:[dirname(dir)]});
+  expect(enclosing.project(file)?.text).toBe("public body\n");
+  // an interpreter given a relative project script that reads its working directory still converts
+  mkdirSync(join(dir,"tools")); writeFileSync(join(dir,"tools/conv.mjs"),"import { readFileSync } from \"node:fs\";\nprocess.cwd();\nprocess.stdout.write(readFileSync(process.argv[2]));\n");
+  const relative=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state-relative"),config:projectionConfig({".docx":[process.execPath,"tools/conv.mjs","{input}"]})});
+  expect(relative.project(file)?.text).toBe("public body\n");
+});
+
+test.skipIf(process.platform !== "darwin")("a failed conversion of unchanged bytes is not retried on every facts read", () => {
+  const dir=root(), converter=join(dir,"slow-fail.sh"), file=join(dir,"broken.docx");
+  writeFileSync(converter,"#!/bin/sh\n/bin/sleep 1\nexit 3\n",{mode:0o755}); writeFileSync(file,"bytes");
+  const projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":[converter,"{input}"]})});
+  const timed=()=>{ const started=performance.now(); expect(projections.project(file)).toBeUndefined(); return performance.now()-started; };
+  expect(timed()).toBeGreaterThan(900);
+  expect(timed()).toBeLessThan(500); // same bytes, same command: not converted again
+  writeFileSync(file,"changed bytes"); expect(timed()).toBeGreaterThan(900);
+  writeFileSync(converter,"#!/bin/sh\n/bin/sleep 1\nexit 4\n",{mode:0o755}); expect(timed()).toBeGreaterThan(900); // a changed command is tried again
 });

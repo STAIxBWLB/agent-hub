@@ -236,3 +236,19 @@ test("the add-on report splits tasks on, off and unknown, gives intervals, and m
   const parsed = JSON.parse(JSON.stringify(record(41, { codex: [] }, { owners: ["constructor"], peers: ["codex", "constructor"] }))) as TaskRecord;
   expect(addonReport([parsed]).find((r) => r.addon === "ripwire")!.unknown).toBe(1);
 });
+
+test("a Codex plugin disabled in config stays off when its hook trust entry remains (#382)", async () => {
+  const home = temp("disabled"), codex = join(home, ".codex"); mkdirSync(codex);
+  writeFileSync(join(codex, "config.toml"), `[plugins."ponytail@ponytail"]\nenabled = false\n\n[hooks.state."ponytail@ponytail:hooks/hooks.json:stop:0:0"]\ntrusted_hash = "x"\n`);
+  expect(await detectTooling("codex", { env: { CODEX_HOME: codex }, home, path: "" })).toEqual([]);
+});
+
+test("Claude add-on detection never blocks on a project settings file that is a FIFO or device (#382)", async () => {
+  const home = temp("fifo-home"), project = temp("fifo-project"); mkdirSync(join(project, ".claude"));
+  expect(Bun.spawnSync(["mkfifo", join(project, ".claude", "settings.json")]).exitCode).toBe(0);
+  const { symlinkSync } = await import("node:fs"); symlinkSync("/dev/zero", join(project, ".claude", "settings.local.json"));
+  const script = join(project, "probe.ts");
+  writeFileSync(script, `import { detectTooling } from ${JSON.stringify(join(import.meta.dir, "../src/hub/tooling.ts"))};\nconsole.log(JSON.stringify(await detectTooling("claude", { env: {}, home: ${JSON.stringify(home)}, cwd: ${JSON.stringify(project)}, path: "" })));\n`);
+  const run = Bun.spawnSync([process.execPath, script], { timeout: 4000, stdout: "pipe", stderr: "pipe" });
+  expect(run.exitCode).toBe(0); expect(run.stdout.toString().trim()).toBe("[]");
+});

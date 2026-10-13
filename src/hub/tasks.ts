@@ -1615,7 +1615,11 @@ export class Tasks {
       if (next.phase && !this.isPii(task) && !this.nameable(JSON.stringify(next.phase))) throw new PreEffectToolRefusal("phase metadata matches a PII pattern; use private work");
       if (next.phase) validatePhaseLinks(task, next.phase, id => this.d.board.get(id), t => this.isPii(t));
     }
-    if (next.reviewedHead !== task.sdlc?.reviewedHead) this.mine(task, by, "reviewer", true);
+    // Recording a head is the reviewer's; a head dropped because the repo or PR changed is not a recording, and a
+    // head supplied with a new PR identity is one even when its value is unchanged (#382).
+    const suppliedHead = !!input && typeof input === "object" && (input as { reviewedHead?: unknown }).reviewedHead !== undefined;
+    const artifactChanged = next.repo !== task.sdlc?.repo || next.pr !== task.sdlc?.pr;
+    if (next.reviewedHead !== undefined && (next.reviewedHead !== task.sdlc?.reviewedHead || (suppliedHead && artifactChanged))) this.mine(task, by, "reviewer", true);
     return this.d.board.update(task.id, by, "lifecycle", { sdlc: next });
   }
 
@@ -1820,7 +1824,7 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review");
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
     const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary, { withheld: withheld || undefined });
@@ -1946,12 +1950,15 @@ export class Tasks {
     this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
   }
 
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false): Promise<Task> {
+  /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review"): Promise<Task> {
     let reviewer = task.reviewer;
-    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") {
+    if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       await this.lifecycleGate(task, reviewer ? "review" : "approval");
       task = this.need(task.id, false, true);
       this.mine(task, by, "owner", true);
+      // In every mode: another done may have landed during the readback.
+      if (task.state === "in_review" || task.state === "approved") throw new Error(`task #${task.id} is already ${task.state}`);
       reviewer = task.reviewer;
     }
     const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined });

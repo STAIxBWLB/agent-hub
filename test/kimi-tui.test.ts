@@ -190,3 +190,24 @@ test("a hub-opened Kimi command pins the selected mode despite a later configura
   expect((await client.request({ t: "peer_start", peer: "kimi" })).ok).toBe(true);
   expect(words.slice(-3)).toEqual(["kimi", "--mode", "tui"]);
 });
+
+test("watch follows a running headless Kimi under the default TUI start mode (#382)", async () => {
+  const hub = await rig();
+  expect((await hub.console_.request({ t: "watch", peer: "kimi" })).ok).toBe(false);
+  expect((await hub.console_.request({ t: "start", peer: "kimi", args: { mode: "headless" } })).ok).toBe(true);
+  await observed(() => hub.daemon.bus.peers.get("kimi")?.state === "idle");
+  expect((await hub.console_.request({ t: "watch", peer: "kimi" })).ok).toBe(true);
+});
+
+test("an older Kimi TUI socket closing keeps a newer launch's admission (#382)", async () => {
+  const hub = await rig("headless");
+  expect((await hub.console_.request({ t: "start", peer: "kimi", args: { mode: "tui" } })).ok).toBe(true);
+  const first = await hub.attach();
+  expect((await hub.console_.request({ t: "start", peer: "kimi", args: { mode: "tui" } })).ok).toBe(true);
+  first.close();
+  await observed(() => hub.daemon.bus.peers.get("kimi")?.state === "offline");
+  const refusal = await ControlClient.connect(hub.stateDir, { role: "peer", peer: "kimi", channel: false })
+    .then(second => { cleanups.push(() => second.close()); return undefined; }, (error: Error) => error.message);
+  expect(refusal).toBeUndefined();
+  await observed(() => hub.daemon.bus.peers.get("kimi")?.state === "idle");
+});

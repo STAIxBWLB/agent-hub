@@ -1,6 +1,7 @@
 import { lstatSync, opendirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "./project.ts";
+import { foldSegment } from "./permission-mode.ts";
 /** Bounded project-relative exact paths/subtrees or *, ? and whole-segment ** globs. */
 export function policyPaths(raw: unknown, field: string): string[] {
   if (raw === undefined) return [];
@@ -15,16 +16,27 @@ export function policyRealPath(path: string): string {
   while (!existing(ancestor)) { const parent = dirname(ancestor); if (parent === ancestor) throw new Error("path cannot be resolved"); ancestor = parent; }
   return join(realPath(ancestor), relative(ancestor, path));
 }
-const beneath = (path: string, root: string) => { path = path.toLowerCase(); root = root.toLowerCase(); return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep); };
+const within = (path: string, root: string) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+// Either spelling protects, as for globs: lowercase as before, or folded like a case-insensitive disk opens names (NFD/NFC,
+// compatibility forms, long s, ignorable code points). Folding is not a function of the lowercase form for every name.
+const beneath = (path: string, root: string) => within(path.toLowerCase(), root.toLowerCase()) || within(foldSegment(path), foldSegment(root));
+const lowerBeneath = (path: string, root: string) => within(path.toLowerCase(), root.toLowerCase());
 export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
 }
-/** Linear-space wildcard DP, avoiding regex backtracking on untrusted paths. */
+/**
+ * Either spelling protects: the lowercase comparison keeps `?` matching one code point whose fold expands (ß, ﬁ), and
+ * the folded one catches NFD/NFC, compatibility and long-s aliases. Adding a match only ever adds protection.
+ */
 function segmentMatches(pattern: string, name: string): boolean {
-  const chars = [...name.toLowerCase()];
+  return wildcard(pattern.toLowerCase(), name.toLowerCase()) || wildcard(foldSegment(pattern), foldSegment(name));
+}
+/** Linear-space wildcard DP, avoiding regex backtracking on untrusted paths. */
+function wildcard(pattern: string, name: string): boolean {
+  const chars = [...name];
   let previous = new Array<boolean>(chars.length + 1).fill(false); previous[0] = true;
-  for (const char of pattern.toLowerCase()) {
+  for (const char of pattern) {
     const next = new Array<boolean>(chars.length + 1).fill(false);
     next[0] = char === "*" && previous[0]!;
     for (let i = 1; i <= chars.length; i++) next[i] = char === "*" ? previous[i]! || next[i - 1]! : previous[i - 1]! && (char === "?" || char === chars[i - 1]);
@@ -63,10 +75,17 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
   if (patternScope(pattern, start, relative(root, lexical), includeParents) || patternScope(pattern, start, relative(root, actual), includeParents)) return true;
   const visit = (dir: string, states: Set<number>, depth: number, ancestors: Set<string>): boolean => {
     const real = policyRealPath(dir);
-    if (states.has(pattern.length)) return beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual));
+    if (states.has(pattern.length)) {
+      if (beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual))) return true;
+      // An earlier `**` can still match deeper: an alias below this match (`ss/ß -> other` for `**/ß`) is searched too.
+      // A trailing `**` only re-matches everything below, so it never walks the subtree (as before, for paths outside it).
+      states = new Set([...states].filter(i => i !== pattern.length && !(i === pattern.length - 1 && pattern[i] === "**")));
+      if (!states.size) return false;
+    }
     if (patternScope(pattern, states, relative(real, actual), includeParents)) return true;
     if (!existing(dir)) return false;
-    if (!beneath(real, root)) throw new Error("policy glob discovery outside project");
+    // Unfolded: a sibling whose folded spelling looks like the project is outside it, and discovery there fails closed.
+    if (!lowerBeneath(real, root)) throw new Error("policy glob discovery outside project");
     const info = statSync(dir);
     if (!info.isDirectory()) return false;
     if (depth > 32 || ancestors.has(real) || budget.entries > 4096) throw new Error("policy glob discovery unavailable");
