@@ -2904,6 +2904,14 @@
       "replacement": "\"declined\", { ...(task.state === \"in_progress\" ?",
       "testFile": "test/planner-pull.test.ts",
       "testName": "declined planner redo returns to To Do and resumes after alternative WIP clears"
+    },
+    {
+      "id": "board-unset-cut-approval-evidence",
+      "file": "src/hub/tasks.ts",
+      "search": "(release.cut === null || actualTaskDates(task).doneAt === null)",
+      "replacement": "actualTaskDates(task).doneAt === null",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release without a cut reports every outside approval as unknown"
     }
   ]
 }
