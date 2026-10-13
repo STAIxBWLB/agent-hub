@@ -189,6 +189,15 @@
         "src/models/mlx.ts",
         "src/cli/upgrade-interactive.ts"
       ]
+    },
+    "docs/agent-notes/README.md": {
+      "verifiedAgainst": "abca643f30468848a95b2435c0a7c0044eff5ed9",
+      "paths": [
+        "src/cli/console-state.ts",
+        "src/cli/attention.ts",
+        "test/console-attention.test.ts",
+        "docs/agent-notes/daemon.md"
+      ]
     }
   }
 }
