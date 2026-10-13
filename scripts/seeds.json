@@ -2664,6 +2664,22 @@
       "replacement": "if (false && tool.name === \"hub_backlog_split\")",
       "testFile": "test/planner-split-surfaces.test.ts",
       "testName": "split nested plan schema follows the selected project profile"
+    },
+    {
+      "id": "planner-reviewer-owner-capacity",
+      "file": "src/hub/routing.ts",
+      "search": "role === \"owner\" && opts.excludeOwners?.includes(peer)",
+      "replacement": "opts.excludeOwners?.includes(peer)",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner owner capacity never removes the required reviewer"
+    },
+    {
+      "id": "planner-idle-final-admission",
+      "file": "src/hub/tasks.ts",
+      "search": "finding.step === 3 && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "replacement": "false && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "testFile": "test/task-sweep.test.ts",
+      "testName": "planner idle sweep keeps its final attempt until owner capacity is available"
     }
   ]
 }
