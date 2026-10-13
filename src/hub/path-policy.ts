@@ -77,8 +77,9 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
     const real = policyRealPath(dir);
     if (states.has(pattern.length)) {
       if (beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual))) return true;
-      // A `**` can still match deeper: an alias below this match (`ss/ß -> other` for `**/ß`) is searched too.
-      states = new Set([...states].filter(i => i !== pattern.length));
+      // An earlier `**` can still match deeper: an alias below this match (`ss/ß -> other` for `**/ß`) is searched too.
+      // A trailing `**` only re-matches everything below, so it never walks the subtree (as before, for paths outside it).
+      states = new Set([...states].filter(i => i !== pattern.length && !(i === pattern.length - 1 && pattern[i] === "**")));
       if (!states.size) return false;
     }
     if (patternScope(pattern, states, relative(real, actual), includeParents)) return true;

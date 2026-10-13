@@ -3220,8 +3220,16 @@
     {
       "id": "policy-glob-search-below-match",
       "file": "src/hub/path-policy.ts",
-      "search": "states = new Set([...states].filter(i => i !== pattern.length));",
+      "search": "states = new Set([...states].filter(i => i !== pattern.length && !(i === pattern.length - 1 && pattern[i] === \"**\")));",
       "replacement": "states = new Set<number>();",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
+    },
+    {
+      "id": "policy-glob-trailing-doublestar-bounded",
+      "file": "src/hub/path-policy.ts",
+      "search": " && !(i === pattern.length - 1 && pattern[i] === \"**\")));",
+      "replacement": "));",
       "testFile": "test/path-policy.test.ts",
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
     }

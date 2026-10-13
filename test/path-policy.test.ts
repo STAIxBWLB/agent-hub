@@ -154,6 +154,9 @@ test("glob policies match decomposed, compatibility and long-s spellings of prot
   mkdirSync(join(dir, "other")); mkdirSync(join(dir, "ss")); symlinkSync("../other", join(dir, "ss/ß")); mkdirSync(join(dir, "x")); symlinkSync("../other", join(dir, "x/x"));
   expect(matchesPolicy(dir, "other/f.csv", ["**/ß"])).toBe(true);
   expect(matchesPolicy(dir, "other/f.csv", ["**/x"])).toBe(true);
+  // a trailing ** does not walk its whole matched subtree for a path outside it: a cycle there leaves other paths public
+  mkdirSync(join(dir, "bulk")); symlinkSync(".", join(dir, "bulk/loop"));
+  expect(matchesPolicy(dir, "other/f.csv", ["bulk/**"])).toBe(false);
   const ctx: ToolContext = { cwd: dir, deny: [], readOnly: ["학생자료/**"], sandboxProfile: "", permit: async () => true, send: () => "sent" };
   expect(await runTool("write", JSON.stringify({ path: nfd + "/a.csv", content: "mutated" }), ctx)).toContain("data.readonly");
   expect(readFileSync(join(dir, nfd, "a.csv"), "utf8")).toBe("original");
