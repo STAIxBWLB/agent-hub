@@ -593,7 +593,7 @@ export class Tasks {
       const priority = task.priority ?? (task.signals.includes("urgent") ? 0 : 2);
       if (priority === 0 && this.d.board.list("backlog").some(other => {
         if (other.id === task.id || this.prerequisiteOf(other, task.id) || (other.priority ?? (other.signals.includes("urgent") ? 0 : 2)) !== 0 || other.rank == null || !other.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) return false;
-        const ancestors = this.d.board.list("backlog").filter(goal => this.prerequisiteOf(goal, task.id) && (goal.priority ?? (goal.signals.includes("urgent") ? 0 : 2)) === 0 && goal.rank != null && goal.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")));
+        const ancestors = this.d.board.list().filter(goal => goal.state !== "approved" && this.prerequisiteOf(goal, task.id) && (goal.priority ?? (goal.signals.includes("urgent") ? 0 : 2)) === 0 && goal.rank != null && goal.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank")));
         const order = [{ rank: task.rank ?? Number.MAX_SAFE_INTEGER, id: task.id }, ...ancestors.map(goal => ({ rank: goal.rank!, id: goal.id }))].sort((a,b) => a.rank-b.rank || a.id-b.id)[0]!;
         return other.rank < order.rank || other.rank === order.rank && other.id < order.id;
       })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
@@ -723,7 +723,12 @@ export class Tasks {
     if (!task || !entry?.planning || entry.planning.revision !== revision || (task.planningRevision ?? 0) !== revision || by !== USER && entry.by !== by) throw new PreEffectToolRefusal("planning undo is stale or not owned");
     if (entry.planning.split) {
       const release = task.release == null ? undefined : this.d.board.release(task.release);
-      if (task.state !== "backlog" || task.owner || taskHasStarted(task) || by !== USER && (task.pinned || release && ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("split undo is no longer eligible");
+      if (task.state !== "backlog" || task.owner || taskHasStarted(task) || release && ["shipped", "dropped"].includes(release.state) || by !== USER && (task.pinned || release?.state === "frozen")) throw new PreEffectToolRefusal("split undo is no longer eligible");
+      if (this.d.store) {
+        try { this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
+        const children = new Set(entry.planning.split.children.map(child => this.d.board.get(child.id)).filter((child): child is Task => !!child).map(child => this.memoryKey(child)));
+        if (this.d.store.store.goals().some(goal => goal.links.some(link => children.has(link.task)))) throw new PreEffectToolRefusal("split children are referenced by long-term tasks");
+      }
       const restored = this.d.board.undoBacklogSplit(id, by, revision);
       this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: restored.planningRevision! });
       return restored;
@@ -777,26 +782,39 @@ export class Tasks {
       const drafts = rows.map((part, index) => {
         if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
         const given = part.class ?? parent.profileClass ?? parent.class;
+        const storedProfile = profile === (this.d.profile ?? "dev") ? this.d.profileData ?? profile : profile;
         let cls: TaskClass;
-        try { cls = profileClass(given as string, this.d.profileData ?? profile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+        try { cls = part.class === undefined ? parent.class : profileClass(given as string, storedProfile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
         const after = part.after ?? [], afterParts = part.afterParts ?? [];
         if (!Array.isArray(after) || after.length > 64 || after.some(dep => !Number.isSafeInteger(dep) || dep <= 0) || new Set(after).size !== after.length || !Array.isArray(afterParts) || afterParts.length > 8 || afterParts.some(dep => !Number.isSafeInteger(dep) || dep < 0 || dep >= index) || new Set(afterParts).size !== afterParts.length) throw new PreEffectToolRefusal("split dependencies must name existing tasks or earlier parts");
         const deps = [...new Set([...(parent.deps ?? []), ...after as number[]])], pending = [...deps], seen = new Set<number>();
+        const direct = afterParts.length ? deps.filter(dep => !parent.deps?.includes(dep)) : deps;
+        if (direct.length + afterParts.length > 64) throw new PreEffectToolRefusal("split child dependencies exceed the 64-edge cap");
         while (pending.length) { const dependency = pending.pop()!; if (dependency === id) throw new PreEffectToolRefusal("split dependency reaches its parent"); if (seen.has(dependency)) continue; seen.add(dependency); const task = this.d.board.get(dependency); if (!task) throw new PreEffectToolRefusal("split dependency is missing"); pending.push(...(task.deps ?? [])); }
-        const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, this.d.profileData ?? profile);
-        const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: taskRole(parent.role, cls, catalog)?.id } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string } : {}) };
+        const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, storedProfile);
+        const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: taskRole(parent.role, cls, catalog)?.id } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
         const fields: PlanningFields = {};
         for (const key of ["priority", "release", "plannedStart", "due"] as const) if (parent[key] !== undefined) fields[key] = parent[key];
         return { ...draft, fields };
       });
       return { parent, drafts };
     };
-    const initial = validate(), verdicts: (PiiVerdict | undefined)[] = [];
-    for (const part of initial.drafts) verdicts.push(this.screenOn() && !this.isPii(initial.parent) ? await this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined);
-    const withheld = await this.withholds("note", reason, initial.parent), current = validate();
-    const drafts = current.drafts.map((part, index) => ({ ...part, signals: [...new Set([...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
+    const initial = validate(), screening = this.screenOn();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const attempt = Promise.all([
+      Promise.all(initial.drafts.map(part => screening && !this.isPii(initial.parent) ? this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined)),
+      this.withholds("note", reason, initial.parent),
+    ]);
+    let screened: Awaited<typeof attempt>;
+    try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), 8000); })]); }
+    finally { if (deadline !== undefined) clearTimeout(deadline); }
+    const [verdicts, withheld] = screened, current = validate();
+    const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }), ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
     const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);
-    for (const child of result.children) this.incomingBacklog.add(child.id);
+    for (const [index, child] of result.children.entries()) {
+      this.incomingBacklog.add(child.id);
+      if (screening) { this.recordScreen(child.id, "task", verdicts[index]); if (verdicts[index]?.label === "unknown") this.releaseNotice(`task #${child.id}: the PII screen gave no verdict (${verdicts[index]!.miss}); it is handled as a PII task`); }
+    }
     this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: result.parent.planningRevision! });
     return result;
   }
@@ -928,10 +946,11 @@ export class Tasks {
   }
 
   /** Where a screened task's `pii` signal came from, on its history and in events (issue #198); no verdict is a console line by id. */
+  private screenNote(v: PiiVerdict | undefined): string { return !v ? "pii: regex" : v.label === "clear" ? "clear" : v.label === "pii" ? `pii: screen, ${v.category}` : `pii: unknown, ${v.miss}`; }
   private screenedTask(task: Task, v: PiiVerdict | undefined): Task {
     this.recordScreen(task.id, "task", v);
     if (v?.label === "unknown") this.d.notify(`task #${task.id}: the PII screen gave no verdict (${v.miss}); it is handled as a PII task`);
-    const note = !v ? "pii: regex" : v.label === "clear" ? "clear" : v.label === "pii" ? `pii: screen, ${v.category}` : `pii: unknown, ${v.miss}`;
+    const note = this.screenNote(v);
     return this.d.board.update(task.id, HUB, "screened", {}, note);
   }
 
