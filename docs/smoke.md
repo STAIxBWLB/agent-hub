@@ -1704,3 +1704,8 @@ The expanded-footer follow-up group passed7/0 with6687 assertions: primary
 stream rows survive alternate panels and are cleared before queued events return;
 expired notices restore the selected approval id and expiry. No earlier assertion
 was removed. Native terminal/tmux proof and final full gates remain pending.
+
+Line-size console faces now honor the resolved ASCII/block selection, with the
+locale fallback retained and ASCII/CLI defaults unchanged. Actual line glyph,
+geometry, modal and runtime regression group passed19/0 with7165 assertions.
+All five faces stayed100 cells wide without colour escapes. Full gates pending.
