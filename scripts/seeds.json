@@ -2392,6 +2392,22 @@
       "replacement": "if (false) this.addPlannerBacklog(e.peer, ids);",
       "testFile": "test/planning-notices.test.ts",
       "testName": "an immediately evicted planner notice retains its ids until queue capacity is available"
+    },
+    {
+      "id": "planner-notice-restart-coalescing",
+      "file": "src/hub/tasks.ts",
+      "search": "!queued.has(id) && this.d.board.get(id)?.state === \"backlog\"",
+      "replacement": "this.d.board.get(id)?.state === \"backlog\"",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "reopened journal planner notices coalesce recovered backlog without duplicate copies"
+    },
+    {
+      "id": "planner-notice-pressure-backoff",
+      "file": "src/hub/tasks.ts",
+      "search": "if (blockedQueue !== undefined && blockedQueue === JSON.stringify(this.d.bus.queueIds(peer))) continue;",
+      "replacement": "if (false) continue;",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "planner overflow waits for a queue change instead of failing every scheduler tick"
     }
   ]
 }
