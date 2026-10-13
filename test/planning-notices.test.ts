@@ -21,7 +21,7 @@ function rig(options: { secondPlanner?: boolean; queueCap?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-planner-notices-")), board = new Board(join(dir, "hub.db"));
   const bus: Bus = new Bus({ batchMs: 0, ...(options.queueCap === undefined ? {} : { queueCap: options.queueCap }), rostered: peer => peer !== "kimi", relevant: (peer, env) => tasks.relevant(peer, env) });
   const roles = { claude: ["planner"], codex: ["implementer"], kimi: ["planner"], ...(options.secondPlanner ? { pi: ["planner"] } : {}) };
-  const deps = { board, bus, roles, routing: () => { const routing = loadRouting(dir); if (options.secondPlanner) routing.classes.implement.peers = []; return routing; }, cwd: dir, project: "notices", notify: () => {} };
+  const deps = { board, bus, roles, routing: () => { const routing = loadRouting(dir); if (options.secondPlanner) routing.classes.implement!.peers = []; return routing; }, cwd: dir, project: "notices", notify: () => {} };
   const tasks = new Tasks(deps), notices: Envelope[] = [];
   bus.tap(event => { if (event.t === "envelope" && event.env.body.startsWith("Backlog items ")) notices.push(event.env); });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
