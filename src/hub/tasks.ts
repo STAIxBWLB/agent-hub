@@ -827,6 +827,7 @@ export class Tasks {
   }
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void): Promise<Task> {
+    external = external ? { ...external } : undefined;
     if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
     const backlog = input.backlog === true;
@@ -856,13 +857,14 @@ export class Tasks {
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
     const plan = cleanPlan(input.plan, this.d.profileData ?? profile);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
-    const signals = this.signalsFor({ ...text, detail: [text.detail, planText(plan)].join("\n"), plan });
+    const screenDetail = [text.detail, external?.repo, external?.url].filter(value => value !== undefined && value !== "").join("\n");
+    const signals = this.signalsFor({ ...text, detail: [screenDetail, planText(plan)].join("\n"), plan });
     // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
     if (input.urgent === true && !signals.includes("urgent")) signals.push("urgent");
     // The PII screen (issue #198) reads the same text before anything else does: until its verdict the task is on no
     // board, in no envelope and before no other model. A pattern match is PII without a call; no verdict is PII too.
     const screening = this.screenOn();
-    const screened = screening && !signals.includes("pii") ? await this.screenCall(screenText({ ...text, plan })) : undefined;
+    const screened = screening && !signals.includes("pii") ? await this.screenCall(screenText({ ...text, detail: screenDetail, plan })) : undefined;
     if (screened && screened.label !== "clear") signals.push("pii");
     let cls = baseGiven;
     let triaged = false;
