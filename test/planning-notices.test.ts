@@ -19,7 +19,7 @@ const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function rig() {
   const dir = mkdtempSync(join(tmpdir(), "ahub-planner-notices-")), board = new Board(join(dir, "hub.db"));
-  const bus = new Bus({ batchMs: 0, rostered: peer => peer !== "kimi", relevant: (peer, env) => tasks.relevant(peer, env) });
+  const bus: Bus = new Bus({ batchMs: 0, rostered: peer => peer !== "kimi", relevant: (peer, env) => tasks.relevant(peer, env) });
   const roles = { claude: ["planner"], codex: ["implementer"], kimi: ["planner"] };
   const deps = { board, bus, roles, routing: () => loadRouting(dir), cwd: dir, project: "notices", notify: () => {} };
   const tasks = new Tasks(deps), notices: Envelope[] = [];
