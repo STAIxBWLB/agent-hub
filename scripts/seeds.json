@@ -2396,10 +2396,10 @@
     {
       "id": "planner-notice-restart-coalescing",
       "file": "src/hub/tasks.ts",
-      "search": "!queued.has(id) && this.d.board.get(id)?.state === \"backlog\"",
-      "replacement": "this.d.board.get(id)?.state === \"backlog\"",
+      "search": "backlog.filter(task => !queued.has(task.id)).map(task => task.id)",
+      "replacement": "backlog.map(task => task.id)",
       "testFile": "test/planning-notices.test.ts",
-      "testName": "reopened journal planner notices coalesce recovered backlog without duplicate copies"
+      "testName": "recovery coalesces planner ids before a restored notice is consumed ahead of the first tick"
     },
     {
       "id": "planner-notice-pressure-backoff",
