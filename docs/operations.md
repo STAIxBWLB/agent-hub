@@ -2923,3 +2923,5 @@ Split reasons preserve deterministic privacy from both initial and final policy 
 GitHub import rejects labels containing commas or double quotes before invoking gh, since its CSV-style label parser could otherwise select a different literal label.
 
 Ask evidence skips body-free memory-reference markers when selecting the latest task transition and note. The selected note retains the existing withheld and on-campus privacy checks.
+
+GitHub intake checks its staging deadline after every awaited proposal, including the final issue. A confirmed late save returns its task ID with partial=true and complete=false so the operator can read back and resume.
