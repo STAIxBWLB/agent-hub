@@ -188,3 +188,23 @@ test("planner idle sweep keeps its final attempt until owner capacity is availab
  await f.tasks.sweep(at);await f.tasks.sweep(at+60000);expect(await f.tasks.sweep(at+120000)).toEqual([]);expect(f.board.get(task.id)!.history.at(-1)?.sweep?.step).toBe(2);
  f.board.update(full.id,HUB,"finished",{state:"approved"});f.peers.local!.set("idle");await f.tasks.sweep(at+180000);expect(f.board.get(task.id)?.owner).toBe("local");
 });
+
+
+test("memory reference bookkeeping preserves sweep thresholds and ladder activity", async () => {
+  const clock = spyOn(Date, "now").mockReturnValue(1000);
+  cleanup.push(() => clock.mockRestore());
+  for (const [state, minutes] of [["proposed", 1], ["in_progress", 2], ["in_review", 3]] as const) {
+    clock.mockReturnValue(1000);
+    const f = await fixture();
+    const task = f.make(state), activity = task.history.length - 1;
+    const due = 1000 + minutes * 60_000;
+    clock.mockReturnValue(due - 1);
+    f.board.update(task.id, HUB, "memory reference started", {});
+    expect(await f.tasks.sweep(due)).toMatchObject([{ finding: { step: 1, activity } }]);
+    clock.mockReturnValue(due + 59_999);
+    f.board.update(task.id, HUB, "memory reference started", {});
+    expect(await f.tasks.sweep(due + 60_000)).toMatchObject([{ finding: { step: 2, activity } }]);
+    expect(await f.tasks.sweep(due + 120_000)).toMatchObject([{ finding: { step: 3, activity } }]);
+    expect(await f.tasks.sweep(due + 180_000)).toEqual([]);
+  }
+});
