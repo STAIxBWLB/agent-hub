@@ -2777,3 +2777,5 @@ Declining rework in changes_requested returns it to proposed before rerouting, j
 Split undo preserves children referenced by persisted task-scoped execution budgets. The person may disable the budget through the existing budget action before undoing otherwise-unused children; a run-scoped budget alone is not a child reference.
 
 Split screening retains the initial deterministic child and inherited parent privacy signals across asynchronous screening and final policy revalidation. Removing a routing pattern while a screen is pending cannot publish an unscreened private child or invent a new screening verdict.
+
+Final deterministic split signals also determine classification provenance. A pattern added during a pending model screen records regex-private history/telemetry instead of retaining an obsolete clear model verdict; inherited parent privacy remains distinct.
