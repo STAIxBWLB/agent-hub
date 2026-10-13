@@ -8,6 +8,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { USER, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 
 class NoticePeer extends BasePeer {
   async deliver(_envs: Envelope[]) {}
@@ -46,6 +47,42 @@ test("incoming backlog notices batch ids only for attached rostered planners (#2
   expect(board.get(privateTask.id)).toMatchObject({ state: "backlog", owner: null });
   expect(tasks.flushPlannerNotices()).toBe(0);
   expect(notices).toHaveLength(1);
+});
+
+test("reopened journal planner notices coalesce recovered backlog without duplicate copies", async () => {
+  const { tasks, board, deps } = rig();
+  const task = await tasks.propose(USER, { title: "durable staged work", class: "implement", backlog: true });
+  const file = join(deps.cwd, "delivery.db");
+  const options = { file, projectRoot: deps.cwd, projectId: "notices", instanceId: "before" };
+  const source = new Bus({ batchMs: 0, journal: new DeliveryJournal(options) });
+  const planner = new NoticePeer("claude"); source.add(planner); await planner.start(); planner.busy(); source.pause("claude");
+  const original = newEnvelope("hub", `Backlog items #${task.id}.`, { to: ["claude"], kind: "task", refs: { backlog: [task.id] } });
+  source.publish(original); source.closeJournal();
+  const restored = new Bus({ batchMs: 0, journal: new DeliveryJournal({ ...options, instanceId: "after" }) });
+  cleanup.push(() => restored.closeJournal());
+  const restarted = new Tasks({ ...deps, board, bus: restored });
+  const attached = new NoticePeer("claude"); restored.add(attached); await attached.start(); attached.busy();
+  expect(restored.queueIds("claude")).toEqual([original.id]);
+  expect(restarted.flushPlannerNotices()).toBe(0);
+  expect(restored.queueIds("claude")).toEqual([original.id]);
+  restored.setRecoveryHold(false); restored.resume("claude");
+  expect(restored.pull("claude")!.map(env => env.id)).toEqual([original.id]);
+  expect(restarted.flushPlannerNotices()).toBe(0);
+});
+
+test("planner overflow waits for a queue change instead of failing every scheduler tick", async () => {
+  const { tasks, bus } = rig({ queueCap: 1 });
+  const peer = new NoticePeer("claude"); bus.add(peer); await peer.start(); peer.busy(); bus.pause("claude");
+  const task = await tasks.propose(USER, { title: "pressure work", class: "implement", backlog: true });
+  bus.publish(newEnvelope(USER, "held important work", { to: ["claude"], priority: "important" }));
+  let overflows = 0; bus.tap(event => { if (event.t === "overflow") overflows++; });
+  expect(tasks.flushPlannerNotices()).toBe(1);
+  for (let tick = 0; tick < 20; tick++) expect(tasks.flushPlannerNotices()).toBe(0);
+  expect(overflows).toBe(1);
+  bus.resume("claude"); expect(bus.pull("claude")).toHaveLength(1);
+  expect(tasks.flushPlannerNotices()).toBe(1);
+  expect(bus.pull("claude")![0]!.refs?.backlog).toEqual([task.id]);
+  expect(tasks.flushPlannerNotices()).toBe(0);
 });
 
 test("planner notice batches are bounded and recover staged work on restart (#263)", async () => {
