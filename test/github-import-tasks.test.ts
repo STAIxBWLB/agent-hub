@@ -13,7 +13,7 @@ function rig(){const dir=mkdtempSync(join(tmpdir(),"ahub-gh-import-")),file=join
 const issue=(number:number,title="public issue")=>({number,title,body:"details",url:`https://github.com/owner/repo/issues/${number}`,state:"OPEN"});
 test("GitHub intake screens canonical source identity before exposing external URLs",async()=>{
  const f=rig();f.routing.signals.pii_screen="local";const seen:string[]=[];
- const tasks=new Tasks({board:f.board,bus:f.bus,cwd:f.dir,project:"import",routing:()=>f.routing,notify:()=>{},piiScreen:async text=>{seen.push(text);return text.includes("sensitive-owner")?{label:"pii",category:"identity",ms:0}:{label:"clear",ms:0}}});
+ const tasks=new Tasks({board:f.board,bus:f.bus,cwd:f.dir,project:"import",routing:()=>f.routing,notify:()=>{},piiScreen:async text=>{seen.push(text);return text.includes("sensitive-owner")?{label:"pii",category:"name",ms:0}:{label:"clear",ms:0}}});
  const result=await tasks.importGitHub(USER,{repo:"sensitive-owner/repo",label:"ready"},async()=>({code:0,stdout:JSON.stringify([{...issue(1),url:"https://github.com/sensitive-owner/repo/issues/1"}])}));
  expect(result.imported).toHaveLength(1);expect(seen.some(text=>text.includes("https://github.com/sensitive-owner/repo/issues/1"))).toBe(true);
  const task=f.board.get(result.imported[0]!)!;expect(tasks.isPii(task)).toBe(true);expect(JSON.stringify(tasks.publicView(task))).not.toContain("sensitive-owner");
