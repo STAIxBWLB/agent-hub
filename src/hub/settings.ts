@@ -31,7 +31,7 @@ export interface SettingDef {
   applies: "live" | "peer start" | "hub start";
   /** `raises`: only a settings session or a person's terminal may set it, except to `floor`. */
   risk: "safe" | "raises";
-  floor?: string | boolean;
+  floor?: string | boolean | number;
   /** Where the value sits inside its file (or, for `runtime`, the peer). */
   path: readonly string[];
 }
@@ -45,7 +45,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
   { key: `routing.classes.${name}.pi_backend`, group: "Routing", label: `${name}: Pi backend`, type: "enum", values: ["dgx", "mlx"], store: "routing", applies: "live", risk: "raises", path: ["classes", name, "pi_backend"] },
 ];
 export const SETTINGS: readonly SettingDef[] = [
-  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "hub start", risk: "safe", path: ["tasks", "wip_limits", peer] })),
+  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "hub start", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "peer start", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
