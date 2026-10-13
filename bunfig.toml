@@ -1,0 +1,3 @@
+[test]
+# Every test run gets its own hub home (test/hub-home.ts): tests never write the person's ~/.agenthub.
+preload = ["./test/hub-home.ts"]

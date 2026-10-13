@@ -133,7 +133,21 @@ test("backlog planning validates dependency cycles reservations and atomic undo 
   expect(undone.deps).toEqual([first.id]);
   expect(undone.reserved).toBeNull();
   expect(undone.priority).toBeUndefined();
+  await tasks.moveBacklog(USER, first.id, true);
   const executing = board.update(first.id, USER, "accepted", { state: "in_progress", owner: "codex" });
   await expect(tasks.planBacklog(USER, { id: first.id, revision: 0, fields: { deps: [] }, reason: "too late" })).rejects.toThrow("unstarted backlog");
   expect(board.get(first.id)).toEqual(executing);
+});
+
+test("planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)", async () => {
+  const {board,tasks}=rig();
+  const task=await tasks.propose(USER,{title:"peer normalization",class:"implement",backlog:true});
+  for(const reserved of ["user","hub","digest","not-registered","bad peer",{},123]) {
+    const attempt=tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved},reason:"invalid reservation"});
+    await expect(attempt).rejects.toThrow();
+    await expect(attempt).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    expect(board.get(task.id)).toEqual(task);
+  }
+  const planned=await tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved:" Codex "},reason:"normalize owner"});
+  expect(planned.reserved).toBe("codex");expect(planned.owner).toBeNull();
 });

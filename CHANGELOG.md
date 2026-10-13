@@ -14,7 +14,14 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Extend backlog planning with bounded acyclic dependencies and rostered reservations, retaining revision-fenced undo and unstarted-work floors (#263).
 
+- Exclude person/hub-owned work from offline-agent attention and read structural board status facts without decoding task payloads (#280).
+
+- Add global body-free attention status, person review/offline facts, read-only recovery observation and token-free pet/prompt output (#280, phase 3 in progress). Native and full release gates remain unverified.
+
+- Add structural console attention counts, an ASCII STAI rule line, read-only `n` navigation, session `P`/`--no-pet`, presentation configuration and plain-mode updates (#280, phase 1). Larger characters, status/dashboard integration and native visual checks remain pending.
+
 - Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
+- Add the hub's own memory (#258, phase 1): append-only short- and long-term logs in `~/.agenthub/memory/` with a derived graph index, promotion of decision, contract and fail notes on approval, `hub_remember` `horizon` and `scope`, graph-first task briefs, recall and `ahub ask` evidence, `ahub memory`, and a read-only dashboard Memory section. PII task text and secret-looking notes never enter it.
 
 - Add five-column dashboard task cards, ready/waiting split, shared peer colors, agent legend/lanes and scoped drag/button assignment and Backlog staging controls (#263).
 

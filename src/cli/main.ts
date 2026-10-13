@@ -4,6 +4,8 @@ import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
 import { terminalText } from "./console-state.ts";
+import { petView, readPet, renderPet } from "./pet.ts";
+import { loadPetConfig } from "./pet-config.ts";
 import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
@@ -55,6 +57,7 @@ import { parseSince, readEvents } from "../hub/events.ts";
 import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
+import { memoryCommand } from "./memory.ts";
 import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
@@ -663,10 +666,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   console: async () => {
-    if (args.some(arg => arg !== "--panels" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--color=auto|always|never]");
+    if (args.some(arg => arg !== "--panels" && arg !== "--no-pet" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
-    if (color instanceof Error) return fail("usage: ahub console [--panels] [--color=auto|always|never]");
-    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels"), color });
+    if (color instanceof Error) return fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
+    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color });
   },
 
   up: async () => {
@@ -1354,6 +1357,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
   },
 
+  pet: () => {
+    if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short]");
+    const short = args.includes("--short");
+    const text = renderPet(readPet(stateDir), short);
+    process.stdout.write(short ? text : text + "\n");
+  },
+
   status: async () => {
     const options = outputOptions();
     if (args.includes("--all")) return printProjects(options);
@@ -1363,6 +1373,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (options.json) return console.log(JSON.stringify(status, null, 2));
       const quota = await hub.request({ t: "budget" });
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
+      if (status.needs && loadPetConfig(cwd).enabled) console.log(renderPet(petView(status)));
     } finally { hub.close(); }
   },
 
@@ -1432,6 +1443,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       return;
     }
     fail("usage: ahub bench run|list|status|report|compare|export (ahub help bench)");
+  },
+  memory: () => {
+    // #258: the hub's own memory on this machine; reads are anyone's, changes a person's.
+    try { console.log(memoryCommand(args, cwd)); } catch (e) { fail((e as Error).message); }
   },
   research: () => {
     // #247: measures from the opt-in research records; `export` writes them out, `backfill` builds them from events.jsonl.

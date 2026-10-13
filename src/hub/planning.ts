@@ -45,8 +45,9 @@ export function planningPatch(input: unknown): PlanningPatch {
       if (!Array.isArray(value) || value.length > 64 || value.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(value).size !== value.length) throw new Error("deps must be at most 64 unique positive task ids");
       result.deps = [...value];
     } else if (key === "reserved") {
-      if (value !== null && (typeof value !== "string" || !value.length || value.length > 64 || /\s/.test(value))) throw new Error("reserved must be a peer id or null");
-      result.reserved = value as string | null;
+      const peer = typeof value === "string" ? value.trim().toLowerCase() : null;
+      if (value !== null && (!peer || !/^[a-z][a-z0-9-]{0,31}$/.test(peer) || ["user", "hub", "digest"].includes(peer))) throw new Error("reserved must be a valid agent peer id or null");
+      result.reserved = peer;
     } else if (key === "pinned") {
       if (typeof value !== "boolean") throw new Error("pinned must be a boolean");
       result.pinned = value;
