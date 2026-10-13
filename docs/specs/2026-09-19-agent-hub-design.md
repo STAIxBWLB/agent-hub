@@ -2760,3 +2760,5 @@ Final deterministic split signals also determine classification provenance. A pa
 The outer dashboard HTTP request for backlog_split receives a per-request idle bound above the manager forwarding deadline, derived from the shared screen and hub database bounds plus margin. Other actions retain their existing HTTP policy. The boundary regression observes actual native timeout allocation; Bun 1.4.2 pending-handler idle expiry is not assumed.
 
 Split reasons retain deterministic privacy from both initial validation and final revalidation, including inherited parent privacy. Later routing policy removal cannot expose an already-withheld reason in public history.
+
+Ask evidence ignores body-free memory-reference bookkeeping when selecting the latest task event and note. The selected meaningful note retains its PII and withheld provenance under the existing on-campus boundary.

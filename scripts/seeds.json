@@ -2808,6 +2808,14 @@
       "replacement": "const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);",
       "testFile": "test/planner-split.test.ts",
       "testName": "split reason retains deterministic privacy across routing policy changes"
+    },
+    {
+      "id": "ask-memory-reference-evidence",
+      "file": "src/hub/ask.ts",
+      "search": "t.history.findLast(entry => entry.event !== \"memory reference started\")",
+      "replacement": "t.history.at(-1)",
+      "testFile": "test/ask.test.ts",
+      "testName": "ask evidence skips memory bookkeeping and preserves note privacy"
     }
   ]
 }
