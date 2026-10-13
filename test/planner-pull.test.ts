@@ -159,3 +159,8 @@ test("planner owner capacity never removes the required reviewer",async()=>{
  const task=await tasks.propose(USER,{title:"review required",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});await tasks.releaseReady();expect(board.get(task.id)?.reviewer).toBe("claude");tasks.accept("codex",task.id);
  const done=await tasks.done("codex",task.id,"complete");expect(done.state).toBe("in_review");
 });
+
+test("ordinary backlog return restores pre-planner reservation provenance",async()=>{
+ const {tasks,board,bus,capacity}=await rig();const task=await tasks.propose(USER,{title:"ordinary return",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"first"});const returned=await tasks.moveBacklog(USER,task.id,false);expect(returned.reserved).toBeNull();
+ capacity.codex=0;const local=new PullPeer("local");bus.add(local);await local.start();const pulled=await tasks.pullPlanned("claude",{id:task.id,revision:returned.planningRevision??0,reason:"again"}).catch(()=>null);expect(pulled).not.toBeNull();expect(board.get(task.id)?.reserved).toBe("local");
+});
