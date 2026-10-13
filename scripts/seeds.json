@@ -2600,6 +2600,22 @@
       "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && (goal.priority",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
+    },
+    {
+      "id": "split-child-memory-reference",
+      "file": "src/hub/tasks.ts",
+      "search": "[...children].some(key => this.d.store!.store.hasTask(key))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo refuses child-scoped memory entries"
+    },
+    {
+      "id": "split-inherited-pii-source",
+      "file": "src/hub/tasks.ts",
+      "search": "inherited ? { item, label: \"pii\", source: \"inherited\" }",
+      "replacement": "inherited ? { item, label: \"pii\", source: \"regex\" }",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "private parent split records inherited PII without invented regex verdicts"
     }
   ]
 }
