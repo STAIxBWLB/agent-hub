@@ -56,7 +56,8 @@ export class TextProjections {
   private readonly failed = new Set<string>();
   constructor(private readonly options: { cwd: string; stateDir: string; config: ProjectionConfig; deny?: string[]; readAllow?: string[]; log?: (line: string) => void }) {
     // Rooted at an empty system directory, not the project: the converter reads its snapshot and program files only.
-    this.sandbox = Object.keys(options.config).length ? profile(EMPTY_ROOT, false, options.readAllow, options.deny, ["."]) : "";
+    // Only where conversion can run: /var/empty is a macOS directory, and a host without the sandbox never converts.
+    this.sandbox = Object.keys(options.config).length && sandboxAvailable() ? profile(EMPTY_ROOT, false, options.readAllow, options.deny, ["."]) : "";
   }
   private warn(ext: string): void {
     if (this.warned.has(ext)) return;
