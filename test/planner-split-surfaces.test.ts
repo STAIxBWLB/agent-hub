@@ -1,3 +1,4 @@
+import {profileTaskTools} from "../src/hub/hub-tools.ts";
 import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -29,3 +30,8 @@ test("split tools HTTP and CLI share role revision and unused-child undo (#263)"
     expect(await request(person,"hub_backlog_undo",{id,revision:5})).toMatchObject({ok:true});
   }finally{other.close();planner.close();person.close();await daemon.stop();rmSync(root,{recursive:true,force:true});}
 },20_000);
+
+test("split nested plan schema follows the selected project profile",()=>{
+ const schema=profileTaskTools("research").find(tool=>tool.name==="hub_backlog_split")!.inputSchema.properties.parts as {items:{properties:{plan:{properties:Record<string,unknown>}}}};
+ expect(Object.keys(schema.items.properties.plan.properties)).toContain("sources");expect(Object.keys(schema.items.properties.plan.properties)).toContain("sections");expect(Object.keys(schema.items.properties.plan.properties)).not.toContain("signatures");
+});

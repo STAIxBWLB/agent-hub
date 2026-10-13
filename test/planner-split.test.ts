@@ -176,3 +176,8 @@ test("split undo retains legacy native entries without a board reference marker"
  const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});store.note({op:"note",project:"split",scope:"project",tier:"short",kind:"finding",peer:USER,text:"legacy child note",about:[],source:"person",task:taskKey("split",result.children[0]!)});
  await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced");expect(f.board.get(result.children[0]!.id)).toBeDefined();
 });
+
+test("split undo retains parent-only memory while removing unused children",async()=>{
+ const f=rig(),store=new MemoryStore({home:join(f.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...f.deps,store:{store,project:"split",repo:"owner/repo"}}),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});
+ await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});await tasks.remember(USER,{text:"parent note",task:parent.id});const undone=await tasks.undoPlanning(USER,parent.id,1);expect(undone.id).toBe(parent.id);expect(f.board.list()).toHaveLength(1);expect(store.hasTask(taskKey("split",parent))).toBe(true);
+});

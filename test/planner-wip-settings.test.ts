@@ -13,7 +13,7 @@ afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
 test("ordinary WIP settings can disable admission but cannot raise or uncover capacity",()=>{
  const def=settingDef("tasks.wip_limits.codex")!;
  expect(settingRefusal(def,0,"ordinary")).toBeUndefined();
- for(const value of [1,32,null])expect(settingRefusal(def,value,"ordinary")).toContain("settings session");
+ for(const value of [1,32,null]){const refusal=settingRefusal(def,value,"ordinary");expect(refusal).toBeDefined();expect(refusal).toContain("settings session");}
  expect(settingRefusal(def,32,"settings")).toBeUndefined();expect(settingRefusal(def,32,"terminal")).toBeUndefined();
 });
 test("normal status text includes planner WIP and capacity for retained peers",()=>{

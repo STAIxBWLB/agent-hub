@@ -3,7 +3,7 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {supportsBoardReleaseFilter} from "../src/cli/board-read.ts";
-import {renderBoardColumns,boardColumnModel} from "../src/cli/output.ts";
+import {renderBoard,renderBoardColumns,boardColumnModel} from "../src/cli/output.ts";
 import {Board} from "../src/hub/board.ts";
 import {Bus} from "../src/hub/bus.ts";
 import {Tasks} from "../src/hub/tasks.ts";
@@ -46,4 +46,14 @@ test("filtered terminal stages retain the visible snapshot alongside column plac
  const row={id:1,state:"proposed",title:"visible",class:"implement",signals:[],deps:[],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{},started:false};
  const first=renderBoardColumns([row],{},120,5000,false,[row]);const later=renderBoardColumns([row],{},120,5000,false,[{...row,state:"approved",owner:"codex",reviewer:"claude"}]);
  expect(later).toEqual(first);
+});
+
+
+test("filtered plain board stages preserve visible rows from the first read",()=>{
+ const row={id:1,state:"proposed",title:"visible",class:"implement",signals:[],deps:[],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{}};
+ expect(renderBoard([row],120,5000,false,[{...row,state:"approved"}])).toEqual(renderBoard([row],120,5000,false,[row]));
+});
+test("column stages preserve cross-column prerequisite state from the first read",()=>{
+ const before=[{id:1,state:"approved",title:"prerequisite",class:"implement",signals:[],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{}},{id:2,state:"proposed",title:"dependent",class:"implement",signals:[],deps:[1],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{}}];
+ expect(renderBoardColumns(before,{},120,5000,false,[{...before[0]!,state:"backlog"},before[1]!])).toEqual(renderBoardColumns(before,{},120,5000,false,before));
 });

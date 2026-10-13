@@ -253,6 +253,8 @@ export function assign(
   routing: Routing,
   opts: {
     exclude?: PeerId[];
+    /** Owner admission limits do not remove otherwise eligible reviewers. */
+    excludeOwners?: PeerId[];
     /** Live membership supplied as data; routing never reads the roster store. */
     offRoster?: PeerId[];
     /** Watched peers take work only on an explicit nomination, never a routing singleton. */
@@ -296,6 +298,7 @@ export function assign(
     if (opts.pullOnly?.includes(peer) && named !== peer) return "pull-only: takes work when named or when it claims it";
     if (!Object.hasOwn(states, peer)) return "not attached";
     if (opts.exclude?.includes(peer)) return "excluded (declined or replaced)";
+    if (role === "owner" && opts.excludeOwners?.includes(peer)) return "owner admission: WIP or delivery hold";
     if (states[peer] === "offline") return "offline";
     if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return "paused";
     const failing = peerEntry(opts.failing, peer);

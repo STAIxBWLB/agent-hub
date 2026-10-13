@@ -238,7 +238,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
 export function renderBoard(tasks: any[], columns?: number, now = Date.now(), _full = false, allTasks: any[] | null = tasks): Span[][] {
   if (!tasks.length) return [[span("no tasks")]];
   const s = initialConsoleState(); s.panel = 3; s.tasks = tasks;
-  const stages = allTasks === null ? undefined : new Map(taskProgress(allTasks).stages.map(stage => [stage.id, stage]));
+  const stages = allTasks === null ? undefined : new Map(taskProgress(boardColumnContext(tasks, allTasks)).stages.map(stage => [stage.id, stage]));
   const data = tasks.map(task => {
     const row = cells(s, task, false, now, stages);
     row[2] = span(row[2]!.text, peerTone(task.owner ?? ""));
