@@ -759,12 +759,12 @@ export class Tasks {
     const imported: number[] = [], existing: number[] = [];
     for (const issue of page.issues) {
       if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };
-      const prior = this.d.board.imported(issue.source.repo, issue.source.issue);
-      if (prior) { existing.push(prior.id); continue; }
       let created = false;
-      const classes = profileData(this.d.profileData ?? this.d.profile ?? "dev").classes;
-      const cls = Object.keys(classes).find(name => classes[name] === "implement") ?? Object.keys(classes)[0];
       try {
+        const prior = this.d.board.imported(issue.source.repo, issue.source.issue);
+        if (prior) { existing.push(prior.id); continue; }
+        const classes = profileData(this.d.profileData ?? this.d.profile ?? "dev").classes;
+        const cls = Object.keys(classes).find(name => classes[name] === "implement") ?? Object.keys(classes)[0];
         const task = await this.propose(USER, { title: issue.title, detail: issue.detail, class: cls, backlog: true }, issue.source, () => { created = true; });
         (created ? imported : existing).push(task.id);
         if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };
