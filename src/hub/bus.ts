@@ -480,7 +480,8 @@ export class Bus {
 
   queuedBacklogIds(id: PeerId): Set<number> {
     const ids = new Set<number>();
-    for (const env of this.queues.get(id) ?? []) {
+    const retained = [...(this.queues.get(id) ?? []), ...(this.journal?.unresolved(id).flatMap(row => row.originals) ?? [])];
+    for (const env of retained) {
       const backlog = env.refs?.backlog;
       if (env.from !== HUB || env.kind !== "task" || !Array.isArray(backlog) || backlog.length > 64) continue;
       for (const task of backlog) if (Number.isSafeInteger(task) && task > 0) ids.add(task);

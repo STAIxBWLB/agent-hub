@@ -2408,6 +2408,22 @@
       "replacement": "if (false) continue;",
       "testFile": "test/planning-notices.test.ts",
       "testName": "planner overflow waits for a queue change instead of failing every scheduler tick"
+    },
+    {
+      "id": "planner-notice-unsettled-coalescing",
+      "file": "src/hub/bus.ts",
+      "search": "...(this.journal?.unresolved(id).flatMap(row => row.originals) ?? [])",
+      "replacement": "...[]",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "planner recovery coalesces unsettled journal originals without a queued copy"
+    },
+    {
+      "id": "planner-notice-roster-retention",
+      "file": "src/hub/tasks.ts",
+      "search": "for (const peer of configured) {",
+      "replacement": "for (const peer of planners) {",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "configured off-roster planners retain incoming ids until roster admission returns"
     }
   ]
 }
