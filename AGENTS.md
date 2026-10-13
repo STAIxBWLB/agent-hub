@@ -37,7 +37,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - `src/hub/budget.ts` (quota readings, pause records in `hub.db`, resume), `src/cli/statusline-tee.ts` (Claude's quota source).
 - `src/hub/board.ts` (sqlite), `src/hub/routing.ts` (`routing.toml`, `assign()`), `src/hub/tasks.ts` (the flow), `src/hub/hub-tools.ts` (tool and role definitions, read by the MCP server and the local worker alike), `src/memory/brief.ts`.
 - `src/adapters/local-worker.ts` + `src/local/` (tools, path guard, seatbelt runner): the hub-native peer. `src/omniroute/`: the only place that reads the gateway key and Access headers. `src/switchyard/`: config generator and session-scoped sidecar. `src/hub/routing.ts`: `routing.toml`.
-- `src/memory/`: claude-mem worker client, session-start recall, and capture for the local worker. Fail-open everywhere; the hub never owns a memory database.
+- `src/memory/`: claude-mem worker client, session-start recall, capture for the local worker, and the hub's own store (`store.ts`, #258: append-only logs in `~/.agenthub/memory/`, a derived index, tiers and graph; `docs/memory.md`). Fail-open everywhere. Never rewrite a memory log line or index a state that is not derived from the rows: a change is a new entry, so an incremental index stays equal to a rebuild.
 - `src/cli/`: `main.ts` (commands), `launch.ts` (hub-owned flags), `init.ts` (marker blocks).
 - `plugins/agent-hub/`: plugin manifest, `.mcp.json` and the committed bundle. `templates/`: what `ahub init` writes.
 - `test/fakes/`: fake ACP agent, fake Codex app-server, fake claude-mem worker. No mocking library.
