@@ -72,3 +72,11 @@ test("dashboard blinking requires a live approval rather than a pending default"
  const disabled=draw(live,false);expect(disabled.attrs.class).not.toContain("pet-waiting");expect(disabled.children[0]!.children).toHaveLength(1);
  const expired=draw({...attention(),approvals:[{id:"approval-expired",expiresAt:900}]});expect(expired.attrs.class).not.toContain("pet-waiting");expect(expired.children[0]!.children).toHaveLength(1);
 });
+
+test("dashboard review eyes retain a distinct lowercase mask and the leaf uses an existing theme tone",()=>{
+ for(const character of Object.values(CHARACTERS)){
+  const review=petPixels(character.frames.blocks.review.full),waiting=petPixels(character.frames.blocks.waiting.full),idle=petPixels(character.frames.blocks.idle.full);
+  expect(review.pixels).not.toEqual(waiting.pixels);expect(review.pixels).not.toEqual(idle.pixels);
+ }
+ const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8");expect(html).toContain('.pet-accent{fill:var(--amber)}');expect(html).toMatch(/--amber:/);
+});

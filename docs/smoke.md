@@ -1754,3 +1754,9 @@ and block line faces intentionally have identical bytes. Added a separate
 observable catalog fixture, restored in finally, retaining every earlier assertion.
 Local execution of this additional case is admission-deferred, not a pass;
 current immutable-head full platform/seed proof is pending.
+
+Lowercase review eyes retain a distinct pixel mask, and Gyul leaf pixels use
+the defined amber attention tone in light/dark/system themes. The actual pet
+suite passed7/0 with138010 assertions across all five characters. Two mutation
+guards cover case preservation and the existing theme variable. Final full
+platform/seed/review and updated browser readback remain pending.

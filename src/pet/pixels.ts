@@ -2,6 +2,7 @@
 export function petPixels(frame: readonly string[]): { width: number; height: number; pixels: [number, number][] } {
   const font: Record<string, string[]> = {
     O:["01110","10001","10001","10001","10001","10001","01110"],
+    o:["00000","00000","01110","10001","10001","01110","00000"],
     X:["10001","10001","01010","00100","01010","10001","10001"],
     S:["01111","10000","10000","01110","00001","00001","11110"],
     T:["11111","00100","00100","00100","00100","00100","00100"],
@@ -15,7 +16,7 @@ export function petPixels(frame: readonly string[]): { width: number; height: nu
   const pixels: [number, number][] = [];
   for (const [row, text] of frame.entries()) for (const [column, glyph] of [...text].entries()) {
     for (let y=0;y<8;y++) for (let x=0;x<5;x++) {
-      const on = glyph === "█" || glyph === "▀" && y<4 || glyph === "▄" && y>=4 || glyph === "▟" && (y>=4 || x>=2) || glyph === "▙" && (y>=4 || x<3) || font[glyph.toUpperCase()]?.[y]?.[x] === "1";
+      const on = glyph === "█" || glyph === "▀" && y<4 || glyph === "▄" && y>=4 || glyph === "▟" && (y>=4 || x>=2) || glyph === "▙" && (y>=4 || x<3) || font[glyph]?.[y]?.[x] === "1";
       if (on) pixels.push([column*5+x,row*8+y]);
     }
   }

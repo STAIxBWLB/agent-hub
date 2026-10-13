@@ -2152,6 +2152,22 @@
       "replacement": "characterAttentionLine(value, character, now, s.petBlink)",
       "testFile": "test/pet-characters.test.ts",
       "testName": "console line glyph mode selects distinct trusted catalog output without moving the prompt"
+    },
+    {
+      "id": "pet-dashboard-review-eye-mask",
+      "file": "src/pet/pixels.ts",
+      "search": "font[glyph]?.[y]?.[x]",
+      "replacement": "font[glyph.toUpperCase()]?.[y]?.[x]",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard review eyes retain a distinct lowercase mask and the leaf uses an existing theme tone"
+    },
+    {
+      "id": "pet-dashboard-leaf-tone",
+      "file": "src/ui/index.html",
+      "search": ".pet-accent{fill:var(--amber)}",
+      "replacement": ".pet-accent{fill:var(--accent)}",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard review eyes retain a distinct lowercase mask and the leaf uses an existing theme tone"
     }
   ]
 }
