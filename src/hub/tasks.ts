@@ -570,12 +570,12 @@ export class Tasks {
     while (pending.length) { const id = pending.pop()!; if (id === prerequisite) return true; if (seen.has(id)) continue; seen.add(id); pending.push(...(this.d.board.get(id)?.deps ?? [])); }
     return false;
   }
+  private plannerFull(task: Task): PeerId[] {
+    return Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; });
+  }
   private plannerAssignment(task: Task, reservedOnly = false): Assignment {
     const states = this.states();
-    const full = Object.keys(states).filter(peer => {
-      const queue = this.d.bus.queueSummary(peer);
-      return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0;
-    });
+    const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
     return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: [...this.excluded(task), ...full], ...(reservedOnly && task.reserved && !this.excluded(task).includes(task.reserved) ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
   }
@@ -602,7 +602,7 @@ export class Tasks {
       }
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
-      const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved")) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
+      const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved") && !["backlog pulled", "backlog returned"].includes(entry.event)) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
       if (task.reserved && reservation?.by === USER && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
       return { task, owner: assignment.owner };
     };
@@ -1193,7 +1193,7 @@ export class Tasks {
         // Awaits run between tasks (briefs, memory): re-read, and stop for anything that changed meanwhile.
         const task = this.d.board.get(id);
         if (!task || task.owner !== peer || !OPEN.includes(task.state) || this.d.bus.stateOf(peer) !== "offline") continue;
-        if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), peer], ...this.health() }).owner) continue;
+        if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), peer, ...(this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [])], ...this.health() }).owner) continue;
         try {
           const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
           const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", reason: "offline", note: why });
@@ -1276,7 +1276,7 @@ export class Tasks {
     if (task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
-    const plannerFull = plannedMove ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];
+    const plannerFull = plannedMove ? this.plannerFull(task) : [];
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...plannerFull, ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
 
     if (waits.length) {
@@ -2113,7 +2113,7 @@ export class Tasks {
       const weights = this.weights(task.class);
       const pii = this.isPii(task);
       const candidates = owner ? [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter(p => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p) : [];
-      const a = assign(task, this.states(), routing, { ...weights, offRoster: [...(weights.offRoster ?? []), peer], exclude: [peer], candidates, ...(owner ? { waitsFor: this.waitsFor(task) } : task.owner ? { notReviewer: task.owner } : {}) });
+      const a = assign(task, this.states(), routing, { ...weights, offRoster: [...(weights.offRoster ?? []), peer], exclude: [peer, ...(owner && this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [])], candidates, ...(owner ? { waitsFor: this.waitsFor(task) } : task.owner ? { notReviewer: task.owner } : {}) });
       return { id: task.id, title: this.publicTitle(task), role: owner ? "owner" : "reviewer", to: (owner ? a.owner : a.reviewer) ?? null };
     });
   }
@@ -2134,7 +2134,8 @@ export class Tasks {
       if (task.owner === peer && (OPEN.includes(task.state) || roster && task.state === "in_review")) {
         const pii = this.isPii(task);
         const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
-        // Budget keeps its original release/unassign behaviour. Roster changes the state in
+        if (this.plannerPullRecord(task)?.pull && !assign(task, this.states(), routing, { candidates, exclude: [...this.excluded(task), peer, ...this.plannerFull(task)], waitsFor: this.waitsFor(task), ...this.weights(task.class) }).owner) continue;
+        // Budget keeps its original release/unassign behaviour for ordinary work. Roster changes the state in
         // assignOwner's same owner write only after routing has found somebody to take it.
         const back = !roster && task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
         let next: Task;
