@@ -80,3 +80,8 @@ test("dashboard review eyes retain a distinct lowercase mask and the leaf uses a
  }
  const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8");expect(html).toContain('.pet-accent{fill:var(--amber)}');expect(html).toMatch(/--amber:/);
 });
+
+test("dashboard leaf resolves to a declared attention palette variable",()=>{
+ const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8"),fill=/\.pet-accent\{fill:([^}]+)\}/.exec(html)?.[1];
+ expect(fill).toBe("var(--amber)");expect(/--amber:/.test(html)).toBe(true);
+});

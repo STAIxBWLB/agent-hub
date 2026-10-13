@@ -1760,3 +1760,10 @@ the defined amber attention tone in light/dark/system themes. The actual pet
 suite passed7/0 with138010 assertions across all five characters. Two mutation
 guards cover case preservation and the existing theme variable. Final full
 platform/seed/review and updated browser readback remain pending.
+
+The review-eye mask guard has actual admitted isolated green -> named assertion
+failure proof. Leaf-tone coverage now checks the bounded CSS fill value in a
+separate test while retaining the earlier HTML assertions: printing the entire
+HTML on failure contained unrelated runtime diagnostic strings, so the strict
+classifier correctly rejected the previous detection. The bounded leaf test now
+also has actual green -> named assertion detected proof. Full final gates pending.

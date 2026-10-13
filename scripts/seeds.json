@@ -2167,7 +2167,7 @@
       "search": ".pet-accent{fill:var(--amber)}",
       "replacement": ".pet-accent{fill:var(--accent)}",
       "testFile": "test/pet-dashboard.test.ts",
-      "testName": "dashboard review eyes retain a distinct lowercase mask and the leaf uses an existing theme tone"
+      "testName": "dashboard leaf resolves to a declared attention palette variable"
     }
   ]
 }
