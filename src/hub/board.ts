@@ -185,6 +185,15 @@ export class Board {
   statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
     return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
   }
+  statusReservations(): string[] {
+    return (this.db.query("SELECT DISTINCT reserved FROM tasks WHERE state NOT IN ('approved', 'backlog') AND reserved IS NOT NULL ORDER BY reserved").all() as { reserved: string }[]).map(row => row.reserved);
+  }
+  plannerWip(peer: string, except?: number): number {
+    const row = this.db.query(`SELECT COUNT(*) AS n FROM tasks WHERE state NOT IN ('approved', 'backlog') AND (? IS NULL OR id != ?) AND
+      (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND
+        json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1))`).get(except ?? null, except ?? null, peer, peer) as { n: number };
+    return row.n;
+  }
 
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */
   counts(): Record<string, number> {

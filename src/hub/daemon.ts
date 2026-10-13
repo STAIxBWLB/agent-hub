@@ -1931,10 +1931,11 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let lastCodexThread: string | undefined;
   const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
-    if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return bus.knownPeers();
-    const ids = new Set(bus.knownPeers());
+    const reservations = board.statusReservations();
+    const ids = new Set([...bus.knownPeers(), ...reservations]);
+    if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return [...ids];
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
-    return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
+    return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
   const status = (includeAttentionItems = false, includeAttentionInput = false) => {
     const taskNeeds = board.statusTasks();
