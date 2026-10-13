@@ -8,7 +8,8 @@ import { createInterface } from "node:readline";
 import { KIMI_2_1_1_5H_REFUSAL_PREFIX } from "../../src/adapters/acp-quota.ts";
 
 const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
-const send = (m: unknown) => process.stdout.write(`${JSON.stringify(m)}\n`);
+let responseBatch: string[] | undefined;
+const send = (m: unknown) => { const line = `${JSON.stringify(m)}\n`; if (responseBatch) responseBatch.push(line); else process.stdout.write(line); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let busy = false;
 let heldCancelReport: (() => void) | undefined;
@@ -242,6 +243,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         });
       }
       if (cancelWaitSeen && process.argv.includes("--cancel-permission-before") && !process.argv.includes("--cancel-result-before-permission")) await cancelPermissionSettled; // consume the prior permission reply
+      if (cancelWaitSeen && process.argv.includes("--batch-cancel-mode")) responseBatch = [];
       heldCancelReport?.();
       const quota = heldQuotaRefusal; heldQuotaRefusal = undefined; quota?.(); // consumed before mode reply
       const ackRecord = arg("--mode-ack-record");
@@ -249,6 +251,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       flushHeld(); // held trailing updates go out before the reply: a resolved setPermissionMode is the barrier (#285)
       if (process.argv.includes("--refuse-mode")) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "mode disabled" } });
       else { modes.currentModeId = msg.params.modeId; send({ jsonrpc: "2.0", id: msg.id, result: {} }); }
+      if (responseBatch) { const lines = responseBatch; responseBatch = undefined; process.stdout.write(lines.join("")); }
     }, Number(arg("--mode-delay-ms") ?? 40));
     if (process.argv.includes("--mode-after-cancel") && !process.argv.includes("--cancel-held") && !process.argv.includes("--cancel-never-report")) void cancelledResult.then(respond);
     else respond();
