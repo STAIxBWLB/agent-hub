@@ -2856,6 +2856,14 @@
       "replacement": "verdict",
       "testFile": "test/planner-split.test.ts",
       "testName": "split records final deterministic privacy instead of an earlier clear screen"
+    },
+    {
+      "id": "split-outer-http-deadline",
+      "file": "src/hub/ui.ts",
+      "search": "else if (input.action === \"backlog_split\") server.timeout(req, Math.ceil((BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000) / 1000) + 5);",
+      "replacement": "else if (input.action === \"backlog_split\") {}",
+      "testFile": "test/ui.test.ts",
+      "testName": "split HTTP applies a bounded per-request deadline without changing ordinary actions"
     }
   ]
 }

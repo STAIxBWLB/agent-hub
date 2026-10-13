@@ -2768,3 +2768,5 @@ Split undo preserves children referenced by persisted task-scoped execution budg
 Split screening retains the initial deterministic child and inherited parent privacy signals across asynchronous screening and final policy revalidation. Removing a routing pattern while a screen is pending cannot publish an unscreened private child or invent a new screening verdict.
 
 Final deterministic split signals also determine classification provenance. A pattern added during a pending model screen records regex-private history/telemetry instead of retaining an obsolete clear model verdict; inherited parent privacy remains distinct.
+
+The outer dashboard HTTP request for backlog_split receives a per-request idle bound above the manager forwarding deadline, derived from the shared screen and hub database bounds plus margin. Other actions retain their existing HTTP policy. The boundary regression observes actual native timeout allocation; Bun 1.4.2 pending-handler idle expiry is not assumed.
