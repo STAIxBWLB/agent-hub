@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "b4e197a0608e81ca94c791fc1bc04347cf7ef5fb",
+      "verifiedAgainst": "645d6fcdc31ba8f8c2ca6edd58faa098332177bd",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "b4e197a0608e81ca94c791fc1bc04347cf7ef5fb",
+      "verifiedAgainst": "645d6fcdc31ba8f8c2ca6edd58faa098332177bd",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "b4e197a0608e81ca94c791fc1bc04347cf7ef5fb",
+      "verifiedAgainst": "645d6fcdc31ba8f8c2ca6edd58faa098332177bd",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "b4e197a0608e81ca94c791fc1bc04347cf7ef5fb",
+      "verifiedAgainst": "645d6fcdc31ba8f8c2ca6edd58faa098332177bd",
       "paths": [
         "package.json",
         "src/",
@@ -155,7 +155,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "b4e197a0608e81ca94c791fc1bc04347cf7ef5fb",
+      "verifiedAgainst": "645d6fcdc31ba8f8c2ca6edd58faa098332177bd",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -172,7 +172,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "b4e197a0608e81ca94c791fc1bc04347cf7ef5fb",
+      "verifiedAgainst": "645d6fcdc31ba8f8c2ca6edd58faa098332177bd",
       "paths": [
         "test/",
         "scripts/check.sh",

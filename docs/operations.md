@@ -2929,3 +2929,5 @@ GitHub intake checks its staging deadline after every awaited proposal, includin
 If GitHub intake saves a row but later bookkeeping fails, canonical identity readback preserves the confirmed ID and queues its Backlog notice. The response remains partial; unreadable or missing readback remains unconfirmed.
 
 A later issue lookup or profile-preparation failure also returns the IDs confirmed earlier in the import as partial progress.
+
+Release cut audits return exact counts with at most 32 example IDs per category; the dashboard states how many IDs are shown when truncated. Scope grouping and indexed approval dates avoid scanning each task history for every release. Full audit pagination remains a future extension.

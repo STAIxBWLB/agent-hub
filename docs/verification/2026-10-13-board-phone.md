@@ -25,3 +25,7 @@ The earlier c37a9aeb capture exposed clipping despite document width 390: releas
 The 1bbced04/Space 39 captures establish only their original source-fixture result. They do not establish later pending-WIP or release-cut rendering. The earlier broader byte-identity statement is withdrawn; this refresh supplies current evidence for the source named above.
 
 Native planner grooming across two releases, real-account import, model ingestion, measured effects, native terminal glyph width and tmux remain unverified. Browser theme changed only through the fixture page dataset; no shared theme cookie was written.
+
+## Later audit preview text
+
+A later rendering change bounds release audit examples and adds exact-total text such as showing32 of96. Current DOM tests verify both known and unknown audit labels and totals. The phone layout styles are unchanged, but the PNGs above predate this suffix and do not constitute a new visual capture of truncated audit content.

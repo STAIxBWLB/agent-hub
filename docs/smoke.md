@@ -1828,3 +1828,5 @@ execution was admission-deferred; final actual proof remains pending.
 The current source fixture at 6d311a51dccd41d3703079175cac65a487189b15 used the normal loopback ticket/session/CSP path with synthetic data and refused production changes. Source board desktop/390px light/dark, release-cut text, pending WIP 2/0/inherit and Save payload, and date-control containment were verified. All nine PNGs were viewed. The refresh exposed and fixed phone date-field clipping that document width alone missed. The same approved Space 44 was reused and finished once; its server was stopped. Receipt: [phone-width verification](verification/2026-10-13-board-phone.md).
 
 This supersedes earlier phone-fixture pending statements only for this source. The old 1bbced04 captures remain historical; no later byte-identity premise is used. Native planner/two-release, accounts, model ingestion and measured effects remain unverified.
+
+The later bounded release-audit preview text is verified by DOM tests, not by a refreshed phone capture. The6d311a51 PNGs remain evidence for their pinned source; see the later-audit note in the phone verification report.
