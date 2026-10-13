@@ -158,3 +158,9 @@ test("supported off-roster reservations are refused before any planning write",a
  const task=await tasks.propose(USER,{title:"native roster floor",class:"implement",backlog:true});
  for(const by of [USER,"claude"]){await expect(tasks.planBacklog(by,{id:task.id,revision:0,fields:{reserved:"pi"},reason:"ineligible native reservation"})).rejects.toThrow("off roster");expect(board.get(task.id)).toEqual(task)}
 });
+
+test("normalized reservation succeeds through the planning pipeline with a named outcome assertion", async () => {
+ const {tasks}=rig(),task=await tasks.propose(USER,{title:"normalized pipeline outcome",class:"implement",backlog:true});
+ const outcome=await tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved:" Codex "},reason:"normalize configured owner"}).then(planned=>({reserved:planned.reserved,owner:planned.owner,state:planned.state}),()=>null);
+ expect(outcome).toEqual({reserved:"codex",owner:null,state:"backlog"});
+});

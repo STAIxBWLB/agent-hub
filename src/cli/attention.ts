@@ -1,4 +1,5 @@
 import { needs, type Needs, type NeedsInput, type NeedItem } from "../ui/needs.ts";
+import { petFrame, type CharacterId, type PetPose } from "../pet/frame.ts";
 export interface AttentionState {
   approvals: readonly { id: string; peer?: string; expiresAt: number }[];
   permissionDefaults: readonly { peer: string }[];
@@ -28,6 +29,12 @@ export function attentionLine(value: Needs, now = 0, blink = false, next = true)
   const label = value.state === "waiting" ? `! ${value.act} need you` : value.state === "blocked" ? `! blocked (${value.act})` : value.state === "review" ? `? ${value.act} for review` : value.state === "working" ? "* working" : value.state === "idle" ? "idle" : "z asleep";
   const eyes = blink && value.items.some(item => item.kind === "approval") && Math.floor(now / 1000) % 2 ? "(- -)" : "(O O)";
   return `${eyes} ${label}${value.watch ? ` +${value.watch}` : ""}${next && value.items.length ? "  n next" : ""}`;
+}
+
+/** Preserve the shipped line layout; only its trusted built-in face is selectable. */
+export function characterAttentionLine(value: Needs, character: CharacterId = "stai", now = 0, blink = false, next = true, glyphs: "ascii" | "blocks" = "ascii"): string {
+  const pose: PetPose = blink && value.items.some(item => item.kind === "approval") && Math.floor(now / 1000) % 2 ? "waitingBlink" : value.state;
+  return petFrame(character, pose, "line", glyphs)[0]! + attentionLine(value, now, blink, next).slice(5);
 }
 
 /** Accept only body-free board facts from the authenticated status reply. */
