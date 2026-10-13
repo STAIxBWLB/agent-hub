@@ -4,12 +4,13 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {Board} from "../src/hub/board.ts";
 import {Bus} from "../src/hub/bus.ts";
-import {Tasks} from "../src/hub/tasks.ts";
+import {Tasks, type TasksDeps} from "../src/hub/tasks.ts";
+import {BasePeer} from "../src/hub/peers.ts";
 import {USER} from "../src/hub/envelope.ts";
 import {loadRouting} from "../src/hub/routing.ts";
 import {classifyPeerCommand} from "../src/cli/identity.ts";
 const cleanup:(()=>void)[]=[];afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
-function rig(){const dir=mkdtempSync(join(tmpdir(),"ahub-gh-import-")),file=join(dir,"hub.db"),board=new Board(file),bus=new Bus({batchMs:0}),routing=loadRouting(dir);const screen={run:()=>{}};const tasks=new Tasks({board,bus,cwd:dir,project:"import",routing:()=>routing,notify:()=>{},piiScreen:async()=>{screen.run();return {label:"clear",ms:0};}});cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});return {dir,file,board,bus,tasks,routing,screen};}
+function rig(extra: Partial<TasksDeps> = {}){const dir=mkdtempSync(join(tmpdir(),"ahub-gh-import-")),file=join(dir,"hub.db"),board=new Board(file),bus=new Bus({batchMs:0}),routing=loadRouting(dir);const screen={run:()=>{}};const tasks=new Tasks({board,bus,cwd:dir,project:"import",routing:()=>routing,notify:()=>{},piiScreen:async()=>{screen.run();return {label:"clear",ms:0};},...extra});cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});return {dir,file,board,bus,tasks,routing,screen};}
 const issue=(number:number,title="public issue")=>({number,title,body:"details",url:`https://github.com/owner/repo/issues/${number}`,state:"OPEN"});
 test("GitHub intake screens canonical source identity before exposing external URLs",async()=>{
  const f=rig();f.routing.signals.pii_screen="local";const seen:string[]=[];
@@ -59,4 +60,39 @@ test("GitHub intake reports confirmed partial progress after late final staging"
   expect(result).toEqual({ imported: [1], existing: [], partial: true, complete: false });
   expect(f.board.list()).toHaveLength(1);
   expect(f.board.get(1)?.title).toBe("last issue");
+});
+
+
+test("GitHub intake retains committed identity after later bookkeeping failure", async () => {
+  for (const readable of [true, false]) {
+    const f = rig();
+    f.routing.signals.pii_screen = "local";
+    const update = f.board.update.bind(f.board);
+    f.board.update = (...args) => {
+      if (args[2] === "screened") {
+        if (!readable) f.board.imported = () => { throw new Error("readback unavailable"); };
+        throw new Error("bookkeeping unavailable");
+      }
+      return update(...args);
+    };
+    const result = await f.tasks.importGitHub(USER, { repo: "owner/repo", label: "ready" }, async () => ({ code: 0, stdout: JSON.stringify([issue(1)]) }));
+    expect(result).toEqual(readable ? { imported: [1], existing: [], partial: true, complete: false } : { imported: [], existing: [], partial: true, complete: false, unconfirmed: true });
+    expect(f.board.list()).toHaveLength(1);
+    expect(f.board.get(1)?.external?.issue).toBe(1);
+  }
+});
+
+
+test("GitHub confirmed recovery retains the planner backlog notice", async () => {
+  class Planner extends BasePeer { async start() { this.setState("idle"); } async stop() {} async deliver() {} }
+  const f = rig({ roles: { claude: ["planner"] } });
+  const planner = new Planner("claude"); f.bus.add(planner); await planner.start();
+  expect(f.tasks.flushPlannerNotices()).toBe(0);
+  f.routing.signals.pii_screen = "local";
+  const update = f.board.update.bind(f.board);
+  f.board.update = (...args) => { if (args[2] === "screened") throw new Error("bookkeeping unavailable"); return update(...args); };
+  const result = await f.tasks.importGitHub(USER, { repo: "owner/repo", label: "ready" }, async () => ({ code: 0, stdout: JSON.stringify([issue(1)]) }));
+  expect(result.imported).toEqual([1]);
+  expect(f.tasks.flushPlannerNotices()).toBe(1);
+  expect(f.tasks.flushPlannerNotices()).toBe(0);
 });

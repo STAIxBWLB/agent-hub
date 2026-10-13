@@ -3008,6 +3008,22 @@
       "replacement": "        (created ? imported : existing).push(task.id);",
       "testFile": "test/github-import-tasks.test.ts",
       "testName": "GitHub intake reports confirmed partial progress after late final staging"
+    },
+    {
+      "id": "github-import-postwrite-identity",
+      "file": "src/hub/tasks.ts",
+      "search": "if (saved) { if (!imported.includes(saved.id)) imported.push(saved.id); if (saved.state === \"backlog\") this.incomingBacklog.add(saved.id); return { imported, existing, partial: true, complete: false }; }",
+      "replacement": "if (saved) { /* seeded: discard the confirmed identity */ }",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub intake retains committed identity after later bookkeeping failure"
+    },
+    {
+      "id": "github-import-postwrite-notice",
+      "file": "src/hub/tasks.ts",
+      "search": "if (saved.state === \"backlog\") this.incomingBacklog.add(saved.id);",
+      "replacement": "/* seeded: omit recovered backlog notification */",
+      "testFile": "test/github-import-tasks.test.ts",
+      "testName": "GitHub confirmed recovery retains the planner backlog notice"
     }
   ]
 }
