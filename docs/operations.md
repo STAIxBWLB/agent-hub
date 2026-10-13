@@ -2757,3 +2757,8 @@ Intentionally person-owned work is not an offline agent. Neither user nor hub
 creates an offline watch item, while person-reviewed tasks remain actionable.
 Status reads only the board's structural id/state/owner/reviewer projection and
 reuses it for retained peer ids, avoiding task body/plan/history decoding.
+
+Planner reservations normalize the same lowercase peer syntax as owner arguments,
+reject reserved pseudo-peers and unknown unconfigured ids, and still enforce the
+roster. Returning unstarted ownerless work to Backlog joins the next planner
+notice batch without waiting for a restart.

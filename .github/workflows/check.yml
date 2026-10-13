@@ -133,7 +133,7 @@ jobs:
     needs: [decision, check]
     if: needs.decision.outputs.run_gate == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -145,7 +145,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - name: Six sequential green and seeded guard pairs
+      - name: Sequential green and seeded guard pairs
         run: bun scripts/seeded-check.ts
       - name: Retain failed seeded-guard phase diagnostics
         if: failure()

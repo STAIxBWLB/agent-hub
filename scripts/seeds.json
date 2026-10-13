@@ -2096,6 +2096,30 @@
       "replacement": "const taskNeeds = board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer }));",
       "testFile": "test/attention-followup.test.ts",
       "testName": "real daemon excludes intentionally person-owned work from offline attention"
+    },
+    {
+      "id": "planning-reservation-normalized",
+      "file": "src/hub/planning.ts",
+      "search": "value.trim().toLowerCase()",
+      "replacement": "value",
+      "testFile": "test/planning.test.ts",
+      "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
+    },
+    {
+      "id": "planning-reservation-supported",
+      "file": "src/hub/tasks.ts",
+      "search": "if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !Object.hasOwn(this.d.routing().peers, patch.reserved))",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
+    },
+    {
+      "id": "planner-return-notice",
+      "file": "src/hub/tasks.ts",
+      "search": "if (!pull) { this.incomingBacklog.add(n); return next; }",
+      "replacement": "if (!pull) return next;",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "person-returned ownerless work produces a planner notice without a restart (#263)"
     }
   ]
 }

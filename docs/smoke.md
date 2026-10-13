@@ -1694,3 +1694,9 @@ Regression fixtures cover reserved pseudo-peer ownership, preserved person
 reviews, selected SQL columns and actual status reads with unreadable unrelated
 JSON payloads. The focused tests pass; immutable-head platform/255-guard proof
 is pending. Native/account/artwork/dashboard legs remain unverified.
+
+Latest planner source fixes have an actual focused result of 11 pass/0 fail:
+reservation normalization/unsupported-id rejection and returned-work notices.
+The previous full262 guard job reached its 10-minute CI limit; the job cap is
+now20 minutes, with all named assertion and per-test/watchdog limits unchanged.
+Current immutable-head265 proof is pending.

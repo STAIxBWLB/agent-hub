@@ -573,6 +573,7 @@ export class Tasks {
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
         if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
+        if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !Object.hasOwn(this.d.routing().peers, patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
         const rows = new Map(this.d.board.list().map(row => [row.id, row]));
         const pending = [...(patch.deps ?? task.deps ?? [])], seen = new Set<number>();
@@ -721,7 +722,7 @@ export class Tasks {
     if (!pull && taskHasStarted(task)) throw new PreEffectToolRefusal(`task #${n}: started work cannot return to backlog`);
     const next = this.d.board.update(n, by, pull ? "backlog pulled" : "backlog returned", { state: pull ? "proposed" : "backlog", owner: null, reviewer: null });
     this.offered.delete(n);
-    if (!pull) return next;
+    if (!pull) { this.incomingBacklog.add(n); return next; }
     const waits = this.waitsFor(next);
     if (waits.length) return this.d.board.update(n, HUB, "blocked", {}, `waits for ${waits.map(v => `#${v}`).join(", ")}`);
     // This persisted ready marker also lets a restart offer ownerless work once a peer attaches.
