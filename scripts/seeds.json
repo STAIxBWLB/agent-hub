@@ -3096,6 +3096,30 @@
       "replacement": "releaseFilter,lanes,showAllDone",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "cached board notices deadline crossings without rewriting unchanged cards (#378)"
+    },
+    {
+      "id": "pi-native-prompt-idle-admission",
+      "file": "src/pi/extension.ts",
+      "search": "if (settlement || runtimeCtx?.isIdle?.() !== true || (command.sessionId !== undefined && command.sessionId !== sessionId) || (command.generation !== undefined && command.generation !== turnGeneration)) {",
+      "replacement": "if (false) {",
+      "testFile": "test/pi-prompt-admission.test.ts",
+      "testName": "real Pi extension refuses a hub prompt when a personal turn overtakes the snapshot ACK (#379)"
+    },
+    {
+      "id": "pi-native-prompt-lineage",
+      "file": "src/adapters/pi.ts",
+      "search": "if (this.fencedPrompt && this.opts.mode === \"tui\" && (this.activeEnvs.length > 0 || this.pendingPromptId || this.hubPromptId) && !this.rosterDetached && !this.rosterUnownedRun && !this.stopping && [\"agent_start\", \"agent_end\", \"agent_settled\"].includes(event.type)) {",
+      "replacement": "if (false) {",
+      "testFile": "test/pi-prompt-admission.test.ts",
+      "testName": "Pi prompt refusal retains its owner and queue when personal lifecycle reaches the daemon before the refusal ACK (#379)"
+    },
+    {
+      "id": "pi-native-deferred-prompt-uncertain",
+      "file": "src/pi/extension.ts",
+      "search": "if (command.type === \"prompt\" && runtimeCtx?.isIdle?.() !== false) {",
+      "replacement": "if (false) {",
+      "testFile": "test/pi-prompt-admission.test.ts",
+      "testName": "real Pi extension treats a deferred native insertion as uncertain and never lends its lineage to a personal start (#379)"
     }
   ]
 }

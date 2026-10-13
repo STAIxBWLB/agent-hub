@@ -28,6 +28,10 @@ export interface PiExit {
 export interface PiToolContext { userBash: boolean; isCurrent: () => boolean; onApproval: (provenance: ApprovalProvenance) => void; }
 export interface PiToolResult { text: string; exitCode: number | null; }
 class PiToolSettlementFailure extends Error {}
+class PiPromptNotStarted extends Error {
+  constructor(readonly promptId: string) { super("Pi native session changed before prompt insertion; reverify its retained terminal before retrying"); }
+}
+class PiPromptUncertain extends Error {}
 export interface PiOptions {
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
@@ -102,6 +106,10 @@ export class PiPeer extends BasePeer {
   private rosterDetached = false;
   private rosterEpoch = 0;
   private rosterLifecycleRevision = 0;
+  private fencedPrompt = false;
+  private hubPromptId: string | undefined;
+  private hubPromptGeneration: number | undefined;
+  private pendingPromptId: string | undefined;
   /** A personal native turn observed on reattach has no hub reply audience. */
   private rosterUnownedRun = false;
   private exitReported = false;
@@ -320,6 +328,7 @@ export class PiPeer extends BasePeer {
     this.rosterDetached = false; this.rosterUnownedRun = false;
     this.requestedStopReason = undefined;
     this.approvalTurnAbort = false;
+    this.fencedPrompt = false; this.hubPromptId = undefined; this.hubPromptGeneration = undefined; this.pendingPromptId = undefined;
     this.exitReported = false; this.started = false; this.lastToolName = undefined; this.shutdownExit = undefined;
     this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false;
     mkdirSync(this.opts.stateDir, { recursive: true });
@@ -348,7 +357,13 @@ export class PiPeer extends BasePeer {
       if (url.pathname === "/ack") {
         const pending = this.tuiCommands.get(String(body.id));
         if (!pending) return Response.json({ ok: false }, { status: 404 });
-        this.tuiCommands.delete(String(body.id)); body.ok ? pending.resolve(body.result) : pending.reject(new Error(String(body.error ?? "Pi TUI command failed")));
+        this.tuiCommands.delete(String(body.id));
+        const refusal = body.refusal;
+        const boundRefusal = this.fencedPrompt && this.verifiedOwner() && pending.command.type === "prompt" && pending.command.sessionId === this.sessionId
+          && refusal?.promptId === pending.command.id && refusal.sessionId === this.sessionId
+          && Number.isSafeInteger(refusal.generation) && refusal.generation >= Number(pending.command.generation);
+        body.ok ? pending.resolve(body.result) : pending.reject(boundRefusal && refusal.kind === "prompt_not_started" ? new PiPromptNotStarted(String(body.id))
+          : boundRefusal && refusal.kind === "prompt_uncertain" ? new PiPromptUncertain("Pi native prompt insertion is uncertain; inspect its retained terminal before retrying") : new Error(String(body.error ?? "Pi TUI command failed")));
         return Response.json({ ok: true });
       }
       if (url.pathname === "/tool") return this.handleToolRequest(body);
@@ -438,11 +453,14 @@ export class PiPeer extends BasePeer {
   async resumeFromRoster(): Promise<void> {
     if (!this.rosterDetached) return;
     if (this.opts.mode !== "tui" || this.stopping || !this.rosterDetached || !this.server || !this.verifiedOwner()) throw new Error("Pi roster return has no verified live TUI owner");
+    if (!this.fencedPrompt) throw new Error("Pi roster return needs a fenced-prompt extension; restart the retained terminal with the current hub extension");
+    if (this.pendingPromptId) throw new Error("Pi prompt admission is still pending; wait before reverifying the retained terminal");
     const epoch = this.rosterEpoch, lifecycle = this.rosterLifecycleRevision, session = this.sessionId, file = this.sessionFile;
     const snapshot = await this.sendTui({ type: "get_session_state" });
     if (epoch !== this.rosterEpoch || this.stopping || !this.verifiedOwner() || this.activeTools || snapshot?.sessionId !== session || snapshot?.sessionFile !== file || typeof snapshot?.idle !== "boolean") throw new Error("Pi roster return could not verify the current native session");
     if (lifecycle !== this.rosterLifecycleRevision) throw new Error("Pi native activity changed during roster return; retry with a fresh session snapshot");
     this.rosterDetached = false;
+    this.hubPromptId = undefined; this.hubPromptGeneration = undefined;
     this.rosterUnownedRun = !snapshot.idle; this.agentRunning = !snapshot.idle;
     this.setState(snapshot.idle ? "idle" : "busy");
     if (!snapshot.idle) this.clearWatchdog();
@@ -536,6 +554,7 @@ export class PiPeer extends BasePeer {
     this.setState("busy"); this.activeEnvs = envs; this.currentReply = replyParent(envs); this.settledText = "";
     const rosterEpoch = this.rosterEpoch;
     let attempted = false;
+    let promptId: string | undefined;
     try {
       const requested = await this.opts.selectModel?.(envs);
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
@@ -544,10 +563,32 @@ export class PiPeer extends BasePeer {
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);
-      if (this.opts.mode === "tui") await this.sendTui({ type: "prompt", message: renderDigest(envs, true) });
+      if (this.opts.mode === "tui") { const pending = this.sendTui({ type: "prompt", message: renderDigest(envs, true) }); promptId = this.pendingPromptId; await pending; }
       else await this.sendRpc({ type: "prompt", message: renderDigest(envs, true) });
+      if (promptId !== undefined && promptId !== this.pendingPromptId) return;
+      if (this.fencedPrompt && this.rosterDetached) {
+        if (deliveryId && this.activeDeliveryIds.delete(deliveryId)) this.delivery({ id: deliveryId, state: "needs_review", reason: "Pi native activity changed before prompt acceptance was confirmed" });
+        this.setState("offline");
+        return;
+      }
       if (deliveryId && this.activeDeliveryIds.has(deliveryId)) this.delivery({ id: deliveryId, state: "accepted" });
     } catch (error) {
+      if (promptId !== undefined && promptId !== this.pendingPromptId) return;
+      if (error instanceof PiPromptUncertain) { this.pendingPromptId = undefined; await this.detachForRoster(); return; }
+      if (error instanceof PiPromptNotStarted && error.promptId === this.pendingPromptId) {
+        this.pendingPromptId = undefined;
+        if (deliveryId) this.activeDeliveryIds.delete(deliveryId);
+        if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: error.message });
+        else this.onFailed?.(envs);
+        await this.detachForRoster();
+        return;
+      }
+      if (this.fencedPrompt && this.pendingPromptId && this.rosterDetached) {
+        this.pendingPromptId = undefined;
+        if (deliveryId && this.activeDeliveryIds.delete(deliveryId)) this.delivery({ id: deliveryId, state: "needs_review", reason: "Pi prompt acknowledgement is uncertain after personal native activity" });
+        this.setState("offline");
+        return;
+      }
       if (rosterEpoch !== this.rosterEpoch) {
         if (!attempted && deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "Pi withdrawn before native dispatch" });
         return;
@@ -565,11 +606,13 @@ export class PiPeer extends BasePeer {
         this.delivery({ id: deliveryId, state: "failed_safe", reason });
       }
       await this.terminateFailedTurn(error instanceof Error ? error : new Error(reason));
+    } finally {
+      if (promptId !== undefined && this.pendingPromptId === promptId) this.pendingPromptId = undefined;
     }
   }
 
   async steer(envs: Envelope[], deliveryId?: string): Promise<void> {
-    if (this.state !== "busy" || !this.acceptingTools || envs.some((e) => e.kind !== "chat" || e.private || e.priority !== "important")) {
+    if (this.state !== "busy" || !this.acceptingTools || (this.fencedPrompt && this.pendingPromptId && this.hubPromptGeneration === undefined) || envs.some((e) => e.kind !== "chat" || e.private || e.priority !== "important")) {
       const reason = `Pi workflow/private messages must queue${this.rosterDetached ? ": off roster" : this.rosterUnownedRun ? ": native turn pending" : ""}`;
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason });
       throw new Error(reason);
@@ -599,6 +642,28 @@ export class PiPeer extends BasePeer {
   }
 
   private handleBridgeEvent(event: any): void {
+    if (this.fencedPrompt && this.opts.mode === "tui" && !this.rosterUnownedRun && ["agent_start", "agent_end", "agent_settled"].includes(event.type)
+      && typeof event.promptId === "string" && event.promptId !== this.hubPromptId) return;
+    if (this.fencedPrompt && this.opts.mode === "tui" && (this.activeEnvs.length > 0 || this.pendingPromptId || this.hubPromptId) && !this.rosterDetached && !this.rosterUnownedRun && !this.stopping && ["agent_start", "agent_end", "agent_settled"].includes(event.type)) {
+      const bound = this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId);
+      if (!bound || !Number.isSafeInteger(event.generation) || event.generation < this.budgetGeneration) return;
+      const owned = this.hubPromptId !== undefined && event.promptId === this.hubPromptId;
+      if (event.type === "agent_start" && event.generation > this.budgetGeneration) {
+        if (owned) this.hubPromptGeneration = event.generation;
+        else {
+          if (this.pendingPromptId || this.activeEnvs.length) {
+            // Await the prompt's exact ACK before deciding whether its effect was absent or uncertain.
+            this.rosterDetached = true; this.rosterEpoch++; this.clearWatchdog();
+            this.activeEnvs = []; this.currentReply = undefined; this.settledText = ""; this.settledError = "";
+            this.abortTools();
+            if (!this.pendingPromptId) {
+              for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: "Pi personal native activity replaced the accepted hub turn" });
+              this.activeDeliveryIds.clear(); this.setState("offline");
+            }
+          } else { this.rosterUnownedRun = true; this.setState("busy"); this.clearWatchdog(); }
+        }
+      } else if (!this.rosterUnownedRun && (!owned || event.generation !== this.hubPromptGeneration)) return;
+    }
     if (this.rosterDetached || this.rosterUnownedRun) {
       // The shipped extension's legacy agent_start omits sessionId. Its authenticated bridge
       // and still-verified owner bind that event to this session; an explicit mismatch never does.
@@ -624,6 +689,7 @@ export class PiPeer extends BasePeer {
     if (event.type === "session_start") {
       if (!this.ownerClaimed) { this.ownerClaimed = true; this.ownerToken = String(event.ownerToken ?? ""); }
       this.approvalTurnAbort = event.approvalTurnAbort === true;
+      this.fencedPrompt ||= event.fencedPrompt === true;
       this.sessionId = String(event.sessionId ?? ""); this.sessionFile = String(event.sessionFile ?? "");
       this.ownerPid = Number.isInteger(event.pid) ? event.pid : undefined; this.ownerSignature = typeof event.signature === "string" ? event.signature : undefined;
       if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) { this.opts.log?.(`[${this.id}] Pi session identity mismatch`); return; }
@@ -704,6 +770,7 @@ export class PiPeer extends BasePeer {
       for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();
       this.currentReply = undefined; this.activeEnvs = [];
+      this.hubPromptId = undefined; this.hubPromptGeneration = undefined;
       this.executionAbort?.abort(); this.executionAbort = undefined;
       this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false;
       this.abortedToolIds.clear(); this.abortIdsOverflow = false;
@@ -722,7 +789,9 @@ export class PiPeer extends BasePeer {
   }
   private sendTui(command: Record<string, unknown>): Promise<any> {
     const id = `ahub-${++this.seq}`;
-    const wire = { id, ...command };
+    const fenced = this.fencedPrompt && command.type === "prompt";
+    if (fenced) { this.pendingPromptId = id; this.hubPromptId = id; this.hubPromptGeneration = undefined; }
+    const wire = { id, ...command, ...(fenced ? { sessionId: this.sessionId, generation: this.budgetGeneration } : {}) };
     return new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => {
         this.tuiCommands.delete(id);

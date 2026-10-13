@@ -2817,3 +2817,12 @@ for an already fresh goal or suggestion read.
 
 The board's existing polling notices deadline crossings through derived overdue
 state in its render cache. Unchanged overdue state preserves the current DOM.
+
+The current Pi extension negotiates fenced prompt admission at verified session
+startup. It checks native idle state immediately before synchronous prompt
+insertion, refuses insertion while its settlement callback is active, and tags
+hub prompt lifecycle events with the command id. A delayed personal lifecycle
+must not consume a hub audience or receipt. Only a verified command/session-bound
+pre-effect refusal permits safe requeue; uncertain delivery stays held. Roster
+rejoin without this extension capability is refused, requiring a current native
+session instead of assuming that an older extension provides the fence.

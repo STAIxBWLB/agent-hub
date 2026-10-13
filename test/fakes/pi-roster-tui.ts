@@ -6,7 +6,7 @@ import { processSignature } from "../../src/pi/process-signature.ts";
 const currentSignature = (pid: number) => { const signature = processSignature(pid); if (!signature) throw new Error("test owner process is not visible"); return signature; };
 
 // A real owner process plus the shipped authenticated bridge protocol, without a native model.
-export async function rosterPiFixture(executeTool: ConstructorParameters<typeof PiPeer>[1]["executeTool"] = async () => "ok", location: { cwd?: string; stateDir?: string } = {}) {
+export async function rosterPiFixture(executeTool: ConstructorParameters<typeof PiPeer>[1]["executeTool"] = async () => "ok", location: { cwd?: string; stateDir?: string; fencedPrompt?: boolean } = {}) {
   const cwd = location.cwd ?? process.cwd();
   const stateDir = location.stateDir ?? mkdtempSync(join(cwd, ".pi-roster-"));
   const owner = Bun.spawn(["sleep", "60"]);
@@ -18,10 +18,16 @@ export async function rosterPiFixture(executeTool: ConstructorParameters<typeof 
   const launch = peer.tuiLaunch!, url = launch.env.AGENTHUB_PI_BRIDGE_URL!;
   const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
   const sessionId = "roster-session", sessionFile = join(stateDir, "personal.jsonl");
-  const post = (path: string, body: unknown) => fetch(`${url}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-  await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: currentSignature(owner.pid), sessionId, sessionFile });
+  let promptId: string | undefined;
+  const post = (path: string, body: any) => {
+    const lifecycle = path === "/event" && ["agent_start", "agent_end", "agent_settled"].includes(body.type);
+    const wire = lifecycle && promptId && body.promptId === undefined ? { ...body, promptId } : body;
+    if (body.type === "agent_settled") promptId = undefined;
+    return fetch(`${url}${path}`, { method: "POST", headers, body: JSON.stringify(wire) });
+  };
+  await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: currentSignature(owner.pid), sessionId, sessionFile, fencedPrompt: location.fencedPrompt !== false });
   const next = async () => ((await (await fetch(`${url}/commands`, { headers })).json()) as any).command;
-  const ack = (command: any, result?: unknown) => post("/ack", { id: command.id, ok: true, result });
+  const ack = (command: any, result?: unknown) => { if (command.type === "prompt") promptId = command.id; return post("/ack", { id: command.id, ok: true, result }); };
   const resume = async (idle: boolean, override: Record<string, unknown> = {}) => {
     const returning = peer.resumeFromRoster();
     const command = await next(); expect(command.type).toBe("get_session_state");
