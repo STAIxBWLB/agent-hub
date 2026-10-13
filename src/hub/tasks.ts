@@ -195,6 +195,7 @@ export class Tasks {
   private readonly incomingBacklog = new Set<number>();
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   private readonly plannerBlockedQueue = new Map<PeerId, string>();
+  private readonly knownPlanners = new Set<PeerId>();
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
   private readonly sweepConfig: TaskSweepConfig;
@@ -204,6 +205,7 @@ export class Tasks {
     const backlog = d.board.list("backlog");
     for (const [peer, roles] of Object.entries(d.roles ?? {})) {
       if (!roles.includes("planner")) continue;
+      this.knownPlanners.add(peer);
       const queued = d.bus.queuedBacklogIds(peer);
       this.addPlannerBacklog(peer, backlog.filter(task => !queued.has(task.id)).map(task => task.id));
     }
@@ -562,7 +564,7 @@ export class Tasks {
     return task.history.findLast(entry => entry.event === "backlog pulled" || entry.event === "backlog returned")?.planning;
   }
   wip(peer: PeerId, except?: number): number {
-    return this.d.board.list().filter(task => task.id !== except && task.state !== "approved" && task.state !== "backlog" && (task.owner === peer || !task.owner && task.state === "proposed" && task.reserved === peer && this.plannerPullRecord(task)?.pull)).length;
+    return this.d.board.plannerWip(peer, except);
   }
   private prerequisiteOf(task: Task, prerequisite: number): boolean {
     const pending = [...(task.deps ?? [])], seen = new Set<number>();
@@ -576,7 +578,7 @@ export class Tasks {
       return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0;
     });
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: [...this.excluded(task), ...full], ...(reservedOnly ? { candidates: task.reserved ? [task.reserved] : [], ...(task.reserved ? { namedOwner: task.reserved } : {}) } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
+    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: [...this.excluded(task), ...full], ...(reservedOnly && task.reserved && !this.excluded(task).includes(task.reserved) ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
@@ -621,6 +623,14 @@ export class Tasks {
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
   flushPlannerNotices(): number {
     const configured = Object.entries(this.d.roles ?? {}).filter(([, roles]) => roles.includes("planner")).map(([peer]) => peer);
+    for (const peer of this.knownPlanners) if (!configured.includes(peer)) {
+      this.knownPlanners.delete(peer); this.plannerBacklog.delete(peer); this.plannerBlockedQueue.delete(peer);
+    }
+    for (const peer of configured) if (!this.knownPlanners.has(peer)) {
+      this.knownPlanners.add(peer);
+      const retained = this.d.bus.queuedBacklogIds(peer);
+      this.addPlannerBacklog(peer, this.d.board.list("backlog").filter(task => !retained.has(task.id)).map(task => task.id));
+    }
     const planners = configured.filter(peer => this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline");
     if (!planners.length) return 0;
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
@@ -1660,9 +1670,11 @@ export class Tasks {
     const task = this.need(id, true, true);
     this.mine(task, by, "owner", true);
     // The owner it is declined for goes on the entry, also when the console declines for it: `excluded()` keeps it out (#207).
-    const back = this.d.board.update(task.id, by, "declined", task.state === "in_progress" ? { state: "proposed" } : {}, reason, task.owner ? { from: task.owner } : {});
+    const planned = this.plannerPullRecord(task)?.pull === true;
+    const back = this.d.board.update(task.id, by, "declined", { ...(task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner } : {});
+    if (planned) this.offered.delete(task.id);
     this.d.notify(`task ${this.publicTitle(back)} declined by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
-    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true });
+    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(planned ? { planner: true } : {}) });
   }
 
   /** Tasks whose check is queued or running, and the owner it was started for. */

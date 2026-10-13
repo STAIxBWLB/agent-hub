@@ -4,10 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/hub/daemon.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { checkSettingValue, parseSettingText, settingDef, settingRows, writeConfigSetting } from "../src/hub/settings.ts";
+import { checkSettingValue, parseSettingText, settingDef, settingRows, settingRefusal, writeConfigSetting } from "../src/hub/settings.ts";
+import { renderStatus } from "../src/cli/output.ts";
+import { paint } from "../src/cli/console-state.ts";
 
 const cleanup: (() => void)[]=[];
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
+test("ordinary WIP settings can disable admission but cannot raise or uncover capacity",()=>{
+ const def=settingDef("tasks.wip_limits.codex")!;
+ expect(settingRefusal(def,0,"ordinary")).toBeUndefined();
+ for(const value of [1,32,null])expect(settingRefusal(def,value,"ordinary")).toContain("settings session");
+ expect(settingRefusal(def,32,"settings")).toBeUndefined();expect(settingRefusal(def,32,"terminal")).toBeUndefined();
+});
+test("normal status text includes planner WIP and capacity for retained peers",()=>{
+ const text=renderStatus({peers:{codex:{state:"offline"}},taskWip:{codex:{wip:1,wipLimit:2}}},120,0).map(line=>paint(line,false)).join("\n");
+ expect(text).toMatch(/codex planner WIP\s+1\/2/);
+});
 test("planner WIP settings use bounded integers and the existing local registry write (#263)", () => {
   const root=mkdtempSync(join(tmpdir(),"ahub-wip-settings-"));cleanup.push(()=>rmSync(root,{recursive:true,force:true}));
   mkdirSync(join(root,".agenthub"));

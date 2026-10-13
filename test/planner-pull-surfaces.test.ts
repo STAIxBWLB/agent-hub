@@ -1,9 +1,10 @@
 import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
+import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -21,6 +22,13 @@ async function cli(root: string, args: string[]) {
   try {const [code,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);return {code,stdout,stderr};}finally{clearTimeout(timer);}
 }
 type Snapshot = { ok: boolean; tasks: { id: number; state: string; owner: string | null; reserved?: string | null; planningRevision: number }[]; boardLegend: { peer: string; wip: number; wipLimit: number }[]; status: { peers: Record<string, unknown>; taskWip: Record<string, {wip: number; wipLimit: number}> } };
+test("restarted ownerless pull reservations retain an unattached peer WIP status row",async()=>{
+ const root=realPath(mkdtempSync(join(tmpdir(),"ahub-reserved-wip-"))),stateDir=join(root,".agenthub/state");mkdirSync(stateDir,{recursive:true});
+ const board=new Board(join(stateDir,"hub.db")),task=board.propose("user",{title:"PRIVATE_RESERVED_TITLE",class:"implement",backlog:true});board.pullPlanned(task.id,"claude","codex",0,"ready");board.close();
+ const daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},tasks:{...DEFAULT_CONFIG.tasks,wip_limits:{codex:2}}}}),client=await ControlClient.connect(stateDir,{role:"console"});
+ try{const status=(await client.request({t:"status"})).status;expect(status.taskWip.codex).toEqual({wip:1,wipLimit:2});expect(status.peers.codex.state).toBe("offline");const snapshot=await client.request({t:"ui_snapshot"});expect(snapshot.boardLegend.find((row:{peer:string})=>row.peer==="codex")).toMatchObject({wip:1,wipLimit:2});}
+ finally{client.close();await daemon.stop();rmSync(root,{recursive:true,force:true});}
+},20000);
 test("planner pull surfaces enforce role revisions and shared WIP status through HTTP (#263)", async () => {
   const root=realPath(mkdtempSync(join(tmpdir(),"ahub-pull-surfaces-"))),stateDir=join(root,".agenthub/state");
   const daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},tasks:{...DEFAULT_CONFIG.tasks,wip_limits:{codex:1,claude:0}},roles:{claude:["planner"],codex:["implementer"]},batch_ms:0}});

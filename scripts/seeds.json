@@ -252,7 +252,7 @@
     {
       "id": "roster-empty-status",
       "file": "src/hub/daemon.ts",
-      "search": "    return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
+      "search": "    return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
       "replacement": "    return [...ids];",
       "testFile": "test/roster.test.ts",
       "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
@@ -1980,8 +1980,8 @@
     {
       "id": "planner-pull-only-reservation-preview",
       "file": "src/hub/tasks.ts",
-      "search": "...(task.reserved ? { namedOwner: task.reserved } : {})",
-      "replacement": "...(false ? { namedOwner: task.reserved } : {})",
+      "search": "candidates: [task.reserved], namedOwner: task.reserved",
+      "replacement": "candidates: [task.reserved]",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull honors original person backlog reservations and pull-only offers (#263)"
     },
@@ -2364,7 +2364,7 @@
     {
       "id": "planner-notice-unsettled-coalescing",
       "file": "src/hub/bus.ts",
-      "search": "...(this.journal?.unresolved(id).flatMap(row => row.originals) ?? [])",
+      "search": "...(this.journal?.unresolved(id).filter(row => row.state !== \"queued\").flatMap(row => row.originals) ?? [])",
       "replacement": "...[]",
       "testFile": "test/planning-notices.test.ts",
       "testName": "planner recovery coalesces unsettled journal originals without a queued copy"
@@ -2552,6 +2552,54 @@
       "replacement": "if (true) return candidate;",
       "testFile": "test/listen.test.ts",
       "testName": "automatic control allocation keeps requested peer ports occupied until a distinct replacement exists"
+    },
+    {
+      "id": "planner-notice-evicted-queued-row",
+      "file": "src/hub/bus.ts",
+      "search": ".filter(row => row.state !== \"queued\")",
+      "replacement": ".filter(() => true)",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "evicted retried journal notices do not suppress backlog rediscovery on restart"
+    },
+    {
+      "id": "planner-notice-new-role-seeding",
+      "file": "src/hub/tasks.ts",
+      "search": "for (const peer of configured) if (!this.knownPlanners.has(peer)) {",
+      "replacement": "for (const peer of configured) if (false) {",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "newly configured planners receive existing backlog without repeating earlier planners"
+    },
+    {
+      "id": "planner-wip-raises-authority",
+      "file": "src/hub/settings.ts",
+      "search": "applies: \"hub start\", risk: \"raises\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
+      "replacement": "applies: \"hub start\", risk: \"safe\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "ordinary WIP settings can disable admission but cannot raise or uncover capacity"
+    },
+    {
+      "id": "planner-decline-slot-release",
+      "file": "src/hub/tasks.ts",
+      "search": "...(planned ? { reserved: null } : {})",
+      "replacement": "...{}",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "declined planner pulls release the old WIP slot and reroute when another peer attaches"
+    },
+    {
+      "id": "planner-reserved-status-row",
+      "file": "src/hub/daemon.ts",
+      "search": "new Set([...bus.knownPeers(), ...reservations])",
+      "replacement": "new Set(bus.knownPeers())",
+      "testFile": "test/planner-pull-surfaces.test.ts",
+      "testName": "restarted ownerless pull reservations retain an unattached peer WIP status row"
+    },
+    {
+      "id": "planner-normal-status-wip",
+      "file": "src/cli/output.ts",
+      "search": "if (data.taskWip) for (const [peer, value] of Object.entries(data.taskWip))",
+      "replacement": "if (false) for (const [peer, value] of Object.entries(data.taskWip!))",
+      "testFile": "test/planner-wip-settings.test.ts",
+      "testName": "normal status text includes planner WIP and capacity for retained peers"
     }
   ]
 }
