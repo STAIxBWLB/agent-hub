@@ -152,7 +152,7 @@ export class AcpPeer extends BasePeer {
   private activeDeliveryId: string | undefined;
   private activeLegacy: { turn: number; envs: Envelope[] } | undefined;
   private deliveryAccepted = false;
-  private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout>; released: Promise<void>; release: () => void } | undefined;
+  private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout>; reported: boolean; released: Promise<void>; release: () => void } | undefined;
   private promptActivity = false;
   private activityOpen = false;
   private activityPrivate = false;
@@ -300,7 +300,7 @@ export class AcpPeer extends BasePeer {
       throw new Error(`${this.id} permission mode ${mode} refused: ${(error as Error).message}`);
     }
     // A mode reply after a cancelled prompt must also observe its queued cleanup.
-    await this.cancelWait?.released;
+    if (this.cancelWait?.reported) await this.cancelWait.released;
     if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown; restart the peer`);
     this.permissionMode = mode;
   }
@@ -346,6 +346,8 @@ export class AcpPeer extends BasePeer {
 
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
     const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}` }] });
+    const reported = () => { if (this.cancelWait?.turn === turn) this.cancelWait.reported = true; };
+    void prompt.then(reported, reported);
     prompt
       .then((result) => {
         if (turn !== this.turn) return; // superseded: these chunks belong to a later turn
@@ -438,7 +440,7 @@ export class AcpPeer extends BasePeer {
       timer.unref?.();
       let release!: () => void;
       const released = new Promise<void>(resolve => { release = resolve; });
-      this.cancelWait = { turn: cancelledTurn, successor, timer, released, release };
+      this.cancelWait = { turn: cancelledTurn, successor, timer, reported: false, released, release };
     }
   }
 
