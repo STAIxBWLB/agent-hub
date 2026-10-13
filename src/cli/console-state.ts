@@ -677,7 +677,7 @@ function decoratePetFooter(s: ConsoleState, columns: number, rows: number, now: 
   const value = consoleNeeds(s, now), character = s.petCharacter ?? "stai", size = petSize(s.petSize, columns, rows);
   const tone: Tone = value.state === "blocked" ? "failure" : value.act ? "attention" : "muted";
   if (size === "line") {
-    const text = characterAttentionLine(value, character, now, s.petBlink);
+    const text = characterAttentionLine(value, character, now, s.petBlink, true, s.petGlyphs);
     return [Bun.stringWidth(text) + 4 <= columns ? [span("-".repeat(columns - Bun.stringWidth(text) - 2) + " ", "muted"), span(text.slice(0, 5)), span(text.slice(5), tone), span("-", "muted")] : rule, ...footer];
   }
   const pose: PetPose = s.petBlink && value.items.some(item => item.kind === "approval") && Math.floor(now / 1000) % 2 ? "waitingBlink" : value.state;

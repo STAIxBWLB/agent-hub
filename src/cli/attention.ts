@@ -32,9 +32,9 @@ export function attentionLine(value: Needs, now = 0, blink = false, next = true)
 }
 
 /** Preserve the shipped line layout; only its trusted built-in face is selectable. */
-export function characterAttentionLine(value: Needs, character: CharacterId = "stai", now = 0, blink = false, next = true): string {
+export function characterAttentionLine(value: Needs, character: CharacterId = "stai", now = 0, blink = false, next = true, glyphs: "ascii" | "blocks" = "ascii"): string {
   const pose: PetPose = blink && value.items.some(item => item.kind === "approval") && Math.floor(now / 1000) % 2 ? "waitingBlink" : value.state;
-  return petFrame(character, pose)[0]! + attentionLine(value, now, blink, next).slice(5);
+  return petFrame(character, pose, "line", glyphs)[0]! + attentionLine(value, now, blink, next).slice(5);
 }
 
 /** Accept only body-free board facts from the authenticated status reply. */

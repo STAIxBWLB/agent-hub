@@ -2563,7 +2563,7 @@ by user still produces its normal review action.
 The owner approved the STAIx reductions and public distribution on 2026-10-13,
 and selected gyul, lantern, cursor-cat and boxbot. All five built-in characters
 have complete line/mini/full ASCII and block data; no image is loaded at build
-or run time. The shipped STAI line remains byte-compatible. Actual consoles
+or run time. The ASCII STAI line remains byte-compatible. Actual consoles
 advertise the five choices and P cycles through them and off; older embedding
 states without advertised choices retain the former STAI/off toggle.
 

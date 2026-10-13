@@ -2144,6 +2144,14 @@
       "replacement": "snapshot.pet.blink!==false && value.state==='waiting'",
       "testFile": "test/pet-dashboard.test.ts",
       "testName": "dashboard blinking requires a live approval rather than a pending default"
+    },
+    {
+      "id": "pet-line-glyph-selection",
+      "file": "src/cli/console-state.ts",
+      "search": "characterAttentionLine(value, character, now, s.petBlink, true, s.petGlyphs)",
+      "replacement": "characterAttentionLine(value, character, now, s.petBlink)",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "console line faces honor selected block glyphs and the locale ASCII floor"
     }
   ]
 }

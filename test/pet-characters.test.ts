@@ -62,3 +62,11 @@ test("expired notices restore selected approval ids and expiry in expanded pet f
   expect(footer).toContain("codex approval-123");expect(footer).toContain("left");expect(footer).not.toContain("PRIVATE_");
  }
 });
+
+test("console line faces honor selected block glyphs and the locale ASCII floor",()=>{
+ for(const character of CHARACTER_IDS)for(const glyphs of ["ascii","blocks"] as const){
+  const state={...initialConsoleState(true),petEnabled:true,petCharacter:character,petSize:"line" as const,petGlyphs:glyphs};
+  const rule=paint(renderConsoleLines(state,100,24,0)[20]!,false);expect(rule).toContain(petFrame(character,"sleeping","line",glyphs)[0]!);expect(Bun.stringWidth(rule)).toBe(100);expect(rule).not.toContain("\x1b");
+ }
+ const floor=petGlyphs("blocks",{LANG:"C",TERM:"xterm"});expect(floor).toBe("ascii");expect(characterAttentionLine(needs({},0),"stai",0,false,true,floor)).toContain(petFrame("stai","sleeping","line","ascii")[0]!);
+});

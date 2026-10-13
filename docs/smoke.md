@@ -1733,3 +1733,7 @@ Dashboard blink now requires a live approval item, not merely waiting state
 (which also includes pending defaults). The actual pet suite passed6/0 with
 138742 assertions across defaults, live approvals, expired approvals and blink-off;
 a mutation guard covers this distinction. Full current-head proof is pending.
+Line-size console faces now honor the resolved ASCII/block selection, with the
+locale fallback retained and ASCII/CLI defaults unchanged. Actual line glyph,
+geometry, modal and runtime regression group passed19/0 with7165 assertions.
+All five faces stayed100 cells wide without colour escapes. Full gates pending.
