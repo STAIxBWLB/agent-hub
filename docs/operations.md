@@ -696,6 +696,21 @@ ahub research backfill             # build this project's records once from even
 ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, incomplete, wrong, abandoned)
 ```
 
+## Hub memory
+
+The hub keeps its own memory in `~/.agenthub/memory/` beside claude-mem ([how it works](memory.md)): notes saved
+against an open task are short-term; when the task is approved its decisions, contracts and fails become long-term.
+Task briefs, session-start recall and `ahub ask` read it first, and the dashboard has a Memory section.
+
+```bash
+ahub memory                              # this project's entries, newest first
+ahub memory search parser                # every word must match
+ahub memory show 1a2b3c4d                # one entry, its provenance and edges
+ahub memory forget 1a2b3c4d              # a person's; also promote, demote, supersede, rebuild
+```
+
+`"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
+
 ## Benchmarks
 
 In a git repository kept for benchmarks (`"bench": { "enabled": true }` in its `.agenthub/config.json`, a clean tree),
@@ -1544,8 +1559,8 @@ can run again), unless the error says the state cannot be read (a damaged
 `hub.db` or journal fails the same way every time): `ahub reset --all --yes`
 archives such a state directory as it is. A full reset names the archive once
 the state directory has moved.
-It never touches claude-mem: notes saved with `hub_remember` are shared memory,
-not hub state. Claude Code sessions attached to the hub lose their hub session;
+It never touches claude-mem or hub memory (`~/.agenthub/memory/`): notes saved with
+`hub_remember` are shared memory, not hub state. Claude Code sessions attached to the hub lose their hub session;
 relaunch them with `ahub claude`.
 
 ## Orphaned daemons

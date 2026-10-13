@@ -133,6 +133,7 @@ jobs:
     needs: [decision, check]
     if: needs.decision.outputs.run_gate == 'true'
     runs-on: ubuntu-latest
+    # 255 guards run in about 590 s, about 2.1 s each, sequentially: 20 minutes leaves room for the set to grow.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
