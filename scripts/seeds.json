@@ -2800,6 +2800,14 @@
       "replacement": "const last = t.history.at(-1)?.event, planned =",
       "testFile": "test/tasks.test.ts",
       "testName": "task memory bookkeeping retains dependent readiness after recovery"
+    },
+    {
+      "id": "import-dot-prefixed-repository",
+      "file": "src/hub/github-import.ts",
+      "search": "[A-Za-z0-9_.-]{1,100}",
+      "replacement": "[A-Za-z0-9][A-Za-z0-9_.-]{0,99}",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake accepts dot-prefixed repository identity in explicit and resolved selections"
     }
   ]
 }
