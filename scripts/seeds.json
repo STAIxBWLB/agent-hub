@@ -1867,7 +1867,7 @@
     },
     {
       "id": "pet-config-off",
-      "file": "src/cli/pet-config.ts",
+      "file": "src/pet/config.ts",
       "search": "if (value === false) return",
       "replacement": "if (value === true) return",
       "testFile": "test/pet-config.test.ts",
