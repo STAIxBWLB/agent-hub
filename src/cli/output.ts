@@ -258,28 +258,31 @@ export function renderBudget(data: BudgetOutput, columns?: number, now = Date.no
   for (const [peer, b] of Object.entries(data.budget)) if (b.paused) out.push(...detail(`paused ${peer}`, `${b.paused.reason ?? "budget"}${typeof b.paused.resetsAt === "number" ? `; resumes ${relative(b.paused.resetsAt, now)}` : ""}`, columns, "attention"));
   return out;
 }
-export function boardColumnModel(tasks: any[], peers: Record<string, BoardPeerInput>, allTasks: any[] | null = tasks) {
+function boardColumnContext(tasks: any[], allTasks: any[] | null): any[] {
   if (allTasks === null) throw new Error("board column dependency context unavailable; retry with a complete snapshot");
-  const visible = new Set(tasks.map(task => task.id));
   const first = new Map(tasks.map(task => [task.id, task])), context = allTasks.map(task => first.get(task.id) ?? task);
   const included = new Set(context.map(task => task.id));
   for (const task of tasks) if (!included.has(task.id)) context.push(task);
+  return context;
+}
+export function boardColumnModel(tasks: any[], peers: Record<string, BoardPeerInput>, allTasks: any[] | null = tasks) {
+  const visible = new Set(tasks.map(task => task.id)), context = boardColumnContext(tasks, allTasks);
   const model = boardColumns(context.map(task => ({ ...task, urgent: task.signals?.includes("urgent") === true })), peers);
   return { columns: model.columns.map(column => ({ ...column, ready: column.ready.filter(card => visible.has(card.id)), waiting: column.waiting.filter(card => visible.has(card.id)) })), unknown: model.unknown.filter(id => visible.has(id)) };
 }
 export function renderBoardColumns(tasks: any[], peers: Record<string, BoardPeerInput>, columns?: number, now = Date.now(), full = false, allTasks: any[] | null = tasks): Span[][] {
   const visible = new Set(tasks.map(task => task.id)), byId = new Map(tasks.map(task => [task.id, task]));
-  const model = boardColumnModel(tasks, peers, allTasks), out: Span[][] = [];
+  const context = boardColumnContext(tasks, allTasks), model = boardColumnModel(tasks, peers, context), out: Span[][] = [];
   for (const column of model.columns) {
     const ready = column.ready.filter(card => visible.has(card.id)), waiting = column.waiting.filter(card => visible.has(card.id));
     if (out.length) out.push([]); out.push([span(column.label, "strong")]);
     if (!ready.length && !waiting.length) { out.push([span("(empty)", "muted")]); continue; }
     if (column.id === "todo") out.push([span("Ready", "strong")]);
-    if (ready.length) out.push(...renderBoard(ready.map(card => byId.get(card.id)), columns, now, full, allTasks));
-    if (waiting.length) { out.push([span("Waiting", "strong")]); out.push(...renderBoard(waiting.map(card => byId.get(card.id)), columns, now, full, allTasks)); for (const card of waiting) out.push(...lines(`#${card.id}: ${card.waiting.join("; ")}`, columns)); }
+    if (ready.length) out.push(...renderBoard(ready.map(card => byId.get(card.id)), columns, now, full, context));
+    if (waiting.length) { out.push([span("Waiting", "strong")]); out.push(...renderBoard(waiting.map(card => byId.get(card.id)), columns, now, full, context)); for (const card of waiting) out.push(...lines(`#${card.id}: ${card.waiting.join("; ")}`, columns)); }
   }
   const unknown = model.unknown.filter(id => visible.has(id));
-  if (unknown.length) out.push([], [span("Unknown state", "strong")], ...renderBoard(unknown.map(id => byId.get(id)), columns, now, full, allTasks));
+  if (unknown.length) out.push([], [span("Unknown state", "strong")], ...renderBoard(unknown.map(id => byId.get(id)), columns, now, full, context));
   return out;
 }
 
