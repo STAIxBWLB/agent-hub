@@ -459,15 +459,17 @@ function renderPlanning(snapshot) {
   if(planningEdit && snapshot.tasks.find(task=>task.id===planningEdit.id)?.planningRevision!==planningEdit.revision)$('planning-version').textContent='Task changed. Reload before saving.';
   update('releases',releases,target=>{
     if(!releases.length)return empty(target,'No releases planned.');
+    const states=new Map(snapshot.tasks.map(task=>[task.id,task.state]));
+    const auditIds=(ids,count)=>ids.map(id=>'#'+id).join(', ')+(Number.isSafeInteger(count)&&count>ids.length?' (showing '+ids.length+' of '+count+')':'');
     for(const release of releases){const row=el('div',undefined,'row');row.append(el('strong','#'+release.id+' '+release.name),badge(release.state),el('p',release.goal));
-      const scope=Array.isArray(release.tasks)?release.tasks:null, remaining=scope?.filter(task=>task.state!=='approved'), states=new Map(snapshot.tasks.map(task=>[task.id,task.state]));
+      const scope=Array.isArray(release.tasks)?release.tasks:null, remaining=scope?.filter(task=>task.state!=='approved');
       const blocking=remaining?.filter(task=>(task.deps || []).some(id=>states.get(id)!=='approved'));
       row.append(el('p',scope?remaining.length+' remaining of '+scope.length+' / '+blocking.length+' blocked':'Scope unknown','meta'));
       if(scope){const progress=el('progress');progress.max=Math.max(1,scope.length);progress.value=scope.length-remaining.length;progress.setAttribute('aria-label','Approved tasks in '+release.name);row.append(progress)}
       row.append(el('p','Start '+dateText(release.plannedStart)+' / cut '+dateText(release.cut)+' / ship '+dateText(release.ship),'meta'));
       row.append(el('p','Actual: active '+dateText(release.activatedAt)+' / frozen '+dateText(release.frozenAt)+' / shipped '+dateText(release.shippedAt),'meta'));
-      if(Array.isArray(release.afterCutUnknown) && release.afterCutUnknown.length)row.append(el('p','Timing relative to release cut unknown: '+release.afterCutUnknown.map(id=>'#'+id).join(', '),'meta'));
-      if(Array.isArray(release.afterCut) && release.afterCut.length)row.append(el('p','Approved after cut outside this release: '+release.afterCut.map(id=>'#'+id).join(', '),'meta'));
+      if(Array.isArray(release.afterCutUnknown) && release.afterCutUnknown.length)row.append(el('p','Timing relative to release cut unknown: '+auditIds(release.afterCutUnknown,release.afterCutUnknownCount),'meta'));
+      if(Array.isArray(release.afterCut) && release.afterCut.length)row.append(el('p','Approved after cut outside this release: '+auditIds(release.afterCut,release.afterCutCount),'meta'));
       const controls=el('div',undefined,'actions');for(const [from,state,label] of [['planning','active','Activate'],['active','frozen','Freeze'],['frozen','shipped','Record shipped']])if(release.state===from)controls.append(boardButton(label,{action:'release_change',id:release.id,revision:release.revision,fields:{state}}));
       if(!['shipped','dropped'].includes(release.state))controls.append(boardButton('Drop release',{action:'release_change',id:release.id,revision:release.revision,fields:{state:'dropped'}}));
       row.append(controls);target.append(row);
