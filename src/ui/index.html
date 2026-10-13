@@ -56,8 +56,8 @@ const dashboardTheme = (() => {
 /* TASK_PROGRESS_MODEL */
 /* PEER_START_RETRY_MS */
 /* BOARD_MODEL */
-/* OFFICE_MODEL */
 /* PET_MODEL */
+/* OFFICE_MODEL */
 const officeView = (() => {
   let choice = 'off';
   try { const saved = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('agent-hub-office='))?.slice('agent-hub-office='.length); if (['off','flat','isometric'].includes(saved)) choice = saved; } catch {}
