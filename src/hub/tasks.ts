@@ -192,6 +192,7 @@ export class Tasks {
   private readonly incomingBacklog = new Set<number>();
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   private readonly plannerBlockedQueue = new Map<PeerId, string>();
+  private readonly knownPlanners = new Set<PeerId>();
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
   private readonly sweepConfig: TaskSweepConfig;
@@ -201,6 +202,7 @@ export class Tasks {
     const backlog = d.board.list("backlog");
     for (const [peer, roles] of Object.entries(d.roles ?? {})) {
       if (!roles.includes("planner")) continue;
+      this.knownPlanners.add(peer);
       const queued = d.bus.queuedBacklogIds(peer);
       this.addPlannerBacklog(peer, backlog.filter(task => !queued.has(task.id)).map(task => task.id));
     }
@@ -563,6 +565,14 @@ export class Tasks {
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
   flushPlannerNotices(): number {
     const configured = Object.entries(this.d.roles ?? {}).filter(([, roles]) => roles.includes("planner")).map(([peer]) => peer);
+    for (const peer of this.knownPlanners) if (!configured.includes(peer)) {
+      this.knownPlanners.delete(peer); this.plannerBacklog.delete(peer); this.plannerBlockedQueue.delete(peer);
+    }
+    for (const peer of configured) if (!this.knownPlanners.has(peer)) {
+      this.knownPlanners.add(peer);
+      const retained = this.d.bus.queuedBacklogIds(peer);
+      this.addPlannerBacklog(peer, this.d.board.list("backlog").filter(task => !retained.has(task.id)).map(task => task.id));
+    }
     const planners = configured.filter(peer => this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline");
     if (!planners.length) return 0;
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
