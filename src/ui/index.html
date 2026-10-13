@@ -466,7 +466,7 @@ function renderPlanning(snapshot) {
       if(scope){const progress=el('progress');progress.max=Math.max(1,scope.length);progress.value=scope.length-remaining.length;progress.setAttribute('aria-label','Approved tasks in '+release.name);row.append(progress)}
       row.append(el('p','Start '+dateText(release.plannedStart)+' / cut '+dateText(release.cut)+' / ship '+dateText(release.ship),'meta'));
       row.append(el('p','Actual: active '+dateText(release.activatedAt)+' / frozen '+dateText(release.frozenAt)+' / shipped '+dateText(release.shippedAt),'meta'));
-      if(Array.isArray(release.afterCutUnknown) && release.afterCutUnknown.length)row.append(el('p','Approval time unknown outside this release: '+release.afterCutUnknown.map(id=>'#'+id).join(', '),'meta'));
+      if(Array.isArray(release.afterCutUnknown) && release.afterCutUnknown.length)row.append(el('p','Timing relative to release cut unknown: '+release.afterCutUnknown.map(id=>'#'+id).join(', '),'meta'));
       if(Array.isArray(release.afterCut) && release.afterCut.length)row.append(el('p','Approved after cut outside this release: '+release.afterCut.map(id=>'#'+id).join(', '),'meta'));
       const controls=el('div',undefined,'actions');for(const [from,state,label] of [['planning','active','Activate'],['active','frozen','Freeze'],['frozen','shipped','Record shipped']])if(release.state===from)controls.append(boardButton(label,{action:'release_change',id:release.id,revision:release.revision,fields:{state}}));
       if(!['shipped','dropped'].includes(release.state))controls.append(boardButton('Drop release',{action:'release_change',id:release.id,revision:release.revision,fields:{state:'dropped'}}));
