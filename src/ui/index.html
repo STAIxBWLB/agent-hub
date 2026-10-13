@@ -24,10 +24,13 @@ const dashboardTheme = (() => {
 .office-avatar{fill:var(--muted)}.office-idle .office-avatar{fill:var(--dot-ok)}.office-busy .office-avatar{fill:var(--dot-warn)}.office-offline .office-avatar{fill:var(--dot)}.office-paused .office-avatar{fill:var(--dot-warn)}.office-waiting .office-avatar{fill:var(--amber)}.office-waiting .office-desk-surface{stroke:var(--amber);stroke-width:.6}.office-glyph-shape{fill:none;stroke-width:.32}.office-idle .office-glyph-shape{stroke:var(--dot-ok)}.office-busy .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-paused .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-offline .office-glyph-shape{stroke:var(--dot)}.office-handshape{fill:none;stroke:var(--dot-err);stroke-width:.28}.office-desk-leg{fill:var(--panel-soft);stroke:var(--line);stroke-width:.2}.office-nameplate{fill:var(--control);stroke:var(--control-border);stroke-width:.2}.office-room-wire{fill:none;stroke:var(--line);stroke-width:.25}.office-divider{fill:none;stroke:var(--line);stroke-width:.2}.office-shelf{fill:var(--panel-soft);stroke:var(--line);stroke-width:.3}.office-shelf-card{fill:var(--green-soft);stroke:var(--green);stroke-width:.25}.office-box-top{fill:var(--control);stroke:var(--control-border);stroke-width:.2}.office-box-left{fill:var(--panel-soft);stroke:var(--line);stroke-width:.2}.office-box-right{fill:var(--panel);stroke:var(--line);stroke-width:.2}.office-busy .office-glyph,.office-hand{animation:office-pulse 1.2s ease-in-out infinite}.office-appear{animation:office-appear .5s ease-out}.office-leaving{pointer-events:none;animation:office-fade .4s linear forwards}.office-fadeout{animation-name:office-fade;animation-duration:1s;animation-timing-function:linear;animation-fill-mode:forwards}.office-settle .office-movable{transition:none}.office-settle .office-appear{animation:none}
 @keyframes office-pulse{50%{opacity:.45}}@keyframes office-appear{from{opacity:0}}@keyframes office-fade{to{opacity:0}}
 @media(prefers-reduced-motion:reduce){.office-scene,.office-scene *{transition:none!important;animation:none!important}}
+
+.pet-container[hidden]{display:none}.pet-container{display:flex;justify-content:flex-end;padding:8px 24px}.pet-control{display:flex;align-items:center;gap:12px;min-height:64px;min-width:40px;font-variant-numeric:tabular-nums}.pet-art{width:72px;height:64px;fill:currentColor}.pet-pixel{shape-rendering:crispEdges}.pet-accent{fill:var(--amber)}.pet-blink{opacity:0}.pet-waiting .pet-open{animation:pet-open 2s steps(1,end) infinite}.pet-waiting .pet-blink{animation:pet-blink 2s steps(1,end) infinite}@keyframes pet-open{50%{opacity:0}}@keyframes pet-blink{50%{opacity:1}}@media(prefers-reduced-motion:reduce){.pet-waiting .pet-open,.pet-waiting .pet-blink{animation:none}}
 </style>
 </head>
 <body>
 <header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></header>
+<div id="pet-container" class="pet-container" hidden></div>
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
 <section class="task-board-section" aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div><details><summary>Plan a task</summary><form id="planning"><div class="field"><label for="planning-task">Task</label><select id="planning-task"><option value="">Select task</option></select></div><div class="split"><label>Priority<select id="planning-priority"><option value="">Default</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></label><label>Order<input id="planning-rank" type="number" min="0" step="1"></label><label>Release<select id="planning-release"><option value="">No release</option></select></label><label>Planned start<input id="planning-start" type="datetime-local" step="any"></label><label>Due<input id="planning-due" type="datetime-local" step="any"></label></div><label><input id="planning-pinned" type="checkbox">Pin against planner changes</label><label>Reason<input id="planning-reason" maxlength="1000" required></label><div class="actions"><button id="planning-save" type="submit" data-mutation="project">Save plan</button><button id="planning-undo" type="button" data-mutation="project">Undo latest plan</button><button id="planning-reload" type="button">Reload current values</button></div><p id="planning-version" class="meta"></p></form></details><details id="split-panel" hidden><summary>Split the selected backlog task</summary><form id="split-backlog"><label>Part titles, one per line<textarea id="split-titles" maxlength="2408" required></textarea></label><label><input id="split-sequential" type="checkbox">Each part waits for the previous part</label><label>Reason<input id="split-reason" maxlength="1000" required></label><p class="meta">Two to eight parts. The original task retains integration and acceptance. Unused parts can be undone from its current plan.</p><button id="split-save" type="submit" data-mutation="project">Stage parts</button></form></details><details><summary>Releases</summary><div id="releases" class="content"></div><form id="release-new"><div class="split"><label>Name<input id="release-name" maxlength="64" required></label><label>Order<input id="release-order" type="number" min="0" value="0" step="1" required></label></div><label>Goal<input id="release-goal" maxlength="1000" required></label><button type="submit" data-mutation="project">Create release</button></form><form id="release-plan"><label>Release<select id="release-edit"><option value="">Select release</option></select></label><div class="split"><label>Planned start<input id="release-start" type="datetime-local" step="any"></label><label>Cut<input id="release-cut" type="datetime-local" step="any"></label><label>Ship<input id="release-ship" type="datetime-local" step="any"></label></div><button id="release-save" type="submit" data-mutation="project">Save dates</button><button id="release-reload" type="button">Reload current release</button><p id="release-version" class="meta"></p></form></details><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
@@ -53,6 +56,7 @@ const dashboardTheme = (() => {
 /* TASK_PROGRESS_MODEL */
 /* PEER_START_RETRY_MS */
 /* BOARD_MODEL */
+/* PET_MODEL */
 /* OFFICE_MODEL */
 const officeView = (() => {
   let choice = 'off';
@@ -162,6 +166,8 @@ function resetView(id, instance) {
   lastSnapshot = null;
   officePrev = null; officeDesks.clear(); officeCards.clear(); officeScene = null;
   $('office').replaceChildren(); $('office-section').hidden = true;
+  const pet=$('pet-container');if(pet){pet.replaceChildren();pet.hidden=true;}
+  if(typeof petSignature!=='undefined')petSignature='';if(typeof petFirst!=='undefined')petFirst=undefined;if(typeof petBaseTitle!=='undefined')document.title=petBaseTitle;
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
@@ -245,7 +251,7 @@ function renderApprovals(permissions) {
   update('permissions', permissions, (target) => {
     if (!permissions.length) return empty(target, 'No approvals waiting.');
     for (const permission of permissions) {
-      const row = el('div', undefined, 'row'); row.append(el('div', permission.peer, 'label'), el('p', permission.title, 'body'));
+      const row = el('div', undefined, 'row'); row.dataset.permissionId=permission.id;row.tabIndex=0;row.append(el('div', permission.peer, 'label'), el('p', permission.title, 'body'));
       if (permission.terminalOnly) row.append(el('p', 'Review in the console or ahub tail; answer with ahub permit. You can deny here.', 'meta'));
       const actions = el('div', undefined, 'actions');
       for (const option of permission.options) { const deny = option.kind === 'reject_once' || option.kind === 'reject_always'; if (permission.terminalOnly && !deny) continue; actions.append(button(option.name, {action:'permit', id:permission.id, option:option.optionId}, deny ? 'danger' : 'primary')); }
@@ -617,7 +623,42 @@ function renderBoard(snapshot, peers, ids) {
     const unknown=model.unknown.filter(id=>visibleIds.has(id));if(unknown.length) target.append(el('p','Unsupported task states: '+unknown.map(id=>'#'+id).join(', '),'board-unknown'));
   });
 }
+const petBaseTitle = typeof document === 'undefined' ? 'agent-hub | Local dashboard' : document.title;
+let petSignature = '', petFirst;
+function reachPetNeed() {
+  if (!snapshotValid || !petFirst) return;
+  const item = petFirst;
+  const row = item.kind === 'review' || item.kind === 'offline' ? taskRows.get(item.id) : item.kind === 'delivery' || item.kind === 'default' ? peerRows.get(item.peer) : item.kind === 'approval' ? document.querySelector('[data-permission-id="'+item.id+'"]') : undefined;
+  if (row) { row.scrollIntoView({block:'center',behavior:'instant'}); row.focus?.(); return; }
+  const heading = item.kind === 'approval' ? 'permissions-title' : ['review','offline'].includes(item.kind) ? 'tasks-title' : item.kind === 'budget' ? 'budget-title' : 'peers-title';
+  $(heading)?.scrollIntoView({block:'start',behavior:'instant'});
+  notice('Attention: '+item.kind+(item.peer?' '+item.peer:'')+(item.id?' '+item.id:''));
+}
+function renderPetAttention(snapshot) {
+  const valid = snapshot && snapshot.pet?.enabled === true && typeof snapshot.pet.character === 'string' && Object.hasOwn(petCharacters,snapshot.pet.character) && snapshot.attention && typeof snapshot.attention === 'object' && !Array.isArray(snapshot.attention);
+  const target=$('pet-container');if(!target)return;
+  const input=snapshot?.attention;
+  const shape=valid && Array.isArray(input.approvals) && Array.isArray(input.defaults) && Array.isArray(input.tasks) && input.peers && typeof input.peers==='object' && !Array.isArray(input.peers) && input.budget && typeof input.budget==='object' && !Array.isArray(input.budget) && typeof input.storageBlocked==='boolean';
+  let value;try{if(shape)value=needs(input,Date.now());}catch{ /* malformed optional attention never breaks the existing dashboard */ }
+  const signature = JSON.stringify(value ? [snapshot.pet.character,snapshot.pet.blink,value] : null);
+  if(signature===petSignature)return;
+  petSignature=signature;petFirst=value?.items[0];
+  target.replaceChildren();target.hidden=!value;
+  const title=value?.act?'('+value.act+') agent-hub':petBaseTitle;if(document.title!==title)document.title=title;
+  if(!value)return;
+  const character=petCharacters[snapshot.pet.character],frame=character.frames.blocks[value.state].full,model=petPixels(frame);
+  const blink = snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval');
+  const button=el('button',undefined,'pet-control'+(blink?' pet-waiting':''));button.type='button';
+  const label=character.name+': '+value.state+', '+value.act+' action, '+value.watch+' watch';button.setAttribute('aria-label',label);button.addEventListener('click',reachPetNeed);
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 '+model.width+' '+model.height);svg.setAttribute('class','pet-art');svg.setAttribute('aria-hidden','true');
+  const accent=character.accent?.full;
+  const poses=blink?[['pet-open',model],['pet-blink',petPixels(character.frames.blocks.waitingBlink.full)]]:[['pet-open',model]];
+  for(const [cls,pose] of poses){const group=document.createElementNS('http://www.w3.org/2000/svg','g');group.setAttribute('class',cls);
+    for(const [x,y] of pose.pixels){const pixel=document.createElementNS('http://www.w3.org/2000/svg','rect');pixel.setAttribute('x',String(x));pixel.setAttribute('y',String(y));pixel.setAttribute('width','1');pixel.setAttribute('height','1');pixel.setAttribute('class',accent && Math.floor(y/8)===accent.row && Math.floor(x/5)>=accent.start && Math.floor(x/5)<accent.start+accent.length?'pet-pixel pet-accent':'pet-pixel');group.append(pixel);}svg.append(group);}
+  button.append(svg,el('span',value.state+' / '+value.act+' action'+(value.watch?' +'+value.watch+' watch':'')));target.append(button);
+}
 function render(snapshot) {
+  renderPetAttention(snapshot);
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id]}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
