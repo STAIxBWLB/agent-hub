@@ -3,12 +3,21 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {supportsBoardReleaseFilter} from "../src/cli/board-read.ts";
-import {renderBoardColumns} from "../src/cli/output.ts";
+import {renderBoardColumns,boardColumnModel} from "../src/cli/output.ts";
 import {Board} from "../src/hub/board.ts";
 import {Bus} from "../src/hub/bus.ts";
 import {Tasks} from "../src/hub/tasks.ts";
 import {USER} from "../src/hub/envelope.ts";
 import {loadRouting} from "../src/hub/routing.ts";
+test("filtered board columns preserve visible row state from the first snapshot",()=>{
+ const row={id:1,state:"proposed",title:"visible",class:"implement",signals:[],deps:[],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{},started:false};
+ const model=boardColumnModel([row],{},[{...row,state:"in_progress",owner:"codex"}]);
+ expect(model.columns.find(column=>column.id==="todo")!.ready.map(card=>card.id)).toEqual([1]);expect(model.columns.find(column=>column.id==="progress")!.ready).toEqual([]);
+});
+test("filtered board columns reject missing dependency context instead of inventing waiting",()=>{
+ const row={id:2,state:"proposed",title:"visible",class:"implement",signals:[],deps:[1]};
+ expect(()=>boardColumnModel([row],{},null)).toThrow("dependency context unavailable");
+});
 test("terminal board columns retain state mapping and dependency waiting (#263)",()=>{
  const tasks=[{id:1,state:"backlog",title:"future",class:"implement",signals:[]},{id:2,state:"proposed",title:"waiting",class:"implement",deps:[1],signals:[]},{id:3,state:"in_progress",title:"active",class:"implement",signals:[]},{id:4,state:"in_review",title:"review",class:"implement",signals:[]},{id:5,state:"approved",title:"done",class:"implement",signals:[]}];
  const complete=tasks.map(task=>({...task,created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{}}));

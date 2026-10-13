@@ -2688,6 +2688,30 @@
       "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && this.prerequisiteOf(goal, task.id)",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
+    },
+    {
+      "id": "board-empty-release-filter",
+      "file": "src/cli/main.ts",
+      "search": "one[\"--release\"] !== undefined && !one[\"--release\"].trim() ||",
+      "replacement": "false ||",
+      "testFile": "test/board-followup-surfaces.test.ts",
+      "testName": "empty explicit release filters fail without broadening the requested board"
+    },
+    {
+      "id": "board-visible-snapshot-state",
+      "file": "src/cli/output.ts",
+      "search": "allTasks.map(task => first.get(task.id) ?? task)",
+      "replacement": "allTasks.map(task => task)",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "filtered board columns preserve visible row state from the first snapshot"
+    },
+    {
+      "id": "board-incomplete-column-context",
+      "file": "src/cli/output.ts",
+      "search": "if (allTasks === null) throw new Error(\"board column dependency context unavailable; retry with a complete snapshot\");",
+      "replacement": "if (allTasks === null) allTasks = tasks;",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "filtered board columns reject missing dependency context instead of inventing waiting"
     }
   ]
 }

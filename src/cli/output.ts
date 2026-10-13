@@ -259,8 +259,12 @@ export function renderBudget(data: BudgetOutput, columns?: number, now = Date.no
   return out;
 }
 export function boardColumnModel(tasks: any[], peers: Record<string, BoardPeerInput>, allTasks: any[] | null = tasks) {
+  if (allTasks === null) throw new Error("board column dependency context unavailable; retry with a complete snapshot");
   const visible = new Set(tasks.map(task => task.id));
-  const model = boardColumns((allTasks ?? tasks).map(task => ({ ...task, urgent: task.signals?.includes("urgent") === true })), peers);
+  const first = new Map(tasks.map(task => [task.id, task])), context = allTasks.map(task => first.get(task.id) ?? task);
+  const included = new Set(context.map(task => task.id));
+  for (const task of tasks) if (!included.has(task.id)) context.push(task);
+  const model = boardColumns(context.map(task => ({ ...task, urgent: task.signals?.includes("urgent") === true })), peers);
   return { columns: model.columns.map(column => ({ ...column, ready: column.ready.filter(card => visible.has(card.id)), waiting: column.waiting.filter(card => visible.has(card.id)) })), unknown: model.unknown.filter(id => visible.has(id)) };
 }
 export function renderBoardColumns(tasks: any[], peers: Record<string, BoardPeerInput>, columns?: number, now = Date.now(), full = false, allTasks: any[] | null = tasks): Span[][] {
