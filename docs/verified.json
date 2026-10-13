@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
+      "verifiedAgainst": "582025f6bf9568d7e1d1bd8f42017f7cfc5f7676",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
+      "verifiedAgainst": "582025f6bf9568d7e1d1bd8f42017f7cfc5f7676",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
+      "verifiedAgainst": "582025f6bf9568d7e1d1bd8f42017f7cfc5f7676",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
+      "verifiedAgainst": "582025f6bf9568d7e1d1bd8f42017f7cfc5f7676",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "6dcc7fe00c38f13613bcf53524fa3d1527a708e5",
+      "verifiedAgainst": "582025f6bf9568d7e1d1bd8f42017f7cfc5f7676",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -62,7 +62,7 @@
       ]
     },
     "docs/agent-notes/benchmarks.md": {
-      "verifiedAgainst": "6dcc7fe00c38f13613bcf53524fa3d1527a708e5",
+      "verifiedAgainst": "582025f6bf9568d7e1d1bd8f42017f7cfc5f7676",
       "paths": [
         "scripts/benchmarks/",
         "test/benchmarks/",
@@ -172,7 +172,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
+      "verifiedAgainst": "582025f6bf9568d7e1d1bd8f42017f7cfc5f7676",
       "paths": [
         "test/",
         "scripts/check.sh",
