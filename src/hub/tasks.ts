@@ -193,6 +193,7 @@ const RESCREEN_MAX = 10;
 export class Tasks {
   private readonly incomingBacklog = new Set<number>();
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
+  private readonly plannerBlockedQueue = new Map<PeerId, string>();
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
   private readonly sweepConfig: TaskSweepConfig;
@@ -211,6 +212,7 @@ export class Tasks {
       if (e.t === "overflow" && e.env.from === HUB && e.env.kind === "task" && Array.isArray(e.env.refs?.backlog)) {
         const ids = e.env.refs.backlog;
         if (ids.length <= 64 && ids.every(id => Number.isSafeInteger(id) && id > 0)) this.addPlannerBacklog(e.peer, ids);
+        this.plannerBlockedQueue.set(e.peer, JSON.stringify(d.bus.queueIds(e.peer)));
       }
       // A turn that ends takes its hand-overs with it: busy later is another turn (#115). The adapter's own state, since a
       // pause shows as `paused` while the turn goes on.
@@ -607,7 +609,8 @@ export class Tasks {
   private addPlannerBacklog(peer: PeerId, ids: readonly number[]): void {
     if (!this.d.roles?.[peer]?.includes("planner") || !this.d.bus.isRostered(peer)) return;
     const pending = this.plannerBacklog.get(peer) ?? new Set<number>();
-    for (const id of ids) if (this.d.board.get(id)?.state === "backlog") pending.add(id);
+    const queued = this.d.bus.queuedBacklogIds(peer);
+    for (const id of ids) if (!queued.has(id) && this.d.board.get(id)?.state === "backlog") pending.add(id);
     if (pending.size) this.plannerBacklog.set(peer, pending);
   }
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
@@ -622,6 +625,9 @@ export class Tasks {
     for (const peer of planners) {
       const pending = this.plannerBacklog.get(peer);
       if (!pending) continue;
+      const blockedQueue = this.plannerBlockedQueue.get(peer);
+      if (blockedQueue !== undefined && blockedQueue === JSON.stringify(this.d.bus.queueIds(peer))) continue;
+      this.plannerBlockedQueue.delete(peer);
       for (const id of pending) if (this.d.board.get(id)?.state !== "backlog") pending.delete(id);
       const ids = [...pending].sort((a, b) => a - b).slice(0, 64);
       if (!ids.length) continue;
