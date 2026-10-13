@@ -480,7 +480,7 @@ export class Bus {
 
   queuedBacklogIds(id: PeerId): Set<number> {
     const ids = new Set<number>();
-    const retained = [...(this.queues.get(id) ?? []), ...(this.journal?.unresolved(id).flatMap(row => row.originals) ?? [])];
+    const retained = [...(this.queues.get(id) ?? []), ...(this.journal?.unresolved(id).filter(row => row.state !== "queued").flatMap(row => row.originals) ?? [])];
     for (const env of retained) {
       const backlog = env.refs?.backlog;
       if (env.from !== HUB || env.kind !== "task" || !Array.isArray(backlog) || backlog.length > 64) continue;

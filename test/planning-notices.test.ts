@@ -117,6 +117,27 @@ test("configured off-roster planners retain incoming ids until roster admission 
  expect(bus.pull("pi")![0]!.refs?.backlog).toEqual([task.id]);expect(bus.pull("claude")).toEqual([]);expect(tasks.flushPlannerNotices()).toBe(0);
 });
 
+test("newly configured planners receive existing backlog without repeating earlier planners", async () => {
+ const {tasks,bus,deps}=rig();for(const id of ["claude","codex"]){const peer=new NoticePeer(id);bus.add(peer);await peer.start();peer.busy()}
+ const task=await tasks.propose(USER,{title:"staged before planner grant",class:"implement",backlog:true});
+ expect(tasks.flushPlannerNotices()).toBe(1);expect(bus.pull("claude")![0]!.refs?.backlog).toEqual([task.id]);expect(bus.pull("codex")).toEqual([]);
+ deps.roles.codex.push("planner");expect(tasks.flushPlannerNotices()).toBe(1);expect(bus.pull("codex")![0]!.refs?.backlog).toEqual([task.id]);
+ expect(bus.pull("claude")).toEqual([]);expect(tasks.flushPlannerNotices()).toBe(0);
+});
+
+test("evicted retried journal notices do not suppress backlog rediscovery on restart", async () => {
+ const {tasks,deps,board}=rig(),task=await tasks.propose(USER,{title:"retried staged notice",class:"implement",backlog:true});
+ const options={file:join(deps.cwd,"evicted-retry.db"),projectRoot:deps.cwd,projectId:"notices",instanceId:"before"},journal=new DeliveryJournal(options);
+ const env=newEnvelope("hub","Backlog items staged.",{to:["claude"],kind:"task",refs:{backlog:[task.id]}});
+ journal.createDelivery({id:"retry-original",peer:"claude",state:"needs_review",createdAt:env.ts,originals:[env],out:[env]});
+ const source=new Bus({journal,batchMs:0,queueCap:1});source.setRecoveryHold(true);source.resolveDelivery("retry-original",journal.get("retry-original")!.revision,"retry","confirmed no previous effect");
+ expect(source.queueIds("claude")).toEqual([env.id]);source.publish(newEnvelope(USER,"important pressure",{to:["claude"],priority:"important"}));
+ expect(source.queueIds("claude")).not.toContain(env.id);expect(journal.unresolved("claude").some(row=>row.state==="queued"&&row.originals.some(item=>item.id===env.id))).toBe(true);source.closeJournal();
+ const restored=new Bus({journal:new DeliveryJournal({...options,instanceId:"after"}),batchMs:0,queueCap:1});restored.setRecoveryHold(true);cleanup.push(()=>restored.closeJournal());
+ const restarted=new Tasks({...deps,board,bus:restored}),peer=new NoticePeer("claude");restored.add(peer);await peer.start();peer.busy();restored.setRecoveryHold(false);
+ expect(restored.pull("claude")![0]!.body).toBe("important pressure");expect(restarted.flushPlannerNotices()).toBe(1);expect(restored.pull("claude")![0]!.refs?.backlog).toEqual([task.id]);
+});
+
 test("planner notice batches are bounded and recover staged work on restart (#263)", async () => {
   const { tasks, bus, notices, deps } = rig();
   for (let i = 0; i < 65; i++) await tasks.propose(USER, { title: `future ${i}`, class: "implement", backlog: true });

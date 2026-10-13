@@ -4,17 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { Tasks } from "../src/hub/tasks.ts";
+import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
+import { projectProfile, resolveProfile } from "../src/hub/profiles.ts";
+import { MemoryStore } from "../src/memory/store.ts";
+import type { PiiVerdict, ScreenRecord } from "../src/hub/inference.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
-function rig(){
+function rig(extra:Partial<TasksDeps>={}){
   const dir=mkdtempSync(join(tmpdir(),"ahub-split-")),board=new Board(join(dir,"hub.db")),bus=new Bus({batchMs:0});
-  const tasks=new Tasks({board,bus,cwd:dir,project:"split",roles:{claude:["planner"]},routing:()=>loadRouting(dir),notify:()=>{}});
-  cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});return {board,tasks,bus};
+  const deps={board,bus,cwd:dir,project:"split",roles:{claude:["planner"]},routing:()=>loadRouting(dir),notify:()=>{},...extra},tasks=new Tasks(deps);
+  cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});return {board,tasks,bus,dir,deps};
 }
 test("backlog split commits a child DAG and undo provenance without partial callbacks (#263)",async()=>{
   const {board,tasks}=rig(),parent=await tasks.propose(USER,{title:"integration goal",class:"implement",backlog:true});
@@ -80,3 +83,52 @@ test("split prerequisites inherit the higher-ranked P0 goal ahead of unrelated w
   const split=await tasks.splitBacklog("claude",{id:parent.id,revision:1,parts:[{title:"first"},{title:"second"}],reason:"parts"}),part=split.children[0]!;
   const pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"highest goal prerequisite"}).catch(()=>null);expect(pulled).toMatchObject({owner:null,state:"proposed",reserved:"codex"});
 });
+
+test("split prerequisites retain P0 ordering after their blocked parent moves to To Do",async()=>{
+ const {tasks,bus}=rig();class Peer extends BasePeer{async start(){this.setState("idle")}async stop(){}async deliver(_envs:Envelope[]){} }
+ for(const id of ["codex","claude"]){const peer=new Peer(id);bus.add(peer);await peer.start()}
+ const parent=await tasks.propose(USER,{title:"first goal",class:"implement",backlog:true,urgent:true}),later=await tasks.propose(USER,{title:"later goal",class:"implement",backlog:true,urgent:true});
+ await tasks.planBacklog(USER,{id:parent.id,revision:0,fields:{rank:1,priority:0},reason:"first"});await tasks.planBacklog(USER,{id:later.id,revision:0,fields:{rank:2,priority:0},reason:"later"});
+ const split=await tasks.splitBacklog(USER,{id:parent.id,revision:1,parts:[{title:"a"},{title:"b"}],reason:"parts"});await tasks.moveBacklog(USER,parent.id,true);
+ const outcome=await tasks.pullPlanned("claude",{id:split.children[0]!.id,revision:split.children[0]!.planningRevision??0,reason:"prerequisite"}).then(row=>row.state,()=>null);expect(outcome).toBe("proposed");
+});
+
+test("split keeps sixty-four parent prerequisites transitively within every edge cap",async()=>{
+ const {tasks,board}=rig(),deps:number[]=[];for(let i=0;i<64;i++)deps.push((await tasks.propose(USER,{title:`prerequisite ${i}`,class:"implement",backlog:true})).id);
+ const parent=await tasks.propose(USER,{title:"integration",class:"implement",backlog:true,after:deps});
+ const split=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b",afterParts:[0]}],reason:"parts"}).catch(()=>null);expect(split).not.toBeNull();if(!split)return;
+ expect(split.parent.deps).toEqual(split.children.map(row=>row.id));expect(split.children[0]!.deps).toEqual(deps);expect(split.children[1]!.deps).toEqual([split.children[0]!.id]);
+ await tasks.undoPlanning(USER,parent.id,1);expect(board.get(parent.id)!.deps).toEqual(deps);
+});
+
+test("split preserves custom dev metadata and stored research aliases across profile changes",async()=>{
+ const custom=rig({profile:"dev",profileData:resolveProfile("dev",{classes:{implement:"implement"}})}),p=await custom.tasks.propose(USER,{title:"custom",class:"implement",backlog:true});
+ const split=await custom.tasks.splitBacklog(USER,{id:p.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});for(const child of split.children)expect(child).toMatchObject({profile:"dev",profileClass:"implement"});
+ const old=rig({profile:"research",profileData:projectProfile("research")}),parent=await old.tasks.propose(USER,{title:"stored research",class:"analyze",backlog:true}),current=new Tasks({...old.deps,profile:"dev",profileData:projectProfile("dev")});
+ const result=await current.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b",class:"analyze"}],reason:"parts"}).catch(()=>({children:[]}));expect(result.children).toHaveLength(2);for(const child of result.children)expect(child).toMatchObject({profile:"research",profileClass:"analyze",class:parent.class});
+});
+
+test("split undo refuses dropped scope even for a person and refuses durable goal links",async()=>{
+ const r=rig(),release=await r.tasks.newRelease(USER,{name:"drop-test",goal:"scope",order:0}),parent=await r.tasks.propose(USER,{title:"scoped",class:"implement",backlog:true});await r.tasks.planBacklog(USER,{id:parent.id,revision:0,fields:{release:release.id},reason:"scope"});
+ await r.tasks.splitBacklog(USER,{id:parent.id,revision:1,parts:[{title:"a"},{title:"b"}],reason:"parts"});r.tasks.changeRelease(USER,{id:release.id,revision:0,state:"dropped"});await expect(r.tasks.undoPlanning(USER,parent.id,2)).rejects.toThrow("eligible");
+ const other=rig(),store=new MemoryStore({home:join(other.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...other.deps,store:{store,project:"split",repo:"owner/repo"}}),task=await tasks.propose(USER,{title:"linked",class:"implement",backlog:true});const parts=await tasks.splitBacklog(USER,{id:task.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});
+ const goal=store.goal({project:"split",scope:"project",title:"goal",milestones:[],dependsOn:[],actor:"user"});tasks.linkGoal(USER,parts.children[0]!.id,goal);await expect(tasks.undoPlanning(USER,task.id,1)).rejects.toThrow("long-term");expect(other.board.get(parts.children[0]!.id)).toBeDefined();
+});
+
+test("split screens parts and reason concurrently and atomically retains each child verdict",async()=>{
+ const f=rig();let on=false,active=0,peak=0;const records:ScreenRecord[]=[],notices:string[]=[];
+ const tasks=new Tasks({...f.deps,routing:()=>{const r=f.deps.routing();return {...r,signals:{...r.signals,pii_screen:on?"local":"off"}}},recordScreen:record=>records.push(record),notify:text=>notices.push(text),piiScreen:async text=>{active++;peak=Math.max(peak,active);await Bun.sleep(5);active--;return text.includes("unknown-part")?{label:"unknown",miss:"failed",ms:5}:{label:"clear",ms:5}}});
+ const parent=await tasks.propose(USER,{title:"screen parent",class:"implement",backlog:true});on=true;
+ const split=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"clear-part"},{title:"unknown-part"}],reason:"parts"});
+ expect(peak).toBe(3);for(const child of split.children)expect(child.history.some(entry=>entry.event==="screened")).toBe(true);
+ expect(records.find(record=>record.task===split.children[0]!.id)).toMatchObject({label:"clear",source:"screen"});expect(records.find(record=>record.task===split.children[1]!.id)).toMatchObject({label:"pii",source:"unknown",miss:"failed"});expect(tasks.isPii(split.children[1]!)).toBe(true);expect(notices.some(line=>line.includes(`#${split.children[1]!.id}: the PII screen gave no verdict`))).toBe(true);
+ await tasks.undoPlanning(USER,parent.id,1);expect(f.board.list()).toHaveLength(1);
+});
+
+test("split request deadline refuses before writes and late screen completion cannot commit",async()=>{
+ const f=rig();let on=false;const pending:((verdict:PiiVerdict)=>void)[]=[];
+ const tasks=new Tasks({...f.deps,routing:()=>{const r=f.deps.routing();return {...r,signals:{...r.signals,pii_screen:on?"local":"off"}}},piiScreen:()=>new Promise<PiiVerdict>(resolve=>pending.push(resolve))});
+ const parent=await tasks.propose(USER,{title:"deadline parent",class:"implement",backlog:true});on=true;
+ await expect(tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"})).rejects.toThrow("deadline");
+ expect(f.board.list()).toEqual([parent]);for(const resolve of pending)resolve({label:"clear",ms:0});await Bun.sleep(0);expect(f.board.list()).toEqual([parent]);
+},20000);

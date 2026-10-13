@@ -7,6 +7,7 @@ import { formatReport, formatTaskReport, type Report, type TaskReport } from "..
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  taskWip?: Record<string, { wip: number; wipLimit: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; budget?: Record<string, any>;
   tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[]; switchyard?: string;
 }
@@ -224,6 +225,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (peerRows.length) out.push([], ...rows(head, peerRows, columns, peerDetails));
   else out.push(...lines("no peers attached yet (ahub claude | ahub codex | ahub kimi)", columns));
   if (settling) out.push([], ...lines("settling: the adapter has not confirmed these deliveries yet (Claude: reply or hub_delivery_done). Task state is independent.", columns, "muted"));
+  if (data.taskWip) for (const [peer, value] of Object.entries(data.taskWip)) out.push(...detail(`${peer} planner WIP`, `${value.wip}/${value.wipLimit}`, columns));
   if (data.models?.backends?.length) {
     out.push([], ...rows(["MODEL", "STATE", "ACTIVE", "REQUESTED", "ACTUAL", "PROVIDER"], data.models.backends.map(b => [span(backendLabel(b)), span(b.state ?? "unknown", stateTone(b.state ?? "")), span(b.active || "-"), span(b.requestedModel ?? "-"), span(b.actualModel ?? "-"), span(b.provider ?? "-")]), columns));
     for (const b of data.models.backends) for (const [key, label] of [["coolingUntil", "cooling"], ["failingUntil", "dispatch held"]]) if (b[key!]) { const at = Date.parse(b[key!]); out.push(...detail(`${backendLabel(b)} ${label}`, `${Number.isFinite(at) ? relative(at, now) : "unknown"}${key === "coolingUntil" && typeof b.failures === "number" ? ` after ${b.failures} failures` : key === "failingUntil" ? "; no load moves until then" : ""}`, columns, "attention")); }
@@ -257,8 +259,12 @@ export function renderBudget(data: BudgetOutput, columns?: number, now = Date.no
   return out;
 }
 export function boardColumnModel(tasks: any[], peers: Record<string, BoardPeerInput>, allTasks: any[] | null = tasks) {
+  if (allTasks === null) throw new Error("board column dependency context unavailable; retry with a complete snapshot");
   const visible = new Set(tasks.map(task => task.id));
-  const model = boardColumns((allTasks ?? tasks).map(task => ({ ...task, urgent: task.signals?.includes("urgent") === true })), peers);
+  const first = new Map(tasks.map(task => [task.id, task])), context = allTasks.map(task => first.get(task.id) ?? task);
+  const included = new Set(context.map(task => task.id));
+  for (const task of tasks) if (!included.has(task.id)) context.push(task);
+  const model = boardColumns(context.map(task => ({ ...task, urgent: task.signals?.includes("urgent") === true })), peers);
   return { columns: model.columns.map(column => ({ ...column, ready: column.ready.filter(card => visible.has(card.id)), waiting: column.waiting.filter(card => visible.has(card.id)) })), unknown: model.unknown.filter(id => visible.has(id)) };
 }
 export function renderBoardColumns(tasks: any[], peers: Record<string, BoardPeerInput>, columns?: number, now = Date.now(), full = false, allTasks: any[] | null = tasks): Span[][] {
