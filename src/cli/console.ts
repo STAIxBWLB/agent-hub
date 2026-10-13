@@ -7,8 +7,11 @@ import { renderTailEvent } from "./tail-render.ts";
 import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
-import { consoleNeeds, attentionLine, attentionFacts } from "./attention.ts";
+import { consoleNeeds, attentionFacts } from "./attention.ts";
 import { loadPetConfig } from "./pet-config.ts";
+import { CHARACTER_IDS, petGlyphs } from "../pet/frame.ts";
+import { consoleFooterRows } from "./console-state.ts";
+import { characterAttentionLine } from "./attention.ts";
 
 export interface ConsoleTerminal {
   columns: number; rows: number; isTTY: boolean; isRaw?: boolean;
@@ -72,6 +75,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let state = initialConsoleState(!!options.panels); state.project = basename(options.cwd);
   const pet = loadPetConfig(options.cwd);
   state.petEnabled = pet.enabled && !options.noPet; state.petBlink = pet.blink;
+  state.petChoices = CHARACTER_IDS; state.petCharacter = pet.character ?? "stai";
+  state.petSize = pet.size; state.petGlyphs = petGlyphs(pet.glyphs);
   let lastAct = 0; let lastBell = -Infinity;
   let columns = options.columns ?? terminal.columns; let rows = options.rows ?? terminal.rows;
   let active = true; let inAlternate = false; let plain = !terminal.isTTY || columns < 80 || rows < 24;
@@ -88,7 +93,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     return index === 0 ? wrapStreamTokens(text, columns, event.tone, event.kind) : wrap(text, columns).map(line => [{ text: line }]);
   });
   const writeStream = (event: ConsoleEvent) => {
-    terminal.write(`\x1b[${rows - 4};1H`); // the scroll region ends above the rule and the three footer lines
+    terminal.write(`\x1b[${rows - consoleFooterRows(state, columns, rows)};1H`); // the scroll region ends above the rule and the three footer lines
     for (const line of streamLines(event)) { terminal.write(paint(line, color)); terminal.write("\r\n"); }
   };
   /** `record: false` is for the console's own prints (the key table, a request viewed again): not events, so not in Events. */
@@ -106,19 +111,19 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (!active) return;
     if (state.petEnabled) {
       const attention = consoleNeeds(state, Date.now());
-      if (plain && attention.act !== lastAct) safeWrite(attentionLine(attention) + "\n");
+      if (plain && attention.act !== lastAct) safeWrite(characterAttentionLine(attention, state.petCharacter) + "\n");
       if (pet.bell && !lastAct && attention.act && attention.items.some(item => item.level === "act" && item.kind !== "message") && Date.now() - lastBell >= 60000) { terminal.write("\x07"); lastBell = Date.now(); }
       lastAct = attention.act;
     }
     if (plain) return;
     if (state.mode === "panels" && !inAlternate) { terminal.write("\x1b[r\x1b[?1049h\x1b[2J"); inAlternate = true; }
     else if (state.mode === "stream" && inAlternate) {
-      terminal.write(`\x1b[?1049l\x1b[1;${rows - 4}r`); inAlternate = false;
+      terminal.write(`\x1b[?1049l\x1b[1;${rows - consoleFooterRows(state, columns, rows)}r`); inAlternate = false;
       if (droppedStream) writeStream({ text: `${plural(droppedStream, "older panel-mode event")} omitted from console memory; inspect hub.log for the full stream.` });
       for (const event of pendingStream) writeStream(event);
       pendingStream = []; droppedStream = 0;
     }
-    terminal.write(state.mode === "stream" ? `\x1b[1;${rows - 4}r` : "\x1b[r");
+    terminal.write(state.mode === "stream" ? `\x1b[1;${rows - consoleFooterRows(state, columns, rows)}r` : "\x1b[r");
     const lines = renderConsoleLines(state, columns, rows);
     const start = rows - lines.length + 1;
     for (const [index, line] of lines.entries()) { terminal.write(`\x1b[${start + index};1H\x1b[2K`); terminal.write(paint(line, color)); }
@@ -196,7 +201,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
       return;
     }
-    if (action.type === "keys") return stream({ text: keyTable(columns, !!state.petEnabled).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
+    if (action.type === "keys") return stream({ text: keyTable(columns, !!state.petEnabled || !!state.petChoices?.length, !!state.petChoices?.length).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
     if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) }, false);
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);

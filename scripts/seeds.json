@@ -2040,6 +2040,54 @@
       "replacement": "const taskNeeds = board.list().map(row => ({ id: row.id, state: row.state, owner: row.owner, reviewer: row.reviewer }));",
       "testFile": "test/attention-followup.test.ts",
       "testName": "real daemon excludes intentionally person-owned work from offline attention"
+    },
+    {
+      "id": "pet-size-full-floor",
+      "file": "src/pet/frame.ts",
+      "search": "requested === \"full\" && columns >= 100 && rows >= 40",
+      "replacement": "requested === \"full\" && columns >= 100",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "glyph and size floors preserve printable fallback and fixed footer geometry"
+    },
+    {
+      "id": "pet-glyph-locale-floor",
+      "file": "src/pet/frame.ts",
+      "search": "/utf-?8/i.test(locale) && !!env.TERM && ![\"dumb\", \"linux\"].includes(env.TERM)",
+      "replacement": "true",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "glyph and size floors preserve printable fallback and fixed footer geometry"
+    },
+    {
+      "id": "pet-prompt-full-width",
+      "file": "src/cli/console-state.ts",
+      "search": "return [...result, footer[2]!];",
+      "replacement": "return [...result, fitLine(footer[2]!, available)];",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "glyph and size floors preserve printable fallback and fixed footer geometry"
+    },
+    {
+      "id": "pet-choice-cycle",
+      "file": "src/cli/console-state.ts",
+      "search": "const choices = s.petChoices;",
+      "replacement": "const choices = undefined;",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "advertised character choices cycle all four alternatives and off without workflow effects"
+    },
+    {
+      "id": "pet-expanded-prose-floor",
+      "file": "src/cli/console-state.ts",
+      "search": "if (s.notice || s.confirm?.type === \"permission_default\") left[2]",
+      "replacement": "if (false) left[2]",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expanded pet rows never carry notice or default-source prose"
+    },
+    {
+      "id": "pet-live-console-choices",
+      "file": "src/cli/console.ts",
+      "search": "state.petChoices = CHARACTER_IDS;",
+      "replacement": "state.petChoices = undefined;",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
     }
   ]
 }

@@ -2554,3 +2554,22 @@ columns, excluding approved rows, and reused for retained off-roster peer ids an
 attention. No task JSON payload is decoded for this projection. Reserved
 pseudo-peers user and hub never produce offline-agent attention; a task reviewed
 by user still produces its normal review action.
+
+## Approved terminal characters and sizes (#280, phase 2)
+
+The owner approved the STAIx reductions and public distribution on 2026-10-13,
+and selected gyul, lantern, cursor-cat and boxbot. All five built-in characters
+have complete line/mini/full ASCII and block data; no image is loaded at build
+or run time. The shipped STAI line remains byte-compatible. Actual consoles
+advertise the five choices and P cycles through them and off; older embedding
+states without advertised choices retain the former STAI/off toggle.
+
+Mini fits at100 columns, full at100 columns/40 rows, otherwise the next smaller
+size is used. Full reserves the catalog maximum of eight sprite rows plus the
+unchanged full-width prompt, independent of state and session character. Mini
+shares the existing four footer rows. Stream scroll bounds and panels body
+height use the same footer geometry. Notice/source prose is excluded beside
+expanded frames. Only a live approval deadline permits the waiting blink;
+C/dumb/linux/unknown locale surfaces use ASCII even when blocks were requested.
+Body foreground is uncoloured; only the Gyul leaf uses an existing accent tone.
+Native terminal/font/tmux proof remains a separate verification leg.

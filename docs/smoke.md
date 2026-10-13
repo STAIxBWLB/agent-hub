@@ -1689,3 +1689,13 @@ Regression fixtures cover reserved pseudo-peer ownership, preserved person
 reviews, selected SQL columns and actual status reads with unreadable unrelated
 JSON payloads. The focused tests pass; immutable-head platform/255-guard proof
 is pending. Native/account/artwork/dashboard legs remain unverified.
+
+## Approved character source fixtures (#280, phase 2)
+
+The original STAIx reference and four existing Higgsfield concepts were inspected;
+210 hand-reduced frames satisfy the literal glyph and geometry limits. Actual
+console fixtures exercise all five choices plus off, full scroll geometry,
+resize fallback, keyboard-modal ownership, prompt preservation and unchanged
+config bytes. The focused console/config/geometry/runtime group passed138/0
+with23808 assertions. Immutable-head platform/seed/review proof is pending.
+Light/dark physical terminal, tmux and ambiguous-wide block glyphs are unverified.
