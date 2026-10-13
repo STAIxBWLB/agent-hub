@@ -2905,3 +2905,5 @@ a fresh peer status read on the same authenticated connection.
 Integer WIP editors retain a saved pending value, including zero and inheritance, before hub restart. GitHub intake accepts dot-prefixed repository names within the existing bounded owner/repository identity. Split undo also refuses children referenced by another task's persisted phase checklist.
 
 Declining rework returns changes_requested to To Do before rerouting. When a planner-pulled task has no eligible destination capacity, it remains ownerless in To Do and is retried after capacity clears, preserving the declined-owner exclusion.
+
+With no release cut, outside approved tasks are reported under unknown cut evidence, including tasks with a known approval time. A child task execution budget also prevents split undo until the person disables that budget.
