@@ -2648,6 +2648,22 @@
       "replacement": "excludeOwners: [], ...this.health()",
       "testFile": "test/planner-pull.test.ts",
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
+    },
+    {
+      "id": "split-parent-memory-undo",
+      "file": "src/hub/board.ts",
+      "search": "item.event !== \"memory reference started\" && (item.by !== HUB || item.event !== \"ready\")",
+      "replacement": "(item.by !== HUB || item.event !== \"ready\")",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains parent-only memory while removing unused children"
+    },
+    {
+      "id": "split-profile-plan-schema",
+      "file": "src/hub/hub-tools.ts",
+      "search": "if (customProfile && tool.name === \"hub_backlog_split\")",
+      "replacement": "if (false && tool.name === \"hub_backlog_split\")",
+      "testFile": "test/planner-split-surfaces.test.ts",
+      "testName": "split nested plan schema follows the selected project profile"
     }
   ]
 }
