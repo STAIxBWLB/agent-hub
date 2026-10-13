@@ -153,3 +153,9 @@ test("automatic rescreen admission retains planner WIP after privacy clears",asy
  for(const owner of ["codex","local"]){const full=board.propose(USER,{title:"occupied",class:"implement"});board.update(full.id,USER,"assigned",{owner,state:"in_progress"});}
  clear=true;await tasks.rescreen();expect(board.get(task.id)?.signals).not.toContain("pii");expect(board.get(task.id)?.owner).toBeNull();
 });
+
+test("planner owner capacity never removes the required reviewer",async()=>{
+ const {tasks,board}=await rig();const busy=board.propose(USER,{title:"reviewer owns work",class:"implement"});board.update(busy.id,USER,"assigned",{owner:"claude",state:"in_progress"});
+ const task=await tasks.propose(USER,{title:"review required",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});await tasks.releaseReady();expect(board.get(task.id)?.reviewer).toBe("claude");tasks.accept("codex",task.id);
+ const done=await tasks.done("codex",task.id,"complete");expect(done.state).toBe("in_review");
+});

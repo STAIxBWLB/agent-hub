@@ -2644,8 +2644,8 @@
     {
       "id": "planner-accepted-offline-preflight",
       "file": "src/hub/tasks.ts",
-      "search": "peer, ...(this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [])], ...this.health()",
-      "replacement": "peer], ...this.health()",
+      "search": "excludeOwners: this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], ...this.health()",
+      "replacement": "excludeOwners: [], ...this.health()",
       "testFile": "test/planner-pull.test.ts",
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
     }
