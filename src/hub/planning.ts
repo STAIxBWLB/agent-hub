@@ -1,5 +1,7 @@
 import type { Task } from "./board.ts";
 
+export const BACKLOG_SPLIT_SCREEN_TIMEOUT_MS = 8000;
+
 export const PLANNING_FIELDS = ["rank", "priority", "release", "plannedStart", "due", "pinned", "deps", "reserved"] as const;
 export interface PlanningFields {
   rank?: number | null;
