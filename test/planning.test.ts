@@ -112,3 +112,55 @@ test("planner backlog reads follow saved rank with stable unknown order (#263)",
   await tasks.planBacklog(USER, { id: second.id, revision: 0, fields: { rank: 1 }, reason: "first phase" });
   expect(tasks.backlogList("claude").map(task => task.id)).toEqual([second.id, third.id, first.id]);
 });
+
+
+test("backlog planning validates dependency cycles reservations and atomic undo (#263)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-planning-graph-"));
+  const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0, rostered: peer => ["claude", "codex"].includes(peer) });
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "planning", roles: { claude: ["planner"] }, notify: () => {} });
+  cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
+  const first = await tasks.propose(USER, { title: "first", class: "implement", backlog: true });
+  const second = await tasks.propose(USER, { title: "second", class: "implement", backlog: true, after: [first.id] });
+  const third = await tasks.propose(USER, { title: "third", class: "implement", backlog: true, after: [second.id] });
+  for (const fields of [{ deps: [first.id] }, { deps: [third.id] }, { deps: [999] }, { deps: [second.id, second.id] }, { deps: [], reserved: "missing" }, { deps: null }, { deps: [1.5] }]) {
+    await expect(tasks.planBacklog("claude", { id: first.id, revision: 0, fields, reason: "invalid graph" })).rejects.toThrow();
+    expect(board.get(first.id)).toEqual(first);
+  }
+  const planned = await tasks.planBacklog("claude", { id: second.id, revision: 0, fields: { deps: [], reserved: "codex", priority: 1 }, reason: "ready prerequisite" });
+  expect(planned).toMatchObject({ deps: [], reserved: "codex", priority: 1, planningRevision: 1, state: "backlog", owner: null });
+  expect(tasks.publicView(planned, true)).not.toHaveProperty("history.1.planning.previous");
+  const undone = await tasks.undoPlanning("claude", second.id, 1);
+  expect(undone.deps).toEqual([first.id]);
+  expect(undone.reserved).toBeNull();
+  expect(undone.priority).toBeUndefined();
+  await tasks.moveBacklog(USER, first.id, true);
+  const executing = board.update(first.id, USER, "accepted", { state: "in_progress", owner: "codex" });
+  await expect(tasks.planBacklog(USER, { id: first.id, revision: 0, fields: { deps: [] }, reason: "too late" })).rejects.toThrow("unstarted backlog");
+  expect(board.get(first.id)).toEqual(executing);
+});
+
+test("planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)", async () => {
+  const {board,tasks}=rig();
+  const task=await tasks.propose(USER,{title:"peer normalization",class:"implement",backlog:true});
+  for(const reserved of ["user","hub","digest","not-registered","bad peer",{},123]) {
+    const attempt=tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved},reason:"invalid reservation"});
+    await expect(attempt).rejects.toThrow();
+    await expect(attempt).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    expect(board.get(task.id)).toEqual(task);
+  }
+  const planned=await tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved:" Codex "},reason:"normalize owner"});
+  expect(planned.reserved).toBe("codex");expect(planned.owner).toBeNull();
+});
+
+test("supported off-roster reservations are refused before any planning write",async()=>{
+ const dir=mkdtempSync(join(tmpdir(),"ahub-roster-planning-")),board=new Board(join(dir,"hub.db")),bus=new Bus({batchMs:0,rostered:peer=>peer!=="pi"});
+ const tasks=new Tasks({board,bus,routing:()=>loadRouting(dir),cwd:dir,project:"roster-floor",roles:{claude:["planner"]},notify:()=>{}});cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true})});
+ const task=await tasks.propose(USER,{title:"native roster floor",class:"implement",backlog:true});
+ for(const by of [USER,"claude"]){await expect(tasks.planBacklog(by,{id:task.id,revision:0,fields:{reserved:"pi"},reason:"ineligible native reservation"})).rejects.toThrow("off roster");expect(board.get(task.id)).toEqual(task)}
+});
+
+test("normalized reservation succeeds through the planning pipeline with a named outcome assertion", async () => {
+ const {tasks}=rig(),task=await tasks.propose(USER,{title:"normalized pipeline outcome",class:"implement",backlog:true});
+ const outcome=await tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved:" Codex "},reason:"normalize configured owner"}).then(planned=>({reserved:planned.reserved,owner:planned.owner,state:planned.state}),()=>null);
+ expect(outcome).toEqual({reserved:"codex",owner:null,state:"backlog"});
+});

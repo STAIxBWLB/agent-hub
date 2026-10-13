@@ -190,3 +190,25 @@ test("controller binds mutations to actor, public results and ids-only audit", a
     await expect(conductor.execute("claude", "hub_status", {})).rejects.toThrow("explicit conductor");
   } finally { holds.close(); }
 });
+
+
+test("planned person reservations block proposer redirects after pull and hub assignment (#263)", async () => {
+  const holds = new ConductorHolds(":memory:"), assigned: string[] = [];
+  const reserved: Task = { ...task(), state: "proposed", owner: null, reserved: "pi", history: [...task().history,
+    { at: 2, by: "user", event: "planned", planning: { revision: 1, fields: ["reserved"], previous: { reserved: null } } },
+    { at: 3, by: "user", event: "backlog pulled" },
+    { at: 4, by: "hub", event: "assigned", owner: "pi" },
+    { at: 5, by: "user", event: "planned", planning: { revision: 2, fields: ["rank"], previous: { rank: null } } } ] };
+  const conductor = new Conductor(holds, {
+    roles: () => ({ codex: ["conductor"] }), capabilities: () => ({ claude: ["assign"] }), status: () => ({ peers: [], taskCounts: {}, approvals: [] }),
+    task: () => reserved, publicView: t => ({ ...t }), assign: async (actor, id, peer) => { assigned.push(`${actor}:${id}:${peer}`); },
+    escalate: async () => reserved, preview: peer => `ahub ${peer}`, startMode: () => "headless", start: async () => {}, known: () => true, pause: () => {}, release: () => {}, audit: () => {},
+  });
+  try {
+    await expect(conductor.execute("claude", "hub_task_assign", { id: 12, peer: "kimi" })).rejects.toThrow("explicit conductor");
+    expect(assigned).toEqual([]);
+    reserved.history.push({ at: 6, by: "claude", event: "planned", planning: { revision: 3, fields: ["reserved"], previous: { reserved: "pi" } } });
+    await conductor.execute("claude", "hub_task_assign", { id: 12, peer: "kimi" });
+    expect(assigned).toEqual(["claude:12:kimi"]);
+  } finally { holds.close(); }
+});

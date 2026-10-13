@@ -764,7 +764,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const staleOff = config.experiments?.stale_notices === "deliver";
   if (staleOff) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
-  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence });
+  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   const conductorHolds = new ConductorHolds(join(opts.stateDir, "hub.db"));
@@ -1438,6 +1438,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const contextTailSeen = new Map<PeerId, string>();
   const intervals = [
     setInterval(() => {
+      try { tasks.flushPlannerNotices(); } catch { /* the board remains authoritative if notice delivery fails */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
       for (const row of bus.queueList()) if (row.state === "needs_review") supervision.needsReview(row.peer, row.id);

@@ -478,6 +478,17 @@ export class Bus {
     return (this.queues.get(id) ?? []).map((e) => e.id);
   }
 
+  queuedBacklogIds(id: PeerId): Set<number> {
+    const ids = new Set<number>();
+    const retained = [...(this.queues.get(id) ?? []), ...(this.journal?.unresolved(id).filter(row => row.state !== "queued").flatMap(row => row.originals) ?? [])];
+    for (const env of retained) {
+      const backlog = env.refs?.backlog;
+      if (env.from !== HUB || env.kind !== "task" || !Array.isArray(backlog) || backlog.length > 64) continue;
+      for (const task of backlog) if (Number.isSafeInteger(task) && task > 0) ids.add(task);
+    }
+    return ids;
+  }
+
   attemptState(): Record<string, number> {
     return Object.fromEntries(this.attempts);
   }

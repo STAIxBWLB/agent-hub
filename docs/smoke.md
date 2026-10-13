@@ -1677,6 +1677,11 @@ conflict priority under the cap and distinct parallel warning coordinates.
 Platform/full206-guard proof is pending. Desktop/phone/real-peer visual readback
 remains unverified; no account, release, installation or live activation ran.
 
+
+Dependency/reservation grooming regression covers direct/transitive cycles,
+missing or duplicate ids, off-roster reservations, atomic rejection and undo,
+and started-task refusal. Current source/fixture proof remains pending.
+
 ## Console attention (#280, phase 1)
 
 Automated coverage targets request ordering, read-only navigation/modal ownership,
@@ -1700,6 +1705,27 @@ Regression fixtures cover reserved pseudo-peer ownership, preserved person
 reviews, selected SQL columns and actual status reads with unreadable unrelated
 JSON payloads. The focused tests pass; immutable-head platform/255-guard proof
 is pending. Native/account/artwork/dashboard legs remain unverified.
+
+Latest planner source fixes have an actual focused result of 11 pass/0 fail:
+reservation normalization/unsupported-id rejection and returned-work notices.
+The previous full262 guard job reached its 10-minute CI limit; the job cap is
+now20 minutes, with all named assertion and per-test/watchdog limits unchanged.
+Current immutable-head265 proof is pending.
+
+The actual queued planner notice regression and prior grooming/conductor group
+passed23/0 with235 assertions. The bus pull omitted a stale batch and the next
+notice contained only the remaining backlog id. Current full gates remain
+pending; no native grooming or live-account claim.
+
+Per-recipient retry and overflow source fixes passed26/0 with255 assertions
+once the owner approved the notice-only fixture. A separate no-worker diagnostic
+verified first2 ids, one consumed copy, stale0, retry1 to Pi, repeated Claude0.
+Roster, per-recipient retry and overflow guards each have actual isolated green
+-> named assertion detected proof. The owner also approved realPath normalization
+in three CLI fixtures, retaining every earlier assertion and identity validation.
+The descendant integration group passed53/0 with368 assertions, including real
+fake-account CLI pull/split/import and five-peer notice baselines. Full current
+platform/seed/review and native account verification remain pending.
 
 ## Approved character source fixtures (#280, phase 2)
 

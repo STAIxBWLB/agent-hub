@@ -1,6 +1,6 @@
 import type { Task } from "./board.ts";
 
-export const PLANNING_FIELDS = ["rank", "priority", "release", "plannedStart", "due", "pinned"] as const;
+export const PLANNING_FIELDS = ["rank", "priority", "release", "plannedStart", "due", "pinned", "deps", "reserved"] as const;
 export interface PlanningFields {
   rank?: number | null;
   priority?: number | null;
@@ -8,6 +8,8 @@ export interface PlanningFields {
   plannedStart?: number | null;
   due?: number | null;
   pinned?: boolean;
+  deps?: number[];
+  reserved?: string | null;
 }
 export interface PlanningPatch extends PlanningFields {}
 export const RELEASE_STATES = ["planning", "active", "frozen", "shipped", "dropped"] as const;
@@ -28,7 +30,14 @@ export function planningPatch(input: unknown): PlanningPatch {
   for (const key of PLANNING_FIELDS) {
     if (!Object.hasOwn(fields, key)) continue;
     const value = fields[key];
-    if (key === "pinned") {
+    if (key === "deps") {
+      if (!Array.isArray(value) || value.length > 64 || value.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(value).size !== value.length) throw new Error("deps must be at most 64 unique positive task ids");
+      result.deps = [...value];
+    } else if (key === "reserved") {
+      const peer = typeof value === "string" ? value.trim().toLowerCase() : null;
+      if (value !== null && (!peer || !/^[a-z][a-z0-9-]{0,31}$/.test(peer) || ["user", "hub", "digest"].includes(peer))) throw new Error("reserved must be a valid agent peer id or null");
+      result.reserved = peer;
+    } else if (key === "pinned") {
       if (typeof value !== "boolean") throw new Error("pinned must be a boolean");
       result.pinned = value;
     } else {

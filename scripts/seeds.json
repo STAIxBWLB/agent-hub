@@ -1762,6 +1762,30 @@
       "testName": "recovered owner delivery holds stay waiting until settlement (#263)"
     },
     {
+      "id": "planning-dependency-cycle",
+      "file": "src/hub/tasks.ts",
+      "search": "if (id === task.id) throw new PreEffectToolRefusal(\"planning dependencies would form a cycle\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"planning dependencies would form a cycle\");",
+      "testFile": "test/planning.test.ts",
+      "testName": "backlog planning validates dependency cycles reservations and atomic undo (#263)"
+    },
+    {
+      "id": "planning-reservation-roster",
+      "file": "src/hub/tasks.ts",
+      "search": "if (patch.reserved && !this.d.bus.isRostered(patch.reserved))",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "supported off-roster reservations are refused before any planning write"
+    },
+    {
+      "id": "planning-dependency-started-floor",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task.state !== \"backlog\" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal(\"dependency and reservation changes require unstarted backlog work\");",
+      "replacement": "if (false) throw new PreEffectToolRefusal(\"dependency and reservation changes require unstarted backlog work\");",
+      "testFile": "test/planning.test.ts",
+      "testName": "backlog planning validates dependency cycles reservations and atomic undo (#263)"
+    },
+    {
       "id": "planning-saved-event-priority",
       "file": "src/hub/daemon.ts",
       "search": "priority: t.priority ?? null",
@@ -1792,6 +1816,38 @@
       "replacement": ".sort((a, b) => a.id - b.id)",
       "testFile": "test/planning.test.ts",
       "testName": "planner backlog reads follow saved rank with stable unknown order (#263)"
+    },
+    {
+      "id": "planning-reservation-person-authority",
+      "file": "src/hub/conductor.ts",
+      "search": " || h.planning?.fields.includes(\"reserved\")",
+      "replacement": " || false",
+      "testFile": "test/conductor.test.ts",
+      "testName": "planned person reservations block proposer redirects after pull and hub assignment (#263)"
+    },
+    {
+      "id": "planner-notice-role",
+      "file": "src/hub/tasks.ts",
+      "search": "to: [peer], kind: \"task\", refs: { backlog: ids }",
+      "replacement": "to: [peer, \"codex\"], kind: \"task\", refs: { backlog: ids }",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "incoming backlog notices batch ids only for attached rostered planners (#263)"
+    },
+    {
+      "id": "planner-notice-ids-only",
+      "file": "src/hub/tasks.ts",
+      "search": "ids.map(id => `#${id}`).join(\", \")",
+      "replacement": "ids.map(id => this.d.board.get(id)!.title).join(\", \")",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "incoming backlog notices batch ids only for attached rostered planners (#263)"
+    },
+    {
+      "id": "planner-notice-bounded",
+      "file": "src/hub/tasks.ts",
+      "search": "[...pending].sort((a, b) => a - b).slice(0, 64)",
+      "replacement": "[...pending].sort((a, b) => a - b)",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "planner notice batches are bounded and recover staged work on restart (#263)"
     },
     {
       "id": "release-stale-edit-invalidation",
@@ -2042,6 +2098,94 @@
       "testName": "real daemon excludes intentionally person-owned work from offline attention"
     },
     {
+      "id": "planning-reservation-normalized",
+      "file": "src/hub/planning.ts",
+      "search": "value.trim().toLowerCase()",
+      "replacement": "value",
+      "testFile": "test/planning.test.ts",
+      "testName": "normalized reservation succeeds through the planning pipeline with a named outcome assertion"
+    },
+    {
+      "id": "planning-reservation-supported",
+      "file": "src/hub/tasks.ts",
+      "search": "if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved))",
+      "replacement": "if (false)",
+      "testFile": "test/planning.test.ts",
+      "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
+    },
+    {
+      "id": "planner-return-notice",
+      "file": "src/hub/tasks.ts",
+      "search": "if (!pull) { this.incomingBacklog.add(n); return next; }",
+      "replacement": "if (!pull) return next;",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "person-returned ownerless work produces a planner notice without a restart (#263)"
+    },
+    {
+      "id": "planner-notice-delivery-refs",
+      "file": "src/hub/tasks.ts",
+      "search": "refs: { backlog: ids }",
+      "replacement": "refs: {}",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "queued planner batches omit pulled ids at delivery and rebatch remaining backlog"
+    },
+    {
+      "id": "planner-notice-delivery-state",
+      "file": "src/hub/tasks.ts",
+      "search": "current.length !== ids.length",
+      "replacement": "false",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "queued planner batches omit pulled ids at delivery and rebatch remaining backlog"
+    },
+    {
+      "id": "planner-notice-recipient-retry",
+      "file": "src/hub/tasks.ts",
+      "search": "this.addPlannerBacklog(peer, current);",
+      "replacement": "for (const id of current) this.incomingBacklog.add(id);",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "a stale planner copy rebatches only for its recipient without repeating another planner's turn"
+    },
+    {
+      "id": "planner-notice-overflow-retry",
+      "file": "src/hub/tasks.ts",
+      "search": "if (ids.length <= 64 && ids.every(id => Number.isSafeInteger(id) && id > 0)) this.addPlannerBacklog(e.peer, ids);",
+      "replacement": "if (false) this.addPlannerBacklog(e.peer, ids);",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "an immediately evicted planner notice retains its ids until queue capacity is available"
+    },
+    {
+      "id": "planner-notice-restart-coalescing",
+      "file": "src/hub/tasks.ts",
+      "search": "backlog.filter(task => !queued.has(task.id)).map(task => task.id)",
+      "replacement": "backlog.map(task => task.id)",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "recovery coalesces planner ids before a restored notice is consumed ahead of the first tick"
+    },
+    {
+      "id": "planner-notice-pressure-backoff",
+      "file": "src/hub/tasks.ts",
+      "search": "if (blockedQueue !== undefined && blockedQueue === JSON.stringify(this.d.bus.queueIds(peer))) continue;",
+      "replacement": "if (false) continue;",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "planner overflow waits for a queue change instead of failing every scheduler tick"
+    },
+    {
+      "id": "planner-notice-unsettled-coalescing",
+      "file": "src/hub/bus.ts",
+      "search": "...(this.journal?.unresolved(id).filter(row => row.state !== \"queued\").flatMap(row => row.originals) ?? [])",
+      "replacement": "...[]",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "planner recovery coalesces unsettled journal originals without a queued copy"
+    },
+    {
+      "id": "planner-notice-roster-retention",
+      "file": "src/hub/tasks.ts",
+      "search": "for (const peer of configured) {",
+      "replacement": "for (const peer of planners) {",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "configured off-roster planners retain incoming ids until roster admission returns"
+    },
+    {
       "id": "pet-size-full-floor",
       "file": "src/pet/frame.ts",
       "search": "requested === \"full\" && columns >= 100 && rows >= 40",
@@ -2216,6 +2360,22 @@
       "replacement": "if (true) return candidate;",
       "testFile": "test/listen.test.ts",
       "testName": "automatic control allocation keeps requested peer ports occupied until a distinct replacement exists"
+    },
+    {
+      "id": "planner-notice-evicted-queued-row",
+      "file": "src/hub/bus.ts",
+      "search": ".filter(row => row.state !== \"queued\")",
+      "replacement": ".filter(() => true)",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "evicted retried journal notices do not suppress backlog rediscovery on restart"
+    },
+    {
+      "id": "planner-notice-new-role-seeding",
+      "file": "src/hub/tasks.ts",
+      "search": "for (const peer of configured) if (!this.knownPlanners.has(peer)) {",
+      "replacement": "for (const peer of configured) if (false) {",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "newly configured planners receive existing backlog without repeating earlier planners"
     }
   ]
 }

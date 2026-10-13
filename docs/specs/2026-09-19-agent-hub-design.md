@@ -2504,6 +2504,13 @@ changed fields and previous values. The configured planner role changes only
 unpinned backlog work outside frozen releases and preserves a person's rank.
 Undo refuses an intervening change or another planner's edit.
 
+Planner backlog notices carry at most 64 ids per recipient. Recovery coalesces
+ids already present in that recipient's restored queue or unresolved journal
+originals. Configured planners retain staged ids while off roster; roster and
+attachment gate publication only. An overflow retains
+only that recipient's pending ids and waits for its queue to change before
+retrying, using the existing scheduler without another timer.
+
 Releases persist planning, active, frozen, shipped and dropped states and planned
 start/cut/ship. Only a person freezes, drops, ships or changes a frozen release.
 Shipping requires every scoped task approved or moved out, records its first
@@ -2515,6 +2522,29 @@ start/review/done. Old absent evidence remains unknown.
 CLI/dashboard/tools, batched planner notices, dependency edits/splitting, WIP
 pull, bounded undo surfaces, research metadata and optional GitHub import remain
 in progress. Source/fixture/platform/seed/visual/native proof is not yet complete.
+
+
+## Planner dependency and reservation grooming (#263, in progress)
+
+Planning may replace at most 64 unique existing positive dependency ids and a
+rostered peer reservation (or clear it). Tasks checks transitive cycles, current
+unstarted backlog state, ownership and existing revision/pin/frozen/person-order
+floors before screening the reason and again afterwards. Board saves metadata,
+dependencies, reservation, revision and prior values in one compare-and-swap.
+Undo restores the same fields only when the latest eligible edit still applies.
+Public planning history excludes previous values. Suggested owners remain
+reservations; editing never offers or starts work. Native grooming remains
+unverified; split, WIP pull, batched notices and import are still required.
+
+
+Incoming backlog ids accumulate through Tasks and are flushed on the existing
+one-second daemon tick as one task-kind notice to attached rostered configured
+planners, at most 64 ids per notice. No task prose enters the notice. Pulled or
+removed ids are omitted, no planner means pending work is retained, and a new
+hub run regroups its currently staged backlog. This is advisory grooming; no
+ownership or execution state changes. Planned reservation edits participate in
+the conductor's latest ownership-decision check, preserving a person's decision
+when the hub later carries it out. Full proof remains pending.
 
 ## Console attention foundation (#280, in progress)
 
@@ -2638,6 +2668,12 @@ holding (`ponytail:` no consensus; a broker if concurrent cross-machine work nee
 through `hub_task_propose(goal)` to this project's long-term tasks only; a person links across projects. Status, the
 console at hub start, recall and the dashboard's Long-term tasks tab show state and lease.
 
+
+Queued planner batches retain bounded ids-only backlog references and recheck
+the board at actual delivery. A batch containing pulled/removed work is discarded
+before reaching the planner; its remaining backlog ids join the next batch. This
+floor also applies during the legacy stale-notice delivery experiment. No task
+text is copied and no routing/ownership state changes.
 ## Amendment: claude-mem import, suggested edges and the memory measurement (#258, phase 3)
 
 `ahub memory import claude-mem` (a person's) copies claude-mem observations whose metadata names a `peer` into
@@ -2650,6 +2686,12 @@ and the report's by-memory-brief split, and `ahub bench run --memory off|claude-
 the project's settings. Whether hub memory helps stays a research result, not an acceptance claim.
 
 
+Planner notice retries are per recipient. A stale copy requeues current backlog
+ids only for the planner whose copy was discarded; a planner that already read
+its original copy is not sent the retry. Queue overflow returns that recipient's
+ids to pending state on the existing bus event, including immediate eviction
+during publication. Pending ids are removed before publication so overflow can
+restore them; no extra timer, route, ownership change or task text is introduced.
 
 ## Automatic control port exclusion (#375)
 

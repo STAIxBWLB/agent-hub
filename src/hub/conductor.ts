@@ -193,7 +193,7 @@ export class Conductor {
       // worked tasks back in proposed); work that waits gets a reserved owner. Never over the person: a console assign or
       // reservation stands until the conductor or the console moves it, also once the hub carried it out (the hub's own
       // moves are not decisions).
-      const moved = task?.history.findLast((h) => h.by !== HUB && (OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved"));
+      const moved = task?.history.findLast((h) => h.by !== HUB && (OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved" || h.planning?.fields.includes("reserved")));
       const accepted = task?.history.some((h) => h.event === "accepted");
       if (task && tool === "hub_task_assign" && role === "owner" && task.history[0]?.by === actor && task.state === "proposed" && !accepted && moved?.by !== USER) {
         const peer = peerId(args.peer, true);

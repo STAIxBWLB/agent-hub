@@ -189,12 +189,23 @@ const RESCREEN_MAX = 10;
  * PII handling, envelopes, briefs and memory notes are decided in one place.
  */
 export class Tasks {
+  private readonly incomingBacklog = new Set<number>();
+  private readonly plannerBacklog = new Map<PeerId, Set<number>>();
+  private readonly plannerBlockedQueue = new Map<PeerId, string>();
+  private readonly knownPlanners = new Set<PeerId>();
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
   private readonly sweepConfig: TaskSweepConfig;
   private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
+    const backlog = d.board.list("backlog");
+    for (const [peer, roles] of Object.entries(d.roles ?? {})) {
+      if (!roles.includes("planner")) continue;
+      this.knownPlanners.add(peer);
+      const queued = d.bus.queuedBacklogIds(peer);
+      this.addPlannerBacklog(peer, backlog.filter(task => !queued.has(task.id)).map(task => task.id));
+    }
     this.sweepConfig = taskSweepConfig(d.sweep);
     this.cohorts = new Cohorts({
       silence: (owners) => this.turnFree() && owners.every((p) => p !== USER && p !== HUB && (this.d.capable?.(p) ?? false)),
@@ -203,6 +214,11 @@ export class Tasks {
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
+      if (e.t === "overflow" && e.env.from === HUB && e.env.kind === "task" && Array.isArray(e.env.refs?.backlog)) {
+        const ids = e.env.refs.backlog;
+        if (ids.length <= 64 && ids.every(id => Number.isSafeInteger(id) && id > 0)) this.addPlannerBacklog(e.peer, ids);
+        this.plannerBlockedQueue.set(e.peer, JSON.stringify(d.bus.queueIds(e.peer)));
+      }
       // A turn that ends takes its hand-overs with it: busy later is another turn (#115). The adapter's own state, since a
       // pause shows as `paused` while the turn goes on.
       if (e.t === "state" && d.bus.peers.get(e.peer)?.state !== "busy") for (const [k, p] of this.sent) if (p === e.peer) this.sent.delete(k);
@@ -540,6 +556,54 @@ export class Tasks {
     this.planningAuthority(by);
     return this.d.board.list("backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id).map(task => this.publicView(task));
   }
+  private addPlannerBacklog(peer: PeerId, ids: readonly number[]): void {
+    if (!this.d.roles?.[peer]?.includes("planner")) return;
+    const pending = this.plannerBacklog.get(peer) ?? new Set<number>();
+    for (const id of ids) if (this.d.board.get(id)?.state === "backlog") pending.add(id);
+    if (pending.size) this.plannerBacklog.set(peer, pending);
+  }
+  /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
+  flushPlannerNotices(): number {
+    const configured = Object.entries(this.d.roles ?? {}).filter(([, roles]) => roles.includes("planner")).map(([peer]) => peer);
+    for (const peer of this.knownPlanners) if (!configured.includes(peer)) {
+      this.knownPlanners.delete(peer); this.plannerBacklog.delete(peer); this.plannerBlockedQueue.delete(peer);
+    }
+    for (const peer of configured) if (!this.knownPlanners.has(peer)) {
+      this.knownPlanners.add(peer);
+      const retained = this.d.bus.queuedBacklogIds(peer);
+      this.addPlannerBacklog(peer, this.d.board.list("backlog").filter(task => !retained.has(task.id)).map(task => task.id));
+    }
+    const planners = configured.filter(peer => this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline");
+    if (!planners.length) return 0;
+    for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
+    const incoming = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
+    if (incoming.length) {
+      for (const peer of configured) {
+        const queued = this.d.bus.queuedBacklogIds(peer);
+        this.addPlannerBacklog(peer, incoming.filter(id => !queued.has(id)));
+      }
+    }
+    for (const id of incoming) this.incomingBacklog.delete(id);
+    const notified = new Set<number>();
+    for (const peer of planners) {
+      const pending = this.plannerBacklog.get(peer);
+      if (!pending) continue;
+      const blockedQueue = this.plannerBlockedQueue.get(peer);
+      if (blockedQueue !== undefined && blockedQueue === JSON.stringify(this.d.bus.queueIds(peer))) continue;
+      this.plannerBlockedQueue.delete(peer);
+      for (const id of pending) if (this.d.board.get(id)?.state !== "backlog") pending.delete(id);
+      const ids = [...pending].sort((a, b) => a - b).slice(0, 64);
+      if (!ids.length) continue;
+      // Remove before publish: an immediate overflow callback may put this recipient's ids back.
+      for (const id of ids) pending.delete(id);
+      try {
+        const queued = this.d.bus.publish(newEnvelope(HUB, `Backlog items ${ids.map(id => `#${id}`).join(", ")}. Read hub_backlog_list and plan the next work with a reason for each change.`, { to: [peer], kind: "task", refs: { backlog: ids } }));
+        if (!queued.includes(peer)) this.addPlannerBacklog(peer, ids);
+        for (const id of ids) notified.add(id);
+      } catch (error) { this.addPlannerBacklog(peer, ids); throw error; }
+    }
+    return notified.size;
+  }
   releaseList(by: PeerId): Record<string, unknown>[] {
     this.planningAuthority(by);
     const tasks = this.d.board.list();
@@ -562,6 +626,22 @@ export class Tasks {
       if (task.state === "approved") throw new PreEffectToolRefusal("approved work is final");
       if (by !== USER && (task.state !== "backlog" || taskHasStarted(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
+      if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
+        if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
+        if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
+        if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
+        const rows = new Map(this.d.board.list().map(row => [row.id, row]));
+        const pending = [...(patch.deps ?? task.deps ?? [])], seen = new Set<number>();
+        while (pending.length) {
+          const id = pending.pop()!;
+          if (id === task.id) throw new PreEffectToolRefusal("planning dependencies would form a cycle");
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const dependency = rows.get(id);
+          if (!dependency) throw new PreEffectToolRefusal(`no dependency task #${id}`);
+          pending.push(...(dependency.deps ?? []));
+        }
+      }
       const target = patch.release === undefined ? task.release : patch.release;
       if (target != null && !this.d.board.release(target)) throw new PreEffectToolRefusal("no such release");
       for (const id of new Set([task.release, target])) {
@@ -672,6 +752,7 @@ export class Tasks {
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     if (backlog) {
+      this.incomingBacklog.add(task.id);
       this.releaseNotice(`task ${this.publicTitle(task)} backlogged by ${by} [${profileTaskLabel(task)}]`);
       return task;
     }
@@ -698,7 +779,7 @@ export class Tasks {
     if (!pull && taskHasStarted(task)) throw new PreEffectToolRefusal(`task #${n}: started work cannot return to backlog`);
     const next = this.d.board.update(n, by, pull ? "backlog pulled" : "backlog returned", { state: pull ? "proposed" : "backlog", owner: null, reviewer: null });
     this.offered.delete(n);
-    if (!pull) return next;
+    if (!pull) { this.incomingBacklog.add(n); return next; }
     const waits = this.waitsFor(next);
     if (waits.length) return this.d.board.update(n, HUB, "blocked", {}, `waits for ${waits.map(v => `#${v}`).join(", ")}`);
     // This persisted ready marker also lets a restart offer ownerless work once a peer attaches.
@@ -866,6 +947,16 @@ export class Tasks {
    * for a recorded notice to this peer whose task is gone, has another owner, or left the states it was about.
    */
   relevant = (peer: PeerId, env: Envelope): boolean => {
+    if (env.from === HUB && env.kind === "task" && env.refs?.backlog) {
+      const ids = env.refs.backlog;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 64 || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) return false;
+      const current = ids.filter(id => this.d.board.get(id)?.state === "backlog");
+      if (current.length !== ids.length || !this.d.roles?.[peer]?.includes("planner") || !this.d.bus.isRostered(peer)) {
+        this.addPlannerBacklog(peer, current);
+        return false;
+      }
+      return true;
+    }
     const c = this.conditional.get(env.id);
     if (!c || c.peer !== peer) return true;
     const t = this.d.board.get(c.task);

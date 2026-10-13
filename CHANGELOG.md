@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Extend backlog planning with bounded acyclic dependencies and rostered reservations, retaining revision-fenced undo and unstarted-work floors (#263).
+
 - Project shared body-free attention into the dashboard header with built-in SVG characters, accessible counts and navigation-only activation (#280).
 
 - Add owner-approved STAIx and four alternative built-in characters, bounded mini/full footers, glyph fallback and session character cycling (#280).

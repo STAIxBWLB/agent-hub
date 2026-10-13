@@ -2733,6 +2733,13 @@ no guessed task bubble. Warning caps retain conflicts first and parallel warning
 kinds have separate segments/labels. Physical visual validation remains pending.
 
 
+Planner backlog plans also accept `deps` (at most 64 unique task ids) and
+`reserved` (rostered peer id or null). Dependency/reservation edits require
+unstarted, unowned backlog work even for the person; cycles and missing ids
+are refused before persistence. Planning undo restores previous dependency and
+reservation values at the same revision fence. Editing never routes work.
+
+
 Release date editors invalidate stale revisions and offer Reload current release
 without overwriting unsaved dates. Project changes clear release creation drafts.
 Dashboard release actions use public numeric ids even when labels are withheld;
@@ -2774,6 +2781,17 @@ Intentionally person-owned work is not an offline agent. Neither user nor hub
 creates an offline watch item, while person-reviewed tasks remain actionable.
 Status reads only the board's structural id/state/owner/reviewer projection and
 reuses it for retained peer ids, avoiding task body/plan/history decoding.
+
+Planner reservations normalize the same lowercase peer syntax as owner arguments,
+reject reserved pseudo-peers and unknown unconfigured ids, and still enforce the
+roster. Returning unstarted ownerless work to Backlog joins the next planner
+notice batch without waiting for a restart.
+
+Queued planner batches retain bounded ids-only backlog references and recheck
+the board at actual delivery. A batch containing pulled/removed work is discarded
+before reaching the planner; its remaining backlog ids join the next batch. This
+floor also applies during the legacy stale-notice delivery experiment. No task
+text is copied and no routing/ownership state changes.
 
 ## Console character choices (#280)
 
