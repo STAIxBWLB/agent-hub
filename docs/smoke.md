@@ -1626,9 +1626,12 @@ Confirm JSON output stays plain under `--color=always`. Record the exact head an
   process in a trusted project. Stop ACP and return to a new TUI, preserving queued
   work and task ownership. Unverified.
 
-## Initial SDLC gates (#257)
+## SDLC gates (#257)
 
-Unverified: a live repository cycle through merge/release under advise. Fake-gh and task fixture checks are source/unit evidence only. Custom lifecycle gates and full release-readiness presentation remain pending; no live cycle or automatic merge is claimed.
+Source is complete: head-bound gates (#333), gsd-lite checklists (#336), bounded custom stages and gates (#349), and the read-only merge queue and release report in CLI, console and dashboard (#350). Fake-gh and task fixture checks are source/unit evidence only.
+
+Unverified (tracked in #273): one real issue on this repository taken through merge and release under `sdlc.mode = "advise"`. Record the issue, PR, heads, each gate's blocker readback and `ahub sdlc release` output here. No live cycle or automatic merge is claimed.
+
 ## Qwen Code 0.25.0 production peer (#256)
 
 Unverified: real provider handshake, a native model/tool turn, context occupancy,
@@ -1651,11 +1654,14 @@ Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.
 - Source model and isolated DOM/daemon regressions cover five columns, ready/wait
   reasons, public stubs, owner/reviewer markers, keyboard buttons, assignment and
   staging authority, stale/foreign gesture fences and legacy capability refusal.
-- Current source checks are pending for this draft; browser visual verification
-  at desktop/phone widths and real peer permission/state readback are unverified.
-- Native planner grooming into two releases, planned/actual date measurement and
-  GitHub import remain unverified or unimplemented in later source slices. No
-  release, installation, account experiment or live activation is implied.
+- Source shipped in #353, #359 and #361 to #367 (v0.12.24); the reservation and
+  overdue fixes in #379. Phone/desktop source captures are in
+  verification/2026-10-13-board-phone.md. A real browser look and real peer
+  permission/state readback are unverified.
+- Unverified (tracked in #273): a native planner grooms a small backlog into two
+  releases, with planned and actual dates read back. A real GitHub intake
+  (#365) is unverified. No release, installation, account experiment or live
+  activation is implied.
 
 
 ## Planning and release controls (#263)
@@ -1663,9 +1669,9 @@ Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.
 Source/fixture coverage is in planning.test.ts and planning-surfaces.test.ts:
 legacy/restart persistence, revision/role/pin/person order/frozen scope/undo/ship,
 actual task dates, CLI marker authority, public PII and research reset identities.
-All current platform and seeded checks remain pending. Desktop/phone rendering and
-native planner grooming into two releases are unverified; no real account run,
-tag, publish, install or live activation was performed.
+Platform and seeded checks passed at each merged head. A real browser look and
+native planner grooming into two releases are unverified (see Project board above);
+no real account run was performed.
 
 ## Office stack merge review (#355, #357, #358, #360)
 
