@@ -2925,3 +2925,5 @@ GitHub import rejects labels containing commas or double quotes before invoking 
 Ask evidence skips body-free memory-reference markers when selecting the latest task transition and note. The selected note retains the existing withheld and on-campus privacy checks.
 
 GitHub intake checks its staging deadline after every awaited proposal, including the final issue. A confirmed late save returns its task ID with partial=true and complete=false so the operator can read back and resume.
+
+If GitHub intake saves a row but later bookkeeping fails, canonical identity readback preserves the confirmed ID and queues its Backlog notice. The response remains partial; unreadable or missing readback remains unconfirmed.
