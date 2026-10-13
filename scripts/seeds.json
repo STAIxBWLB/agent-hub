@@ -1900,8 +1900,8 @@
     {
       "id": "planner-pull-person-order",
       "file": "src/hub/tasks.ts",
-      "search": "if (priority === 0 && this.d.board.list(\"backlog\").some",
-      "replacement": "if (false && this.d.board.list(\"backlog\").some",
+      "search": "if (priority === 0) {",
+      "replacement": "if (false) {",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
     },
@@ -2060,16 +2060,16 @@
     {
       "id": "split-plan-pii-floor",
       "file": "src/hub/tasks.ts",
-      "search": "this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join(\"\\n\") })",
-      "replacement": "this.signalsFor(part)",
+      "search": "signals: [...new Set([...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join(\"\\n\") })",
+      "replacement": "signals: [...new Set([...this.signalsFor(part)",
       "testFile": "test/planner-split.test.ts",
       "testName": "split plans containing PII are private before any observer or public response (#263)"
     },
     {
       "id": "split-prerequisite-effective-rank",
       "file": "src/hub/tasks.ts",
-      "search": "...ancestors.map(goal => ({ rank: goal.rank!, id: goal.id }))",
-      "replacement": "...[]",
+      "search": "goal.id === candidate.id || this.prerequisiteOf(goal, candidate.id)",
+      "replacement": "goal.id === candidate.id",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites inherit the higher-ranked P0 goal ahead of unrelated work (#263)"
     },
@@ -2116,7 +2116,7 @@
     {
       "id": "role-board-task-guidance",
       "file": "src/ui/index.html",
-      "search": "if(task.role)row.append(el('p','Task guidance: '+task.role+' (grants no authority)','meta'));",
+      "search": "if(task.role){const guidance='Task guidance: '+task.role+' (grants no authority)';row.append(el('p',guidance,'meta'));row.setAttribute('aria-label',row.getAttribute('aria-label')+', '+guidance);}",
       "replacement": "if(false)row.append(el('p','Task guidance: '+task.role+' (grants no authority)','meta'));",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "board task guidance remains visible on a public PII stub without granting actions (#295)"
@@ -2692,7 +2692,7 @@
     {
       "id": "split-stored-profile-resolution",
       "file": "src/hub/tasks.ts",
-      "search": "const storedProfile = profile === (this.d.profile ?? \"dev\") ? this.d.profileData ?? profile : profile;",
+      "search": "const storedProfile = !parent.profile ? \"dev\" : profile === (this.d.profile ?? \"dev\") ? this.d.profileData ?? profile : profile;",
       "replacement": "const storedProfile = this.d.profileData ?? this.d.profile ?? \"dev\";",
       "testFile": "test/planner-split.test.ts",
       "testName": "split preserves custom dev metadata and stored research aliases across profile changes"
@@ -2700,8 +2700,8 @@
     {
       "id": "split-proposed-parent-p0",
       "file": "src/hub/tasks.ts",
-      "search": "this.d.board.list().filter(goal => goal.state !== \"approved\" && this.prerequisiteOf(goal, task.id)",
-      "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && this.prerequisiteOf(goal, task.id)",
+      "search": "this.d.board.list().filter(goal => goal.state !== \"approved\" && (goal.priority",
+      "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && (goal.priority",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
     },

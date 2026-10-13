@@ -525,7 +525,7 @@ function taskCard(task, card, stage, ids) {
   if (card.starred) { const star = el('span', '★'); star.setAttribute('aria-hidden','true'); head.append(star); }
   row.append(head, peerMark(task.owner)); if (task.reviewer) row.append(peerMark(task.reviewer, true));
   row.append(el('p', task.profileClass ? task.profileClass + ' (base ' + task.class + ')' : task.class, 'meta'));
-  if(task.role)row.append(el('p','Task guidance: '+task.role+' (grants no authority)','meta'));
+  if(task.role){const guidance='Task guidance: '+task.role+' (grants no authority)';row.append(el('p',guidance,'meta'));row.setAttribute('aria-label',row.getAttribute('aria-label')+', '+guidance);}
   if(task.release!=null){const release=boardViewState?.snapshot.releases?.find(release=>release.id===task.release),label='Release #'+task.release+' '+(release?.name || '(label unavailable)');row.append(el('p',label,'meta'));row.setAttribute('aria-label',row.getAttribute('aria-label')+', '+label);}
   if (stage) row.append(renderTaskStage(stage));
   if (card.waiting.length) row.append(el('p', 'Waiting: ' + card.waiting.join('; '), 'meta'));

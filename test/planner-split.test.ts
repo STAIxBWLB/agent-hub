@@ -132,3 +132,25 @@ test("split request deadline refuses before writes and late screen completion ca
  await expect(tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"})).rejects.toThrow("deadline");
  expect(f.board.list()).toEqual([parent]);for(const resolve of pending)resolve({label:"clear",ms:0});await Bun.sleep(0);expect(f.board.list()).toEqual([parent]);
 },20000);
+
+test("competing split prerequisites retain their person-ranked ancestor order",async()=>{
+ const {tasks,bus}=rig();class Peer extends BasePeer{async start(){this.setState("idle")}async stop(){}async deliver(_envs:Envelope[]){} }
+ for(const id of ["codex","claude"]){const peer=new Peer(id);bus.add(peer);await peer.start()}
+ const first=await tasks.propose(USER,{title:"first goal",class:"implement",backlog:true,urgent:true}),second=await tasks.propose(USER,{title:"second goal",class:"implement",backlog:true,urgent:true});
+ await tasks.planBacklog(USER,{id:first.id,revision:0,fields:{rank:1,priority:0},reason:"first"});await tasks.planBacklog(USER,{id:second.id,revision:0,fields:{rank:2,priority:0},reason:"second"});
+ const a=await tasks.splitBacklog(USER,{id:first.id,revision:1,parts:[{title:"a"},{title:"b"}],reason:"parts"}),b=await tasks.splitBacklog(USER,{id:second.id,revision:1,parts:[{title:"c"},{title:"d"}],reason:"parts"});await tasks.moveBacklog(USER,first.id,true);
+ await expect(tasks.pullPlanned("claude",{id:b.children[0]!.id,revision:b.children[0]!.planningRevision??0,reason:"lower prerequisite"})).rejects.toThrow("P0 backlog order");
+ const permitted=await tasks.pullPlanned("claude",{id:a.children[0]!.id,revision:a.children[0]!.planningRevision??0,reason:"higher prerequisite"});expect(permitted.state).toBe("proposed");
+});
+test("deterministic private split parts never reach the model screener",async()=>{
+ const f=rig();let on=false;const seen:string[]=[];
+ const tasks=new Tasks({...f.deps,routing:()=>{const r=f.deps.routing();return {...r,signals:{...r.signals,pii_screen:on?"local":"off"}}},piiScreen:async text=>{seen.push(text);return {label:"clear",ms:0}}});
+ const parent=await tasks.propose(USER,{title:"public parent",class:"implement",backlog:true});on=true;
+ const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"patient 900101-1234567"},{title:"safe part"}],reason:"safe reason"});
+ expect(seen.some(text=>text.includes("900101"))).toBe(false);expect(tasks.isPii(result.children[0]!)).toBe(true);expect(seen.some(text=>text.includes("safe part"))).toBe(true);
+});
+test("legacy split parents ignore later custom dev aliases",async()=>{
+ const f=rig(),parent=await f.tasks.propose(USER,{title:"legacy",class:"implement",backlog:true});
+ const tasks=new Tasks({...f.deps,profile:"dev",profileData:resolveProfile("dev",{classes:{custom:"implement"}})});
+ await expect(tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a",class:"custom"},{title:"b"}],reason:"parts"})).rejects.toThrow();expect(f.board.list()).toHaveLength(1);
+});
