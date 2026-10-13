@@ -55,6 +55,8 @@ export interface TaskRecord {
   tooling?: Record<string, Addon[]>;
   /** #248, with `tooling`: every peer with an event attributed to the task, fingerprinted or not. */
   peers?: string[];
+  /** #258 AC11: task briefs handed over for it, and how many of them carried a hub-memory fail note; absent without briefs. */
+  briefs?: { delivered: number; withFail: number };
 }
 /** A person's later verdict on one task record: `createdAt` binds it to that task, not a later one with the same id. */
 export interface LabelRecord { schema: typeof RESEARCH_SCHEMA; kind: "label"; project: string; task: number; createdAt: string; label: Label; at: string }
@@ -67,15 +69,15 @@ export const researchFile = (projectId: string, home = hubHome()): string => joi
 /** One task across every record about it: a task id is reused after `ahub reset --all`, its proposal time is not. */
 export const recordKey = (r: { project: string; task: number; createdAt: string | null; approvedAt?: string }): string => `${r.project}#${r.task}@${r.createdAt ?? r.approvedAt ?? ""}`;
 
-type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers"> & {
-  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>;
+type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs"> & {
+  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>; briefs: { delivered: number; withFail: number };
 };
 /** Keyed by peer ids, model names and reasons, any of which may be `constructor` or `__proto__`: no prototype to inherit from. */
 const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
   tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
-  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map() });
+  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map(), briefs: { delivered: 0, withFail: 0 } });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
 
@@ -166,6 +168,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     }
     else if (e.type === "route") a.models.add(e.route);
     else if (e.type === "route_outcome") { if (e.next?.tests === "pass") a.tests.pass++; if (e.next?.tests === "fail") a.tests.fail++; }
+    else if (e.type === "memory_brief") { a.briefs.delivered++; if (e.fails > 0) a.briefs.withFail++; }
     else if (e.type === "stuck") a.stuck++;
     else if (e.type === "overlap") a.overlaps++;
     else if (e.type === "conflict") a.conflicts++;
@@ -173,12 +176,12 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const out: TaskRecord[] = [];
   for (const a of [...earlier, ...tasks.values()]) {
     if (!a.approvedAt) continue;
-    const { approvedAt, lastState: _state, models, tooling: fingerprints, peers, ...rest } = a;
+    const { approvedAt, lastState: _state, models, tooling: fingerprints, peers, briefs, ...rest } = a;
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(approvedAt);
     out.push({ schema: RESEARCH_SCHEMA, kind: "task", project: projectKey(projectId), ...rest, outcome: "approved", approvedAt,
       wallMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null,
       firstPass: a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer,
-      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers.keys()].sort() } : {}) });
+      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers.keys()].sort() } : {}), ...(briefs.delivered ? { briefs } : {}) });
   }
   return out.sort((x, y) => x.approvedAt.localeCompare(y.approvedAt) || x.task - y.task);
 }
@@ -261,7 +264,9 @@ function measures(records: TaskRecord[], labels: Map<string, Label>): Measures {
     tokensPerTask: { median: quantile(records.map((r) => r.tokens.total), 0.5), p90: quantile(records.map((r) => r.tokens.total), 0.9) },
     wallMsPerTask: { median: quantile(records.flatMap((r) => r.wallMs ?? []), 0.5), p90: quantile(records.flatMap((r) => r.wallMs ?? []), 0.9) } };
 }
-export interface ResearchReport { overall: Measures; byClass: Record<string, Measures>; byOwner: Record<string, Measures>; byProject: Record<string, Measures>; byModel: Record<string, Measures> }
+export interface ResearchReport { overall: Measures; byClass: Record<string, Measures>; byOwner: Record<string, Measures>; byProject: Record<string, Measures>; byModel: Record<string, Measures>;
+  /** #258 AC11: tasks whose brief carried a hub-memory fail note, a brief without one, or no brief recorded. */
+  byMemoryBrief: Record<string, Measures> }
 /**
  * The derived measures, never stored as truth: each task counts once (its last record), and a person's latest label
  * decides whether an approved task later failed. Records older than `since` (ms epoch, by approval) are left out.
@@ -275,7 +280,8 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
     return Object.fromEntries([...out].sort(([a], [b]) => a.localeCompare(b)).map(([k, rs]) => [k, measures(rs, labels)]));
   };
   return { overall: measures(all, labels), byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
-    byProject: group((r) => [r.project]), byModel: group((r) => r.models.length ? r.models : ["unknown"]) };
+    byProject: group((r) => [r.project]), byModel: group((r) => r.models.length ? r.models : ["unknown"]),
+    byMemoryBrief: group((r) => [!r.briefs ? "no brief recorded" : r.briefs.withFail ? "a fail note in its brief" : "brief without a fail note"]) };
 }
 
 const fmtPct = (v: number | null) => v === null ? "-" : `${Math.round(v * 100)}%`;
@@ -284,7 +290,7 @@ export function formatResearch(r: ResearchReport): string[] {
   const row = (name: string, m: Measures) => `${name.padEnd(24)} ${String(m.tasks).padStart(5)}  ${fmtPct(m.successRate).padStart(7)}  ${fmtPct(m.firstPassRate).padStart(10)}  ${(m.reworkRate === null ? "-" : m.reworkRate.toFixed(2)).padStart(6)}  ${fmtPct(m.checkFailureRate).padStart(11)}  ${fmtNum(m.tokensPerTask.median).padStart(10)}  ${fmtNum(m.tokensPerTask.p90).padStart(10)}  ${(m.wallMsPerTask.median === null ? "-" : `${Math.round(m.wallMsPerTask.median / 60_000)}m`).padStart(8)}`;
   const head = `${"".padEnd(24)} ${"tasks".padStart(5)}  ${"success".padStart(7)}  ${"first pass".padStart(10)}  ${"rework".padStart(6)}  ${"check fails".padStart(11)}  ${"tokens p50".padStart(10)}  ${"tokens p90".padStart(10)}  ${"wall p50".padStart(8)}`;
   const section = (title: string, groups: Record<string, Measures>) => Object.keys(groups).length ? [``, title, head, ...Object.entries(groups).map(([k, m]) => row(k, m))] : [];
-  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", r.byModel), ...section("by project", r.byProject)];
+  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", r.byModel), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
 }
 
 /** Each approved task once, its last record, and every task's latest label: what both reports count. */

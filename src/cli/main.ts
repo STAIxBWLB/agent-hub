@@ -54,7 +54,7 @@ import { setupOllamaModel } from "./models-setup.ts";
 
 import { contextLine, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
-import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
+import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, MEMORY_MODES, readRuns, runSummary, sameSuite, type MemoryMode } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
 import { goalCommand, memoryCommand } from "./memory.ts";
@@ -1390,7 +1390,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const json = args.includes("--json");
     const [sub, ...rest] = args.filter((a) => a !== "--json");
     if (sub === "run") {
-      const { one, many, rest: positional } = takeFlags(rest, ["--arm", "--repeat", "--tasks"], ["--addon"]);
+      const { one, many, rest: positional } = takeFlags(rest, ["--arm", "--repeat", "--tasks", "--memory"], ["--addon"]);
+      if (one["--memory"] !== undefined && !(MEMORY_MODES as readonly string[]).includes(one["--memory"])) fail(`--memory takes ${MEMORY_MODES.join(", ")}`);
       // #248: `--addon ripwire=off` declares the arm's add-on state; the run refuses peers that do not match it.
       const addons: Partial<Record<AddonName, "on" | "off">> = {};
       for (const spec of many["--addon"] ?? []) {
@@ -1401,14 +1402,14 @@ const commands: Record<string, () => Promise<void> | void> = {
       const suite = positional[0];
       const repeat = one["--repeat"] === undefined ? 1 : Number(one["--repeat"]);
       if (!suite || positional.length !== 1 || !one["--arm"]?.trim() || !Number.isSafeInteger(repeat) || repeat < 1 || repeat > 100) {
-        fail("usage: ahub bench run <suite.json> --arm <label> [--repeat 1..100] [--tasks a,b] [--addon <name>=on|off]...");
+        fail("usage: ahub bench run <suite.json> --arm <label> [--repeat 1..100] [--tasks a,b] [--addon <name>=on|off]... [--memory off|claude-mem|native|both]");
       }
       await benchPreflight(cwd, loadConfig(cwd).bench.enabled); // the suite's refs are checked once it is read
       let interrupted = false;
       const stop = () => { interrupted = true; console.log("stopping at the next check: the attempt in progress is recorded as interrupted (a task still open is named)"); };
       process.on("SIGINT", stop);
       try {
-        const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, addons, only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd));
+        const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, addons, ...(one["--memory"] ? { memory: one["--memory"] as MemoryMode } : {}), only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd));
         return console.log(formatBenchReport(benchReport(readRuns().filter((r) => r.header.run === run))).join("\n"));
       } finally { process.off("SIGINT", stop); }
     }

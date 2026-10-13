@@ -151,3 +151,10 @@ test("planning normalizes real reservations and rejects unsupported pseudo peers
   const planned=await tasks.planBacklog("claude",{id:task.id,revision:0,fields:{reserved:" Codex "},reason:"normalize owner"});
   expect(planned.reserved).toBe("codex");expect(planned.owner).toBeNull();
 });
+
+test("supported off-roster reservations are refused before any planning write",async()=>{
+ const dir=mkdtempSync(join(tmpdir(),"ahub-roster-planning-")),board=new Board(join(dir,"hub.db")),bus=new Bus({batchMs:0,rostered:peer=>peer!=="pi"});
+ const tasks=new Tasks({board,bus,routing:()=>loadRouting(dir),cwd:dir,project:"roster-floor",roles:{claude:["planner"]},notify:()=>{}});cleanup.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true})});
+ const task=await tasks.propose(USER,{title:"native roster floor",class:"implement",backlog:true});
+ for(const by of [USER,"claude"]){await expect(tasks.planBacklog(by,{id:task.id,revision:0,fields:{reserved:"pi"},reason:"ineligible native reservation"})).rejects.toThrow("off roster");expect(board.get(task.id)).toEqual(task)}
+});
