@@ -8,7 +8,7 @@ const checker = resolve(import.meta.dir, "../scripts/check-docs.mjs");
 function fixture(run: (root: string, stamp: string, git: (...args: string[]) => string) => void) {
   const root = mkdtempSync(join(tmpdir(), "ahub-docs-"));
   const git = (...args: string[]) => {
-    const result = spawnSync("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd: root, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" } });
+    const result = spawnSync("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd: root, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" } });
     if (result.status !== 0) throw new Error(result.stderr);
     return result.stdout.trim();
   };
@@ -139,6 +139,27 @@ test("documentation readbacks never execute the repository fsmonitor helper (#25
   const marker = join(root, "monitor-ran"), script = join(root, "monitor.sh"); writeFileSync(script, '#!/bin/sh\nprintf marker > "' + marker + '"\n'); chmodSync(script, 0o755); git("config", "core.fsmonitor", script);
   const result = spawnSync("node", [checker, root, "--json"], { encoding: "utf8" }); expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(true); expect(existsSync(marker)).toBe(false);
 }));
+test("documentation fixture commits suppress detached maintenance while the fsmonitor trap remains effective (#369)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-docs-maintenance-")), trace = join(dir, "git.jsonl"), previous = process.env.GIT_TRACE2_EVENT;
+  try {
+    process.env.GIT_TRACE2_EVENT = trace;
+    fixture((root, _stamp, git) => {
+      git("config", "gc.auto", "1");
+      writeFileSync(join(root, "src/covered.ts"), "force fixture commit\n"); git("add", "."); git("commit", "-qm", "Exercise fixture maintenance isolation");
+      const events = readFileSync(trace, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(events.some(event => event.event === "child_start" && event.argv?.includes("maintenance"))).toBe(false);
+      const marker = join(root, "control-monitor-ran"), script = join(root, "control-monitor.sh");
+      writeFileSync(script, '#!/bin/sh\nprintf marker > "' + marker + '"\n'); chmodSync(script, 0o755);
+      for (const enabled of [false, true]) {
+        const result = spawnSync("git", ["-c", `core.fsmonitor=${enabled ? script : "false"}`, "-c", "maintenance.auto=false", "-c", "gc.auto=0", "pack-objects", "--stdout", "--all", "--indexed-objects"], { cwd: root, stdio: ["ignore", "ignore", "pipe"] });
+        expect(result.status).toBe(0); expect(existsSync(marker)).toBe(enabled);
+      }
+    });
+  } finally {
+    if (previous === undefined) delete process.env.GIT_TRACE2_EVENT; else process.env.GIT_TRACE2_EVENT = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 test("documentation drift checks never execute configured clean or process filters (#257)", () => fixture((root, _stamp, git) => {
   writeFileSync(join(root, ".gitattributes"), "src/covered.ts filter=metadata-trap\n");
   git("add", ".gitattributes"); git("commit", "-qm", "Declare fixture filter attribute");
