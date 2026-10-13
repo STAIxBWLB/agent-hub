@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.24 and control protocol 16. Live verification
+This guide describes ahub 0.12.25 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Command output
@@ -1129,7 +1129,12 @@ result and return) or `ahub codex resume` to select its previous native session.
 the terminal window itself. The Claude channel retries and reconnects on return.
 Pi return retains the verified owner's monotonic generation even after refused
 native activity while detached; it shares no personal output and invalidates any
-cached empty-session resume proof after that activity.
+cached empty-session resume proof after that activity. Return also needs the
+current hub extension, which fences prompt admission: a TUI still running an
+older extension is refused (restart its retained terminal), and a return whose
+snapshot raced native activity is refused until retried. When personal TUI
+activity overtakes a hub prompt, Pi is detached: a prompt the extension proves it
+never inserted returns to the queue, anything else is held as `needs_review`.
 It leaves queued and held deliveries, and existing manual or budget pauses,
 untouched. The queue listing names `off roster` as the membership hold. Returning
 and starting the peer makes retained queued messages available again; held
@@ -1614,21 +1619,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.24), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.25), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.24 ahub upgrade --to 0.12.24 --dry-run
-bunx --package @staix/agent-hub@0.12.24 ahub upgrade --to 0.12.24 --yes
+bunx --package @staix/agent-hub@0.12.25 ahub upgrade --to 0.12.25 --dry-run
+bunx --package @staix/agent-hub@0.12.25 ahub upgrade --to 0.12.25 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.24 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.25 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1660,14 +1665,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.24 --dry-run
+ahub upgrade --to 0.12.25 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.24 --yes
+ahub upgrade --to 0.12.25 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2316,9 +2321,11 @@ ancestor: the manifest-only follow-up commit need not hash or stamp itself.
 
 ## Seeded guard verification
 
-`bun scripts/seeded-check.ts` runs six guard pairs sequentially: header quoting,
-Origin refusal, control-token authentication, the hop cap, PII public views and
-uncertain-delivery receipts. Each named test first passes on current tracked
+`bun scripts/seeded-check.ts` runs every guard pair in `scripts/seeds.json`
+sequentially, starting with header quoting, Origin refusal, control-token
+authentication, the hop cap, PII public views and uncertain-delivery receipts.
+A guard needs a test that runs on Linux, where the CI job runs; a macOS-only
+protection (sandbox, text projection) is covered by its regression test. Each named test first passes on current tracked
 checkout bytes, then must fail an assertion with the corresponding guard weakened.
 Seed rot (anything other than one exact replacement), a surviving seed and an
 invalid detection have distinct errors. Compiler, setup, unrelated-test and timeout
@@ -2334,8 +2341,8 @@ fixture location with test and leak evidence for inspection.
 
 The required Linux CI job `seeded guards` follows the ordinary checks; it does not
 repeat on macOS or run recursively inside `bun test`. The runner reports every
-pair's elapsed seconds and the total runtime. Runtime measurement remains pending
-until that gate executes; a green ordinary check alone does not prove these pairs.
+pair's elapsed seconds and the total runtime. A green ordinary check alone does
+not prove these pairs.
 
 The full CI gate tests the PR head tree on Linux and macOS, followed by the
 sequential seeded-guard job. Main and release jobs reuse only a successful full
@@ -2344,6 +2351,9 @@ unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
 it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
 test files twenty times on macOS, in its own concurrency group; it does not replace the full gate.
+`scripts/check.sh` stops a suite still running after `AHUB_CHECK_HANG_S` seconds
+(600 by default); hosted macOS CI sets 780 inside the unchanged 15-minute job
+limit (#378).
 
 ## Preview initialization and native launch
 
@@ -2612,7 +2622,7 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 # Rich-document text projections (#259)
 
-- Configure text_projection only in an untracked machine-local file, with a separate {input} argv argument. Facts uses bounded read-only/no-network conversion and a content/config cache; failure keeps the prior file view and logs a bounded notice.
+- Configure text_projection only in an untracked machine-local file, with a separate {input} argv argument. Facts uses bounded read-only/no-network conversion from a scratch directory, where the converter reads only its input snapshot and its own program and script files (no other project file, even under `local.read_allow`), and a content/config cache; failure keeps the prior file view and logs a bounded notice, and a conversion that failed with its full deadline is not retried for the same bytes and command until the hub restarts (#382).
 - Raw change identity and projected presentation stay separate; private paths never enter conversion. Schema, limits and current surface scope: [text projections](text-projection.md).
 
 # Task catalog guidance (#295)

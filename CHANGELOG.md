@@ -2,7 +2,7 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.25
 
 - Preserve person-owned reservations through planner grooming, including same-value changes (#378).
 - Refuse stale Pi roster-return snapshots when native activity changes in flight (#378).
