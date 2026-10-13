@@ -1,3 +1,4 @@
+import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +22,7 @@ async function cli(root: string, args: string[]) {
 }
 type Snapshot = { ok: boolean; tasks: { id: number; state: string; owner: string | null; reserved?: string | null; planningRevision: number }[]; boardLegend: { peer: string; wip: number; wipLimit: number }[]; status: { peers: Record<string, unknown>; taskWip: Record<string, {wip: number; wipLimit: number}> } };
 test("planner pull surfaces enforce role revisions and shared WIP status through HTTP (#263)", async () => {
-  const root=mkdtempSync(join(tmpdir(),"ahub-pull-surfaces-")),stateDir=join(root,".agenthub/state");
+  const root=realPath(mkdtempSync(join(tmpdir(),"ahub-pull-surfaces-"))),stateDir=join(root,".agenthub/state");
   const daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},tasks:{...DEFAULT_CONFIG.tasks,wip_limits:{codex:1,claude:0}},roles:{claude:["planner"],codex:["implementer"]},batch_ms:0}});
   const person=await ControlClient.connect(stateDir,{role:"console"}),planner=await ControlClient.connect(stateDir,{role:"tools",peer:"claude"}),other=await ControlClient.connect(stateDir,{role:"tools",peer:"codex"});
   try {
