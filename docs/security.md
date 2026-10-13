@@ -231,3 +231,19 @@ from built-in literal frames with existing theme colours, without HTML insertion
 inline handlers, style attributes or external assets. Existing CSP hashing,
 headers, origin and session authorization remain in force. Clicking scrolls and
 focuses only; it cannot grant permissions or invoke a mutation.
+
+
+## Hub-owned structured memory (#258)
+
+With a project config, native hub memory is enabled unless `memory.native` is
+false. Append-only segments and their derived index stay in the private hub-home
+memory directory, created with 0700 directory and 0600 file modes. PII-task notes, PII-pattern
+notes and secret-looking text are refused before persistence; promotions are
+screened again. The index can be rebuilt from segments and does not replace the
+separate claude-mem worker database.
+
+Sync starts only after a person configures a remote. Public GitHub remotes are
+refused; unknown visibility proceeds with a warning for the configured remote.
+Short-term segments, machine identity and the derived index are excluded from
+sync. Suggested graph edges are off by default and are not evidence until a
+person confirms them. Operational details and limits: [hub memory](memory.md).

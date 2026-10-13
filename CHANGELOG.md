@@ -4,6 +4,12 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.24
+
+- Preserve planner notices across queued/uncertain deliveries, stale recipient copies, queue pressure and temporary roster absence (#263).
+- Isolate fixture-owned automatic Git maintenance without weakening document readback security assertions (#369).
+- Keep automatic control listeners clear of requested native peer ports while preserving ownership refusals (#375).
+
 - Restore dashboard peer role metadata and show bounded task guidance ids on board cards (#295).
 
 - Complete terminal board column/release projections and structured late-cut/unknown approval flags (#263).
@@ -22,9 +28,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Exclude person/hub-owned work from offline-agent attention and read structural board status facts without decoding task payloads (#280).
 
-- Add global body-free attention status, person review/offline facts, read-only recovery observation and token-free pet/prompt output (#280, phase 3 in progress). Native and full release gates remain unverified.
+- Add global body-free attention status, person review/offline facts, read-only recovery observation and token-free pet/prompt output (#280). Native account verification remains unverified.
 
-- Add structural console attention counts, an ASCII STAI rule line, read-only `n` navigation, session `P`/`--no-pet`, presentation configuration and plain-mode updates (#280, phase 1). Larger characters, status/dashboard integration and native visual checks remain pending.
+- Add structural console attention counts, an ASCII STAI rule line, read-only `n` navigation, session `P`/`--no-pet`, presentation configuration and plain-mode updates (#280). Native visual checks remain unverified.
 
 - Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
 
