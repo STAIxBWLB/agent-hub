@@ -182,9 +182,9 @@ test("sweep: an auto-reassign whose assignment cannot publish is noticed as save
 });
 
 test("planner idle sweep keeps its final attempt until owner capacity is available",async()=>{
- const f=await fixture({sweep:{...DEFAULT_TASK_SWEEP,enabled:true,unaccepted_min:1,idle_min:2,review_min:3,ladder_min:1,auto_reassign:true}});f.peers.local!.set("offline");
+ const f=await fixture({sweep:{...DEFAULT_TASK_SWEEP,enabled:true,unaccepted_min:1,idle_min:2,review_min:3,ladder_min:1,auto_reassign:true}});f.peers.local!.set("offline");f.peers.kimi!.set("offline");
  const task=await f.tasks.propose("user",{title:"planned idle",class:"implement",backlog:true});await f.tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});await f.tasks.releaseReady();f.tasks.accept("codex",task.id);f.peers.local!.set("idle");
- const full=f.board.propose("user",{title:"occupied",class:"implement"});f.board.update(full.id,HUB,"assigned",{owner:"local",state:"in_progress"});const at=f.board.get(task.id)!.history.at(-1)!.at+120000;
+ const full=f.board.propose("user",{title:"occupied",class:"implement"});f.board.update(full.id,HUB,"assigned",{owner:"local",state:"in_progress"});f.peers.local!.set("busy");const at=f.board.get(task.id)!.history.at(-1)!.at+120000;
  await f.tasks.sweep(at);await f.tasks.sweep(at+60000);expect(await f.tasks.sweep(at+120000)).toEqual([]);expect(f.board.get(task.id)!.history.at(-1)?.sweep?.step).toBe(2);
- f.board.update(full.id,HUB,"finished",{state:"approved"});await f.tasks.sweep(at+180000);expect(f.board.get(task.id)?.owner).toBe("local");
+ f.board.update(full.id,HUB,"finished",{state:"approved"});f.peers.local!.set("idle");await f.tasks.sweep(at+180000);expect(f.board.get(task.id)?.owner).toBe("local");
 });
