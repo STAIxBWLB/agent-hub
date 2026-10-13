@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
 import { projectionConfig, TextProjections } from "../src/hub/text-projection.ts";
@@ -149,6 +149,9 @@ test.skipIf(process.platform !== "darwin")("a converter reads only its input sna
   const projections=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state"),config:projectionConfig({".docx":[converter,"{input}"]})});
   const projected=projections.project(file);
   expect(projected?.text).toBe("public body\n");
+  // a read_allow entry that encloses the project still leaves the project unreadable to the converter
+  const enclosing=new TextProjections({cwd:dir,stateDir:join(dir,".agenthub/state-enclosing"),config:projectionConfig({".docx":[converter,"{input}"]}),readAllow:[dirname(dir)]});
+  expect(enclosing.project(file)?.text).toBe("public body\n");
 });
 
 test.skipIf(process.platform !== "darwin")("a failed conversion of unchanged bytes is not retried on every facts read", () => {

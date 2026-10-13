@@ -145,6 +145,8 @@ test("glob policies match decomposed, compatibility and long-s spellings of prot
   expect(matchesPolicy(dir, accented + "/b.csv", ["données/*.csv"])).toBe(true);
   expect(matchesPolicy(dir, "data/ſecret/x", ["data/sec*"])).toBe(true);
   expect(matchesPolicy(dir, "other/a.csv", ["학생자료/**"])).toBe(false);
+  mkdirSync(join(dir, "single")); for (const name of ["ß.txt", "ﬁ.txt"]) writeFileSync(join(dir, "single", name), "x");
+  for (const name of ["ß.txt", "ﬁ.txt"]) expect(matchesPolicy(dir, "single/" + name, ["single/?.txt"])).toBe(true); // a fold that expands keeps ? matching
   const ctx: ToolContext = { cwd: dir, deny: [], readOnly: ["학생자료/**"], sandboxProfile: "", permit: async () => true, send: () => "sent" };
   expect(await runTool("write", JSON.stringify({ path: nfd + "/a.csv", content: "mutated" }), ctx)).toContain("data.readonly");
   expect(readFileSync(join(dir, nfd, "a.csv"), "utf8")).toBe("original");

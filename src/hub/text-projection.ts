@@ -116,10 +116,13 @@ export class TextProjections {
       if (!sandboxAvailable()) throw new Error("sandbox unavailable");
       scratch = realPath(mkdtempSync(join(tmpdir(), "ahub-projection-input-"))); const snapshot = join(scratch, "input" + ext);
       writeFileSync(snapshot, bytes, { mode: 0o400 });
-      const programs = programFiles(this.options.cwd, argv).map(p => "\n(allow file-read* process-exec (literal " + sbplString(realPath(p.file)) + "))").join("");
+      // A read_allow entry may enclose the project. Seatbelt lets a later rule win only for the operation it names, so the
+      // deny and the literal grants after it both name file-read-data; metadata stays readable for getcwd.
+      const projectDeny = "\n(deny file-read-data (subpath " + sbplString(realPath(this.options.cwd)) + "))";
+      const programs = programFiles(this.options.cwd, argv).map(p => "\n(allow file-read* file-read-data process-exec (literal " + sbplString(realPath(p.file)) + "))").join("");
       const result = spawnSync(process.execPath, [join(import.meta.dir, "projection-exec.ts")], {
         cwd: this.options.cwd, timeout: deadline === undefined ? 8000 : Math.ceil(Math.max(1, Math.min(8000, deadline - performance.now()))), maxBuffer: MAX_TEXT * 2, encoding: "utf8",
-        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + "\n(allow file-read* (literal " + sbplString(snapshot) + "))" + programs, argv: argv.map(arg => arg === "{input}" ? snapshot : arg), ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.min(5000, deadline - performance.now() - 100)) }) }),
+        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + projectDeny + "\n(allow file-read* file-read-data (literal " + sbplString(snapshot) + "))" + programs, argv: argv.map(arg => arg === "{input}" ? snapshot : arg), ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.min(5000, deadline - performance.now() - 100)) }) }),
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: "en_US.UTF-8", TERM: "dumb" },
       });
       // ponytail: in-memory for this process, cleared at 1024 keys; persist it if restarts make retries costly.

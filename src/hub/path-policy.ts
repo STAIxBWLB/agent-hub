@@ -22,11 +22,18 @@ export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
 }
-/** Linear-space wildcard DP, avoiding regex backtracking on untrusted paths. */
+/**
+ * Either spelling protects: the lowercase comparison keeps `?` matching one code point whose fold expands (ß, ﬁ), and
+ * the folded one catches NFD/NFC, compatibility and long-s aliases. Adding a match only ever adds protection.
+ */
 function segmentMatches(pattern: string, name: string): boolean {
-  const chars = [...foldSegment(name)];
+  return wildcard(pattern.toLowerCase(), name.toLowerCase()) || wildcard(foldSegment(pattern), foldSegment(name));
+}
+/** Linear-space wildcard DP, avoiding regex backtracking on untrusted paths. */
+function wildcard(pattern: string, name: string): boolean {
+  const chars = [...name];
   let previous = new Array<boolean>(chars.length + 1).fill(false); previous[0] = true;
-  for (const char of foldSegment(pattern)) {
+  for (const char of pattern) {
     const next = new Array<boolean>(chars.length + 1).fill(false);
     next[0] = char === "*" && previous[0]!;
     for (let i = 1; i <= chars.length; i++) next[i] = char === "*" ? previous[i]! || next[i - 1]! : previous[i - 1]! && (char === "?" || char === chars[i - 1]);

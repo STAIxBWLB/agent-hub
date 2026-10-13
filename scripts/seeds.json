@@ -3132,18 +3132,10 @@
     {
       "id": "policy-glob-unicode-fold-name",
       "file": "src/hub/path-policy.ts",
-      "search": "const chars = [...foldSegment(name)];",
-      "replacement": "const chars = [...name.toLowerCase()];",
+      "search": "|| wildcard(foldSegment(pattern), foldSegment(name));",
+      "replacement": "|| false;",
       "testFile": "test/path-policy.test.ts",
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
-    },
-    {
-      "id": "projection-converter-empty-root",
-      "file": "src/hub/text-projection.ts",
-      "search": "profile(EMPTY_ROOT, false,",
-      "replacement": "profile(options.cwd, false,",
-      "testFile": "test/text-projection.test.ts",
-      "testName": "a converter reads only its input snapshot and its own program, never other project files"
     },
     {
       "id": "projection-failure-memo",
@@ -3216,6 +3208,22 @@
       "replacement": "|| false))",
       "testFile": "test/sdlc.test.ts",
       "testName": "the owner relinks a PR after a reviewed head was recorded; only the reviewer records a head (#382)"
+    },
+    {
+      "id": "policy-glob-lowercase-single",
+      "file": "src/hub/path-policy.ts",
+      "search": "return wildcard(pattern.toLowerCase(), name.toLowerCase()) ||",
+      "replacement": "return false ||",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
+    },
+    {
+      "id": "projection-project-data-deny",
+      "file": "src/hub/text-projection.ts",
+      "search": "const projectDeny = \"\\n(deny file-read-data (subpath \" + sbplString(realPath(this.options.cwd)) + \"))\";",
+      "replacement": "const projectDeny = \"\";",
+      "testFile": "test/text-projection.test.ts",
+      "testName": "a converter reads only its input snapshot and its own program, never other project files"
     }
   ]
 }
