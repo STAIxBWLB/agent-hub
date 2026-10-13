@@ -189,3 +189,19 @@ test("release audit previews disclose exact totals when IDs are bounded", () => 
   expect(text).toContain("Approved after cut outside this release: #1, #2 (showing 2 of 40)");
   expect(text).toContain("Timing relative to release cut unknown: #3 (showing 1 of 50)");
 });
+
+
+test("release blocked counts refresh when an outside prerequisite changes", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const source = html.slice(html.indexOf("let planningEdit ="), html.indexOf("function peerMark("));
+  const updateSource = html.match(/^function update\(.*$/m)![0];
+  const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
+  const own = { id: 1, state: "proposed", title: "own", deps: [2] }, outside = { id: 2, state: "in_progress", title: "dependency" };
+  const snapshot = { tasks: [own, outside], releases: [{ id: 1, name: "phase", goal: "safe", state: "planning", revision: 0, tasks: [own], afterCut: [], afterCutUnknown: [] }], planningCapabilities: { enabled: true } };
+  const el = (_tag: string, text?: string) => { const node = new Node(); node.textContent = text ?? ""; return node; };
+  const api = runInNewContext(`const $=get;const signatures=new Map();let boardViewState={snapshot};${updateSource}\n${source};({render:renderPlanning})`, { get, snapshot, el, badge: (text: string) => el("span", text), boardContext: () => ({ projectId: "a" }), sameBoardContext: () => true, empty: () => {}, boardButton: () => new Node() });
+  const text = () => get("releases").children.flatMap(row => row.children.map(node => node.textContent)).join("\n");
+  api.render(snapshot); expect(text()).toContain("1 remaining of 1 / 1 blocked");
+  api.render({ ...snapshot, tasks: [own, { ...outside, state: "approved" }] });
+  expect(text()).toContain("1 remaining of 1 / 0 blocked");
+});

@@ -3032,6 +3032,14 @@
       "replacement": "return this.d.board.releases().map(release => { for (const task of this.d.board.list()) actualTaskDates(task);",
       "testFile": "test/board-followup.test.ts",
       "testName": "release audit snapshots bound previews and scan each task history once"
+    },
+    {
+      "id": "release-external-dependency-refresh",
+      "file": "src/ui/index.html",
+      "search": "update('releases',{releases,taskStates:[...states]},target=>{",
+      "replacement": "update('releases',releases,target=>{",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "release blocked counts refresh when an outside prerequisite changes"
     }
   ]
 }
