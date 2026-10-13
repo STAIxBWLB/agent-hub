@@ -2028,7 +2028,7 @@
     {
       "id": "split-plan-pii-floor",
       "file": "src/hub/tasks.ts",
-      "search": "signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join(\"\\n\") })",
+      "search": "signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!",
       "replacement": "signals: [...new Set([...this.signalsFor(part)",
       "testFile": "test/planner-split.test.ts",
       "testName": "split plans containing PII are private before any observer or public response (#263)"
@@ -2768,6 +2768,14 @@
       "replacement": "...[],",
       "testFile": "test/planner-split.test.ts",
       "testName": "split retains initial deterministic privacy after routing changes during screening"
+    },
+    {
+      "id": "split-final-deterministic-provenance",
+      "file": "src/hub/tasks.ts",
+      "search": "deterministicPrivate[index] ? undefined : verdict",
+      "replacement": "verdict",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split records final deterministic privacy instead of an earlier clear screen"
     }
   ]
 }
