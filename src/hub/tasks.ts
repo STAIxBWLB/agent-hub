@@ -753,7 +753,7 @@ export class Tasks {
   async importGitHub(by: PeerId, input: GitHubImportSelection, run?: SdlcGh): Promise<{ imported: number[]; existing: number[]; partial: boolean; complete: boolean; unconfirmed?: true }> {
     if (by !== USER) throw new PreEffectToolRefusal("GitHub import is a person console command");
     const deadline = performance.now() + 20_000;
-    const page = await readGitHubImport(input, run ?? ((args, timeout) => sdlcGh(args, timeout, this.d.cwd)));
+    const page = await readGitHubImport(input, run ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, this.d.cwd, bound)));
     const imported: number[] = [], existing: number[] = [];
     for (const issue of page.issues) {
       if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };
