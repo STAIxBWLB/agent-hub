@@ -2889,3 +2889,13 @@ exclusion and fixed prompt/footer geometry remain. No new request or timer.
 Automatic reroutes of planner-pulled work retain WIP and delivery-hold admission
 during offline, budget, roster and idle recovery. Explicit manual assignments
 retain their existing override authority.
+
+
+GitHub intake refuses comma-containing labels rather than allowing gh to split
+one literal label into several filters. WIP capacity excludes owner candidates
+only; eligible reviewers retain normal review routing. An auto-reassigning
+planner idle sweep waits without consuming its final step while no owner has
+capacity. Parent-only memory notes do not prevent unused child undo; child
+reference markers remain protected. Split-part plan schemas follow the selected
+project profile. Terminal tables preserve the visible read for stages and use
+a fresh peer status read on the same authenticated connection.

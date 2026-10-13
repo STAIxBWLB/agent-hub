@@ -1821,3 +1821,8 @@ Final review found active notices suppressed by expanded footers. Source now
 shows them in panel body or once in the local stream, away from the character.
 Added output/expiry/prompt geometry regressions and two guards. First local
 execution was admission-deferred; final actual proof remains pending.
+
+
+## Project board phone-width fixture (2026-10-13)
+
+Actual source at 1bbced04 was served with synthetic data through the normal loopback dashboard session path. Desktop/light and 390px light/dark captures were viewed; five columns, six cards, guidance accessible names, keyboard focus and no horizontal overflow were confirmed. Later candidate UI source is byte-identical. Receipt: [phone-width verification](verification/2026-10-13-board-phone.md). This supersedes earlier phone-fixture pending statements only; native planner/two-release, accounts, model ingestion and measured effects remain unverified.
