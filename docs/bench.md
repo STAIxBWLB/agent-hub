@@ -147,6 +147,11 @@ ahub bench run ../suites/s.json --arm all-off --addon claude-mem=off --addon pon
 ahub bench compare all-on ripwire-off all-off
 ```
 
+`--memory off|claude-mem|native|both` declares which memory the arm's hub runs with (#258): `off` is neither
+claude-mem nor hub memory, `claude-mem` only claude-mem, `native` only hub memory, `both` both. The runner reads the
+project's `memory.enabled` and `memory.native` and refuses a mismatch before anything runs; restart the hub after
+changing them. The header keeps it as `condition.memory`.
+
 Switching an add-on is the person's setup between runs (a plugin's `enabledPlugins` entry, PATH); the runner only
 checks it. CooperBench (`docs/cooperbench.md`) keeps every add-on off by design, so add-on arms run here.
 

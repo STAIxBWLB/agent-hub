@@ -2607,3 +2607,14 @@ holding (`ponytail:` no consensus; a broker if concurrent cross-machine work nee
 through `hub_task_propose(goal)` to this project's long-term tasks only; a person links across projects. Status, the
 console at hub start, recall and the dashboard's Long-term tasks tab show state and lease.
 
+## Amendment: claude-mem import, suggested edges and the memory measurement (#258, phase 3)
+
+`ahub memory import claude-mem` (a person's) copies claude-mem observations whose metadata names a `peer` into
+long-term hub memory as `source: claude-mem`, opening claude-mem's database read-only and skipping model answers,
+PII-pattern and secret-looking text; ids are deterministic, so a re-import adds nothing. `memory.suggest_edges` (off by
+default) lets the hub's model suggest `contradicts` / `same_topic` between a new entry and up to six near ones, checked
+against that closed list and stored as `hub-model` suggestions; they are drawn dashed and excluded from briefs, recall
+and `ahub ask` until a person confirms them. Measurement: `memory_brief` events (counts), research records' `briefs`
+and the report's by-memory-brief split, and `ahub bench run --memory off|claude-mem|native|both` arms checked against
+the project's settings. Whether hub memory helps stays a research result, not an acceptance claim.
+
