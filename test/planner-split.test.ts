@@ -154,3 +154,13 @@ test("legacy split parents ignore later custom dev aliases",async()=>{
  const tasks=new Tasks({...f.deps,profile:"dev",profileData:resolveProfile("dev",{classes:{custom:"implement"}})});
  await expect(tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a",class:"custom"},{title:"b"}],reason:"parts"})).rejects.toThrow();expect(f.board.list()).toHaveLength(1);
 });
+
+test("split undo refuses child-scoped memory entries",async()=>{
+ const f=rig(),store=new MemoryStore({home:join(f.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...f.deps,store:{store,project:"split",repo:"owner/repo"}}),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});
+ const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});await tasks.remember(USER,{text:"child note",task:result.children[0]!.id});await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced");expect(f.board.get(result.children[0]!.id)).toBeDefined();
+});
+test("private parent split records inherited PII without invented regex verdicts",async()=>{
+ const f=rig(),records:ScreenRecord[]=[];const tasks=new Tasks({...f.deps,routing:()=>({...f.deps.routing(),signals:{...f.deps.routing().signals,pii_screen:"local"}}),piiScreen:async()=>({label:"unknown",miss:"failed",ms:2}),recordScreen:record=>records.push(record)});
+ const parent=await tasks.propose(USER,{title:"public words",class:"implement",backlog:true});const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});
+ for(const child of result.children){expect(child.history.find(entry=>entry.event==="screened")?.note).toBe("pii: inherited");expect(records.find(record=>record.task===child.id)).toEqual({task:child.id,item:"task",label:"pii",source:"inherited"});}
+});
