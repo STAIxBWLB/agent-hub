@@ -2120,6 +2120,22 @@
       "replacement": "characterAttentionLine(value, character, now, s.petBlink)",
       "testFile": "test/pet-characters.test.ts",
       "testName": "console line glyph mode selects distinct trusted catalog output without moving the prompt"
+    },
+    {
+      "id": "pet-expanded-panel-notice",
+      "file": "src/cli/console-state.ts",
+      "search": "if (noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== \"line\") lines.unshift",
+      "replacement": "if (false) lines.unshift",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expanded pets keep active notices in panel body and away from character footer"
+    },
+    {
+      "id": "pet-expanded-stream-notice",
+      "file": "src/cli/console.ts",
+      "search": "if (key !== lastExpandedNotice) { lastExpandedNotice = key;",
+      "replacement": "if (false) { lastExpandedNotice = key;",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "expanded stream pets print notice feedback once without putting prose in the footer"
     }
   ]
 }

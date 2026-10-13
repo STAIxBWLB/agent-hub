@@ -35,3 +35,9 @@ test("primary stream footer boundary survives alternate panels with the pet turn
  const running=runConsole({cwd:root,stateDir:root,terminal,client,color:false});
  try{expect(output).toContain("\x1b[1;31r");key("\t");for(let n=0;n<5;n++)key("P");client.onPush({t:"notice",line:"PANEL_EVENT_MARKER"});output="";key("\t");expect(output).toContain("\x1b[?1049l");for(let row=32;row<=36;row++)expect(output).toContain(`\x1b[${row};1H\x1b[2K`);expect(output).toContain("PANEL_EVENT_MARKER");expect(output.indexOf("\x1b[36;1H\x1b[2K")).toBeLessThan(output.indexOf("PANEL_EVENT_MARKER"))}finally{stop();await running;rmSync(root,{recursive:true})}
 });
+
+test("expanded stream pets print notice feedback once without putting prose in the footer",async()=>{
+ const root=mkdtempSync(join(tmpdir(),"ahub-pet-notice-"));mkdirSync(join(root,".agenthub"));writeFileSync(join(root,".agenthub/config.json"),JSON.stringify({pet:{size:"full",glyphs:"ascii"}}));
+ let output="",key=(_value:string)=>{},stop=()=>{},resize=()=>{};const terminal:ConsoleTerminal={columns:120,rows:40,isTTY:true,write:text=>{output+=text},raw:()=>{},onData:fn=>{key=fn;return()=>{}},onSignal:fn=>{stop=fn;return()=>{}},onResize:fn=>{resize=fn;return()=>{}}};const client={request:async()=>({}),send:()=>{},close:()=>{},onPush:()=>{},onClose:()=>{}};
+ const running=runConsole({cwd:root,stateDir:root,terminal,client,color:false});try{output="";key("a");expect(output).toContain("Notice: no request selected; [ ] selects one");output="";resize();expect(output).not.toContain("no request selected")}finally{stop();await running;rmSync(root,{recursive:true})}
+});

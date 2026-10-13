@@ -1726,3 +1726,8 @@ and block line faces intentionally have identical bytes. Added a separate
 observable catalog fixture, restored in finally, retaining every earlier assertion.
 Local execution of this additional case is admission-deferred, not a pass;
 current immutable-head full platform/seed proof is pending.
+
+Final review found active notices suppressed by expanded footers. Source now
+shows them in panel body or once in the local stream, away from the character.
+Added output/expiry/prompt geometry regressions and two guards. First local
+execution was admission-deferred; final actual proof remains pending.

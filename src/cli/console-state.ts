@@ -575,6 +575,9 @@ export function renderConsole(s: ConsoleState, columns: number, rows = 24, now =
   return renderConsoleLines(s, columns, rows, now).map(line => paint(line, false));
 }
 const NOTICE_MS = 10_000;
+export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt">, now = Date.now()): boolean {
+  return !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+}
 export const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
@@ -720,7 +723,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
   if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${duration(permission.expiresAt - now)} left`, "muted"));
   else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
-  const noticeShown = !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+  const noticeShown = activeNotice(s, now);
   if (noticeShown) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
   const neverPeer = s.confirm?.type === "permission_default" ? s.confirm.peer : s.confirm?.type === "command" && s.confirm.args[0] === "permission" && s.confirm.args[2] === "never-ask" ? s.confirm.args[1] : undefined;
   const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
@@ -782,6 +785,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       lines.push(rule, ...title, ...tail);
     }
   }
+  if (noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== "line") lines.unshift(...wrap(`Notice: ${s.notice}`, columns).map(text => [span(text, s.noticeTone ?? "failure")]));
   const body = lines.slice(0, height); while (body.length < height) body.push([]);
   return [header(s, columns), rule, ...body, ...decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown)];
 }
