@@ -2917,3 +2917,5 @@ Dashboard backlog splits receive a dedicated outer HTTP request bound above mana
 An acknowledged ACP permission-mode change awaits queued cancellation cleanup only when the cancelled prompt response has already been observed. A still-unreported cancelled prompt stays busy under its existing deadline, while mode acknowledgements remain available. A successful mode acknowledgement alone does not prove the peer is idle.
 
 Task idle sweeps ignore body-free memory-reference bookkeeping when finding the last real activity. Saving a task note or goal link does not postpone an idle notice or restart its escalation ladder.
+
+Split reasons preserve deterministic privacy from both initial and final policy checks, including parent privacy. Once withheld, a reason stays withheld in public history even if routing patterns are later removed.
