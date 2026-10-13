@@ -1,3 +1,4 @@
+import {realPath} from "../src/hub/project.ts";
 import {expect,test} from "bun:test";
 import {mkdtempSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
@@ -12,7 +13,7 @@ test("empty explicit release filters fail without broadening the requested board
  finally{rmSync(root,{recursive:true,force:true});}
 },20000);
 test("board release filters and columns are readonly and retain agent backlog floors (#263)",async()=>{
- const root=mkdtempSync(join(tmpdir(),"ahub-board-flags-")),stateDir=join(root,".agenthub/state"),daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},batch_ms:0}}),person=await ControlClient.connect(stateDir,{role:"console"}),peer=await ControlClient.connect(stateDir,{role:"tools",peer:"codex"});
+ const root=realPath(mkdtempSync(join(tmpdir(),"ahub-board-flags-"))),stateDir=join(root,".agenthub/state"),daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},batch_ms:0}}),person=await ControlClient.connect(stateDir,{role:"console"}),peer=await ControlClient.connect(stateDir,{role:"tools",peer:"codex"});
  try{
   const request=(client:ControlClient,op:string,args:unknown={})=>client.request({t:"task",op,args});
   const created=await request(person,"release_new",{name:"first",goal:"safe",order:0}),release=JSON.parse(created.text);
