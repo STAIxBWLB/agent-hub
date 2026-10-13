@@ -2088,6 +2088,14 @@
       "replacement": "state.petChoices = undefined;",
       "testFile": "test/pet-console-runtime.test.ts",
       "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
+    },
+    {
+      "id": "pet-stream-footer-shrink",
+      "file": "src/cli/console.ts",
+      "search": "priorStreamFooterStart < footerStart",
+      "replacement": "false",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
     }
   ]
 }
