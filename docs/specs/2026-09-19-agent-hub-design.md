@@ -2629,3 +2629,18 @@ and rebuilds; the dashboard's Memory section is read-only inside the existing CS
 (`memory.native`). Proposed defaults 1 to 5 of #258 are taken as confirmed by the request to implement it. Machine sync,
 long-term tasks with leases (decision 9's amendment), claude-mem import and model-suggested edges follow in later phases.
 
+## Amendment: hub memory between machines and long-term tasks (#258, phase 2)
+
+Decision 9 is amended for memory only: the memory directory is a git repository that tracks `log/*.jsonl` and syncs
+through a private remote a person sets (`ahub memory sync --remote`); each machine commits only its own segment and
+merges others' unrelated histories, so a merge never conflicts. A GitHub remote that `gh` reports public is refused;
+an unknown one warns. Sync is fail-open (one log line), runs at hub start and every `memory.sync_interval_min`, one at a
+time per machine. Git calls keep the hub's safe configuration except the person's credential helper, for this
+repository only. Long-term tasks (`goal`, `goal_state`, `goal_link`, `lease`, `lease_force` entries) carry state,
+milestones, dependencies and linked board tasks (project, id and proposal time). A hub working on a linked board task
+holds the lease (4 h, renewed past half) unless another machine holds it; a person's `ahub goal take --force` voids
+earlier claims. The lease is advisory: claims inside one sync window both stand and show as a conflict, the earlier
+holding (`ponytail:` no consensus; a broker if concurrent cross-machine work needs one). A peer links its own board task
+through `hub_task_propose(goal)` to this project's long-term tasks only; a person links across projects. Status, the
+console at hub start, recall and the dashboard's Long-term tasks tab show state and lease.
+

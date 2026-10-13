@@ -711,6 +711,15 @@ ahub memory forget 1a2b3c4d              # a person's; also promote, demote, sup
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
 
+Between your machines, through a private git remote, with long-term tasks that span them:
+
+```bash
+ahub memory sync --remote git@github.com:you/agent-hub-memory.git   # once per machine; then every 10 minutes
+ahub goal new "native memory"                                        # a long-term task
+ahub goal                                                            # open ones, who holds each and until when
+ahub goal take 1a2b3c4d --force                                      # take one over from another machine
+```
+
 ## Benchmarks
 
 In a git repository kept for benchmarks (`"bench": { "enabled": true }` in its `.agenthub/config.json`, a clean tree),

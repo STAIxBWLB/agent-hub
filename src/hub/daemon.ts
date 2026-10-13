@@ -90,7 +90,8 @@ import { grantablePath, instructionProtection, isPermissionMode, permissionBound
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
-import { extractNodes, MemoryStore, type View as MemoryView } from "../memory/store.ts";
+import { DEFAULT_LEASE_MS, extractNodes, MemoryStore, taskKey, type GoalView, type View as MemoryView } from "../memory/store.ts";
+import { syncMemory } from "../memory/sync.ts";
 import { memoryProjectKey, nativeRecall, promotionScreen, withoutPii } from "../memory/recall.ts";
 
 export interface HubConfig {
@@ -108,8 +109,8 @@ export interface HubConfig {
   batch_max: number;
   batch_ms: number;
   queue_cap: number;
-  /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval. */
-  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number };
+  /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval; `sync_interval_min`: machine sync while a remote is set (default 10, 0 off). */
+  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number };
   roster: PeerRoster;
   roles: Record<string, string[]>;
   profile?: ProfileName;
@@ -248,6 +249,11 @@ function ttlDays(v: unknown): number {
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > 3650) throw new Error("memory.short_ttl_days must be a whole number of days from 1 to 3650");
   return v;
 }
+/** `memory.sync_interval_min`: 0 (off) or a whole number of minutes up to a day. */
+function syncMinutes(v: unknown): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 1440) throw new Error("memory.sync_interval_min must be 0 (off) or a whole number of minutes up to 1440");
+  return v;
+}
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -323,7 +329,8 @@ export function loadConfig(cwd: string): HubConfig {
     permission_modes: permissionDefaults(file.permission_modes),
     protect_instruction_files: instructionProtection(file.protect_instruction_files),
     permission_default_sources: appliedPermissionSources,
-    memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}) }, // the native store is on with any project config (#258)
+    memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}),
+      ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}) }, // the native store is on with any project config (#258)
     roster: peerRosterConfig(file.roster),
     roles: conductorPolicy.roles,
     conductor: conductorPolicy.conductor,
@@ -816,18 +823,64 @@ export async function startDaemon(opts: DaemonOptions) {
    * Notes as they leave for a model (a recall preface, a brief, `ask` evidence) are screened again under the current
    * policy: a shared note was accepted under another project's patterns, and patterns change. A match is withheld.
    */
-  const screenMemory = <T extends MemoryView>(vs: T[]): T[] => withoutPii(vs, currentRouting(opts.cwd, log), opts.cwd, config.pii?.paths ?? []);
+  const screenMemory = <T extends { title: string | null; text: string }>(vs: T[]): T[] => withoutPii(vs, currentRouting(opts.cwd, log), opts.cwd, config.pii?.paths ?? []);
   const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
   /** A task's own nodes: what its title names (an issue, a path), its refs and plan paths, plan symbols, and the task itself. */
   const taskNodes = (t: { id?: number; created?: number; title?: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }) =>
     extractNodes(t.title ?? "", { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, paths: [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])], symbols: t.plan?.symbols, ...(t.id !== undefined && t.created !== undefined ? { task: { id: t.id, created: t.created } } : {}) });
+
+  const leaseNoticed = new Set<string>();
+  const goalLine = (g: GoalView) => `goal:${g.id.slice(0, 8)} ${g.state} ${g.title}${g.lease.holder ? ` (held by ${g.lease.holder === memoryStore?.machine.id ? "this machine" : `machine ${g.lease.holder.slice(0, 8)}`} until ${g.lease.until}${g.lease.conflict.length ? `; conflicting claim from ${g.lease.conflict.map((m) => m.slice(0, 8)).join(", ")}` : ""})` : ""}`;
+  /**
+   * #258: a board task that is part of a long-term task holds that task's lease for this machine while it is worked
+   * on: claimed when free, renewed past half its time, never taken from another machine's active lease (that is a
+   * person's `ahub goal take --force`). Fail-open.
+   */
+  function renewLeases(t: { id: number; created: number }): void {
+    try {
+      for (const g of memoryStore!.goalsOfTask(taskKey(memoryProject, t))) {
+        if (g.state === "done" || g.state === "dropped") continue;
+        if (g.lease.holder && g.lease.holder !== memoryStore!.machine.id) {
+          const key = `${g.id}\0${g.lease.holder}`;
+          if (!leaseNoticed.has(key)) { leaseNoticed.add(key); notify(`task #${t.id} is part of ${goalLine(g)}; another machine holds it, so this one did not claim it`); }
+          continue;
+        }
+        if (g.lease.holder && Date.parse(g.lease.until!) - Date.now() > DEFAULT_LEASE_MS / 2) continue;
+        memoryStore!.take(g.id, HUB);
+      }
+    } catch (e) { log(`hub memory lease not renewed: ${(e as Error).message}`); }
+  }
+  /** Every in-progress board task's long-term tasks: leases are held while work goes on, not only when the board changes. */
+  function renewAllLeases(): void {
+    if (!memoryStore) return;
+    for (const t of board.list("in_progress")) if (!tasks.isPii(t)) renewLeases(t);
+  }
+  let syncRun: Promise<void> | undefined;
+  const syncStop = new AbortController();
+  /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
+  function syncNow(): Promise<void> {
+    if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
+    syncRun = (async () => {
+      try {
+        const r = await syncMemory(memoryStore!, { signal: syncStop.signal });
+        if (!r.ok && !/^(no sync remote|stopped)/.test(r.error ?? "")) log(`hub memory sync failed: ${r.error}`);
+        else if (r.warning) log(`hub memory sync: ${r.warning}`);
+      } finally { syncRun = undefined; }
+    })();
+    return syncRun;
+  }
 
   /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
   async function ensurePreface(peer: PeerId): Promise<void> {
     if ((!config.memory.enabled && !memoryStore) || recalled.has(peer)) return;
     // The hub's own long-term decisions, contracts and fails lead; claude-mem's recent work follows, each with half the budget.
     let own: string | undefined;
-    try { own = memoryStore ? nativeRecall(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")).slice(0, 30), config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, memoryLine) : undefined; }
+    try {
+      // This project's active long-term tasks lead, then its latest long-term decisions, contracts and fails.
+      const goals = memoryStore ? screenMemory(memoryStore.goals(memoryProject).filter((g) => g.state !== "done" && g.state !== "dropped").map((g) => ({ ...g, text: "" }))).map(goalLine) : [];
+      // Entries and titles are agents' words from any synced machine: one line each, and no forged message header.
+      own = memoryStore ? nativeRecall([...goals, ...screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")).slice(0, 30).map(memoryLine)], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
+    }
     catch (e) { log(`hub memory recall failed: ${(e as Error).message}`); }
     const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens) : undefined;
     const block = [own, theirs].filter(Boolean).join("\n\n");
@@ -1153,6 +1206,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "proposed" || h.event === "backlog pulled" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(t.planningRevision ? { release: t.release ?? null, priority: t.priority ?? null, plannedStart: t.plannedStart ?? null, due: t.due ?? null } : {}), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
+    if (memoryStore && (t.state === "in_progress" || h.event === "done") && !tasks.isPii(t)) renewLeases(t);
     if ((h.event === "proposed" || h.event === "backlog pulled") && projections.enabled && turnLog) {
       const created = taskProposalAt(t);
       if (created !== undefined) {
@@ -3083,16 +3137,18 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       const q = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
       const text = (v: unknown, max = 200) => typeof v === "string" && v.trim() && v.length <= max ? v.trim() : undefined;
-      const tier = q.tier === "short" || q.tier === "long" ? q.tier : "long";
+      const tier = q.tier === "short" || q.tier === "long" || q.tier === "goals" ? q.tier : "long";
       const kind = typeof q.kind === "string" && (["decision", "finding", "contract", "fail"] as string[]).includes(q.kind) ? q.kind as MemoryView["kind"] : undefined;
       const peer = text(q.peer, 32), machine = text(q.machine, 32), search = text(q.q), node = text(q.node), since = [text(q.since, 40)].find((v) => v !== undefined && !Number.isNaN(Date.parse(v))); // an unreadable since filters nothing
       const hops = q.hops === 2 ? 2 : 1;
       const all = memoryStore.list({ project: memoryProject, limit: Number.MAX_SAFE_INTEGER });
-      const rows = memoryStore.list({ project: memoryProject, tier, ...(kind ? { kind } : {}), ...(peer ? { peer } : {}), ...(machine ? { machine } : {}), ...(since ? { since } : {}), ...(search ? { q: search } : {}), limit: 50 });
+      const goals = memoryStore.goals(memoryProject);
+      const rows = tier === "goals" ? [] : memoryStore.list({ project: memoryProject, tier, ...(kind ? { kind } : {}), ...(peer ? { peer } : {}), ...(machine ? { machine } : {}), ...(since ? { since } : {}), ...(search ? { q: search } : {}), limit: 50 });
       const shape = (v: MemoryView, full = false) => ({ id: v.id, at: v.at, tier: v.tier, kind: v.kind, peer: v.peer, machine: v.machine, project: v.project, scope: v.scope, title: v.title, text: full ? v.text : v.text.slice(0, 600),
         task: v.task, about: v.about, source: v.source, supersededBy: v.supersededBy, promotedFrom: v.promotedFrom, expiresAt: v.expiresAt });
       const selected = node?.startsWith("mem:") ? memoryStore.get(node.slice(4), memoryProject) : undefined;
-      return { memory: { tier, counts: { short: all.filter((v) => v.tier === "short").length, long: all.filter((v) => v.tier === "long").length },
+      return { memory: { tier, counts: { short: all.filter((v) => v.tier === "short").length, long: all.filter((v) => v.tier === "long").length, goals: goals.filter((g) => g.state !== "done" && g.state !== "dropped").length },
+        ...(tier === "goals" ? { goals: goals.slice(0, 50) } : {}),
         peers: [...new Set(all.map((v) => v.peer))].sort(), machines: [...new Set(all.map((v) => v.machine))].sort(), machine: memoryStore.machine.id,
         entries: rows.map((v) => shape(v)), ...(node ? { node, graph: memoryStore.graph(memoryProject, node, hops, 200), ...(selected ? { detail: shape(selected, true) } : {}) } : {}) } };
     } catch (e) { log(`hub memory view failed: ${(e as Error).message}`); return {}; } // an unreadable store never breaks the dashboard
@@ -4174,6 +4230,16 @@ export async function startDaemon(opts: DaemonOptions) {
         void holdPeer(msg.t, String(msg.peer)).then((result) => reply({ t: msg.t, ...result }), () => reply({ t: msg.t, ok: false, error: "peer resume validation failed" }));
         return;
       }
+      case "goal_link":
+        // #258: a person links a board task to a long-term task (`ahub goal link`); the link goes through Tasks.
+        if (c.role !== "console") return void reply({ t: msg.t, ok: false, error: "goal_link is a console command" });
+        try {
+          const text = tasks.linkGoal(USER, msg.task, msg.goal);
+          const linked = board.get(Number(msg.task));
+          if (linked?.state === "in_progress" && !tasks.isPii(linked)) renewLeases(linked); // already being worked on: hold it now
+          return void reply({ t: msg.t, ok: true, text });
+        }
+        catch (e) { return void reply({ t: msg.t, ok: false, error: (e as Error).message }); }
       case "ask":
         // Console only: the evidence may hold PII task text (on campus), and the answer is for the person at the terminal.
         if (c.role !== "console") return void reply({ t: "ask", ok: false, error: "ask is a console command" });
@@ -4286,6 +4352,8 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.close();
       conductorHolds.close();
       executionBudget.close();
+      syncStop.abort(); // a sync in flight kills its git step and ends before the store closes
+      await syncRun?.catch(() => undefined);
       memoryStore?.close();
       board.close();
       turnLog?.close();
@@ -4325,6 +4393,18 @@ export async function startDaemon(opts: DaemonOptions) {
   // #258: approvals whose settle entry a crash cut off are settled now (decisions, contracts and fails reach long-term).
   try { const settled = tasks.reconcileMemory(); if (settled) log(`hub memory: settled ${settled} approved task${settled === 1 ? "" : "s"} a stop had left unsettled`); }
   catch (e) { log(`hub memory reconciliation failed: ${(e as Error).message}`); }
+  if (memoryStore) {
+    // #258: which long-term tasks are open, and who holds them, after this machine's last sync.
+    try { for (const g of memoryStore.goals(memoryProject).filter((x) => x.state !== "done" && x.state !== "dropped")) notify(`long-term task ${goalLine(g)}`); }
+    catch (e) { log(`hub memory goals unreadable: ${(e as Error).message}`); }
+    renewAllLeases();
+    const leases = setInterval(renewAllLeases, 10 * 60_000); leases.unref?.(); intervals.push(leases);
+    const every = config.memory.sync_interval_min ?? 10;
+    if (every > 0) {
+      const first = setTimeout(() => void syncNow(), 5_000); first.unref?.(); intervals.push(first);
+      const timer = setInterval(() => void syncNow(), every * 60_000); timer.unref?.(); intervals.push(timer);
+    }
+  }
   if (crashed) {
     // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
     try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }

@@ -581,7 +581,7 @@ test("review of #352: notes leaving for a model are screened under the current P
   expect(store(twoHome, clock).list().map((v) => v.text)).toEqual(["newer synced decision"]);
 });
 
-test("review of #352: a note on a task never approved leaves after the fixed backstop, and the CLI screens what it prints", () => {
+test("review of #352: a note on a task never approved leaves after the fixed backstop, and the CLI screens what it prints", async () => {
   const home = temp("orphan"), clock = { t: Date.parse("2026-10-01T00:00:00Z") };
   const s = store(home, clock);
   s.note(note({ text: "on an abandoned task", task: "work/app#15@1" }));
@@ -592,16 +592,16 @@ test("review of #352: a note on a task never approved leaves after the fixed bac
   const cwd = temp("cli"), project = memoryProjectKey(cwd);
   const pii = s.note(note({ project, tier: "long", kind: "decision", text: "call 900101-1234567 about it" }));
   s.note(note({ project, tier: "long", kind: "decision", text: "a clean decision" }));
-  const out = memoryCommand(["list"], cwd, { store: s });
+  const out = await memoryCommand(["list"], cwd, { store: s });
   expect(out).toContain("a clean decision");
   expect(out).not.toContain("900101-1234567");
   expect(out).toContain("1 withheld");
-  expect(() => memoryCommand(["show", pii], cwd, { store: s })).toThrow("withheld");
+  await expect(memoryCommand(["show", pii], cwd, { store: s })).rejects.toThrow("withheld");
   // A config that does not load never drops its private paths: a read that needs them fails closed.
   s.note(note({ project, tier: "long", kind: "decision", text: "about a file", about: ["path:clients/a.csv"] }));
   mkdirSync(join(cwd, ".agenthub"), { recursive: true });
   writeFileSync(join(cwd, ".agenthub", "config.json"), JSON.stringify({ pii: { paths: ["clients/**"] }, memory: { short_ttl_days: "two" } }));
-  expect(() => memoryCommand(["list"], cwd, { store: s })).toThrow("does not load");
+  await expect(memoryCommand(["list"], cwd, { store: s })).rejects.toThrow("does not load");
 });
 
 test("review of #352: a note written while the index is locked shows on the next read", () => {
@@ -662,5 +662,5 @@ test("review of #352: the promotion screen ignores a task key's numbers, sees th
   const before = kept.expiresAt;
   s.promote(kept.id, "user");
   expect(s.get(kept.id)?.expiresAt).toBe(before); // a second refusal never pushes the deadline out
-  expect(() => memoryCommand(["promote", kept.id], cwd, { store: s })).toThrow("stays short-term");
+  await expect(memoryCommand(["promote", kept.id], cwd, { store: s })).rejects.toThrow("stays short-term");
 });

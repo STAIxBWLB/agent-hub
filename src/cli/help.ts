@@ -108,6 +108,9 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] [--json]", "the hub's own memory for this project: decisions, contracts, fails and findings, short- and long-term (docs/memory.md)"],
     ["ahub memory search <words> | show <id> | graph <id|node> [--hops 1|2] [--json]", "find entries, read one with its provenance, or list its graph neighbourhood"],
     ["ahub memory promote|demote|forget <id> | supersede <old> <new> | rebuild", "a person's changes to memory: move an entry between tiers, forget it, mark it superseded, or rebuild the index from the logs"],
+    ["ahub memory sync [--remote <private git url>] | machine [--label <name>]", "sync hub memory with your other machines through a private git remote (a person's), or show or name this machine"],
+    ["ahub goal [list] [--all] | show <id> [--json]", "long-term tasks: state, which machine holds each and until when, linked board tasks"],
+    ["ahub goal new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task> | state <id> <state> | done <id> | take <id> [--force]", "a person's changes to long-term tasks; take --force voids other machines' claims"],
   ]],
   ["Hooks", [
     ["ahub check-path --hook", "check-path as a Claude Code PreToolUse hook (templates/claude-hooks.json); never blocks"],
