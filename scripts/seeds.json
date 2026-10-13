@@ -2216,6 +2216,22 @@
       "replacement": "if (!pull) return next;",
       "testFile": "test/planning-notices.test.ts",
       "testName": "person-returned ownerless work produces a planner notice without a restart (#263)"
+    },
+    {
+      "id": "planner-notice-delivery-refs",
+      "file": "src/hub/tasks.ts",
+      "search": "refs: { backlog: ids }",
+      "replacement": "refs: {}",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "queued planner batches omit pulled ids at delivery and rebatch remaining backlog"
+    },
+    {
+      "id": "planner-notice-delivery-state",
+      "file": "src/hub/tasks.ts",
+      "search": "current.length !== ids.length",
+      "replacement": "false",
+      "testFile": "test/planning-notices.test.ts",
+      "testName": "queued planner batches omit pulled ids at delivery and rebatch remaining backlog"
     }
   ]
 }
