@@ -13,6 +13,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Add structural console attention counts, an ASCII STAI rule line, read-only `n` navigation, session `P`/`--no-pet`, presentation configuration and plain-mode updates (#280, phase 1). Larger characters, status/dashboard integration and native visual checks remain pending.
 
 - Add revision-fenced task planning, person-owned phased release controls, actual-history dates and optional research metadata across CLI, tools and dashboard (#263).
+
+- Import the hub's notes from claude-mem into hub memory, add optional model-suggested edges that stay out of evidence until a person confirms them, and measure memory through `memory_brief` counts, a by-memory-brief research split and `ahub bench run --memory` arms (#258, phase 3).
+
 - Sync hub memory between a person's machines through a private git remote (`ahub memory sync`), and add long-term tasks with advisory leases and conflict display (`ahub goal`, `hub_task_propose` `goal`, status, recall and the dashboard's Long-term tasks tab) (#258, phase 2).
 
 - Add the hub's own memory (#258, phase 1): append-only short- and long-term logs in `~/.agenthub/memory/` with a derived graph index, promotion of decision, contract and fail notes on approval, `hub_remember` `horizon` and `scope`, graph-first task briefs, recall and `ahub ask` evidence, `ahub memory`, and a read-only dashboard Memory section. PII task text and secret-looking notes never enter it.

@@ -44,7 +44,7 @@ export interface TasksDeps {
   briefs?: Briefs;
   memory?: MemoryClient;
   /** #258: the hub's own store, the project name it files entries under (the git chain) and the repo `#N` issues belong to. */
-  store?: { store: MemoryStore; project: string; repo: string; deny?: string[] };
+  store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void };
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
   /** The completion check configured for a class, if any (local config only; issue #7). */
@@ -2079,6 +2079,7 @@ export class Tasks {
       // the note gets its own deadline and is never taken for a source waiting for promotion.
       if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) st.store.settle(this.memoryKey(task), by);
       const id = st.store.note({ op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" }, horizon === "short");
+      st.onNote?.(id);
       return { id, tier };
     } catch (e) {
       this.releaseNotice(`a ${kind} note was not saved to hub memory (${(e as Error).message})`);
