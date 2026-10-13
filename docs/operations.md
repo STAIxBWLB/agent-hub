@@ -2803,3 +2803,7 @@ Only a live approval alternates the two waiting poses once per second through
 CSS. `pet.blink:false` and reduced motion retain a static pose. No new timer,
 request, image protocol or character-file load is added. Project reset clears
 the widget and title. Native/browser visual validation remains unverified.
+With mini/full characters, active console notices remain visible away from the
+character: panel body rows show the bounded wrapped notice, and stream mode
+prints each fresh notice once through the existing local stream. Footer prose
+exclusion and fixed prompt/footer geometry remain. No new request or timer.

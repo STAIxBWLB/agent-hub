@@ -9,8 +9,8 @@ import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.
 import type { BusEvent } from "../hub/bus.ts";
 import { consoleNeeds, attentionFacts } from "./attention.ts";
 import { loadPetConfig } from "./pet-config.ts";
-import { CHARACTER_IDS, petGlyphs } from "../pet/frame.ts";
-import { consoleFooterRows } from "./console-state.ts";
+import { CHARACTER_IDS, petGlyphs, petSize } from "../pet/frame.ts";
+import { activeNotice, consoleFooterRows } from "./console-state.ts";
 import { characterAttentionLine } from "./attention.ts";
 
 export interface ConsoleTerminal {
@@ -86,6 +86,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
   let priorStreamFooterStart: number | undefined;
+  let lastExpandedNotice = "";
   const notice = (text: string) => notify(state, text, Date.now());
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
   const streamLines = (event: ConsoleEvent) => terminalText(event.text).replace(/\t/g, " ").split("\n").flatMap((text, index) => {
@@ -132,6 +133,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (droppedStream) writeStream({ text: `${plural(droppedStream, "older panel-mode event")} omitted from console memory; inspect hub.log for the full stream.` });
       for (const event of pendingStream) writeStream(event);
       pendingStream = []; droppedStream = 0;
+    }
+    if (state.mode === "stream" && state.petEnabled && petSize(state.petSize, columns, rows) !== "line" && activeNotice(state)) {
+      const key = JSON.stringify([state.noticeAt, state.notice]);
+      if (key !== lastExpandedNotice) { lastExpandedNotice = key; stream({ text: `Notice: ${state.notice}`, kind: "notice", tone: state.noticeTone ?? "failure" }, false); }
     }
     const lines = renderConsoleLines(state, columns, rows);
     const start = rows - lines.length + 1;

@@ -1767,3 +1767,7 @@ separate test while retaining the earlier HTML assertions: printing the entire
 HTML on failure contained unrelated runtime diagnostic strings, so the strict
 classifier correctly rejected the previous detection. The bounded leaf test now
 also has actual green -> named assertion detected proof. Full final gates pending.
+Final review found active notices suppressed by expanded footers. Source now
+shows them in panel body or once in the local stream, away from the character.
+Added output/expiry/prompt geometry regressions and two guards. First local
+execution was admission-deferred; final actual proof remains pending.

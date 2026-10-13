@@ -80,3 +80,10 @@ test("console line glyph mode selects distinct trusted catalog output without mo
   const after=renderConsoleLines(state,100,24,0);expect(paint(after[20]!,false)).toContain("B B B");expect(after.at(-1)).toEqual(before.at(-1));
  }finally{CHARACTERS.stai.frames.blocks.sleeping.line=prior}
 });
+
+test("expanded pets keep active notices in panel body and away from character footer",()=>{
+ for(const size of ["mini","full"] as PetSize[]){const state={...initialConsoleState(true),petEnabled:true,petSize:size,notice:"READABLE_NOTICE_MARKER",noticeAt:0};const lines=renderConsoleLines(state,120,40,0),footer=consoleFooterRows(state,120,40);
+  expect(lines.slice(0,-footer).map(line=>paint(line,false)).join("\n")).toContain("Notice: READABLE_NOTICE_MARKER");expect(lines.slice(-footer).map(line=>paint(line,false)).join("\n")).not.toContain("READABLE_NOTICE_MARKER");expect(lines).toHaveLength(40);
+  expect(renderConsoleLines(state,120,40,10001).map(line=>paint(line,false)).join("\n")).not.toContain("READABLE_NOTICE_MARKER");
+ }
+});
