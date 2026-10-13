@@ -334,6 +334,11 @@ test("#248: an arm's declared add-on state is checked against the attached peers
   // The offline peer is not part of the arm; each attached peer's add-ons are in the fingerprint.
   expect(run.header.fingerprint.peers).toEqual([{ id: "claude", addons: [{ name: "claude-mem", version: "13.29.0" }] }, { id: "codex", addons: [{ name: "ripwire", version: null }] }]);
   expect(run.attempts.map((a) => a.arm)).toEqual(["all-on", "all-on"]);
+  // #258 AC11: the memory arm is checked against the hub's memory settings the same way.
+  const memoryIo: BenchIo = { ...io, memoryConfig: () => ({ enabled: true, native: false }) };
+  await expect(runBench({ ...opts, arm: "native", memory: "native" }, memoryIo)).rejects.toThrow("declares memory native, but this project's hub runs with claude-mem");
+  const mem = await runBench({ ...opts, arm: "claude-mem-only", memory: "claude-mem", repeat: 1 }, memoryIo);
+  expect(readRuns(home).find((r) => r.header.run === mem)!.header.condition).toEqual({ memory: "claude-mem" });
 }, 30_000);
 
 test("a branch that shares its name with a tag is returned to as the branch", async () => {
