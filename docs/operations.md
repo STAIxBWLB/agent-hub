@@ -63,6 +63,26 @@ a three-line footer, separated by ASCII `-` rules; the stream has one rule above
 its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
 without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
+
+The console attention companion (#280, phase 1) uses ASCII on the rule above
+the footer, leaving the three footer lines and cursor unchanged. It shows
+waiting, blocked, review, working, idle or asleep, with separate action/watch
+counts. `n` selects the next approval or held queue row, or prints an applicable
+command; it never answers a request or runs that command. Editing, choices,
+confirmation and the key table retain their keyboard controls. `P` toggles the
+STAI line and off for the session. Alternate characters and larger forms are
+later phases, pending artwork review.
+
+Configure `pet` in `.agenthub/config.json` or `config.local.json`; local options
+override shared ones. Defaults are `character: "stai"`, `size: "line"`,
+`glyphs: "auto"`, `blink: true`, `bell: false`. This phase always draws ASCII.
+`pet: false` or `ahub console --no-pet` preserves the prior console output.
+Unknown options produce one bounded notice and fall back. Only an open approval
+blinks, using the existing redraw; `blink: false` disables it. The optional bell
+sounds on an action-count transition from zero, at most once per minute, never
+for a message alone. Plain mode prints the line only when the action count
+changes. Messages addressed to `user` remain attention items until the next key.
+No new timer, network request, daemon field or writable settings path is added.
 Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
 ends), never while a command is being edited or a choice is open; under a
 confirmation an arrow dismisses it like any key but y, without moving a tab. A pasted
@@ -675,6 +695,21 @@ ahub research export --format csv  # the records, for your own analysis
 ahub research backfill             # build this project's records once from events.jsonl
 ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, incomplete, wrong, abandoned)
 ```
+
+## Hub memory
+
+The hub keeps its own memory in `~/.agenthub/memory/` beside claude-mem ([how it works](memory.md)): notes saved
+against an open task are short-term; when the task is approved its decisions, contracts and fails become long-term.
+Task briefs, session-start recall and `ahub ask` read it first, and the dashboard has a Memory section.
+
+```bash
+ahub memory                              # this project's entries, newest first
+ahub memory search parser                # every word must match
+ahub memory show 1a2b3c4d                # one entry, its provenance and edges
+ahub memory forget 1a2b3c4d              # a person's; also promote, demote, supersede, rebuild
+```
+
+`"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
 
 ## Benchmarks
 
@@ -1524,8 +1559,8 @@ can run again), unless the error says the state cannot be read (a damaged
 `hub.db` or journal fails the same way every time): `ahub reset --all --yes`
 archives such a state directory as it is. A full reset names the archive once
 the state directory has moved.
-It never touches claude-mem: notes saved with `hub_remember` are shared memory,
-not hub state. Claude Code sessions attached to the hub lose their hub session;
+It never touches claude-mem or hub memory (`~/.agenthub/memory/`): notes saved with
+`hub_remember` are shared memory, not hub state. Claude Code sessions attached to the hub lose their hub session;
 relaunch them with `ahub claude`.
 
 ## Orphaned daemons
@@ -2763,3 +2798,36 @@ staging is incomplete; repeat safely to reconcile the persisted identity.
 Public cards link to their source; PII cards expose no external identity.
 GitHub comments/labels/assignment/closure are never written. Current source and
 native verification remain pending; no live account import was performed.
+## Global attention and prompt output (#280, phase 3)
+
+`ahub pet` reads the selected project's status file without a control token or
+network connection. It accepts only structural counts/state/first metadata from
+a confirmed daemon owner. Missing, malformed, legacy or unconfirmed data is
+reported as unavailable; it is not an empty live hub. `ahub pet --short` writes
+`ahub!N` when a known action count is positive, otherwise no bytes, including no
+newline. Explicit `pet` reads remain available when the presentation is off;
+normal `ahub status` appends the line only while the project's pet is enabled.
+
+An open recovery lock is read without coordinating the operation. Only the
+shared runner check's observed absence adds an action; unknown remains watch and
+is labelled unknown. A matching daemon recovery watch is replaced once, without
+double counting. A missing hub status is labelled unavailable even when a known
+recovery action can be shown. The output never resumes, aborts or disposes a run.
+
+Person-reviewed tasks contribute review actions; an offline peer holding
+unfinished work contributes one watch item with its lowest task id. The console
+receives those structural facts through its existing authenticated status reply.
+`n` selects an exact visible review task, or prints the task/review guidance if
+that row is unavailable. Offline guidance names status/task reads and an explicit
+assignment command. No command is executed by navigation. There is no extra
+console poll, timer or task-list request for stream mode.
+
+Intentionally person-owned work is not an offline agent. Neither user nor hub
+creates an offline watch item, while person-reviewed tasks remain actionable.
+Status reads only the board's structural id/state/owner/reviewer projection and
+reuses it for retained peer ids, avoiding task body/plan/history decoding.
+
+Planner reservations normalize the same lowercase peer syntax as owner arguments,
+reject reserved pseudo-peers and unknown unconfigured ids, and still enforce the
+roster. Returning unstarted ownerless work to Backlog joins the next planner
+notice batch without waiting for a restart.

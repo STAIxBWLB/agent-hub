@@ -4,11 +4,13 @@ import { readMergeQueue } from "./sdlc-queue.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
+import { mentionsPrivatePath } from "../memory/recall.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
+import { extractNodes, looksSecret, PROMOTED_KINDS, type Kind, type MemoryStore, type Scope, type Tier } from "../memory/store.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasStarted, planningUndoEntry, type HistoryEntry, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
@@ -44,6 +46,8 @@ export interface TasksDeps {
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   memory?: MemoryClient;
+  /** #258: the hub's own store, the project name it files entries under (the git chain) and the repo `#N` issues belong to. */
+  store?: { store: MemoryStore; project: string; repo: string; deny?: string[] };
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
   /** The completion check configured for a class, if any (local config only; issue #7). */
@@ -631,6 +635,7 @@ export class Tasks {
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
         if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
+        if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
         const rows = new Map(this.d.board.list().map(row => [row.id, row]));
         const pending = [...(patch.deps ?? task.deps ?? [])], seen = new Set<number>();
@@ -859,7 +864,7 @@ export class Tasks {
     if (!pull && taskHasStarted(task)) throw new PreEffectToolRefusal(`task #${n}: started work cannot return to backlog`);
     const next = this.d.board.update(n, by, pull ? "backlog pulled" : "backlog returned", { state: pull ? "proposed" : "backlog", owner: null, reviewer: null });
     this.offered.delete(n);
-    if (!pull) return next;
+    if (!pull) { this.incomingBacklog.add(n); return next; }
     const waits = this.waitsFor(next);
     if (waits.length) return this.d.board.update(n, HUB, "blocked", {}, `waits for ${waits.map(v => `#${v}`).join(", ")}`);
     // This persisted ready marker also lets a restart offer ownerless work once a peer attaches.
@@ -1802,6 +1807,7 @@ export class Tasks {
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
     if (!reviewer) {
+      this.settleMemory(next);
       if (next.owner) this.d.board.recordOutcome(next.owner, next.class, true); // approved without a review is a success too
       this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
       await this.releaseDependents(next);
@@ -1916,6 +1922,7 @@ export class Tasks {
         }
       }
       this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`, withheld);
+      this.settleMemory(next);
       this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${next.owner ?? "its owner"} it was approved`, () =>
         this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii));
       await this.releaseDependents(next);
@@ -2107,7 +2114,7 @@ export class Tasks {
     return { ...(policy?.route ? { route: policy.route } : {}), ...(policy?.fixed_model ? { fixedModel: policy.fixed_model } : {}), pii, task: String(about.id) };
   }
 
-  async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown }): Promise<string> {
+  async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown }): Promise<string> {
     const text = String(input.text ?? "").trim();
     if (!text) throw new Error("text is required");
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
@@ -2115,24 +2122,96 @@ export class Tasks {
     // Shared with every other peer as well, so text that matches a PII pattern is refused like a note about a PII task.
     const title = String(input.title ?? "").trim();
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: claude-mem processes what it stores with a cloud model");
-    if (!this.d.memory) return "memory is disabled; nothing saved";
+    if (input.horizon !== undefined && input.horizon !== "short" && input.horizon !== "long") throw new Error('horizon is "short" or "long"');
+    if (input.scope !== undefined && input.scope !== "project" && input.scope !== "shared") throw new Error('scope is "project" or "shared"');
+    if (!this.d.memory && !this.d.store) return "memory is disabled; nothing saved";
+    // Long-term notes leave the machine (#258), and claude-mem's observer is a cloud model: a secret goes to neither.
+    if (looksSecret(`${title}\n${text}`)) throw new Error("this note looks like it holds a secret (a key, token or password) and is not saved");
+    if (this.aboutPrivatePath(title, text, task)) throw new Error("this note is about a path the project keeps private (pii.paths) and is not saved");
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
-    const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) : "finding";
-    const res = await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } });
-    if (!res) return "memory worker unavailable; nothing saved";
+    const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
+    const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
+    const res = this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
+    if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
     this.d.notify(line);
     this.d.share?.(by, line);
-    return "saved to shared memory; the other agents get it with their next message";
+    return `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term${this.d.memory && !res ? "; claude-mem unavailable" : ""})` : ""}; the other agents get it with their next message`;
+  }
+
+  /** The task's key in the hub's store: unique across `ahub reset --all`, which restarts the ids. */
+  private memoryKey(task: Task): string { return `${this.d.store!.project}#${task.id}@${task.created}`; }
+
+  /**
+   * One note in the hub's own store (#258). Short-term while its task is open; on an approved task, or with horizon
+   * long, decisions, contracts and fails are long-term. Fail-open: a store that cannot be written costs one notice.
+   * The caller has screened the text for PII; never a PII task's.
+   */
+  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project"): { id: string; tier: Tier } | undefined {
+    const st = this.d.store;
+    if (!st || (task && this.isPii(task))) return undefined;
+    try { // never throws: callers run after a board write
+      // Approved, or settled in the store already: the snapshot the caller holds can predate an approval made while it awaited.
+      const approved = !!task && (task.state === "approved" || st.store.settled(this.memoryKey(task)));
+      const tier: Tier = horizon ?? (approved && PROMOTED_KINDS.includes(kind) ? "long" : "short");
+      const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st.project, repo: st.repo, deny: st.deny, paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], symbols: task?.plan?.symbols, ...(task ? { task: { id: task.id, created: task.created } } : {}) });
+      // A short-term note on a task already approved (before hub memory existed, or late): the task is settled first, so
+      // the note gets its own deadline and is never taken for a source waiting for promotion.
+      if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) st.store.settle(this.memoryKey(task), by);
+      const id = st.store.note({ op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" }, horizon === "short");
+      return { id, tier };
+    } catch (e) {
+      this.releaseNotice(`a ${kind} note was not saved to hub memory (${(e as Error).message})`);
+      return undefined;
+    }
+  }
+
+  /** An approved task's decision, contract and fail notes move to long-term; its short-term entries start to expire (#258). */
+  /**
+   * At hub start: an approved task whose settle entry a crash or a failed write cut off is settled now, so its
+   * decisions, contracts and fails still reach long-term memory and its findings get their deadline.
+   */
+  reconcileMemory(): number {
+    if (!this.d.store) return 0;
+    let n = 0;
+    for (const t of this.d.board.list("approved")) {
+      if (this.isPii(t)) continue;
+      try { const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key)) { this.settleMemory(t); n++; } }
+      catch { /* fail-open: tried again at the next start */ }
+    }
+    return n;
+  }
+
+  private settleMemory(task: Task): void {
+    if (!this.d.store || this.isPii(task)) return;
+    // The store screens each note as it moves to the synced log (the promotion screen the daemon gives it).
+    try { this.d.store.store.settle(this.memoryKey(task), task.reviewer ?? task.owner ?? HUB); }
+    catch (e) { this.releaseNotice(`task #${task.id}: hub memory could not settle its notes (${(e as Error).message})`); }
+  }
+
+  /**
+   * Whether a note names, or its task touches, a path the current `pii.paths` makes private: checked before either memory
+   * backend sees it, whatever the task's signals said when it was proposed.
+   */
+  private aboutPrivatePath(title: string, text: string, task: Task | undefined): boolean {
+    const st = this.d.store;
+    // No denylist here: a path the graph leaves out is still checked against the privacy policy.
+    const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st?.project ?? this.d.project, repo: st?.repo ?? this.d.project, deny: [],
+      paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], symbols: task?.plan?.symbols });
+    return mentionsPrivatePath(`${title}\n${text}`, about, this.d.piiPaths ?? [], this.d.cwd);
   }
 
   /** Auto notes: only transitions that carry content, never for PII. */
-  private note(task: Task, by: PeerId, kind: string, text: string, withheld = false): void {
-    if (this.isPii(task) || !this.d.memory) return;
+  private note(task: Task, by: PeerId, kind: Kind, text: string, withheld = false): void {
+    if (this.isPii(task) || (!this.d.memory && !this.d.store)) return;
     // claude-mem's observer is a cloud model: model-written text that matches a PII pattern, or that the PII screen did
-    // not clear (#198), is not sent (#69).
+    // not clear (#198), is not sent (#69). Long-term hub memory leaves the machine (#258): the same rule, and no secrets.
     if (withheld || !this.nameable(text)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (${this.whyWithheld(text)})`);
-    void this.d.memory.save({ text, title: `agent-hub task #${task.id}: ${task.title}`.slice(0, 120), project: this.d.project, metadata: { peer: by, task: task.id, kind } });
+    if (looksSecret(text)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it looks like it holds a secret)`);
+    const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
+    if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
+    this.saveNative(by, kind, text, title, task);
+    if (this.d.memory) void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
   }
 
   private tell(task: Task, body: string, pii: boolean): void {
