@@ -2616,6 +2616,14 @@
       "replacement": "inherited ? { item, label: \"pii\", source: \"regex\" }",
       "testFile": "test/planner-split.test.ts",
       "testName": "private parent split records inherited PII without invented regex verdicts"
+    },
+    {
+      "id": "planner-automatic-reroute-capacity",
+      "file": "src/hub/tasks.ts",
+      "search": "const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== \"manual\" || opts.roster);",
+      "replacement": "const plannedMove = opts.planner;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "automatic offline rerouting of planner pulls respects destination WIP"
     }
   ]
 }
