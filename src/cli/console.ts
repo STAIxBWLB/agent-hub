@@ -85,6 +85,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const removers: (() => void)[] = []; const timers: ReturnType<typeof setInterval>[] = [];
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
+  let priorStreamFooterStart: number | undefined;
   const notice = (text: string) => notify(state, text, Date.now());
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
   const streamLines = (event: ConsoleEvent) => terminalText(event.text).replace(/\t/g, " ").split("\n").flatMap((text, index) => {
@@ -123,6 +124,11 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       for (const event of pendingStream) writeStream(event);
       pendingStream = []; droppedStream = 0;
     }
+    const footerStart = rows - consoleFooterRows(state, columns, rows) + 1;
+    if (state.mode === "stream" && priorStreamFooterStart !== undefined && priorStreamFooterStart < footerStart) {
+      for (let row = priorStreamFooterStart; row < footerStart; row++) terminal.write(`\x1b[${row};1H\x1b[2K`);
+    }
+    priorStreamFooterStart = state.mode === "stream" ? footerStart : undefined;
     terminal.write(state.mode === "stream" ? `\x1b[1;${rows - consoleFooterRows(state, columns, rows)}r` : "\x1b[r");
     const lines = renderConsoleLines(state, columns, rows);
     const start = rows - lines.length + 1;
