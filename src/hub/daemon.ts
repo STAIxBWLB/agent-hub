@@ -419,6 +419,8 @@ interface Client {
   peer?: PeerId;
   tail?: () => void;
   watch?: () => void;
+  /** The one-launch Kimi TUI admission this socket attached under; its close clears only that admission. */
+  kimiAdmission?: string;
 }
 type Sock = ServerWebSocket<Client>;
 
@@ -655,7 +657,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const peer = sock.data.peer ? bus.peers.get(sock.data.peer) : undefined;
         if (peer instanceof WsPeer) {
           peer.detach(sock);
-          if (sock.data.peer === "kimi" && peer.state === "offline" && !peer.claiming) clearKimiAdmission();
+          if (sock.data.peer === "kimi" && peer.state === "offline" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();
         }
       },
     },
@@ -3869,7 +3871,7 @@ export async function startDaemon(opts: DaemonOptions) {
         preparedSessionRoles.delete(c.peer); // an external transport has no receipt for this daemon's native preamble
         preparedSessionRoleIdentities.delete(c.peer);
         ws.claim(sock, msg.channel === false);
-        if (kimiPull) { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; }
+        if (kimiPull) { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; c.kimiAdmission = kimiAdmissionId; }
         if (c.peer === "claude") logPermissionStart(c.peer);
         writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
         void ensurePreface(c.peer).finally(() => {
@@ -4154,7 +4156,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ ok: false, error: "watch is a person-only console command" });
         if (msg.peer !== "kimi" && msg.peer !== "qwen") return void reply({ ok: false, error: "watch supports headless kimi and qwen only" });
         const peer = msg.peer as "kimi" | "qwen";
-        if (peer === "kimi" && (kimiSessionMode ?? startMode("kimi")) === "tui") return void reply({ ok: false, error: "Kimi is in pull-only TUI mode; use its native terminal or start headless" });
+        // Judged by the live owner: a headless Kimi started by --mode headless is watchable under a TUI start mode.
+        const kimiOwner = bus.peers.get("kimi");
+        if (peer === "kimi" && !(kimiOwner instanceof AcpPeer) && (kimiOwner instanceof WsPeer || (kimiSessionMode ?? startMode("kimi")) === "tui")) return void reply({ ok: false, error: "Kimi is in pull-only TUI mode; use its native terminal or start headless" });
         if (!membershipAllowed(peer)) return void reply({ ok: false, error: `${peer} is off roster` });
         c.watch?.();
         c.watch = activityRings[peer].subscribe(item => {
