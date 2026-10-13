@@ -742,7 +742,9 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     return decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown);
   }
   const progress = taskProgress(s.tasks);
-  const height = rows - 2 - consoleFooterRows(s, columns, rows);
+  const bodyHeight = rows - 2 - consoleFooterRows(s, columns, rows);
+  const noticeLines = noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== "line" ? wrap(`Notice: ${s.notice}`, columns).slice(0, Math.max(0, bodyHeight - 6)).map(text => [span(text, s.noticeTone ?? "failure")]) : [];
+  const height = bodyHeight - noticeLines.length;
   const lines: Span[][] = [];
   if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
   else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length));
@@ -785,7 +787,6 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       lines.push(rule, ...title, ...tail);
     }
   }
-  if (noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== "line") lines.unshift(...wrap(`Notice: ${s.notice}`, columns).map(text => [span(text, s.noticeTone ?? "failure")]));
   const body = lines.slice(0, height); while (body.length < height) body.push([]);
-  return [header(s, columns), rule, ...body, ...decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown)];
+  return [header(s, columns), rule, ...noticeLines, ...body, ...decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown)];
 }
