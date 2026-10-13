@@ -2184,6 +2184,22 @@
       "replacement": "if (false) { lastExpandedNotice = key;",
       "testFile": "test/pet-console-runtime.test.ts",
       "testName": "expanded stream pets print notice feedback once without putting prose in the footer"
+    },
+    {
+      "id": "pet-dashboard-default-peer-focus",
+      "file": "src/ui/index.html",
+      "search": "item.kind === 'delivery' || item.kind === 'default' ? peerRows.get(item.peer)",
+      "replacement": "item.kind === 'delivery' ? peerRows.get(item.peer)",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pending defaults focus their visible peer row with an unavailable-row fallback"
+    },
+    {
+      "id": "pet-dashboard-punctuation-mask",
+      "file": "src/pet/pixels.ts",
+      "search": "font[glyph]?.[y]?.[x] === \"1\"",
+      "replacement": "!\"/-\\\\'\".includes(glyph) && font[glyph]?.[y]?.[x] === \"1\"",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard rasterizes every shipped non-space block glyph and preserves STAI raised arms"
     }
   ]
 }

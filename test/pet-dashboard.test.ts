@@ -85,3 +85,18 @@ test("dashboard leaf resolves to a declared attention palette variable",()=>{
  const html=readFileSync(new URL("../src/ui/index.html",import.meta.url),"utf8"),fill=/\.pet-accent\{fill:([^}]+)\}/.exec(html)?.[1];
  expect(fill).toBe("var(--amber)");expect(/--amber:/.test(html)).toBe(true);
 });
+
+test("dashboard pending defaults focus their visible peer row with an unavailable-row fallback",()=>{
+ const f=fixture(),row=new Node();f.context.peerRows.set("codex",row);
+ f.context.draw({pet:{enabled:true,character:"stai",blink:false},attention:{...attention(),defaults:[{peer:"codex"}]}});
+ f.context.reach();expect(row.scrolls).toBe(1);expect(row.focuses).toBe(1);expect(f.notices).toEqual([]);
+ f.context.peerRows.clear();f.context.reach();expect(f.get("peers-title").scrolls).toBe(1);expect(f.notices).toEqual(["Attention: default codex"]);
+});
+
+test("dashboard rasterizes every shipped non-space block glyph and preserves STAI raised arms",()=>{
+ const glyphs=new Set(Object.values(CHARACTERS).flatMap(character=>Object.values(character.frames.blocks).flatMap(pose=>pose.full.flatMap(row=>[...row]))));
+ glyphs.delete(" ");for(const glyph of glyphs)expect(petPixels([glyph]).pixels.length).toBeGreaterThan(0);
+ const stai=CHARACTERS.stai.frames.blocks;
+ expect(JSON.stringify(petPixels(stai.waiting.full).pixels)).not.toBe(JSON.stringify(petPixels(stai.idle.full).pixels));
+ expect(petPixels(["-"]).pixels.length).toBe(5);
+});

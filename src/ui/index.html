@@ -617,7 +617,7 @@ let petSignature = '', petFirst;
 function reachPetNeed() {
   if (!snapshotValid || !petFirst) return;
   const item = petFirst;
-  const row = item.kind === 'review' || item.kind === 'offline' ? taskRows.get(item.id) : item.kind === 'delivery' ? peerRows.get(item.peer) : item.kind === 'approval' ? document.querySelector('[data-permission-id="'+item.id+'"]') : undefined;
+  const row = item.kind === 'review' || item.kind === 'offline' ? taskRows.get(item.id) : item.kind === 'delivery' || item.kind === 'default' ? peerRows.get(item.peer) : item.kind === 'approval' ? document.querySelector('[data-permission-id="'+item.id+'"]') : undefined;
   if (row) { row.scrollIntoView({block:'center',behavior:'instant'}); row.focus?.(); return; }
   const heading = item.kind === 'approval' ? 'permissions-title' : ['review','offline'].includes(item.kind) ? 'tasks-title' : item.kind === 'budget' ? 'budget-title' : 'peers-title';
   $(heading)?.scrollIntoView({block:'start',behavior:'instant'});
