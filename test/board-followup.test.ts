@@ -57,3 +57,9 @@ test("column stages preserve cross-column prerequisite state from the first read
  const before=[{id:1,state:"approved",title:"prerequisite",class:"implement",signals:[],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{}},{id:2,state:"proposed",title:"dependent",class:"implement",signals:[],deps:[1],created:1,updated:1,owner:null,reviewer:null,refs:{},plan:{}}];
  expect(renderBoardColumns(before,{},120,5000,false,[{...before[0]!,state:"backlog"},before[1]!])).toEqual(renderBoardColumns(before,{},120,5000,false,before));
 });
+
+test("release without a cut reports every outside approval as unknown",async()=>{
+ const root=mkdtempSync(join(tmpdir(),"ahub-board-cut-unset-")),board=new Board(":memory:"),bus=new Bus({batchMs:0}),tasks=new Tasks({board,bus,cwd:root,project:"cut",routing:()=>loadRouting(root),notify:()=>{}});
+ try{await tasks.newRelease(USER,{name:"phase",goal:"safe",order:0});const ids:number[]=[];for(const event of ["done","legacy completion"]){const row=board.propose(USER,{title:event,class:"implement"});board.update(row.id,USER,"accepted",{state:"in_progress",owner:"codex"});board.update(row.id,USER,event,{state:"approved"});ids.push(row.id)}board.propose(USER,{title:"unfinished",class:"implement"});expect(tasks.releaseList(USER)[0]?.afterCut).toBeNull();expect(tasks.releaseList(USER)[0]?.afterCutUnknown).toEqual(ids);
+ }finally{bus.closeJournal();board.close();rmSync(root,{recursive:true,force:true})}
+});
