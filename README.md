@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker, with optional Qwen Code and Jcode support, collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.12.23, control protocol 16. Durable delivery records distinguish queued
+Status: 0.12.24, control protocol 16. Durable delivery records distinguish queued
 work from uncertain execution. The [smoke checklist](docs/smoke.md) records
 verified paths and remaining prerequisites.
 
@@ -12,6 +12,11 @@ Read the [operations guide](docs/operations.md) for the daily workflow, queue
 reconciliation, and the staged upgrade command for supported source protocols.
 Controlled recovery preserves work; uncertain effects are never automatically
 replayed and may require operator review.
+
+[Hub memory](docs/memory.md) keeps optional local short- and long-term notes with
+a rebuildable graph index. It runs alongside native claude-mem capture/recall,
+which remains a separate service. Machine sync requires a configured remote;
+no remote is created by startup.
 
 ## Start here
 
@@ -28,7 +33,7 @@ cd <your project> && ahub init && ahub up
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.23 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.12.24 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.

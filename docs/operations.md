@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.23 and control protocol 16. Live verification
+This guide describes ahub 0.12.24 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Command output
@@ -64,25 +64,24 @@ its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
 without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
 
-The console attention companion (#280, phase 1) uses ASCII on the rule above
-the footer, leaving the three footer lines and cursor unchanged. It shows
-waiting, blocked, review, working, idle or asleep, with separate action/watch
-counts. `n` selects the next approval or held queue row, or prints an applicable
-command; it never answers a request or runs that command. Editing, choices,
-confirmation and the key table retain their keyboard controls. `P` toggles the
-STAI line and off for the session. Alternate characters and larger forms are
-later phases, pending artwork review.
+The console attention companion (#280) shows waiting, blocked, review, working,
+idle or asleep with separate action/watch counts. `n` selects the exact approval,
+held queue or review row, or prints applicable guidance; it never answers a
+request or runs a command. Editing, choices and confirmation retain their controls.
+`P` cycles the five built-in characters and off for the current console.
 
 Configure `pet` in `.agenthub/config.json` or `config.local.json`; local options
 override shared ones. Defaults are `character: "stai"`, `size: "line"`,
-`glyphs: "auto"`, `blink: true`, `bell: false`. This phase always draws ASCII.
-`pet: false` or `ahub console --no-pet` preserves the prior console output.
+`glyphs: "auto"`, `blink: true`, `bell: false`. Line preserves the three footer
+rows and prompt position. Mini/full reserve a bounded character rectangle and
+fall back when the terminal is too small. Supported glyphs and character choices
+are described below. `pet: false` or `ahub console --no-pet` disables presentation.
 Unknown options produce one bounded notice and fall back. Only an open approval
-blinks, using the existing redraw; `blink: false` disables it. The optional bell
+blinks through the existing redraw; `blink: false` disables it. The optional bell
 sounds on an action-count transition from zero, at most once per minute, never
-for a message alone. Plain mode prints the line only when the action count
-changes. Messages addressed to `user` remain attention items until the next key.
-No new timer, network request, daemon field or writable settings path is added.
+for a message alone. Plain mode prints the line only when the action count changes.
+Messages addressed to `user` remain attention items until the next key. Drawing
+adds no timer, network request or writable settings path.
 Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
 ends), never while a command is being edited or a choice is open; under a
 confirmation an arrow dismisses it like any key but y, without moving a tab. A pasted
@@ -1615,21 +1614,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.23), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.24), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.23 ahub upgrade --to 0.12.23 --dry-run
-bunx --package @staix/agent-hub@0.12.23 ahub upgrade --to 0.12.23 --yes
+bunx --package @staix/agent-hub@0.12.24 ahub upgrade --to 0.12.24 --dry-run
+bunx --package @staix/agent-hub@0.12.24 ahub upgrade --to 0.12.24 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.23 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.24 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1661,14 +1660,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.23 --dry-run
+ahub upgrade --to 0.12.24 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.23 --yes
+ahub upgrade --to 0.12.24 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2655,9 +2654,9 @@ To Do work with `ahub backlog return <id>`. Owned or started work cannot return.
 
 Ordinary agent task lists and conductor task reads exclude Backlog. Staged work
 is never claimed, accepted, completed, swept, escalated or relayed. PII cards and
-notices use the existing public stub. Planner grooming tools, the five-column
-view, releases and dates are later #263 slices; the native planner/two-release
-smoke remains unverified. No tag, publish or live activation occurs here.
+notices use the existing public stub. Planner grooming, five-column views, releases and dates are described below.
+The native planner/two-release smoke remains unverified; board release actions
+never tag or publish software.
 
 
 Pulling Backlog establishes its first execution-proposal boundary for projected
@@ -2690,12 +2689,11 @@ are refused. Review/verdict/approval transitions stay with their flow actors.
 
 A hub advertises Backlog support explicitly. Older or unknown snapshots cannot
 silently turn Add to Backlog into an immediate offer. PII cards retain their
-public stub; legend entries contain ids/counts, never task prose. Editable
-planning priority/rank, releases, dates, planner grooming/undo and GitHub import
-remain subsequent #263 slices. This source slice is not a native planner cycle.
+public stub; legend entries contain ids/counts, never task prose. Planning priority/rank, releases, dates, planner grooming/undo and GitHub import
+are described below. Native planner-cycle evidence remains unverified.
 
 
-## Planning and phased releases (#263, source verification pending)
+## Planning and phased releases (#263)
 
 Use `ahub backlog list` to read public staged work, then `ahub backlog plan <id>
 <revision> <fields-json> <reason>` to set rank, priority (0-3), release id, planned
@@ -2720,9 +2718,9 @@ telemetry records ids/changed fields without prose. #247 task records carry
 optional release, priority, plannedStart and due, retaining unknown legacy data.
 
 Dependency/reservation planning, split/pull WIP limits, batched incoming notices
-and optional one-way GitHub import remain subsequent implementation. Current
-source checks and desktop/phone visual validation are pending; native planner
-work across two releases remains unverified. No installed/live behavior claimed.
+and one-way GitHub import are described below. Source checks are recorded in the
+release verification report. Native planner work across two releases remains
+unverified; source and fixture checks do not establish installed live behavior.
 
 Office merge corrections retain the header's view selector when Off hides the
 scene. Activating a card reveals its task if a state filter excluded it; Work
@@ -2744,10 +2742,10 @@ Release date editors invalidate stale revisions and offer Reload current release
 without overwriting unsaved dates. Project changes clear release creation drafts.
 Dashboard release actions use public numeric ids even when labels are withheld;
 `ahub release show <name>` looks up the stored identity on the console and returns
-the screened public projection. Source verification remains pending.
+the screened public projection. Exact-head source verification is recorded in the release report.
 
 
-## Planner WIP pull (#263, verification pending)
+## Planner WIP pull (#263)
 
 `hub_backlog_pull` takes id, current planning revision and a bounded reason. A
 configured planner with assignment capability reserves a ready To Do slot using
@@ -2757,26 +2755,26 @@ The person uses `ahub backlog pull-ready <id> <revision> <reason>` or Pull withi
 WIP on a card. Explicit manual pull/assignment retain their existing authority.
 
 Capacity defaults to one per peer. `ahub settings set tasks.wip_limits.codex 2`
-uses the existing machine-local registry path; integers0..32 apply at hub start,
-with0 disabling planner admission for that peer. Stored pending values and
+uses the existing machine-local registry path; integers 0..32 apply at hub start,
+with 0 disabling planner admission for that peer. Stored pending values and
 effective runtime limits remain distinct. Status and the agent legend count
 owned unfinished work plus unowned planner-pull reservations.
 
 Pending unowned, unstarted pull can be undone at its latest owned revision via
 `hub_backlog_undo` or the existing planning undo control, restoring its earlier
-reservation. Normal release routing offers work only while that reserved peer
-still has capacity; no other peer inherits its slot. Native/visual verification,
-full exact-head source gates, split and one-way import remain outstanding.
+reservation. An ordinary return to Backlog also restores the pre-pull reservation unless a later explicit reservation edit superseded it. Normal release routing offers work only while that reserved peer
+still has capacity; no other peer inherits its slot. Split and one-way import are described below. Native verification remains
+outstanding; exact-head source checks are recorded separately.
 
 
 Planned-date editors preserve loaded UTC milliseconds until their displayed
 value changes, including repeated local wall times during a clock change. Local
 inputs retain seconds/milliseconds and support HTML date years without truncating
 fields; see https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#local-dates-and-times.
-Current exact-head date-editor proof is pending.
+Date-editor source proof is recorded with the exact-head checks.
 
 
-## Backlog split (#263, source verification pending)
+## Backlog split (#263)
 
 Use `hub_backlog_split` with parent id/revision, reason and two to eight part
 objects, or `ahub backlog split <id> <revision> <parts-json> <reason>`. Each part
@@ -2789,24 +2787,26 @@ Children retain prerequisite, privacy and phase planning. A person's P0 order
 permits that goal's required predecessors, preventing dependency deadlock.
 Unused unchanged backlog children can be removed by latest split undo; later
 edits, execution, ownership or outside references refuse it. All writes roll
-back together and observers receive changes only after commit. Current source
-and native/visual verification remain pending.
+back together and observers receive changes only after commit. Exact-head source checks are recorded separately; native verification remains
+unverified.
 
 
-## One-way GitHub intake (#263, verification pending)
+The manager allows split screening, the bounded database wait and forwarding margin before declaring a missing reply unconfirmed. Reload the task before retrying an unconfirmed split. Stored role ids survive unavailable catalog guidance. Task memory-reference markers do not supersede assignment or check results, and dependency recovery ignores them.
+
+## One-way GitHub intake (#263)
 
 `ahub board import github --label <label> [--milestone <milestone>]
 [--repo <owner/repo>]` is person-only. Omitted repo is resolved by gh in the
 project directory. The command reads open issues with fixed bounded argv and
-stages up to32 into unoffered Backlog, retaining canonical repo/issue identity
+stages up to 32 into unoffered Backlog, retaining canonical repo/issue identity
 across restarts. Repeating intake does not refresh or overwrite existing cards.
 
 The response lists confirmed imported/existing task ids and explicit partial,
 complete and unconfirmed state. A truncated page, time budget or interrupted
 staging is incomplete; repeat safely to reconcile the persisted identity.
 Public cards link to their source; PII cards expose no external identity.
-GitHub comments/labels/assignment/closure are never written. Current source and
-native verification remain pending; no live account import was performed.
+GitHub comments/labels/assignment/closure are never written. Exact-head source checks are recorded separately. Native verification remains
+unverified; no live account import was performed.
 
 
 `ahub board --columns` groups the same state-derived columns and ready/waiting
@@ -2814,7 +2814,7 @@ reasons as the dashboard; `--release <name> | --release-id <id>` filters public 
 `--columns --json` returns filtered tasks and column metadata together. Ordinary
 peer reads retain the existing backlog prohibition. Phase views flag public ids
 approved after a known cut outside that release, and separately list unknown
-approval times without inventing dates. Source verification remains pending.
+approval times without inventing dates. Exact-head source verification is recorded in the release report.
 ## Global attention and prompt output (#280, phase 3)
 
 `ahub pet` reads the selected project's status file without a control token or
@@ -2858,8 +2858,8 @@ text is copied and no routing/ownership state changes.
 ## Console character choices (#280)
 
 `pet.character` selects stai (default), gyul, lantern, cursor-cat or boxbot.
-`pet.size` selects line (default), mini or full. Mini needs100 columns; full also
-needs40 rows, and smaller terminals fall back automatically. `P` cycles the
+`pet.size` selects line (default), mini or full. Mini needs 100 columns; full also
+needs 40 rows, and smaller terminals fall back automatically. `P` cycles the
 built-ins and off for the current console only. `?` lists this under Pet, even
 while drawing is off. The command prompt keeps its original row and width.
 
@@ -2891,3 +2891,45 @@ exclusion and fixed prompt/footer geometry remain. No new request or timer.
 Automatic reroutes of planner-pulled work retain WIP and delivery-hold admission
 during offline, budget, roster and idle recovery. Explicit manual assignments
 retain their existing override authority.
+
+
+GitHub intake refuses comma-containing labels rather than allowing gh to split
+one literal label into several filters. WIP capacity excludes owner candidates
+only; eligible reviewers retain normal review routing. An auto-reassigning
+planner idle sweep waits without consuming its final step while no owner has
+capacity. Parent-only memory notes do not prevent unused child undo; child
+reference markers remain protected. Split-part plan schemas follow the selected
+project profile. Terminal tables preserve the visible read for stages and use
+a fresh peer status read on the same authenticated connection.
+
+Integer WIP editors retain a saved pending value, including zero and inheritance, before hub restart. GitHub intake accepts dot-prefixed repository names within the existing bounded owner/repository identity. Split undo also refuses children referenced by another task's persisted phase checklist.
+
+Declining rework returns changes_requested to To Do before rerouting. When a planner-pulled task has no eligible destination capacity, it remains ownerless in To Do and is retried after capacity clears, preserving the declined-owner exclusion.
+
+With no release cut, outside approved tasks are reported under unknown cut evidence, including tasks with a known approval time. A child task execution budget also prevents split undo until the person disables that budget.
+
+Split children retain their initial deterministic and inherited privacy signals across awaited screening. A routing-pattern reload cannot remove those captured signals from an unscreened child at final validation.
+
+If a routing pattern adds deterministic privacy during screening, split history and telemetry use regex-private provenance rather than an earlier clear model result. The same captured final signals determine both the child and its provenance.
+
+Dashboard backlog splits receive a dedicated outer HTTP request bound above manager forwarding, using the shared screening/database bounds and margin. Ordinary action policy remains unchanged. At phone widths, split form grids use one column so native date controls remain inside their panels.
+
+An acknowledged ACP permission-mode change awaits queued cancellation cleanup only when the cancelled prompt response has already been observed. A still-unreported cancelled prompt stays busy under its existing deadline, while mode acknowledgements remain available. A successful mode acknowledgement alone does not prove the peer is idle.
+
+Task idle sweeps ignore body-free memory-reference bookkeeping when finding the last real activity. Saving a task note or goal link does not postpone an idle notice or restart its escalation ladder.
+
+Split reasons preserve deterministic privacy from both initial and final policy checks, including parent privacy. Once withheld, a reason stays withheld in public history even if routing patterns are later removed.
+
+GitHub import rejects labels containing commas or double quotes before invoking gh, since its CSV-style label parser could otherwise select a different literal label.
+
+Ask evidence skips body-free memory-reference markers when selecting the latest task transition and note. The selected note retains the existing withheld and on-campus privacy checks.
+
+GitHub intake checks its staging deadline after every awaited proposal, including the final issue. A confirmed late save returns its task ID with partial=true and complete=false so the operator can read back and resume.
+
+If GitHub intake saves a row but later bookkeeping fails, canonical identity readback preserves the confirmed ID and queues its Backlog notice. The response remains partial; unreadable or missing readback remains unconfirmed.
+
+A later issue lookup or profile-preparation failure also returns the IDs confirmed earlier in the import as partial progress.
+
+Release cut audits return exact counts with at most 32 example IDs per category; the dashboard states how many IDs are shown when truncated. Scope grouping and indexed approval dates avoid scanning each task history for every release. Full audit pagination remains a future extension.
+
+Release cards include task states in their refresh key, so completion of an outside prerequisite updates blocked counts even when the release and audit preview are unchanged.
