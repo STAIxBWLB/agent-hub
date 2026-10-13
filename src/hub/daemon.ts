@@ -1,4 +1,5 @@
 import { projectedDiff } from "./projected-diff.ts";
+import { listenWithoutPortCollision } from "./listen.ts";
 import { needs, type NeedsInput } from "../ui/needs.ts";
 import { loadPetConfig } from "../pet/config.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
@@ -619,7 +620,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
   const token = randomBytes(24).toString("hex");
 
-  const server = Bun.serve<Client>({
+  const server = listenWithoutPortCollision(() => Bun.serve<Client>({
     hostname: "127.0.0.1",
     port: opts.controlPort,
     fetch(req, srv) {
@@ -655,7 +656,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       },
     },
-  });
+  }), opts.controlPort === 0 ? [opts.codexAppPort, opts.codexProxyPort] : []);
   // Written once this run owns the port, before any connection can attach a peer: a daemon that fails to bind (another
   // is running) never marks a run boundary in the live one's events.
   event({ type: "hub_start", instance: instanceId });

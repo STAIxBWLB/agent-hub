@@ -2649,3 +2649,13 @@ and `ahub ask` until a person confirms them. Measurement: `memory_brief` events 
 and the report's by-memory-brief split, and `ahub bench run --memory off|claude-mem|native|both` arms checked against
 the project's settings. Whether hub memory helps stays a research result, not an acceptance claim.
 
+
+
+## Automatic control port exclusion (#375)
+
+When controlPort is zero, the daemon excludes requested positive Codex app and
+proxy ports from its automatic listener selection. A rejected owned listener
+stays bound until a distinct replacement is selected; only these temporary
+listeners are closed, including on binding failure. Selection is bounded by
+the number of excluded ports plus one. Explicit control-port behavior and
+existing Origin/token/native ownership refusals remain unchanged.

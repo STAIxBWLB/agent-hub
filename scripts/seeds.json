@@ -2208,6 +2208,14 @@
       "replacement": "!\"/-\\\\'\".includes(glyph) && font[glyph]?.[y]?.[x] === \"1\"",
       "testFile": "test/pet-dashboard.test.ts",
       "testName": "dashboard rasterizes every shipped non-space block glyph and preserves STAI raised arms"
+    },
+    {
+      "id": "control-port-peer-exclusion",
+      "file": "src/hub/listen.ts",
+      "search": "if (!reserved.has(candidate.port ?? -1)) return candidate;",
+      "replacement": "if (true) return candidate;",
+      "testFile": "test/listen.test.ts",
+      "testName": "automatic control allocation keeps requested peer ports occupied until a distinct replacement exists"
     }
   ]
 }
