@@ -87,3 +87,15 @@ test("expanded pets keep active notices in panel body and away from character fo
   expect(renderConsoleLines(state,120,40,10001).map(line=>paint(line,false)).join("\n")).not.toContain("READABLE_NOTICE_MARKER");
  }
 });
+
+test("expanded panel notices reserve wrapped rows before placing the selected peer",()=>{
+ for(const size of ["mini","full"] as PetSize[]){
+  const peers=Object.fromEntries(Array.from({length:28},(_,i)=>[`peer${String(i).padStart(2,"0")}`,{state:"idle"}]));
+  const state={...initialConsoleState(true),peers,selection:27,petEnabled:true,petSize:size,notice:"WRAPPED_NOTICE_MARKER ".repeat(10),noticeAt:0};
+  const lines=renderConsoleLines(state,120,40,0),body=lines.slice(2,-consoleFooterRows(state,120,40)).map(line=>paint(line,false));
+  expect(lines).toHaveLength(40);expect(body.some(line=>line.startsWith("Notice: WRAPPED_NOTICE_MARKER"))).toBe(true);
+  expect(body.some(line=>line.startsWith("> peer27"))).toBe(true);
+  expect(reduceConsole(state,"p",0).state).toMatchObject({input:"pause peer27",editing:true});
+  expect(reduceConsole(state,"p",0).effects).toEqual([]);
+ }
+});

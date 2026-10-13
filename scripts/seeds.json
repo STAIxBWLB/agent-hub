@@ -1867,7 +1867,7 @@
     },
     {
       "id": "pet-config-off",
-      "file": "src/pet/config.ts",
+      "file": "src/cli/pet-config.ts",
       "search": "if (value === false) return",
       "replacement": "if (value === true) return",
       "testFile": "test/pet-config.test.ts",
@@ -2090,30 +2090,6 @@
       "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
     },
     {
-      "id": "pet-dashboard-unchanged",
-      "file": "src/ui/index.html",
-      "search": "if(signature===petSignature)return;",
-      "replacement": "if(false)return;",
-      "testFile": "test/pet-dashboard.test.ts",
-      "testName": "dashboard pet uses shared body-free needs and pixels without rewriting an unchanged snapshot"
-    },
-    {
-      "id": "pet-dashboard-stale-navigation",
-      "file": "src/ui/index.html",
-      "search": "if (!snapshotValid || !petFirst) return;",
-      "replacement": "if (!petFirst) return;",
-      "testFile": "test/pet-dashboard.test.ts",
-      "testName": "dashboard pet activation reaches the exact visible need or heading and never invokes an action"
-    },
-    {
-      "id": "pet-dashboard-status-input-floor",
-      "file": "src/hub/daemon.ts",
-      "search": "...(includeAttentionInput ? { attentionInput } : {})",
-      "replacement": "...{ attentionInput }",
-      "testFile": "test/pet-dashboard.test.ts",
-      "testName": "real dashboard snapshot projects structural attention without publishing its input in status"
-    },
-    {
       "id": "pet-stream-footer-shrink",
       "file": "src/cli/console.ts",
       "search": "priorStreamFooterStart < footerStart",
@@ -2138,20 +2114,68 @@
       "testName": "expired notices restore selected approval ids and expiry in expanded pet footers"
     },
     {
-      "id": "pet-dashboard-live-approval-blink",
-      "file": "src/ui/index.html",
-      "search": "snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval')",
-      "replacement": "snapshot.pet.blink!==false && value.state==='waiting'",
-      "testFile": "test/pet-dashboard.test.ts",
-      "testName": "dashboard blinking requires a live approval rather than a pending default"
-    },
-    {
       "id": "pet-line-glyph-selection",
       "file": "src/cli/console-state.ts",
       "search": "characterAttentionLine(value, character, now, s.petBlink, true, s.petGlyphs)",
       "replacement": "characterAttentionLine(value, character, now, s.petBlink)",
       "testFile": "test/pet-characters.test.ts",
       "testName": "console line glyph mode selects distinct trusted catalog output without moving the prompt"
+    },
+    {
+      "id": "pet-expanded-panel-notice",
+      "file": "src/cli/console-state.ts",
+      "search": "const noticeLines = noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== \"line\" ?",
+      "replacement": "const noticeLines = false ?",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expanded pets keep active notices in panel body and away from character footer"
+    },
+    {
+      "id": "pet-expanded-stream-notice",
+      "file": "src/cli/console.ts",
+      "search": "if (key !== lastExpandedNotice) { lastExpandedNotice = key;",
+      "replacement": "if (false) { lastExpandedNotice = key;",
+      "testFile": "test/pet-console-runtime.test.ts",
+      "testName": "expanded stream pets print notice feedback once without putting prose in the footer"
+    },
+    {
+      "id": "pet-expanded-notice-capacity",
+      "file": "src/cli/console-state.ts",
+      "search": "const height = bodyHeight - noticeLines.length;",
+      "replacement": "const height = bodyHeight;",
+      "testFile": "test/pet-characters.test.ts",
+      "testName": "expanded panel notices reserve wrapped rows before placing the selected peer"
+    },
+    {
+      "id": "pet-dashboard-unchanged",
+      "file": "src/ui/index.html",
+      "search": "if(signature===petSignature)return;",
+      "replacement": "if(false)return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet uses shared body-free needs and pixels without rewriting an unchanged snapshot"
+    },
+    {
+      "id": "pet-dashboard-stale-navigation",
+      "file": "src/ui/index.html",
+      "search": "if (!snapshotValid || !petFirst) return;",
+      "replacement": "if (!petFirst) return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet activation reaches the exact visible need or heading and never invokes an action"
+    },
+    {
+      "id": "pet-dashboard-status-input-floor",
+      "file": "src/hub/daemon.ts",
+      "search": "...(includeAttentionInput ? { attentionInput } : {})",
+      "replacement": "...{ attentionInput }",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "real dashboard snapshot projects structural attention without publishing its input in status"
+    },
+    {
+      "id": "pet-dashboard-live-approval-blink",
+      "file": "src/ui/index.html",
+      "search": "snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval')",
+      "replacement": "snapshot.pet.blink!==false && value.state==='waiting'",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard blinking requires a live approval rather than a pending default"
     },
     {
       "id": "pet-dashboard-review-eye-mask",
@@ -2168,22 +2192,6 @@
       "replacement": ".pet-accent{fill:var(--accent)}",
       "testFile": "test/pet-dashboard.test.ts",
       "testName": "dashboard leaf resolves to a declared attention palette variable"
-    },
-    {
-      "id": "pet-expanded-panel-notice",
-      "file": "src/cli/console-state.ts",
-      "search": "if (noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== \"line\") lines.unshift",
-      "replacement": "if (false) lines.unshift",
-      "testFile": "test/pet-characters.test.ts",
-      "testName": "expanded pets keep active notices in panel body and away from character footer"
-    },
-    {
-      "id": "pet-expanded-stream-notice",
-      "file": "src/cli/console.ts",
-      "search": "if (key !== lastExpandedNotice) { lastExpandedNotice = key;",
-      "replacement": "if (false) { lastExpandedNotice = key;",
-      "testFile": "test/pet-console-runtime.test.ts",
-      "testName": "expanded stream pets print notice feedback once without putting prose in the footer"
     },
     {
       "id": "pet-dashboard-default-peer-focus",
