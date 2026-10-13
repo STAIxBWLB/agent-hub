@@ -8,7 +8,8 @@ installed. Every machine keeps its own copy in `~/.agenthub/memory/` (directory 
 
 On with any project config (`.agenthub/config.json`); `"memory": { "native": false }` turns it off for a project.
 `memory.short_ttl_days` (default 14, a whole number from 1 to 3650; anything else fails the config) sets how long
-short-term entries live after their task is approved. Writing and
+short-term entries live after their task is approved, and `memory.sync_interval_min` (default 10, 0 off, at most 1440) how often a running
+hub syncs once a remote is set. Writing and
 reading are fail-open: a store that cannot be written costs one notice, and never a tool call or a turn.
 
 ## Tiers
@@ -73,7 +74,74 @@ Edges are deterministic and fixed when the entry is written, so a rebuild never 
   draws them as `rules_out`.
 - `by` (peer, machine) and `in` (project), from the entry's fields; `supersedes` between entries.
 
-Model-suggested edges and long-term tasks come in later phases of #258.
+- `part_of` (board task to long-term task) and `depends_on` (between long-term tasks), from the links below.
+
+Model-suggested edges come in phase 3 of #258.
+
+## Long-term tasks
+
+A long-term task (a goal) spans sessions, board tasks, projects and machines: an epic issue, a migration. It has a
+state (`open`, `active`, `blocked`, `done`, `dropped`), milestones, the long-term tasks it depends on, its linked board
+tasks (project, task id and proposal time, so a reset's reused ids never join it) and a lease. All of it lives in the
+synced log as entries:
+
+| `op` | Fields |
+| --- | --- |
+| `goal` | `project`, `scope`, `title`, `milestones`, `dependsOn`, `actor` |
+| `goal_state` | `target`, `by`: the state |
+| `goal_link` | `target`, `by`: the board task key |
+| `lease`, `lease_force` | `target`, `by`: until when (ISO) |
+
+- **Titles** and milestones are kept to one line (whatever another machine wrote), and recall lines are sanitized, so
+  they cannot carry a forged message header into an agent's context.
+- **Links**: a peer joins its own board task to one of this project's long-term tasks with
+  `hub_task_propose(..., goal: "<id>")`; a person links any board task of the project to any long-term task with
+  `ahub goal link <id> <task>` (through the running hub, so the board task is checked). Nothing about a PII task is linked.
+- **Lease**: while a linked board task is in progress on this machine's hub, the hub holds the long-term task's lease
+  (default 4 hours, renewed past half its time). It looks at every in-progress task at start, every 10 minutes, when
+  a task changes on the board and when a person links one, so a task worked on for hours keeps its lease. It never takes a lease another machine holds: the console says who
+  holds it, and a person takes it over with `ahub goal take <id> --force`, which voids every earlier claim. A lease that
+  expired is free for anyone.
+- **Conflicts**: sync is eventually consistent, so a lease is advisory. Two machines that claim inside one sync window
+  both stand: the earlier claim holds and the other shows as a conflict everywhere (status, dashboard, `ahub goal`)
+  until a person settles it with `--force`. There is no consensus; a broker would make it a real lock if concurrent
+  work across machines ever needs one.
+- **Where it shows**: at hub start (a console line per open long-term task of the project), in `ahub status`, in
+  `ahub goal list`, on the dashboard's Long-term tasks tab, and leading the session-start recall. Briefs bring along
+  the entries of the long-term task's other board tasks.
+
+```bash
+ahub goal new "native memory" --milestone "phase 1" --milestone "phase 2"   # a person's
+ahub goal link 1a2b3c4d 12
+ahub goal                                  # open long-term tasks, their state and lease
+ahub goal show 1a2b3c4d
+ahub goal take 1a2b3c4d [--force]
+ahub goal state 1a2b3c4d blocked
+ahub goal done 1a2b3c4d
+```
+
+## Machine sync
+
+The memory directory is a git repository that tracks only `log/*.jsonl` (and its `.gitignore`); the index, the local
+short-term segment and `machine.json` never leave the machine. Each machine commits only its own segment and starts
+its own history, so merging another machine's history never conflicts.
+
+```bash
+ahub memory sync --remote git@github.com:you/agent-hub-memory.git   # once per machine, a person's
+ahub memory sync                                                    # pull, then push, now
+ahub memory machine --label "office mac"                            # a name shown beside the id
+```
+
+- A sync commits this machine's segment, fetches, merges the remote's history, pushes (once more after a merge when
+  another machine pushed in between) and indexes what arrived. One sync runs per machine at a time.
+- A running hub syncs 5 seconds after it starts and every `memory.sync_interval_min` minutes (default 10; 0 turns it
+  off) once a remote is set. A failure is one `hub.log` line and never blocks a turn; a store without a remote does
+  nothing and creates nothing.
+- The remote must be private: long-term entries hold note text. A GitHub remote is checked with `gh repo view` and a
+  public one is refused; any other host, or a `gh` that cannot answer, is unknown and the sync goes on with a warning.
+- Use an SSH remote, or HTTPS with a credential helper in your global git config: the hub keeps your credential helper
+  for this repository only, and never prompts.
+- A forgotten entry stays in the remote's git history; removing it from there is a person's history rewrite.
 
 ## Index
 
@@ -126,8 +194,8 @@ ahub memory supersede <old> <new>        # the old one is dropped from briefs an
 ahub memory rebuild
 ```
 
-A forgotten long-term entry stays in the log file (and, once machine sync exists, in its remote's git history); removing
-it from there is a person's rewrite of that history.
+A forgotten long-term entry stays in the log file and in the sync remote's git history; removing it from there is a
+person's rewrite of that history.
 
 ## Privacy
 
