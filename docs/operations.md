@@ -2909,3 +2909,5 @@ Declining rework returns changes_requested to To Do before rerouting. When a pla
 With no release cut, outside approved tasks are reported under unknown cut evidence, including tasks with a known approval time. A child task execution budget also prevents split undo until the person disables that budget.
 
 Split children retain their initial deterministic and inherited privacy signals across awaited screening. A routing-pattern reload cannot remove those captured signals from an unscreened child at final validation.
+
+If a routing pattern adds deterministic privacy during screening, split history and telemetry use regex-private provenance rather than an earlier clear model result. The same captured final signals determine both the child and its provenance.
