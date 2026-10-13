@@ -769,6 +769,7 @@ export class Tasks {
       try {
         const task = await this.propose(USER, { title: issue.title, detail: issue.detail, class: cls, backlog: true }, issue.source, () => { created = true; });
         (created ? imported : existing).push(task.id);
+        if (performance.now() >= deadline) return { imported, existing, partial: true, complete: false };
       } catch { return { imported, existing, partial: true, complete: false, unconfirmed: true }; }
     }
     return { imported, existing, partial: page.partial, complete: !page.partial };
