@@ -55,7 +55,9 @@ export class TextProjections {
   /** Inputs whose full-budget conversion failed: the same bytes under the same command are not converted again. */
   private readonly failed = new Set<string>();
   constructor(private readonly options: { cwd: string; stateDir: string; config: ProjectionConfig; deny?: string[]; readAllow?: string[]; log?: (line: string) => void }) {
-    // Rooted at an empty system directory, not the project: the converter reads its snapshot and program files only.
+    // Rooted at an empty system directory, not the project. The project guarantee: project file data is denied, then the
+    // snapshot, the argv-named program/script files and the directory listings above an in-project script are granted, so
+    // no other project file is readable (system, toolchain, home and local.read_allow paths outside the project remain granted).
     // Only where conversion can run: /var/empty is a macOS directory, and a host without the sandbox never converts.
     this.sandbox = Object.keys(options.config).length && sandboxAvailable() ? profile(EMPTY_ROOT, false, options.readAllow, options.deny, ["."]) : "";
   }
