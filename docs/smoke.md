@@ -1699,3 +1699,12 @@ resize fallback, keyboard-modal ownership, prompt preservation and unchanged
 config bytes. The focused console/config/geometry/runtime group passed138/0
 with23808 assertions. Immutable-head platform/seed/review proof is pending.
 Light/dark physical terminal, tmux and ambiguous-wide block glyphs are unverified.
+
+## Dashboard character (#280, phase 4 in progress)
+
+Source fixtures cover shared body-free review projection, selected configuration,
+status-input separation, bounded SVG pixels, unchanged-snapshot DOM writes,
+exact-row navigation, missing-row guidance and stale-navigation refusal. Existing
+dashboard authentication/CSP/page-size and Office regressions are retained.
+Current full platform, mutation, browser, mobile, light/dark and reduced-motion
+proof is pending. Native terminal/tmux/account legs remain unverified.

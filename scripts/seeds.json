@@ -2088,6 +2088,30 @@
       "replacement": "state.petChoices = undefined;",
       "testFile": "test/pet-console-runtime.test.ts",
       "testName": "actual console advertises all characters while full footer resize and off retain the prompt and config"
+    },
+    {
+      "id": "pet-dashboard-unchanged",
+      "file": "src/ui/index.html",
+      "search": "if(signature===petSignature)return;",
+      "replacement": "if(false)return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet uses shared body-free needs and pixels without rewriting an unchanged snapshot"
+    },
+    {
+      "id": "pet-dashboard-stale-navigation",
+      "file": "src/ui/index.html",
+      "search": "if (!snapshotValid || !petFirst) return;",
+      "replacement": "if (!petFirst) return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet activation reaches the exact visible need or heading and never invokes an action"
+    },
+    {
+      "id": "pet-dashboard-status-input-floor",
+      "file": "src/hub/daemon.ts",
+      "search": "...(includeAttentionInput ? { attentionInput } : {})",
+      "replacement": "...{ attentionInput }",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "real dashboard snapshot projects structural attention without publishing its input in status"
     }
   ]
 }

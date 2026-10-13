@@ -220,3 +220,14 @@ loads. Presentation config admits only known ids/sizes/glyph modes, never paths
 or arbitrary glyph bodies. Character cycling emits no workflow effects. Larger
 frames carry only structural need ids/counts and exclude source/notice prose;
 private task and approval details remain in their existing operator views.
+
+The optional dashboard attention input contains only structural task ids, states,
+owner/reviewer ids, approval ids and numeric times, peer delivery states and
+budget pause times. It is assembled from the same allowlisted input as status;
+task text, plans, approval prose, error text and paths are excluded. This input
+is supplied only inside console-authorized dashboard snapshots, never ordinary
+status replies or status.json. The pet creates trusted inline SVG pixel nodes
+from built-in literal frames with existing theme colours, without HTML insertion,
+inline handlers, style attributes or external assets. Existing CSP hashing,
+headers, origin and session authorization remain in force. Clicking scrolls and
+focuses only; it cannot grant permissions or invoke a mutation.

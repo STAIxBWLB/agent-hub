@@ -2779,3 +2779,18 @@ terminals retain the ASCII floor. `pet.blink:false` is static. Neither choosing
 nor drawing a character changes authority, config files, task state or polling.
 Explicit `ahub pet` and text status use the configured line face; prompt tokens
 remain character-independent. Native glyph width and tmux are unverified.
+
+## Dashboard attention character (#280)
+
+The dashboard header draws the configured built-in character independently of
+Office. It uses the same structural needs model as status and the console. The
+accessible button names the character, state and action/watch counts; the tab
+title shows the action count. Activating the button scrolls and focuses the exact
+visible approval/task/peer row, or its related section with fixed id-only guidance
+when the row is filtered or unavailable. It performs no action and changes no
+filters. Legacy snapshots without attention keep the widget hidden.
+
+Only a live approval alternates the two waiting poses once per second through
+CSS. `pet.blink:false` and reduced motion retain a static pose. No new timer,
+request, image protocol or character-file load is added. Project reset clears
+the widget and title. Native/browser visual validation remains unverified.

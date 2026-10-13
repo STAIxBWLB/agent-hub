@@ -2608,3 +2608,18 @@ and rebuilds; the dashboard's Memory section is read-only inside the existing CS
 (`memory.native`). Proposed defaults 1 to 5 of #258 are taken as confirmed by the request to implement it. Machine sync,
 long-term tasks with leases (decision 9's amendment), claude-mem import and model-suggested edges follow in later phases.
 
+
+## Dashboard attention projection (#280, phase 4 in progress)
+
+The existing dashboard snapshot supplies optional allowlisted needs input and
+known presentation choices; normal status/file payloads do not gain that input.
+The header independently projects the shared pure needs function into literal
+built-in SVG pixels and an accessible state/count label. Unchanged state and
+choices do not rewrite pet DOM. Clicks navigate only to exact visible rows or
+related headings, never issue actions or alter filters. Missing/invalid legacy
+input hides the widget. Project resets clear retained navigation and title.
+
+The two approved waiting frames alternate in CSS once per second only while
+a live approval exists. Reduced motion and blink-off remain static. Every other
+state stays still. No timer/request or new asset dependency is introduced;
+existing header policy and computed CSP hashes apply.
