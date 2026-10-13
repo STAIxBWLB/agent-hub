@@ -2606,6 +2606,17 @@ screening. Tasks screens imported content and stages unoffered backlog; links
 are shown only through the central public projection, with no source identity
 exposed for PII cards. No GitHub comment, label, assignment or close is written.
 Current source/native proof remains pending.
+
+
+## Remaining board projections (#263, in progress)
+
+Terminal `board --columns` uses the same state/ready/waiting model as the
+dashboard, retaining public rows and unknown states. `board --release <name> | --release-id <id>`
+filters read-only through the existing task-list authority; it never exposes
+backlog to an unprivileged peer. Frozen/phase views flag ids of approved tasks
+outside the release whose structured approval time is after its planned cut.
+Missing cut or approval evidence stays unknown, not inferred from notes.
+Source/native/phone proof remains pending.
 ## Console attention foundation (#280, in progress)
 
 The self-contained needs(input,now) model receives structural console-owned
@@ -2783,3 +2794,7 @@ GitHub intake rechecks its total staging deadline after every awaited proposal, 
 After a confirmed GitHub task insertion, failure in later bookkeeping triggers canonical source-identity readback. A recovered row is returned among imported IDs with partial=true/complete=false; unavailable readback remains unconfirmed. A recovered backlog row is queued for the planner notice even when earlier bookkeeping prevented the normal enqueue.
 
 The per-issue intake failure boundary includes existing-row lookup and profile preparation as well as proposal staging, so a later lookup failure retains prior confirmed IDs in the partial response.
+
+Release snapshots group scope rows once and read approval dates once per task. Cross-release audit previews contain at most 32 IDs per category plus exact counts, with truncation disclosed in the UI. Sorted date indexes preserve strict after-cut semantics without rescanning every task history for every release. Full audit pagination remains a future extension.
+
+Release-card invalidation includes the task-state snapshot, so approval of a prerequisite outside the release refreshes blocked counts even when the release row and audit preview are unchanged.

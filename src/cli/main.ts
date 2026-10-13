@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
@@ -65,7 +66,7 @@ import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRef
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderRoster, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -327,13 +328,13 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false): Promise<string> {
-  const hub = await connect();
+async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false, connection?: ControlClient): Promise<string> {
+  const hub = connection ?? await connect();
   try {
     const res = await hub.request({ t: "task", op, args: a }, op === "github_import" ? 60_000 : 30_000);
     if (!res.ok) { if (throwOnError) throw new Error(res.error); audit("refused"); fail(res.error); }
     return res.text;
-  } finally { hub.close(); }
+  } finally { if (!connection) hub.close(); }
 }
 
 /** Reads hub.db's turn records; `none` when the hub never kept one (snapshots off, no git work tree, an older hub). */
@@ -1095,19 +1096,32 @@ const commands: Record<string, () => Promise<void> | void> = {
       return console.log(await taskOp("github_import", selection));
     }
     const options = outputOptions();
-    const ready = args.includes("--ready");
-    const state = args.find((a) => !a.startsWith("--"));
-    const tasks = JSON.parse(await taskOp("hub_task_list", ready ? { ready: true } : state ? { state } : {})) as any[];
-    if (options.json) return console.log(JSON.stringify(tasks, null, 2));
+    const { one, rest } = takeFlags(args, ["--release", "--release-id"], []);
+    if (one["--release"] !== undefined && !one["--release"].trim() || one["--release"] !== undefined && one["--release-id"] !== undefined || one["--release-id"] !== undefined && !/^[1-9]\d*$/.test(one["--release-id"])) fail("choose --release <nonempty name> or --release-id <positive id>");
+    const release = one["--release-id"] ? "#"+one["--release-id"] : one["--release"];
+    const boardHub = await connect();
+    try {
+    let boardStatus: any;
+    if (release) { const reply = await boardHub.request({ t: "status" }); boardStatus = reply.status; if (!supportsBoardReleaseFilter(boardStatus)) fail("running hub does not support release filters; use a compatible daemon"); }
+    const ready = rest.includes("--ready"), byColumn = rest.includes("--columns");
+    const state = rest.find((a) => !a.startsWith("--"));
+    if (byColumn && !boardStatus) boardStatus = (await boardHub.request({ t: "status" })).status;
+    if (byColumn && !supportsBoardColumnMetadata(boardStatus)) fail("running hub does not support accurate board column metadata; use a compatible daemon");
+    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) }, false, boardHub)) as any[];
+    if (options.json && !byColumn) return console.log(JSON.stringify(tasks, null, 2));
     let allTasks: any[] | null = tasks;
-    if (ready || state) {
-      try { allTasks = JSON.parse(await taskOp("hub_task_list", {}, true)) as any[]; }
+    if (ready || state || release) {
+      try { allTasks = JSON.parse(await taskOp("hub_task_list", byColumn ? { columnMetadata: true } : {}, true, boardHub)) as any[]; }
       catch (error) {
+        if (byColumn) fail("board column dependency context unavailable; retry with a complete snapshot");
         allTasks = null;
         console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\n\t]/g, " ")}` }], false));
       }
     }
-    printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
+    if (byColumn) {
+      const status = (await boardHub.request({ t: "status" })).status; if (!status?.peers) fail("peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, status.peers, options.columns, Date.now(), options.full, allTasks), options.color);
+    } else printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
+    } finally { boardHub.close(); }
   },
 
   sdlc: async () => {

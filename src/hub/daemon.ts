@@ -1650,8 +1650,16 @@ export async function startDaemon(opts: DaemonOptions) {
         pending.done(summary);
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }
-      case "hub_task_list":
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+      case "hub_task_list": {
+        let releaseId: number | undefined;
+        if (a.release !== undefined) {
+          if (typeof a.release !== "string" || !a.release || a.release.length > 100) throw new PreEffectToolRefusal("invalid release filter");
+          const release = /^#[1-9]\d*$/.test(a.release) ? board.release(Number(a.release.slice(1))) : board.releases().find(item => item.name === a.release);
+          if (!release) throw new PreEffectToolRefusal("no such release");
+          releaseId = release.id;
+        }
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => { const view: Record<string, unknown> = onPrem ? { ...t } : tasks.publicView(t); const { history: _h, ...rest } = view; return { ...rest, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; }));
+      }
     }
     if (op === "task_show" && by !== USER) {
       const task = board.get(Number(a.id));
@@ -1959,6 +1967,7 @@ export async function startDaemon(opts: DaemonOptions) {
       peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: id === "kimi" ? "pull-only: messages wait for hub_inbox; no push, steer, watchdog or automatic quota handoff" : "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
+    boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
     roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id) }])),
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),

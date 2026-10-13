@@ -1700,6 +1700,12 @@ GitHub intake fixtures cover fixed read-only selection, page and identity
 validation, persistent/restart/after-screen dedupe, PII source projection,
 confirmed partial progress and person CLI classification. Current full and
 native/visual evidence remain pending. No real-account import ran.
+
+
+Remaining board projection fixtures exercise shared column mapping/waits and
+actual CLI release/JSON filters with peer backlog floors. Cut flags derive
+structured approval history and retain missing approval/cut as unknown. Current
+full source/phone/native proof remains pending.
 ## Console attention (#280, phase 1)
 
 Automated coverage targets request ordering, read-only navigation/modal ownership,

@@ -669,12 +669,46 @@ export class Tasks {
   }
   releaseList(by: PeerId): Record<string, unknown>[] {
     this.planningAuthority(by);
-    const tasks = this.d.board.list();
-    return this.d.board.releases().map(release => ({ ...release,
-      name: this.nameable(release.name) ? release.name : "[withheld]",
-      goal: this.nameable(release.goal) ? release.goal : "[withheld]",
-      tasks: tasks.filter(task => task.release === release.id).map(task => ({ id: task.id, state: task.state, deps: task.deps ?? [] })),
-    }));
+    const scopes = new Map<number, { id: number; state: Task["state"]; deps: number[] }[]>();
+    type Approval = { id: number; release: Task["release"]; doneAt: number | null };
+    const approved: Approval[] = [], owned = new Map<number, Approval[]>();
+    for (const task of this.d.board.list()) {
+      if (typeof task.release === "number") {
+        const scope = scopes.get(task.release) ?? [];
+        scope.push({ id: task.id, state: task.state, deps: task.deps ?? [] }); scopes.set(task.release, scope);
+      }
+      if (task.state !== "approved") continue;
+      const row = { id: task.id, release: task.release, doneAt: actualTaskDates(task).doneAt };
+      approved.push(row);
+      if (typeof task.release === "number") { const rows = owned.get(task.release) ?? []; rows.push(row); owned.set(task.release, rows); }
+    }
+    const compare = (a: Approval, b: Approval) => a.doneAt! - b.doneAt! || a.id - b.id;
+    const known = approved.filter(task => task.doneAt !== null).sort(compare), unknown = approved.filter(task => task.doneAt === null);
+    const after = (rows: Approval[], cut: number) => {
+      let low = 0, high = rows.length;
+      while (low < high) { const mid = Math.floor((low + high) / 2); if (rows[mid]!.doneAt! <= cut) low = mid + 1; else high = mid; }
+      return low;
+    };
+    // ponytail: audit previews show 32 ids plus exact counts; add a paginated audit endpoint for exhaustive lists.
+    const outsideIds = (rows: Approval[], start: number, release: number) => {
+      const result: number[] = [];
+      for (let i = start; i < rows.length && result.length < 32; i++) if (rows[i]!.release !== release) result.push(rows[i]!.id);
+      return result;
+    };
+    return this.d.board.releases().map(release => {
+      const own = owned.get(release.id) ?? [], ownKnown = own.filter(task => task.doneAt !== null).sort(compare);
+      const cutStart = release.cut === null ? known.length : after(known, release.cut);
+      const unknownPool = release.cut === null ? approved : unknown;
+      return { ...release,
+        name: this.nameable(release.name) ? release.name : "[withheld]",
+        goal: this.nameable(release.goal) ? release.goal : "[withheld]",
+        tasks: scopes.get(release.id) ?? [],
+        afterCutUnknown: outsideIds(unknownPool, 0, release.id),
+        afterCutUnknownCount: release.cut === null ? approved.length - own.length : unknown.length - (own.length - ownKnown.length),
+        afterCut: release.cut === null ? null : outsideIds(known, cutStart, release.id),
+        afterCutCount: release.cut === null ? null : known.length - cutStart - (ownKnown.length - after(ownKnown, release.cut)),
+      };
+    });
   }
 
   async planBacklog(by: PeerId, input: { id: number; revision: number; fields: unknown; reason: string }): Promise<Task> {

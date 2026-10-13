@@ -2090,6 +2090,38 @@
       "testName": "task cards show public release membership and accessible identity (#263)"
     },
     {
+      "id": "board-release-read-filter",
+      "file": "src/hub/daemon.ts",
+      "search": "(releaseId === undefined || t.release === releaseId)",
+      "replacement": "true",
+      "testFile": "test/board-followup-surfaces.test.ts",
+      "testName": "board release filters and columns are readonly and retain agent backlog floors (#263)"
+    },
+    {
+      "id": "release-cut-approval-evidence",
+      "file": "src/hub/tasks.ts",
+      "search": "afterCut: release.cut === null ? null : outsideIds(known, cutStart, release.id)",
+      "replacement": "afterCut: release.cut === null ? null : outsideIds(approved, 0, release.id)",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release cut flags use structured approval and preserve missing cut evidence (#263)"
+    },
+    {
+      "id": "board-release-filter-capability",
+      "file": "src/cli/board-read.ts",
+      "search": "(capability as Record<string,unknown>).releaseFilter === true",
+      "replacement": "true",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release filtering requires an explicit compatible daemon capability (#263)"
+    },
+    {
+      "id": "board-column-started-projection",
+      "file": "src/hub/daemon.ts",
+      "search": "...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {})",
+      "replacement": "...{}",
+      "testFile": "test/board-followup-surfaces.test.ts",
+      "testName": "board release filters and columns are readonly and retain agent backlog floors (#263)"
+    },
+    {
       "id": "needs-approval-expiry",
       "file": "src/ui/needs.ts",
       "search": "request.expiresAt > now",
@@ -2658,6 +2690,30 @@
       "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
     },
     {
+      "id": "board-empty-release-filter",
+      "file": "src/cli/main.ts",
+      "search": "one[\"--release\"] !== undefined && !one[\"--release\"].trim() ||",
+      "replacement": "false ||",
+      "testFile": "test/board-followup-surfaces.test.ts",
+      "testName": "empty explicit release filters fail without broadening the requested board"
+    },
+    {
+      "id": "board-visible-snapshot-state",
+      "file": "src/cli/output.ts",
+      "search": "allTasks.map(task => first.get(task.id) ?? task)",
+      "replacement": "allTasks.map(task => task)",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "filtered board columns preserve visible row state from the first snapshot"
+    },
+    {
+      "id": "board-incomplete-column-context",
+      "file": "src/cli/output.ts",
+      "search": "if (allTasks === null) throw new Error(\"board column dependency context unavailable; retry with a complete snapshot\");",
+      "replacement": "if (allTasks === null) allTasks = tasks;",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "filtered board columns reject missing dependency context instead of inventing waiting"
+    },
+    {
       "id": "github-import-escaped-output-bound",
       "file": "src/hub/github-import.ts",
       "search": "new TextEncoder().encode(result.stdout).length>2*1024*1024",
@@ -2690,6 +2746,14 @@
       "testName": "automatic rescreen admission retains planner WIP after privacy clears"
     },
     {
+      "id": "board-visible-stage-snapshot",
+      "file": "src/cli/output.ts",
+      "search": "const context = boardColumnContext(tasks, allTasks), model = boardColumnModel(tasks, peers, context), out: Span[][] = [];",
+      "replacement": "const context = allTasks!, model = boardColumnModel(tasks, peers, context), out: Span[][] = [];",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "column stages preserve cross-column prerequisite state from the first read"
+    },
+    {
       "id": "split-memory-reference-marker",
       "file": "src/hub/tasks.ts",
       "search": "if (task) this.markMemoryReference(task, by);",
@@ -2712,6 +2776,14 @@
       "replacement": "excludeOwners: [], ...this.health()",
       "testFile": "test/planner-pull.test.ts",
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
+    },
+    {
+      "id": "board-plain-visible-stage-snapshot",
+      "file": "src/cli/output.ts",
+      "search": "taskProgress(boardColumnContext(tasks, allTasks))",
+      "replacement": "taskProgress(allTasks)",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "filtered plain board stages preserve visible rows from the first read"
     },
     {
       "id": "github-import-literal-label-floor",
@@ -2834,6 +2906,14 @@
       "testName": "declined planner redo returns to To Do and resumes after alternative WIP clears"
     },
     {
+      "id": "board-unset-cut-approval-evidence",
+      "file": "src/hub/tasks.ts",
+      "search": "const unknownPool = release.cut === null ? approved : unknown;",
+      "replacement": "const unknownPool = unknown;",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release without a cut reports every outside approval as unknown"
+    },
+    {
       "id": "split-child-execution-budget-reference",
       "file": "src/hub/tasks.ts",
       "search": "Array.isArray(budgets) && budgets.some(budget => budget.kind === \"task\" && budget.taskId !== undefined && childIds.has(budget.taskId))",
@@ -2936,6 +3016,30 @@
       "replacement": "      const prior = this.d.board.imported(issue.source.repo, issue.source.issue);\n      if (prior) { existing.push(prior.id); continue; }\n      let created = false;\n      const classes = profileData(this.d.profileData ?? this.d.profile ?? \"dev\").classes;\n      const cls = Object.keys(classes).find(name => classes[name] === \"implement\") ?? Object.keys(classes)[0];\n      try {",
       "testFile": "test/github-import-tasks.test.ts",
       "testName": "GitHub intake retains progress when a later identity lookup fails"
+    },
+    {
+      "id": "release-audit-preview-bound",
+      "file": "src/hub/tasks.ts",
+      "search": "i < rows.length && result.length < 32",
+      "replacement": "i < rows.length",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release audit snapshots bound previews and scan each task history once"
+    },
+    {
+      "id": "release-audit-history-work",
+      "file": "src/hub/tasks.ts",
+      "search": "return this.d.board.releases().map(release => {",
+      "replacement": "return this.d.board.releases().map(release => { for (const task of this.d.board.list()) actualTaskDates(task);",
+      "testFile": "test/board-followup.test.ts",
+      "testName": "release audit snapshots bound previews and scan each task history once"
+    },
+    {
+      "id": "release-external-dependency-refresh",
+      "file": "src/ui/index.html",
+      "search": "update('releases',{releases,taskStates:[...states]},target=>{",
+      "replacement": "update('releases',releases,target=>{",
+      "testFile": "test/task-board-ui.test.ts",
+      "testName": "release blocked counts refresh when an outside prerequisite changes"
     }
   ]
 }
