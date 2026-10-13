@@ -164,3 +164,9 @@ test("ordinary backlog return restores pre-planner reservation provenance",async
  const {tasks,board,bus,capacity}=await rig();const task=await tasks.propose(USER,{title:"ordinary return",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"first"});const returned=await tasks.moveBacklog(USER,task.id,false);expect(returned.reserved).toBeNull();
  capacity.codex=0;const local=new PullPeer("local");bus.add(local);await local.start();const pulled=await tasks.pullPlanned("claude",{id:task.id,revision:returned.planningRevision??0,reason:"again"}).catch(()=>null);expect(pulled).not.toBeNull();expect(board.get(task.id)?.reserved).toBe("local");
 });
+
+test("declined planner redo returns to To Do and resumes after alternative WIP clears",async()=>{
+ const {tasks,board,bus,capacity}=await rig();const task=await tasks.propose(USER,{title:"redo work",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});await tasks.releaseReady();tasks.accept("codex",task.id);await tasks.done("codex",task.id,"first pass");board.update(task.id,"claude","changes_requested",{state:"changes_requested"},"redo");expect(board.get(task.id)?.state).toBe("changes_requested");
+ const local=new PullPeer("local");bus.add(local);await local.start();const busy=await tasks.propose(USER,{title:"occupied local",class:"implement",owner:"local"});tasks.accept("local",busy.id);capacity.claude=0;await tasks.decline("codex",task.id,"cannot redo");expect(board.get(task.id)).toMatchObject({state:"proposed",owner:null,reserved:null});await tasks.releaseReady();expect(board.get(task.id)?.owner).toBeNull();
+ await tasks.done("local",busy.id,"done");await tasks.review("claude",busy.id,"approved");await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("local");
+});
