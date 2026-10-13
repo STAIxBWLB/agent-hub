@@ -1956,7 +1956,7 @@
     {
       "id": "planner-readiness-preserves-undo",
       "file": "src/hub/board.ts",
-      "search": "return task.history.findLast(item => item.by !== HUB || item.event !== \"ready\");",
+      "search": "return task.history.findLast(item => item.event !== \"memory reference started\" && (item.by !== HUB || item.event !== \"ready\"));",
       "replacement": "return task.history.at(-1);",
       "testFile": "test/planner-pull.test.ts",
       "testName": "unoffered planner pull can undo after a hub readiness marker (#263)"
@@ -2708,8 +2708,8 @@
     {
       "id": "planner-accepted-offline-preflight",
       "file": "src/hub/tasks.ts",
-      "search": "peer, ...(this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [])], ...this.health()",
-      "replacement": "peer], ...this.health()",
+      "search": "excludeOwners: this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], ...this.health()",
+      "replacement": "excludeOwners: [], ...this.health()",
       "testFile": "test/planner-pull.test.ts",
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
     },
@@ -2720,6 +2720,38 @@
       "replacement": "false||",
       "testFile": "test/github-import.test.ts",
       "testName": "GitHub intake rejects comma labels before the StringSlice CLI can broaden selection"
+    },
+    {
+      "id": "split-parent-memory-undo",
+      "file": "src/hub/board.ts",
+      "search": "item.event !== \"memory reference started\" && (item.by !== HUB || item.event !== \"ready\")",
+      "replacement": "(item.by !== HUB || item.event !== \"ready\")",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains parent-only memory while removing unused children"
+    },
+    {
+      "id": "split-profile-plan-schema",
+      "file": "src/hub/hub-tools.ts",
+      "search": "if (customProfile && tool.name === \"hub_backlog_split\")",
+      "replacement": "if (false && tool.name === \"hub_backlog_split\")",
+      "testFile": "test/planner-split-surfaces.test.ts",
+      "testName": "split nested plan schema follows the selected project profile"
+    },
+    {
+      "id": "planner-reviewer-owner-capacity",
+      "file": "src/hub/routing.ts",
+      "search": "role === \"owner\" && opts.excludeOwners?.includes(peer)",
+      "replacement": "opts.excludeOwners?.includes(peer)",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "planner owner capacity never removes the required reviewer"
+    },
+    {
+      "id": "planner-idle-final-admission",
+      "file": "src/hub/tasks.ts",
+      "search": "finding.step === 3 && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "replacement": "false && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "testFile": "test/task-sweep.test.ts",
+      "testName": "planner idle sweep keeps its final attempt until owner capacity is available"
     }
   ]
 }
