@@ -2607,7 +2607,7 @@
       "search": "[...children].some(key => this.d.store!.store.hasTask(key))",
       "replacement": "false",
       "testFile": "test/planner-split.test.ts",
-      "testName": "split undo refuses child-scoped memory entries"
+      "testName": "split undo retains legacy native entries without a board reference marker"
     },
     {
       "id": "split-inherited-pii-source",
@@ -2624,6 +2624,14 @@
       "replacement": "const plannedMove = opts.planner;",
       "testFile": "test/planner-pull.test.ts",
       "testName": "automatic offline rerouting of planner pulls respects destination WIP"
+    },
+    {
+      "id": "split-memory-reference-marker",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task) this.markMemoryReference(task, by);",
+      "replacement": "if (false) this.markMemoryReference(task!, by);",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains memory references when the native store is unavailable"
     }
   ]
 }
