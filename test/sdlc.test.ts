@@ -124,6 +124,7 @@ test("the owner relinks a PR after a reviewed head was recorded; only the review
   await r.tasks.done("codex", r.id, "done");
   r.tasks.recordLifecycle(USER, r.id, { reviewedHead: A });
   expect(r.board.get(r.id)?.sdlc?.reviewedHead).toBe(A);
-  expect(r.tasks.recordLifecycle("codex", r.id, { pr: 2 }).sdlc?.reviewedHead).toBeUndefined();
+  expect(() => r.tasks.recordLifecycle("codex", r.id, { pr: 2 })).not.toThrow();
+  expect(r.board.get(r.id)?.sdlc?.pr).toBe(2); expect(r.board.get(r.id)?.sdlc?.reviewedHead).toBeUndefined();
   expect(() => r.tasks.recordLifecycle("codex", r.id, { reviewedHead: B })).toThrow();
 });

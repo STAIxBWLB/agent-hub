@@ -206,5 +206,8 @@ test("an older Kimi TUI socket closing keeps a newer launch's admission (#382)",
   expect((await hub.console_.request({ t: "start", peer: "kimi", args: { mode: "tui" } })).ok).toBe(true);
   first.close();
   await observed(() => hub.daemon.bus.peers.get("kimi")?.state === "offline");
-  const second = await hub.attach(); expect((await second.request({ t: "inbox" })).ok).toBe(true);
+  const refusal = await ControlClient.connect(hub.stateDir, { role: "peer", peer: "kimi", channel: false })
+    .then(second => { cleanups.push(() => second.close()); return undefined; }, (error: Error) => error.message);
+  expect(refusal).toBeUndefined();
+  await observed(() => hub.daemon.bus.peers.get("kimi")?.state === "idle");
 });

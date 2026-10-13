@@ -3128,6 +3128,86 @@
       "replacement": "activePromptId = pendingPromptId; pendingPromptId = undefined;",
       "testFile": "test/pi-prompt-continuation.test.ts",
       "testName": "real Pi extension keeps prompt lineage across native retry starts until logical settlement (#379)"
+    },
+    {
+      "id": "policy-glob-unicode-fold-name",
+      "file": "src/hub/path-policy.ts",
+      "search": "const chars = [...foldSegment(name)];",
+      "replacement": "const chars = [...name.toLowerCase()];",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
+    },
+    {
+      "id": "projection-converter-empty-root",
+      "file": "src/hub/text-projection.ts",
+      "search": "profile(EMPTY_ROOT, false,",
+      "replacement": "profile(options.cwd, false,",
+      "testFile": "test/text-projection.test.ts",
+      "testName": "a converter reads only its input snapshot and its own program, never other project files"
+    },
+    {
+      "id": "projection-failure-memo",
+      "file": "src/hub/text-projection.ts",
+      "search": "if (this.failed.has(key)) throw new Error(\"conversion failed before\");",
+      "replacement": "void this.failed;",
+      "testFile": "test/text-projection.test.ts",
+      "testName": "a failed conversion of unchanged bytes is not retried on every facts read"
+    },
+    {
+      "id": "kimi-watch-live-owner",
+      "file": "src/hub/daemon.ts",
+      "search": "if (peer === \"kimi\" && !(kimiOwner instanceof AcpPeer) && (",
+      "replacement": "if (peer === \"kimi\" && (",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "watch follows a running headless Kimi under the default TUI start mode (#382)"
+    },
+    {
+      "id": "kimi-admission-socket-fence",
+      "file": "src/hub/daemon.ts",
+      "search": " && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();",
+      "replacement": ") clearKimiAdmission();",
+      "testFile": "test/kimi-tui.test.ts",
+      "testName": "an older Kimi TUI socket closing keeps a newer launch's admission (#382)"
+    },
+    {
+      "id": "codex-disabled-plugin-trust",
+      "file": "src/hub/tooling.ts",
+      "search": "if (!disabled.has(m[1]! + \"@\" + m[2]!)) found.set(m[1]!, m[2]!);",
+      "replacement": "found.set(m[1]!, m[2]!);",
+      "testFile": "test/tooling.test.ts",
+      "testName": "a Codex plugin disabled in config stays off when its hook trust entry remains (#382)"
+    },
+    {
+      "id": "tooling-regular-file-read",
+      "file": "src/hub/tooling.ts",
+      "search": "if (!st.isFile() || st.size > 1024 * 1024) return undefined;",
+      "replacement": "if (st.size > 1024 * 1024) return undefined;",
+      "testFile": "test/tooling.test.ts",
+      "testName": "Claude add-on detection never blocks on a project settings file that is a FIFO or device (#382)"
+    },
+    {
+      "id": "sdlc-done-single-gate",
+      "file": "src/hub/tasks.ts",
+      "search": "this.d.sdlc.config().mode !== \"off\" && gated !== (reviewer ? \"review\" : \"approval\")",
+      "replacement": "this.d.sdlc.config().mode !== \"off\"",
+      "testFile": "test/sdlc.test.ts",
+      "testName": "advise: overlapping dones record one done after a single readback and one advice notice (#382)"
+    },
+    {
+      "id": "sdlc-done-fence-after-readback",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task.state === \"in_review\" || task.state === \"approved\") throw new Error(`task #${task.id} is already ${task.state}`);",
+      "replacement": "void 0;",
+      "testFile": "test/sdlc.test.ts",
+      "testName": "advise: overlapping dones record one done after a single readback and one advice notice (#382)"
+    },
+    {
+      "id": "sdlc-owner-relink-pr",
+      "file": "src/hub/tasks.ts",
+      "search": "if (next.reviewedHead !== undefined && next.reviewedHead !== task.sdlc?.reviewedHead)",
+      "replacement": "if (next.reviewedHead !== task.sdlc?.reviewedHead)",
+      "testFile": "test/sdlc.test.ts",
+      "testName": "the owner relinks a PR after a reviewed head was recorded; only the reviewer records a head (#382)"
     }
   ]
 }
