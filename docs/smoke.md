@@ -1708,3 +1708,14 @@ exact-row navigation, missing-row guidance and stale-navigation refusal. Existin
 dashboard authentication/CSP/page-size and Office regressions are retained.
 Current full platform, mutation, browser, mobile, light/dark and reduced-motion
 proof is pending. Native terminal/tmux/account legs remain unverified.
+
+Actual source-only Ego Chromium QA at b54b7c6c exercised STAIx and all four
+selected alternatives. Screenshots were opened and inspected at390x844 and
+1440x1000 in light/dark projections: document widths matched, Enter on the
+review control focused exact task4, and no action callback ran. Reduced motion
+reported no animation, open pose opacity1 and blink pose opacity0. The task
+space finished and the admitted helper exited0. This is fixture/browser proof,
+not a native account or production runtime claim. Served bytes compared against
+phase2 with the same upstream main:146871 before,164034 after (+17163).
+The focused production-boundary correction group passed35/0 (145589 assertions);
+current full platform/seed/review proof remains pending.
