@@ -2608,7 +2608,7 @@ Current source/native proof remains pending.
 ## Remaining board projections (#263, in progress)
 
 Terminal `board --columns` uses the same state/ready/waiting model as the
-dashboard, retaining public rows and unknown states. `board --release <name|#id>`
+dashboard, retaining public rows and unknown states. `board --release <name> | --release-id <id>`
 filters read-only through the existing task-list authority; it never exposes
 backlog to an unprivileged peer. Frozen/phase views flag ids of approved tasks
 outside the release whose structured approval time is after its planned cut.
