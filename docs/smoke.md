@@ -1709,3 +1709,9 @@ Line-size console faces now honor the resolved ASCII/block selection, with the
 locale fallback retained and ASCII/CLI defaults unchanged. Actual line glyph,
 geometry, modal and runtime regression group passed19/0 with7165 assertions.
 All five faces stayed100 cells wide without colour escapes. Full gates pending.
+
+The first final265-guard run found a surviving line-glyph seed: shipped ASCII
+and block line faces intentionally have identical bytes. Added a separate
+observable catalog fixture, restored in finally, retaining every earlier assertion.
+Local execution of this additional case is admission-deferred, not a pass;
+current immutable-head full platform/seed proof is pending.

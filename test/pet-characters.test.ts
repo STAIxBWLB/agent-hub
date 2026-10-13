@@ -70,3 +70,13 @@ test("console line faces honor selected block glyphs and the locale ASCII floor"
  }
  const floor=petGlyphs("blocks",{LANG:"C",TERM:"xterm"});expect(floor).toBe("ascii");expect(characterAttentionLine(needs({},0),"stai",0,false,true,floor)).toContain(petFrame("stai","sleeping","line","ascii")[0]!);
 });
+
+test("console line glyph mode selects distinct trusted catalog output without moving the prompt",()=>{
+ const prior=CHARACTERS.stai.frames.blocks.sleeping.line;
+ const state={...initialConsoleState(true),petEnabled:true,petCharacter:"stai" as const,petSize:"line" as const,petGlyphs:"blocks" as const};
+ const before=renderConsoleLines(state,100,24,0);
+ try{
+  CHARACTERS.stai.frames.blocks.sleeping.line=["B B B"];
+  const after=renderConsoleLines(state,100,24,0);expect(paint(after[20]!,false)).toContain("B B B");expect(after.at(-1)).toEqual(before.at(-1));
+ }finally{CHARACTERS.stai.frames.blocks.sleeping.line=prior}
+});

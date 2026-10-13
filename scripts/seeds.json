@@ -2119,7 +2119,7 @@
       "search": "characterAttentionLine(value, character, now, s.petBlink, true, s.petGlyphs)",
       "replacement": "characterAttentionLine(value, character, now, s.petBlink)",
       "testFile": "test/pet-characters.test.ts",
-      "testName": "console line faces honor selected block glyphs and the locale ASCII floor"
+      "testName": "console line glyph mode selects distinct trusted catalog output without moving the prompt"
     }
   ]
 }
