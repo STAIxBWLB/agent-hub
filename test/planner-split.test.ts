@@ -181,3 +181,8 @@ test("split undo retains parent-only memory while removing unused children",asyn
  const f=rig(),store=new MemoryStore({home:join(f.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...f.deps,store:{store,project:"split",repo:"owner/repo"}}),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});
  await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});await tasks.remember(USER,{text:"parent note",task:parent.id});const undone=await tasks.undoPlanning(USER,parent.id,1).catch(()=>null);expect(undone).not.toBeNull();if(!undone)return;expect(undone.id).toBe(parent.id);expect(f.board.list()).toHaveLength(1);expect(store.hasTask(taskKey("split",parent))).toBe(true);
 });
+
+test("split retains stored task role ids when current catalog guidance disappears",async()=>{
+ const f=rig(),catalog=(await import("../src/hub/roles.ts")).loadRoleCatalog();const tasks=new Tasks({...f.deps,catalog}),parent=await tasks.propose(USER,{title:"role parent",class:"implement",role:"backend-engineer",backlog:true});catalog.roles.delete("backend-engineer");
+ const split=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"}).catch(()=>null);expect(split).not.toBeNull();if(!split)return;for(const child of split.children)expect(child.role).toBe("backend-engineer");
+});
