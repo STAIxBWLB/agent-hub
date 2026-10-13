@@ -18,4 +18,4 @@ Scope: the task flow, assignment, the state machine and the hub's MCP tools. Rea
 
 - A planner patch that names `reserved` at all, the same value included, is refused while `hasPersonReservation` holds; planner pull and grooming both ask it (#378: a same-value write laundered a person's reservation).
 - `done()` gates the SDLC transition once: pass `gated` to `complete()` when nothing was awaited since, and after any awaited gate readback refuse if another done already moved the task, in every mode (#382: advise recorded overlapping dones).
-- A changed `reviewedHead`, or one supplied with a changed repo or PR, needs the reviewer or a person; a head dropped because the owner relinked the PR does not (#382).
+- A changed `reviewedHead`, or one supplied with a changed repo or PR, needs the reviewer or a person; a head dropped because the owner relinked the PR does not (#382: the owner could not relink, and could carry a head to a new PR).

@@ -9,7 +9,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Refresh deferred memory indexes for goal and suggestion reads (#378).
 - Update overdue board badges when deadlines pass without rebuilding unchanged cards on every poll (#378).
 - Match glob data policies against NFD, compatibility and long-s spellings, so a read-only or private subtree with a decomposed Hangul or accented name is protected (#382).
-- Confine document converters to their input snapshot and program files, and stop retrying a failed conversion of unchanged bytes on every facts read (#382).
+- Keep document converters from reading project files other than their input snapshot and program files, and stop retrying a failed conversion of unchanged bytes on every facts read (#382).
 - Let `ahub watch kimi` follow a running headless Kimi under the default TUI start mode, and keep a newer Kimi TUI admission when an older socket closes (#382).
 - Keep a disabled Codex plugin off when its hook trust entry remains, and read project Claude settings without blocking on a FIFO or device (#382).
 - Gate `hub_task_done` once, refuse an overlapping done in advise mode, and let the owner relink a PR after a reviewed head was recorded (#382).

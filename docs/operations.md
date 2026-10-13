@@ -2622,7 +2622,7 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 # Rich-document text projections (#259)
 
-- Configure text_projection only in an untracked machine-local file, with a separate {input} argv argument. Facts uses bounded read-only/no-network conversion from a scratch directory, where the converter reads only its input snapshot and its own program and script files (no other project file, even under `local.read_allow`), and a content/config cache; failure keeps the prior file view and logs a bounded notice, and a conversion that failed with its full deadline is not retried for the same bytes and command until the hub restarts (#382).
+- Configure text_projection only in an untracked machine-local file, with a separate {input} argv argument. Facts uses bounded read-only/no-network conversion from a scratch directory, where the converter reads only its input snapshot and its own program and script files (no other project file, even under `local.read_allow`), and a content/config cache; failure keeps the prior file view and logs a bounded notice, and a conversion that failed with its full deadline is not retried for the same bytes and command for the life of the hub process (a bounded in-memory record) (#382).
 - Raw change identity and projected presentation stay separate; private paths never enter conversion. Schema, limits and current surface scope: [text projections](text-projection.md).
 
 # Task catalog guidance (#295)
