@@ -190,5 +190,5 @@ test("unified split accepts a confirmed response beyond the generic action deadl
  }finally{await stopManager({home:f.home});f.hub.stop(true)}
 });
 test("unified split missed reply is unconfirmed and requires task readback before retry",async()=>{
- const f=await scriptedAction();try{const result=await f.action("backlog_split");expect(result).toMatchObject({ok:false,unconfirmed:true});expect(result.text).toContain("Reload the task");}finally{await stopManager({home:f.home});f.hub.stop(true)}
+ const f=await scriptedAction();try{const result=await f.action("backlog_split");expect(result.unconfirmed).toBe(true);expect(result).toMatchObject({ok:false,unconfirmed:true});expect(result.text).toContain("Reload the task");}finally{await stopManager({home:f.home});f.hub.stop(true)}
 });
