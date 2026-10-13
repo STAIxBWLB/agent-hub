@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "4a38149b7a2ef098f980d4b867f9531719b08397",
+      "verifiedAgainst": "e8fa0e3be5eb71282ccc9279a55bc6154de0c6a6",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "4a38149b7a2ef098f980d4b867f9531719b08397",
+      "verifiedAgainst": "e8fa0e3be5eb71282ccc9279a55bc6154de0c6a6",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "4a38149b7a2ef098f980d4b867f9531719b08397",
+      "verifiedAgainst": "e8fa0e3be5eb71282ccc9279a55bc6154de0c6a6",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "4a38149b7a2ef098f980d4b867f9531719b08397",
+      "verifiedAgainst": "e8fa0e3be5eb71282ccc9279a55bc6154de0c6a6",
       "paths": [
         "package.json",
         "src/",
