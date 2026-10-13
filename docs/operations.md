@@ -2927,3 +2927,5 @@ Ask evidence skips body-free memory-reference markers when selecting the latest 
 GitHub intake checks its staging deadline after every awaited proposal, including the final issue. A confirmed late save returns its task ID with partial=true and complete=false so the operator can read back and resume.
 
 If GitHub intake saves a row but later bookkeeping fails, canonical identity readback preserves the confirmed ID and queues its Backlog notice. The response remains partial; unreadable or missing readback remains unconfirmed.
+
+A later issue lookup or profile-preparation failure also returns the IDs confirmed earlier in the import as partial progress.
