@@ -2847,3 +2847,7 @@ With mini/full characters, active console notices remain visible away from the
 character: panel body rows show the bounded wrapped notice, and stream mode
 prints each fresh notice once through the existing local stream. Footer prose
 exclusion and fixed prompt/footer geometry remain. No new request or timer.
+
+Automatic reroutes of planner-pulled work retain WIP and delivery-hold admission
+during offline, budget, roster and idle recovery. Explicit manual assignments
+retain their existing override authority.

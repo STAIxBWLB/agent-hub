@@ -2504,6 +2504,14 @@
       "replacement": "if (false) for (const [peer, value] of Object.entries(data.taskWip!))",
       "testFile": "test/planner-wip-settings.test.ts",
       "testName": "normal status text includes planner WIP and capacity for retained peers"
+    },
+    {
+      "id": "planner-automatic-reroute-capacity",
+      "file": "src/hub/tasks.ts",
+      "search": "const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== \"manual\" || opts.roster);",
+      "replacement": "const plannedMove = opts.planner;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "automatic offline rerouting of planner pulls respects destination WIP"
     }
   ]
 }
