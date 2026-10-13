@@ -36,3 +36,12 @@ test("GitHub intake accepts dot-prefixed repository identity in explicit and res
   expect(result).not.toBeNull();if(!result)continue;expect(result.issues[0]?.source.repo).toBe("github/.github");expect(calls.at(-1)).toContain("github/.github");expect(calls.every(args=>args[0]==="repo"||args[0]==="issue"&&args[1]==="list")).toBe(true);
  }
 });
+
+
+test("GitHub intake refuses quoted labels before CSV interpretation", async () => {
+  let calls = 0;
+  for (const label of ['"ready"', 'ready"work', '"ready,work"']) {
+    await expect(readGitHubImport({ repo: "Owner/Repo", label }, async () => { calls++; return { code: 0, stdout: "[]" }; })).rejects.toThrow("selection");
+  }
+  expect(calls).toBe(0);
+});
