@@ -49,7 +49,7 @@ export function nextSweep(task: Task, config: TaskSweepConfig, now: number): Swe
       : task.state === "in_review" && task.reviewer ? "review-pending" : undefined;
   if (!kind) return undefined;
   let activity = task.history.length - 1;
-  while (activity >= 0 && task.history[activity]?.sweep) activity--;
+  while (activity >= 0 && (task.history[activity]?.sweep || task.history[activity]?.event === "memory reference started")) activity--;
   const at = task.history[activity]?.at ?? task.created;
   const threshold = kind === "unaccepted-assignment" ? config.unaccepted_min : kind === "idle-owner" ? config.idle_min : config.review_min;
   if (now - at < threshold * 60_000) return undefined;
