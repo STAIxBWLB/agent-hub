@@ -2911,3 +2911,5 @@ With no release cut, outside approved tasks are reported under unknown cut evide
 Split children retain their initial deterministic and inherited privacy signals across awaited screening. A routing-pattern reload cannot remove those captured signals from an unscreened child at final validation.
 
 If a routing pattern adds deterministic privacy during screening, split history and telemetry use regex-private provenance rather than an earlier clear model result. The same captured final signals determine both the child and its provenance.
+
+Dashboard backlog splits receive a dedicated outer HTTP request bound above manager forwarding, using the shared screening/database bounds and margin. Ordinary action policy remains unchanged. At phone widths, split form grids use one column so native date controls remain inside their panels.

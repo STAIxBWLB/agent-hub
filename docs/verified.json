@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "642f06347e6c2a9ce3ae8f89fe80e0b755b4a977",
+      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "642f06347e6c2a9ce3ae8f89fe80e0b755b4a977",
+      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "642f06347e6c2a9ce3ae8f89fe80e0b755b4a977",
+      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "642f06347e6c2a9ce3ae8f89fe80e0b755b4a977",
+      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
       "paths": [
         "package.json",
         "src/",
@@ -98,7 +98,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "b8590bd9e58a36c85f1eeddef233831fd21818ba",
+      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -172,7 +172,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "642f06347e6c2a9ce3ae8f89fe80e0b755b4a977",
+      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
       "paths": [
         "test/",
         "scripts/check.sh",
