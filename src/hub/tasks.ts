@@ -571,12 +571,12 @@ export class Tasks {
     while (pending.length) { const id = pending.pop()!; if (id === prerequisite) return true; if (seen.has(id)) continue; seen.add(id); pending.push(...(this.d.board.get(id)?.deps ?? [])); }
     return false;
   }
+  private plannerFull(task: Task): PeerId[] {
+    return Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; });
+  }
   private plannerAssignment(task: Task, reservedOnly = false): Assignment {
     const states = this.states();
-    const full = Object.keys(states).filter(peer => {
-      const queue = this.d.bus.queueSummary(peer);
-      return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0;
-    });
+    const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
     return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: [...this.excluded(task), ...full], ...(reservedOnly && task.reserved && !this.excluded(task).includes(task.reserved) ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
   }
@@ -603,7 +603,7 @@ export class Tasks {
       }
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
-      const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved")) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
+      const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved") && !["backlog pulled", "backlog returned"].includes(entry.event)) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
       if (task.reserved && reservation?.by === USER && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
       return { task, owner: assignment.owner };
     };
@@ -730,6 +730,7 @@ export class Tasks {
     if (entry.planning.split) {
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.state !== "backlog" || task.owner || taskHasStarted(task) || release && ["shipped", "dropped"].includes(release.state) || by !== USER && (task.pinned || release?.state === "frozen")) throw new PreEffectToolRefusal("split undo is no longer eligible");
+      if (entry.planning.split.children.some(saved => this.d.board.get(saved.id)?.history.some(item => item.event === "memory reference started"))) throw new PreEffectToolRefusal("split children are referenced by persistent long-term memory");
       if (this.d.store) {
         try { this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
         const children = new Set(entry.planning.split.children.map(child => this.d.board.get(child.id)).filter((child): child is Task => !!child).map(child => this.memoryKey(child)));
@@ -1220,7 +1221,7 @@ export class Tasks {
         // Awaits run between tasks (briefs, memory): re-read, and stop for anything that changed meanwhile.
         const task = this.d.board.get(id);
         if (!task || task.owner !== peer || !OPEN.includes(task.state) || this.d.bus.stateOf(peer) !== "offline") continue;
-        if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), peer], ...this.health() }).owner) continue;
+        if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), peer, ...(this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [])], ...this.health() }).owner) continue;
         try {
           const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
           const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", reason: "offline", note: why });
@@ -1303,7 +1304,7 @@ export class Tasks {
     if (task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
-    const plannerFull = plannedMove ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];
+    const plannerFull = plannedMove ? this.plannerFull(task) : [];
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...plannerFull, ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
 
     if (waits.length) {
@@ -2140,7 +2141,7 @@ export class Tasks {
       const weights = this.weights(task.class);
       const pii = this.isPii(task);
       const candidates = owner ? [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter(p => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p) : [];
-      const a = assign(task, this.states(), routing, { ...weights, offRoster: [...(weights.offRoster ?? []), peer], exclude: [peer], candidates, ...(owner ? { waitsFor: this.waitsFor(task) } : task.owner ? { notReviewer: task.owner } : {}) });
+      const a = assign(task, this.states(), routing, { ...weights, offRoster: [...(weights.offRoster ?? []), peer], exclude: [peer, ...(owner && this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [])], candidates, ...(owner ? { waitsFor: this.waitsFor(task) } : task.owner ? { notReviewer: task.owner } : {}) });
       return { id: task.id, title: this.publicTitle(task), role: owner ? "owner" : "reviewer", to: (owner ? a.owner : a.reviewer) ?? null };
     });
   }
@@ -2161,7 +2162,8 @@ export class Tasks {
       if (task.owner === peer && (OPEN.includes(task.state) || roster && task.state === "in_review")) {
         const pii = this.isPii(task);
         const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
-        // Budget keeps its original release/unassign behaviour. Roster changes the state in
+        if (this.plannerPullRecord(task)?.pull && !assign(task, this.states(), routing, { candidates, exclude: [...this.excluded(task), peer, ...this.plannerFull(task)], waitsFor: this.waitsFor(task), ...this.weights(task.class) }).owner) continue;
+        // Budget keeps its original release/unassign behaviour for ordinary work. Roster changes the state in
         // assignOwner's same owner write only after routing has found somebody to take it.
         const back = !roster && task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
         let next: Task;
@@ -2225,6 +2227,7 @@ export class Tasks {
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
+    if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
     if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
@@ -2248,10 +2251,14 @@ export class Tasks {
     if (g.state === "done" || g.state === "dropped") throw new PreEffectToolRefusal(`goal: that long-term task is ${g.state}`);
     return g;
   }
-  /** Record that a board task is part of a long-term task; never for a PII task. Fail-open after the board write. */
+  /** Fence deletion before external memory writes; one marker survives store absence. */
+  private markMemoryReference(task: Task, by: PeerId): void {
+    if (!this.d.board.get(task.id)?.history.some(entry => entry.event === "memory reference started")) this.d.board.update(task.id, by, "memory reference started", {});
+  }
+  /** Record a long-term link, never for PII; failures remain notices. */
   private linkNative(task: Task, goal: GoalView, by: PeerId): string {
     if (this.isPii(task)) { this.releaseNotice(`task #${task.id} is not linked to a long-term task: nothing about a PII task enters hub memory`); return "not linked (PII task)"; }
-    try { this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
+    try { this.markMemoryReference(task, by); this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
     catch (e) { this.releaseNotice(`task #${task.id}: the link to long-term task ${goal.id.slice(0, 8)} was not saved (${(e as Error).message})`); return "not linked"; }
   }
   /** A person links a board task of this project to a long-term task (`ahub goal link`). */
@@ -2278,6 +2285,7 @@ export class Tasks {
       // A short-term note on a task already approved (before hub memory existed, or late): the task is settled first, so
       // the note gets its own deadline and is never taken for a source waiting for promotion.
       if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) st.store.settle(this.memoryKey(task), by);
+      if (task) this.markMemoryReference(task, by);
       const id = st.store.note({ op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" }, horizon === "short");
       st.onNote?.(id);
       return { id, tier };
@@ -2332,7 +2340,10 @@ export class Tasks {
     const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
     this.saveNative(by, kind, text, title, task);
-    if (this.d.memory) void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
+    if (this.d.memory) {
+      try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
+      void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
+    }
   }
 
   private tell(task: Task, body: string, pii: boolean): void {

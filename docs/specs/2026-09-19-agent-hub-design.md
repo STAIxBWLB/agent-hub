@@ -2566,6 +2566,10 @@ to cancel a dispatched native turn. Native/visual proof remains unverified.
 
 ## Backlog split contract (#263, in progress)
 
+Task-scoped memory note/link attempts record one body-free board-history marker
+before external persistence. Split undo preserves that fence even when memory
+is disabled or unavailable; failed attempts conservatively retain the child.
+
 Splitting keeps the original card as integration/acceptance responsibility and
 adds two to eight unoffered child cards as prerequisites. Existing prerequisites
 and conservative privacy/phase planning are retained. Per-part dependencies may
