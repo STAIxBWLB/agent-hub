@@ -150,6 +150,10 @@ test("glob policies match decomposed, compatibility and long-s spellings of prot
   // an exact entry keeps matching every spelling it matched before folding (U+0130 then a combining mark reorders)
   expect(matchesPolicy(dir, "i\u0307\u0338/new.csv", ["\u0130\u0338"])).toBe(true);
   expect(matchesPolicy(dir, "\u0130\u0338/new.csv", ["i\u0307\u0338"])).toBe(true);
+  // a directory matching the pattern by its folded spelling is still searched for a matching alias below it
+  mkdirSync(join(dir, "other")); mkdirSync(join(dir, "ss")); symlinkSync("../other", join(dir, "ss/ß")); mkdirSync(join(dir, "x")); symlinkSync("../other", join(dir, "x/x"));
+  expect(matchesPolicy(dir, "other/f.csv", ["**/ß"])).toBe(true);
+  expect(matchesPolicy(dir, "other/f.csv", ["**/x"])).toBe(true);
   const ctx: ToolContext = { cwd: dir, deny: [], readOnly: ["학생자료/**"], sandboxProfile: "", permit: async () => true, send: () => "sent" };
   expect(await runTool("write", JSON.stringify({ path: nfd + "/a.csv", content: "mutated" }), ctx)).toContain("data.readonly");
   expect(readFileSync(join(dir, nfd, "a.csv"), "utf8")).toBe("original");

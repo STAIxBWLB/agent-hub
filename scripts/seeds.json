@@ -3216,6 +3216,14 @@
       "replacement": "within(foldSegment(path), foldSegment(root));",
       "testFile": "test/path-policy.test.ts",
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
+    },
+    {
+      "id": "policy-glob-search-below-match",
+      "file": "src/hub/path-policy.ts",
+      "search": "states = new Set([...states].filter(i => i !== pattern.length));",
+      "replacement": "states = new Set<number>();",
+      "testFile": "test/path-policy.test.ts",
+      "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
     }
   ]
 }

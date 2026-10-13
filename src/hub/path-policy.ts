@@ -75,7 +75,12 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
   if (patternScope(pattern, start, relative(root, lexical), includeParents) || patternScope(pattern, start, relative(root, actual), includeParents)) return true;
   const visit = (dir: string, states: Set<number>, depth: number, ancestors: Set<string>): boolean => {
     const real = policyRealPath(dir);
-    if (states.has(pattern.length)) return beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual));
+    if (states.has(pattern.length)) {
+      if (beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual))) return true;
+      // A `**` can still match deeper: an alias below this match (`ss/ß -> other` for `**/ß`) is searched too.
+      states = new Set([...states].filter(i => i !== pattern.length));
+      if (!states.size) return false;
+    }
     if (patternScope(pattern, states, relative(real, actual), includeParents)) return true;
     if (!existing(dir)) return false;
     // Unfolded: a sibling whose folded spelling looks like the project is outside it, and discovery there fails closed.
