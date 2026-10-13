@@ -2800,6 +2800,14 @@
       "replacement": "while (activity >= 0 && task.history[activity]?.sweep) activity--;",
       "testFile": "test/task-sweep.test.ts",
       "testName": "memory reference bookkeeping preserves sweep thresholds and ladder activity"
+    },
+    {
+      "id": "split-reason-policy-provenance",
+      "file": "src/hub/tasks.ts",
+      "search": "const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld || initialReasonPrivate || this.isPii(current.parent) || !this.nameable(reason));",
+      "replacement": "const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split reason retains deterministic privacy across routing policy changes"
     }
   ]
 }
