@@ -2717,3 +2717,5 @@ stays bound until a distinct replacement is selected; only these temporary
 listeners are closed, including on binding failure. Selection is bounded by
 the number of excluded ports plus one. Explicit control-port behavior and
 existing Origin/token/native ownership refusals remain unchanged.
+
+Declining rework in changes_requested returns it to proposed before rerouting, just as declining in_progress work does. The Board permits that transition; the Tasks owner/person authority remains required. Planner-pulled work without destination WIP is retried from To Do once capacity becomes available.
