@@ -16,7 +16,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["Daemon and runtime", [
     ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],
-    ["ahub console [--panels] [--color=auto|always|never]", "enter the human console, leaving the daemon running on exit"],
+    ["ahub console [--panels] [--color=auto|always|never]", "enter the human console; P cycles built-in pet characters/off; exiting leaves the daemon running"],
     ["ahub console --no-pet", "turn off attention for this session; combines with --panels and --color"],
     ["ahub pet [--short]", "read attention without connecting; --short prints ahub!N only when action is needed"],
     ["ahub sdlc status [task] | explain <task> | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
