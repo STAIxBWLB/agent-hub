@@ -1341,7 +1341,9 @@ const commands: Record<string, () => Promise<void> | void> = {
   pet: () => {
     if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short]");
     const short = args.includes("--short");
-    const text = renderPet(readPet(stateDir), short);
+    let character: import("../pet/frame.ts").CharacterId | undefined;
+    try { character = loadPetConfig(cwd).character; } catch { /* explicit structural reads remain available with malformed presentation config */ }
+    const text = renderPet(readPet(stateDir), short, character);
     process.stdout.write(short ? text : text + "\n");
   },
 
@@ -1354,7 +1356,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (options.json) return console.log(JSON.stringify(status, null, 2));
       const quota = await hub.request({ t: "budget" });
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
-      if (status.needs && loadPetConfig(cwd).enabled) console.log(renderPet(petView(status)));
+      if (status.needs) { const pet = loadPetConfig(cwd); if (pet.enabled) console.log(renderPet(petView(status), false, pet.character)); }
       // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
       if (existsSync(join(hubHome(), "memory", "index.db"))) {
         try { const lines = await goalCommand(["list"], cwd); if (!lines.startsWith("no open")) console.log(`\nlong-term tasks\n${lines}`); } catch { /* memory unreadable: status goes on */ }

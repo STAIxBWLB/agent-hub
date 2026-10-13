@@ -338,7 +338,7 @@ test("dashboard renders Pi/local waiting counts and terminal answer directions w
   const code = /function renderApprovals\(permissions\) \{([\s\S]*?)\n\}/.exec(html)?.[0];
   expect(code).toBeDefined();
   class Node {
-    textContent = ""; children: Node[] = [];
+    textContent = ""; children: Node[] = []; dataset: Record<string,string> = {}; tabIndex = -1;
     constructor(text = "") { this.textContent = text; }
     append(...children: Node[]) { this.children.push(...children); }
   }

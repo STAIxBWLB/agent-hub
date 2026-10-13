@@ -2621,6 +2621,41 @@ attention. No task JSON payload is decoded for this projection. Reserved
 pseudo-peers user and hub never produce offline-agent attention; a task reviewed
 by user still produces its normal review action.
 
+## Approved terminal characters and sizes (#280, phase 2)
+
+The owner approved the STAIx reductions and public distribution on 2026-10-13,
+and selected gyul, lantern, cursor-cat and boxbot. All five built-in characters
+have complete line/mini/full ASCII and block data; no image is loaded at build
+or run time. The ASCII STAI line remains byte-compatible. Actual consoles
+advertise the five choices and P cycles through them and off; older embedding
+states without advertised choices retain the former STAI/off toggle.
+
+Mini fits at100 columns, full at100 columns/40 rows, otherwise the next smaller
+size is used. Full reserves the catalog maximum of eight sprite rows plus the
+unchanged full-width prompt, independent of state and session character. Mini
+shares the existing four footer rows. Stream scroll bounds and panels body
+height use the same footer geometry. Notice/source prose is excluded beside
+expanded frames. Only a live approval deadline permits the waiting blink;
+C/dumb/linux/unknown locale surfaces use ASCII even when blocks were requested.
+Body foreground is uncoloured; only the Gyul leaf uses an existing accent tone.
+Native terminal/font/tmux proof remains a separate verification leg.
+
+## Shared dashboard attention (#280, phase 4)
+
+The existing authenticated UI snapshot receives an optional allowlisted attention
+input and enabled/character/blink presentation fields. Status wire/file callers
+retain their phase3 summary/items projection and never receive this input. The
+page invokes the same injected needs function on this body-free input, renders
+the selected built-in full block frame as SVG pixels and exposes state/counts
+through an accessible button. Its click only reaches an exact visible list row
+or the relevant heading with fixed structural guidance; no action request occurs.
+
+DOM writes and title counts follow the derived signature, not every poll. A
+waiting pulse uses CSS transform/opacity only, with a static reduced-motion and
+blink-off escape. There is no extra timer, request, route or authority; legacy
+or invalid snapshots make attention unavailable. Project changes clear stale
+attention and restore the title. The existing CSP/header policy is unchanged.
+
 ## Amendment: hub memory, tiers and graph (#258, phase 1)
 
 Decision 10 is amended: the hub owns a store of its own in `~/.agenthub/memory/`, machine-wide, and claude-mem stays
@@ -2636,6 +2671,21 @@ and rebuilds; the dashboard's Memory section is read-only inside the existing CS
 (`memory.native`). Proposed defaults 1 to 5 of #258 are taken as confirmed by the request to implement it. Machine sync,
 long-term tasks with leases (decision 9's amendment), claude-mem import and model-suggested edges follow in later phases.
 
+
+## Dashboard attention projection (#280, phase 4 in progress)
+
+The existing dashboard snapshot supplies optional allowlisted needs input and
+known presentation choices; normal status/file payloads do not gain that input.
+The header independently projects the shared pure needs function into literal
+built-in SVG pixels and an accessible state/count label. Unchanged state and
+choices do not rewrite pet DOM. Clicks navigate only to exact visible rows or
+related headings, never issue actions or alter filters. Missing/invalid legacy
+input hides the widget. Project resets clear retained navigation and title.
+
+The two approved waiting frames alternate in CSS once per second only while
+a live approval exists. Reduced motion and blink-off remain static. Every other
+state stays still. No timer/request or new asset dependency is introduced;
+existing header policy and computed CSP hashes apply.
 ## Amendment: hub memory between machines and long-term tasks (#258, phase 2)
 
 Decision 9 is amended for memory only: the memory directory is a git repository that tracks `log/*.jsonl` and syncs
@@ -2675,3 +2725,12 @@ its original copy is not sent the retry. Queue overflow returns that recipient's
 ids to pending state on the existing bus event, including immediate eviction
 during publication. Pending ids are removed before publication so overflow can
 restore them; no extra timer, route, ownership change or task text is introduced.
+
+## Automatic control port exclusion (#375)
+
+When controlPort is zero, the daemon excludes requested positive Codex app and
+proxy ports from its automatic listener selection. A rejected owned listener
+stays bound until a distinct replacement is selected; only these temporary
+listeners are closed, including on binding failure. Selection is bounded by
+the number of excluded ports plus one. Explicit control-port behavior and
+existing Origin/token/native ownership refusals remain unchanged.
