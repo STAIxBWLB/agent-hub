@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { realPath } from "./project.ts";
 import { profile, sandboxAvailable } from "../local/sandbox.ts";
 export type ProjectionConfig = Record<string, string[]>;
+const EMPTY_ROOT = "/var/empty";
 export const MAX_PROJECTION_INPUT = 16 * 1024 * 1024;
 const MAX_INPUT = MAX_PROJECTION_INPUT, MAX_TEXT = 256 * 1024;
 /** Only machine-local config chooses programs; no implicit shell or command-string parsing. */
@@ -23,14 +24,18 @@ export function projectionConfig(raw: unknown): ProjectionConfig {
 }
 export interface ProjectedText { inputHash: string; rawHash: string; rawBlob: string; configHash: string; text: string }
 const hash = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
-function commandFingerprint(cwd: string, argv: string[]): string {
-  const parts = [JSON.stringify(argv)];
+/** The program and script files an argv runs, resolved as the converter will see them. */
+function programFiles(cwd: string, argv: string[]): { file: string; size: number; mtimeMs: number; ctimeMs: number }[] {
+  const out: { file: string; size: number; mtimeMs: number; ctimeMs: number }[] = [];
   for (const [index, arg] of argv.entries()) {
     if (index !== 0 && !/\.(?:sh|py|js|ts|rb)$/.test(arg)) continue;
     const choices = isAbsolute(arg) ? [arg] : index === 0 && !arg.includes("/") ? (process.env.PATH ?? "/usr/bin:/bin").split(":").slice(0, 32).map(dir => join(dir, arg)) : [resolve(cwd, arg)];
-    for (const file of choices) try { const st = statSync(file); if (!st.isFile()) continue; parts.push(file, String(st.size), String(st.mtimeMs), String(st.ctimeMs)); break; } catch { /* another PATH entry */ }
+    for (const file of choices) try { const st = statSync(file); if (!st.isFile()) continue; out.push({ file, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs }); break; } catch { /* another PATH entry */ }
   }
-  return hash(parts.join("\\n"));
+  return out;
+}
+function commandFingerprint(cwd: string, argv: string[]): string {
+  return hash([JSON.stringify(argv), ...programFiles(cwd, argv).flatMap(p => [p.file, String(p.size), String(p.mtimeMs), String(p.ctimeMs)])].join("\\n"));
 }
 function boundedCache(file: string): string {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -47,8 +52,11 @@ function boundedCache(file: string): string {
 export class TextProjections {
   private readonly sandbox: string;
   private readonly warned = new Set<string>();
+  /** Inputs whose full-budget conversion failed: the same bytes under the same command are not converted again. */
+  private readonly failed = new Set<string>();
   constructor(private readonly options: { cwd: string; stateDir: string; config: ProjectionConfig; deny?: string[]; readAllow?: string[]; log?: (line: string) => void }) {
-    this.sandbox = Object.keys(options.config).length ? profile(options.cwd, false, options.readAllow, options.deny, ["."]) : "";
+    // Rooted at an empty system directory, not the project: the converter reads its snapshot and program files only.
+    this.sandbox = Object.keys(options.config).length ? profile(EMPTY_ROOT, false, options.readAllow, options.deny, ["."]) : "";
   }
   private warn(ext: string): void {
     if (this.warned.has(ext)) return;
@@ -103,17 +111,21 @@ export class TextProjections {
           if (value.inputHash === inputHash && value.rawHash === rawHash && value.rawBlob === rawBlob && value.configHash === configHash && typeof value.text === "string" && Buffer.byteLength(value.text) <= MAX_TEXT) return value;
         }
       } catch { /* missing/invalid cache is not evidence */ }
+      if (this.failed.has(key)) throw new Error("conversion failed before");
       if (!sandboxAvailable()) throw new Error("sandbox unavailable");
       scratch = realPath(mkdtempSync(join(tmpdir(), "ahub-projection-input-"))); const snapshot = join(scratch, "input" + ext);
       writeFileSync(snapshot, bytes, { mode: 0o400 });
+      const programs = programFiles(this.options.cwd, argv).map(p => "\n(allow file-read* process-exec (literal " + sbplString(realPath(p.file)) + "))").join("");
       const result = spawnSync(process.execPath, [join(import.meta.dir, "projection-exec.ts")], {
         cwd: this.options.cwd, timeout: deadline === undefined ? 8000 : Math.ceil(Math.max(1, Math.min(8000, deadline - performance.now()))), maxBuffer: MAX_TEXT * 2, encoding: "utf8",
-        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + "\n(allow file-read* (literal " + sbplString(snapshot) + "))", argv: argv.map(arg => arg === "{input}" ? snapshot : arg), ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.min(5000, deadline - performance.now() - 100)) }) }),
+        input: JSON.stringify({ cwd: this.options.cwd, sandbox: this.sandbox + "\n(allow file-read* (literal " + sbplString(snapshot) + "))" + programs, argv: argv.map(arg => arg === "{input}" ? snapshot : arg), ...(deadline === undefined ? {} : { timeoutMs: Math.max(1, Math.min(5000, deadline - performance.now() - 100)) }) }),
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: "en_US.UTF-8", TERM: "dumb" },
       });
-      if (result.error || result.status !== 0) throw new Error("conversion failed");
+      // ponytail: in-memory for this process, cleared at 1024 keys; persist it if restarts make retries costly.
+      const failure = () => { if (deadline === undefined) { if (this.failed.size >= 1024) this.failed.clear(); this.failed.add(key); } return new Error("conversion failed"); };
+      if (result.error || result.status !== 0) throw failure();
       const converted = JSON.parse(result.stdout) as { ok?: boolean; text?: string };
-      if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\0")) throw new Error("conversion failed");
+      if (converted.ok !== true || typeof converted.text !== "string" || Buffer.byteLength(converted.text) > MAX_TEXT || converted.text.includes("\0")) throw failure();
       verify?.();
       const value = { inputHash, rawHash, rawBlob, configHash, text: converted.text };
       mkdirSync(cacheDir, { recursive: true });

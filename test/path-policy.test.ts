@@ -135,3 +135,17 @@ test("read-only hardlink identity refusal is stable for the protected original a
   }
   expect(readFileSync(join(dir, "data/raw/input.json"), "utf8")).toBe("original");
 });
+test("glob policies match decomposed, compatibility and long-s spellings of protected names", async () => {
+  const dir = root(), nfd = "학생자료".normalize("NFD"), accented = "données".normalize("NFD");
+  mkdirSync(join(dir, nfd)); writeFileSync(join(dir, nfd, "a.csv"), "original");
+  mkdirSync(join(dir, accented)); writeFileSync(join(dir, accented, "b.csv"), "original");
+  mkdirSync(join(dir, "data/ſecret"), { recursive: true });
+  expect(matchesPolicy(dir, nfd + "/a.csv", ["학생자료/**"])).toBe(true);
+  expect(matchesPolicy(dir, nfd + "/new.csv", ["학생자료/*.csv"])).toBe(true);
+  expect(matchesPolicy(dir, accented + "/b.csv", ["données/*.csv"])).toBe(true);
+  expect(matchesPolicy(dir, "data/ſecret/x", ["data/sec*"])).toBe(true);
+  expect(matchesPolicy(dir, "other/a.csv", ["학생자료/**"])).toBe(false);
+  const ctx: ToolContext = { cwd: dir, deny: [], readOnly: ["학생자료/**"], sandboxProfile: "", permit: async () => true, send: () => "sent" };
+  expect(await runTool("write", JSON.stringify({ path: nfd + "/a.csv", content: "mutated" }), ctx)).toContain("data.readonly");
+  expect(readFileSync(join(dir, nfd, "a.csv"), "utf8")).toBe("original");
+});

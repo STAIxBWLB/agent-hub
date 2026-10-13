@@ -2,7 +2,7 @@
 
 - Optional shared or machine-local config declares `pii.paths` and `data.readonly`, each at most 64 project-relative paths/patterns of at most 200 characters. Entries name exact paths/subtrees or bounded globs, with no command execution. Empty or absent lists preserve existing behavior. These initial policies apply at daemon start; edit config deliberately and restart to refresh them.
 - Example: `{ "pii": { "paths": ["data/private"] }, "data": { "readonly": ["data/raw"] } }`.
-- Matching compares declared spellings and real targets, including symlink aliases and case variants. Unknown resolution conservatively matches an active policy. Paths outside the project cannot be selected as policy entries; managed tools retain their existing project boundary.
+- Matching compares declared spellings and real targets, including symlink aliases, case variants and Unicode spellings a case-insensitive disk treats as the same name (NFC/NFD, compatibility forms, the long s), for exact entries and globs alike (#382). Unknown resolution conservatively matches an active policy. Paths outside the project cannot be selected as policy entries; managed tools retain their existing project boundary.
 
 # Private task flow
 

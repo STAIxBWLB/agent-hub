@@ -1,6 +1,7 @@
 import { lstatSync, opendirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "./project.ts";
+import { foldSegment } from "./permission-mode.ts";
 /** Bounded project-relative exact paths/subtrees or *, ? and whole-segment ** globs. */
 export function policyPaths(raw: unknown, field: string): string[] {
   if (raw === undefined) return [];
@@ -15,16 +16,17 @@ export function policyRealPath(path: string): string {
   while (!existing(ancestor)) { const parent = dirname(ancestor); if (parent === ancestor) throw new Error("path cannot be resolved"); ancestor = parent; }
   return join(realPath(ancestor), relative(ancestor, path));
 }
-const beneath = (path: string, root: string) => { path = path.toLowerCase(); root = root.toLowerCase(); return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep); };
+// Folded like a case-insensitive disk opens names: NFD/NFC, compatibility forms, long s and ignorable code points.
+const beneath = (path: string, root: string) => { path = foldSegment(path); root = foldSegment(root); return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep); };
 export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
 }
 /** Linear-space wildcard DP, avoiding regex backtracking on untrusted paths. */
 function segmentMatches(pattern: string, name: string): boolean {
-  const chars = [...name.toLowerCase()];
+  const chars = [...foldSegment(name)];
   let previous = new Array<boolean>(chars.length + 1).fill(false); previous[0] = true;
-  for (const char of pattern.toLowerCase()) {
+  for (const char of foldSegment(pattern)) {
     const next = new Array<boolean>(chars.length + 1).fill(false);
     next[0] = char === "*" && previous[0]!;
     for (let i = 1; i <= chars.length; i++) next[i] = char === "*" ? previous[i]! || next[i - 1]! : previous[i - 1]! && (char === "?" || char === chars[i - 1]);
