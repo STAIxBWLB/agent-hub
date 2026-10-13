@@ -2573,3 +2573,19 @@ expanded frames. Only a live approval deadline permits the waiting blink;
 C/dumb/linux/unknown locale surfaces use ASCII even when blocks were requested.
 Body foreground is uncoloured; only the Gyul leaf uses an existing accent tone.
 Native terminal/font/tmux proof remains a separate verification leg.
+
+## Shared dashboard attention (#280, phase 4)
+
+The existing authenticated UI snapshot receives an optional allowlisted attention
+input and enabled/character/blink presentation fields. Status wire/file callers
+retain their phase3 summary/items projection and never receive this input. The
+page invokes the same injected needs function on this body-free input, renders
+the selected built-in full block frame as SVG pixels and exposes state/counts
+through an accessible button. Its click only reaches an exact visible list row
+or the relevant heading with fixed structural guidance; no action request occurs.
+
+DOM writes and title counts follow the derived signature, not every poll. A
+waiting pulse uses CSS transform/opacity only, with a static reduced-motion and
+blink-off escape. There is no extra timer, request, route or authority; legacy
+or invalid snapshots make attention unavailable. Project changes clear stale
+attention and restore the title. The existing CSP/header policy is unchanged.

@@ -1,5 +1,6 @@
 import { projectedDiff } from "./projected-diff.ts";
 import { needs, type NeedsInput } from "../ui/needs.ts";
+import { loadPetConfig } from "../pet/config.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
@@ -1805,7 +1806,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
     return [...ids].filter(peer => membershipAllowed(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
-  const status = (includeAttentionItems = false) => {
+  const status = (includeAttentionItems = false, includeAttentionInput = false) => {
     const taskNeeds = board.statusTasks();
     const peerIds = statusPeerIds(taskNeeds);
     const view = {
@@ -1838,7 +1839,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const state = bus.stateOf(task.owner);
       peerNeeds[task.owner] = { state, attached: !!bus.peers.get(task.owner) && ["idle", "busy", "paused"].includes(state) };
     }
-    const attention = needs({
+    const attentionInput: NeedsInput = {
       approvals: [...permissions].map(([id, row]) => ({ id, peer: row.peer, expiresAt: row.expiresAt, since: row.createdAt })),
       defaults: [...pendingPermissionDefaults.keys()].map(peer => ({ peer })),
       peers: peerNeeds,
@@ -1846,8 +1847,9 @@ export async function startDaemon(opts: DaemonOptions) {
       recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
       tasks: taskNeeds,
       budget: Object.fromEntries(Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}])),
-    }, Date.now());
-    return { ...view, needs: { act: attention.act, watch: attention.watch, state: attention.state, ...(attention.items[0] ? { first: attention.items[0] } : {}) },
+    };
+    const attention = needs(attentionInput, Date.now());
+    return { ...view, ...(includeAttentionInput ? { attentionInput } : {}), needs: { act: attention.act, watch: attention.watch, state: attention.state, ...(attention.items[0] ? { first: attention.items[0] } : {}) },
       ...(includeAttentionItems ? { attentionItems: attention.items } : {}) };
   };
   // #226: who owns this manifest, beyond a pid that a reboot can hand to another process. Only the file carries it
@@ -3040,11 +3042,15 @@ export async function startDaemon(opts: DaemonOptions) {
         return ta && tb && CONFLICT_STATES.includes(ta.state) && CONFLICT_STATES.includes(tb.state) ? [{ kind: "conflict" as const, tasks: conflict.tasks, peers: conflict.peers }] : [];
       }),
     ];
-    const peerView = Object.fromEntries(Object.entries(status().peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
+    const attentionStatus = status(false, true);
+    let pet; try { const config = loadPetConfig(opts.cwd); pet = { enabled: config.enabled, character: config.character ?? "stai", blink: config.blink }; } catch { pet = { enabled: false }; }
+    const peerView = Object.fromEntries(Object.entries(attentionStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
     return {
       ok: true,
       projectId,
       instanceId,
+      attention: attentionStatus.attentionInput,
+      pet,
       status: { peers: peerView },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true },
