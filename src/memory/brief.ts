@@ -27,33 +27,44 @@ export async function related(client: MemoryClient, project: string, query: stri
   return out;
 }
 
+/** A native memory line for a brief (#258): `mem:<id8> <kind> <tier>: <title or text>`, fails first. */
+export interface NativeItem { id: string; line: string }
+export type NativeBrief = (task: BriefTask) => NativeItem[];
+export interface BriefTask { id?: number; created?: number; title: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }
+
 /**
- * Task briefs: what memory already knows about a piece of work, handed over with it. Index first (search), then the
- * neighbourhood of the top hit (timeline); details stay in claude-mem for the receiver to fetch by id. A peer is never
- * shown the same observation twice in one hub run.
+ * Task briefs: what memory already knows about a piece of work, handed over with it. The hub's own store first (#258:
+ * entries one or two hops from the task's paths, symbols, issue and task, a linked fail first, superseded entries
+ * dropped), then claude-mem: index first (search), then the neighbourhood of the top hit (timeline); details stay in
+ * the store for the receiver to fetch by id. `brief_items` caps both together. A peer is never shown the same entry
+ * twice in one hub run.
  */
 export class Briefs {
-  private readonly seen = new Map<PeerId, Set<number>>();
+  private readonly seen = new Map<PeerId, Set<string>>();
 
   constructor(
-    private readonly client: MemoryClient,
+    private readonly client: MemoryClient | undefined,
     private readonly project: string,
     private readonly maxItems = 8,
+    private readonly native?: NativeBrief,
   ) {}
 
-  async forTask(peer: PeerId, task: { title: string; refs: { paths?: string[] } }): Promise<string | undefined> {
-    const found = await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" "));
-    if (!found.length) return undefined;
-    const seen = this.seen.get(peer) ?? new Set<number>();
+  async forTask(peer: PeerId, task: BriefTask): Promise<string | undefined> {
+    const seen = this.seen.get(peer) ?? new Set<string>();
     this.seen.set(peer, seen);
+    const own: NativeItem[] = [];
+    try { for (const item of this.native?.(task) ?? []) if (!seen.has(item.id) && own.length < this.maxItems) own.push(item); } catch { /* fail-open: the store is optional */ }
+    const found = this.client && own.length < this.maxItems ? await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" ")) : [];
     const items: BriefItem[] = [];
     for (const item of found) {
-      if (seen.has(item.id)) continue;
+      if (seen.has(`#${item.id}`)) continue;
       items.push(item);
-      if (items.length === this.maxItems) break;
+      if (own.length + items.length === this.maxItems) break;
     }
-    if (!items.length) return undefined;
-    for (const item of items) seen.add(item.id);
-    return ["Memory brief (claude-mem; fetch details by id if you need them):", ...items.map((i) => `#${i.id} ${i.time} ${i.type} ${i.title}`)].join("\n");
+    if (!own.length && !items.length) return undefined;
+    for (const item of own) seen.add(item.id);
+    for (const item of items) seen.add(`#${item.id}`);
+    const header = own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; claude-mem by #id):" : "Memory brief (claude-mem; fetch details by id if you need them):";
+    return [header, ...own.map((i) => i.line), ...items.map((i) => `#${i.id} ${i.time} ${i.type} ${i.title}`)].join("\n");
   }
 }

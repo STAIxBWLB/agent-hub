@@ -58,3 +58,15 @@ test("planner notice batches are bounded and recover staged work on restart (#26
   expect([...notices[0]!.body.matchAll(/#\d+/g)]).toHaveLength(64);
   expect([...notices[1]!.body.matchAll(/#\d+/g)]).toHaveLength(1);
 });
+
+test("person-returned ownerless work produces a planner notice without a restart (#263)",async()=>{
+  const {tasks,bus,notices}=rig();
+  const task=await tasks.propose(USER,{title:"returned work",class:"implement"});
+  expect(task).toMatchObject({state:"proposed",owner:null});
+  const planner=new NoticePeer("claude");bus.add(planner);await planner.start();
+  expect(tasks.flushPlannerNotices()).toBe(0);
+  await tasks.moveBacklog(USER,task.id,false);
+  expect(tasks.flushPlannerNotices()).toBe(1);expect(notices).toHaveLength(1);
+  expect(notices[0]!.body).toContain(`#${task.id}`);expect(notices[0]!.body).not.toContain("returned work");
+  expect(tasks.flushPlannerNotices()).toBe(0);
+});
