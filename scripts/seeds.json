@@ -2748,10 +2748,10 @@
     {
       "id": "board-visible-stage-snapshot",
       "file": "src/cli/output.ts",
-      "search": "if (ready.length) out.push(...renderBoard(ready.map(card => byId.get(card.id)), columns, now, full, context));",
-      "replacement": "if (ready.length) out.push(...renderBoard(ready.map(card => byId.get(card.id)), columns, now, full, allTasks));",
+      "search": "const context = boardColumnContext(tasks, allTasks), model = boardColumnModel(tasks, peers, context), out: Span[][] = [];",
+      "replacement": "const context = allTasks!, model = boardColumnModel(tasks, peers, context), out: Span[][] = [];",
       "testFile": "test/board-followup.test.ts",
-      "testName": "filtered terminal stages retain the visible snapshot alongside column placement"
+      "testName": "column stages preserve cross-column prerequisite state from the first read"
     },
     {
       "id": "split-memory-reference-marker",
