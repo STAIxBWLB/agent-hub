@@ -13,12 +13,13 @@ class NoticePeer extends BasePeer {
   async deliver(_envs: Envelope[]) {}
   async start() { this.setState("idle"); }
   async stop() { this.setState("offline"); }
+  busy() { this.setState("busy"); }
 }
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function rig() {
   const dir = mkdtempSync(join(tmpdir(), "ahub-planner-notices-")), board = new Board(join(dir, "hub.db"));
-  const bus = new Bus({ batchMs: 0, rostered: peer => peer !== "kimi" });
+  const bus = new Bus({ batchMs: 0, rostered: peer => peer !== "kimi", relevant: (peer, env) => tasks.relevant(peer, env) });
   const roles = { claude: ["planner"], codex: ["implementer"], kimi: ["planner"] };
   const deps = { board, bus, roles, routing: () => loadRouting(dir), cwd: dir, project: "notices", notify: () => {} };
   const tasks = new Tasks(deps), notices: Envelope[] = [];
@@ -69,4 +70,13 @@ test("person-returned ownerless work produces a planner notice without a restart
   expect(tasks.flushPlannerNotices()).toBe(1);expect(notices).toHaveLength(1);
   expect(notices[0]!.body).toContain(`#${task.id}`);expect(notices[0]!.body).not.toContain("returned work");
   expect(tasks.flushPlannerNotices()).toBe(0);
+});
+
+test("queued planner batches omit pulled ids at delivery and rebatch remaining backlog",async()=>{
+ const {tasks,bus}=rig();const planner=new NoticePeer("claude");bus.add(planner);await planner.start();planner.busy();
+ const first=await tasks.propose(USER,{title:"private pulled marker",class:"implement",backlog:true});const second=await tasks.propose(USER,{title:"private remaining marker",class:"implement",backlog:true});
+ expect(tasks.flushPlannerNotices()).toBe(2);expect(bus.queued("claude")).toBe(1);
+ await tasks.moveBacklog(USER,first.id,true);expect(bus.pull("claude")).toEqual([]);expect(bus.queued("claude")).toBe(0);
+ expect(tasks.flushPlannerNotices()).toBe(1);const delivered=bus.pull("claude")!;expect(delivered).toHaveLength(1);expect(delivered[0]!.refs?.backlog).toEqual([second.id]);expect(delivered[0]!.body).not.toContain(`#${first.id}`);expect(delivered[0]!.body).not.toContain("private");
+ await tasks.moveBacklog(USER,second.id,true);expect(tasks.flushPlannerNotices()).toBe(0);
 });

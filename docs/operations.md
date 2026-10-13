@@ -2848,3 +2848,9 @@ Planner reservations normalize the same lowercase peer syntax as owner arguments
 reject reserved pseudo-peers and unknown unconfigured ids, and still enforce the
 roster. Returning unstarted ownerless work to Backlog joins the next planner
 notice batch without waiting for a restart.
+
+Queued planner batches retain bounded ids-only backlog references and recheck
+the board at actual delivery. A batch containing pulled/removed work is discarded
+before reaching the planner; its remaining backlog ids join the next batch. This
+floor also applies during the legacy stale-notice delivery experiment. No task
+text is copied and no routing/ownership state changes.
