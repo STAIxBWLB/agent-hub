@@ -190,6 +190,7 @@ const RESCREEN_MAX = 10;
  */
 export class Tasks {
   private readonly incomingBacklog = new Set<number>();
+  private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
   private readonly sweepConfig: TaskSweepConfig;
@@ -205,6 +206,10 @@ export class Tasks {
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
+      if (e.t === "overflow" && e.env.from === HUB && e.env.kind === "task" && Array.isArray(e.env.refs?.backlog)) {
+        const ids = e.env.refs.backlog;
+        if (ids.length <= 64 && ids.every(id => Number.isSafeInteger(id) && id > 0)) this.addPlannerBacklog(e.peer, ids);
+      }
       // A turn that ends takes its hand-overs with it: busy later is another turn (#115). The adapter's own state, since a
       // pause shows as `paused` while the turn goes on.
       if (e.t === "state" && d.bus.peers.get(e.peer)?.state !== "busy") for (const [k, p] of this.sent) if (p === e.peer) this.sent.delete(k);
@@ -542,16 +547,36 @@ export class Tasks {
     this.planningAuthority(by);
     return this.d.board.list("backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id).map(task => this.publicView(task));
   }
-  /** One bounded ids-only notice on the daemon's existing periodic tick. */
+  private addPlannerBacklog(peer: PeerId, ids: readonly number[]): void {
+    if (!this.d.roles?.[peer]?.includes("planner") || !this.d.bus.isRostered(peer)) return;
+    const pending = this.plannerBacklog.get(peer) ?? new Set<number>();
+    for (const id of ids) if (this.d.board.get(id)?.state === "backlog") pending.add(id);
+    if (pending.size) this.plannerBacklog.set(peer, pending);
+  }
+  /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
   flushPlannerNotices(): number {
     const planners = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => roles.includes("planner") && this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline").map(([peer]) => peer);
     if (!planners.length) return 0;
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
-    const ids = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
-    if (!ids.length) return 0;
-    const queued = this.d.bus.publish(newEnvelope(HUB, `Backlog items ${ids.map(id => `#${id}`).join(", ")}. Read hub_backlog_list and plan the next work with a reason for each change.`, { to: planners, kind: "task", refs: { backlog: ids } }));
-    if (planners.every(peer => queued.includes(peer))) for (const id of ids) this.incomingBacklog.delete(id);
-    return ids.length;
+    const incoming = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
+    for (const peer of planners) this.addPlannerBacklog(peer, incoming);
+    for (const id of incoming) this.incomingBacklog.delete(id);
+    const notified = new Set<number>();
+    for (const peer of planners) {
+      const pending = this.plannerBacklog.get(peer);
+      if (!pending) continue;
+      for (const id of pending) if (this.d.board.get(id)?.state !== "backlog") pending.delete(id);
+      const ids = [...pending].sort((a, b) => a - b).slice(0, 64);
+      if (!ids.length) continue;
+      // Remove before publish: an immediate overflow callback may put this recipient's ids back.
+      for (const id of ids) pending.delete(id);
+      try {
+        const queued = this.d.bus.publish(newEnvelope(HUB, `Backlog items ${ids.map(id => `#${id}`).join(", ")}. Read hub_backlog_list and plan the next work with a reason for each change.`, { to: [peer], kind: "task", refs: { backlog: ids } }));
+        if (!queued.includes(peer)) this.addPlannerBacklog(peer, ids);
+        for (const id of ids) notified.add(id);
+      } catch (error) { this.addPlannerBacklog(peer, ids); throw error; }
+    }
+    return notified.size;
   }
   releaseList(by: PeerId): Record<string, unknown>[] {
     this.planningAuthority(by);
@@ -901,7 +926,7 @@ export class Tasks {
       if (!Array.isArray(ids) || !ids.length || ids.length > 64 || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) return false;
       const current = ids.filter(id => this.d.board.get(id)?.state === "backlog");
       if (current.length !== ids.length || !this.d.roles?.[peer]?.includes("planner") || !this.d.bus.isRostered(peer)) {
-        for (const id of current) this.incomingBacklog.add(id);
+        this.addPlannerBacklog(peer, current);
         return false;
       }
       return true;
