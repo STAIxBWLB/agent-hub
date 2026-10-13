@@ -2505,7 +2505,9 @@ unpinned backlog work outside frozen releases and preserves a person's rank.
 Undo refuses an intervening change or another planner's edit.
 
 Planner backlog notices carry at most 64 ids per recipient. Recovery coalesces
-ids already present in that recipient's restored queue. An overflow retains
+ids already present in that recipient's restored queue or unresolved journal
+originals. Configured planners retain staged ids while off roster; roster and
+attachment gate publication only. An overflow retains
 only that recipient's pending ids and waits for its queue to change before
 retrying, using the existing scheduler without another timer.
 

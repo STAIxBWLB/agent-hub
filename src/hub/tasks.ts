@@ -612,20 +612,23 @@ export class Tasks {
     return this.d.board.list("backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id).map(task => this.publicView(task));
   }
   private addPlannerBacklog(peer: PeerId, ids: readonly number[]): void {
-    if (!this.d.roles?.[peer]?.includes("planner") || !this.d.bus.isRostered(peer)) return;
+    if (!this.d.roles?.[peer]?.includes("planner")) return;
     const pending = this.plannerBacklog.get(peer) ?? new Set<number>();
     for (const id of ids) if (this.d.board.get(id)?.state === "backlog") pending.add(id);
     if (pending.size) this.plannerBacklog.set(peer, pending);
   }
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
   flushPlannerNotices(): number {
-    const planners = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => roles.includes("planner") && this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline").map(([peer]) => peer);
+    const configured = Object.entries(this.d.roles ?? {}).filter(([, roles]) => roles.includes("planner")).map(([peer]) => peer);
+    const planners = configured.filter(peer => this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline");
     if (!planners.length) return 0;
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
     const incoming = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
-    for (const peer of planners) {
-      const queued = this.d.bus.queuedBacklogIds(peer);
-      this.addPlannerBacklog(peer, incoming.filter(id => !queued.has(id)));
+    if (incoming.length) {
+      for (const peer of configured) {
+        const queued = this.d.bus.queuedBacklogIds(peer);
+        this.addPlannerBacklog(peer, incoming.filter(id => !queued.has(id)));
+      }
     }
     for (const id of incoming) this.incomingBacklog.delete(id);
     const notified = new Set<number>();
