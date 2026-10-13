@@ -11,7 +11,7 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "22993206f309720e714cbd7c045aadaef9ac9ba1",
+      "verifiedAgainst": "230833b4ef9df745552f292ffd6965e4b261ce24",
       "paths": [
         "src/",
         "templates/"
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "042c440e23452d62b5aaaf86330431fe0b16baba",
+      "verifiedAgainst": "230833b4ef9df745552f292ffd6965e4b261ce24",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -98,7 +98,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "6d311a51dccd41d3703079175cac65a487189b15",
+      "verifiedAgainst": "230833b4ef9df745552f292ffd6965e4b261ce24",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -155,7 +155,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "645d6fcdc31ba8f8c2ca6edd58faa098332177bd",
+      "verifiedAgainst": "230833b4ef9df745552f292ffd6965e4b261ce24",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
