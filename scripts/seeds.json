@@ -2020,8 +2020,8 @@
     {
       "id": "split-person-prerequisite-order",
       "file": "src/hub/tasks.ts",
-      "search": "this.prerequisiteOf(other, task.id) ||",
-      "replacement": "false ||",
+      "search": "if (id === prerequisite) return true;",
+      "replacement": "if (id === prerequisite) return false;",
       "testFile": "test/planner-split.test.ts",
       "testName": "person P0 integration order allows its split prerequisites first (#263)"
     },
