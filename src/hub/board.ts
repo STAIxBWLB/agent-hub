@@ -293,7 +293,7 @@ export class Board {
         const child = this.get(saved.id);
         if (!child || child.state !== "backlog" || child.owner || taskHasStarted(child) || (child.planningRevision ?? 0) !== saved.revision || child.history.length !== saved.history) throw new Error("split child changed or started");
       }
-      if (this.list().some(task => task.id !== id && !ids.has(task.id) && task.deps?.some(dep => ids.has(dep)))) throw new Error("split children are referenced by other work");
+      if (this.list().some(task => task.id !== id && !ids.has(task.id) && (task.deps?.some(dep => ids.has(dep)) || task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))))) throw new Error("split children are referenced by other work");
       const restored = this.plan(id, by, { deps: entry!.planning!.previous.deps ?? [] }, revision, `undo split revision ${revision}`);
       for (const child of ids) this.db.query("DELETE FROM tasks WHERE id=?").run(child);
       return restored;

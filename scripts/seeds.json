@@ -2728,6 +2728,14 @@
       "replacement": "const last = t.history.at(-1)?.event, planned =",
       "testFile": "test/tasks.test.ts",
       "testName": "task memory bookkeeping retains dependent readiness after recovery"
+    },
+    {
+      "id": "split-phase-checklist-reference",
+      "file": "src/hub/board.ts",
+      "search": "task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo retains children referenced by another task phase checklist"
     }
   ]
 }
