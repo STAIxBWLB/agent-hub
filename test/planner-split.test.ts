@@ -186,3 +186,8 @@ test("split retains stored task role ids when current catalog guidance disappear
  const f=rig(),catalog=(await import("../src/hub/roles.ts")).loadRoleCatalog();const tasks=new Tasks({...f.deps,catalog}),parent=await tasks.propose(USER,{title:"role parent",class:"implement",role:"backend-engineer",backlog:true});catalog.roles.delete("backend-engineer");
  const split=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"}).catch(()=>null);expect(split).not.toBeNull();if(!split)return;for(const child of split.children)expect(child.role).toBe("backend-engineer");
 });
+
+test("split undo retains children referenced by another task phase checklist",async()=>{
+ const {tasks,board}=rig(),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});const split=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});const other=await tasks.propose(USER,{title:"phase integration",class:"implement",backlog:true});
+ await tasks.moveBacklog(USER,other.id,true);tasks.recordLifecycle(USER,other.id,{phase:{id:"phase-one",tasks:[{id:split.children[0]!.id,after:[]}],criteria:[{id:"criterion-one",required:true,result:"unverified",refs:[]}]}});const before=JSON.stringify(board.list());await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced by other work");expect(JSON.stringify(board.list())).toBe(before);
+});
