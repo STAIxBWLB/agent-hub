@@ -3,6 +3,9 @@ import { PEER_PALETTE, peerPaletteCss } from "../ui/peer-palette.ts";
 import { PEER_START_RETRY_MS } from "./start-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { officeModel } from "../ui/office-model.ts";
+import { needs } from "../ui/needs.ts";
+import { CHARACTERS } from "../pet/characters.ts";
+import { petPixels } from "../pet/pixels.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -35,7 +38,8 @@ export function startDashboard(options: DashboardOptions) {
     .replace("/* PEER_PALETTE_CSS */", () => peerPaletteCss())
     .replace("/* TASK_PROGRESS_MODEL */", () => `const taskProgress = ${taskProgress.toString()};`)
     .replace("/* PEER_START_RETRY_MS */", () => `const PEER_START_RETRY_MS = ${PEER_START_RETRY_MS};`)
-    .replace("/* OFFICE_MODEL */", () => `const officeModel = ${officeModel.toString()};`);
+    .replace("/* OFFICE_MODEL */", () => `const officeModel = ${officeModel.toString()};`)
+    .replace("/* PET_MODEL */", () => `const needs = ${needs.toString()}; const petCharacters = ${JSON.stringify(Object.fromEntries(Object.entries(CHARACTERS).map(([id, character]) => [id, { name: character.name, accent: character.accent, frames: { blocks: Object.fromEntries(Object.entries(character.frames.blocks).map(([pose, sizes]) => [pose, { full: sizes.full }])) } }])))}; const petPixels = ${petPixels.toString()};`);
   const hashes = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))]
     .map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`).join(" ");
   const headers = {

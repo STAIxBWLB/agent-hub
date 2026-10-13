@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Project shared body-free attention into the dashboard header with built-in SVG characters, accessible counts and navigation-only activation (#280).
+
 - Add owner-approved STAIx and four alternative built-in characters, bounded mini/full footers, glyph fallback and session character cycling (#280).
 
 - Exclude person/hub-owned work from offline-agent attention and read structural board status facts without decoding task payloads (#280).

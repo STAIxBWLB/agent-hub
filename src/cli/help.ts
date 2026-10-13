@@ -116,7 +116,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub facts --hook", "turn-free facts as a Claude Code PreToolUse, PostToolUse and Stop hook (issue #108); never blocks"],
   ]],
   ["Dashboard", [
-    ["ahub ui [--no-open]", "open the local dashboard (or print its one-time link)"],
+    ["ahub ui [--no-open]", "open the local dashboard with configured attention character (or print its one-time link)"],
     ["ahub ui --settings [--no-open]", "human only: open it with a settings session, which for 15 minutes may change permission modes, routing and start settings"],
     ["ahub ui --all [--no-open]", "open the unified project dashboard"],
     ["ahub ui --all --stop", "stop only the dashboard manager"],

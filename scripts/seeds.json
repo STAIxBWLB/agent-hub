@@ -1867,7 +1867,7 @@
     },
     {
       "id": "pet-config-off",
-      "file": "src/cli/pet-config.ts",
+      "file": "src/pet/config.ts",
       "search": "if (value === false) return",
       "replacement": "if (value === true) return",
       "testFile": "test/pet-config.test.ts",
@@ -2144,6 +2144,78 @@
       "replacement": "const height = bodyHeight;",
       "testFile": "test/pet-characters.test.ts",
       "testName": "expanded panel notices reserve wrapped rows before placing the selected peer"
+    },
+    {
+      "id": "pet-dashboard-unchanged",
+      "file": "src/ui/index.html",
+      "search": "if(signature===petSignature)return;",
+      "replacement": "if(false)return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet uses shared body-free needs and pixels without rewriting an unchanged snapshot"
+    },
+    {
+      "id": "pet-dashboard-stale-navigation",
+      "file": "src/ui/index.html",
+      "search": "if (!snapshotValid || !petFirst) return;",
+      "replacement": "if (!petFirst) return;",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pet activation reaches the exact visible need or heading and never invokes an action"
+    },
+    {
+      "id": "pet-dashboard-status-input-floor",
+      "file": "src/hub/daemon.ts",
+      "search": "...(includeAttentionInput ? { attentionInput } : {})",
+      "replacement": "...{ attentionInput }",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "real dashboard snapshot projects structural attention without publishing its input in status"
+    },
+    {
+      "id": "pet-dashboard-live-approval-blink",
+      "file": "src/ui/index.html",
+      "search": "snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval')",
+      "replacement": "snapshot.pet.blink!==false && value.state==='waiting'",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard blinking requires a live approval rather than a pending default"
+    },
+    {
+      "id": "pet-dashboard-review-eye-mask",
+      "file": "src/pet/pixels.ts",
+      "search": "font[glyph]?.[y]?.[x]",
+      "replacement": "font[glyph.toUpperCase()]?.[y]?.[x]",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard review eyes retain a distinct lowercase mask and the leaf uses an existing theme tone"
+    },
+    {
+      "id": "pet-dashboard-leaf-tone",
+      "file": "src/ui/index.html",
+      "search": ".pet-accent{fill:var(--amber)}",
+      "replacement": ".pet-accent{fill:var(--accent)}",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard leaf resolves to a declared attention palette variable"
+    },
+    {
+      "id": "pet-dashboard-default-peer-focus",
+      "file": "src/ui/index.html",
+      "search": "item.kind === 'delivery' || item.kind === 'default' ? peerRows.get(item.peer)",
+      "replacement": "item.kind === 'delivery' ? peerRows.get(item.peer)",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard pending defaults focus their visible peer row with an unavailable-row fallback"
+    },
+    {
+      "id": "pet-dashboard-punctuation-mask",
+      "file": "src/pet/pixels.ts",
+      "search": "font[glyph]?.[y]?.[x] === \"1\"",
+      "replacement": "!\"/-\\\\'\".includes(glyph) && font[glyph]?.[y]?.[x] === \"1\"",
+      "testFile": "test/pet-dashboard.test.ts",
+      "testName": "dashboard rasterizes every shipped non-space block glyph and preserves STAI raised arms"
+    },
+    {
+      "id": "control-port-peer-exclusion",
+      "file": "src/hub/listen.ts",
+      "search": "if (!reserved.has(candidate.port ?? -1)) return candidate;",
+      "replacement": "if (true) return candidate;",
+      "testFile": "test/listen.test.ts",
+      "testName": "automatic control allocation keeps requested peer ports occupied until a distinct replacement exists"
     }
   ]
 }
