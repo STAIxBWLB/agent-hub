@@ -1,4 +1,5 @@
-import { KINDS, MemoryStore, type Kind, type Tier, type View } from "../memory/store.ts";
+import { GOAL_STATES, KINDS, looksSecret, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "../memory/store.ts";
+import { syncMemory, type SyncOptions } from "../memory/sync.ts";
 import { memoryProjectKey, promotionScreen, withoutPii } from "../memory/recall.ts";
 import { currentRouting } from "../hub/routing.ts";
 import { loadConfig } from "../hub/daemon.ts";
@@ -10,7 +11,8 @@ const loadConfigSafe = (cwd: string) => { try { return loadConfig(cwd); } catch 
  * #258: `ahub memory`, straight on the machine's store (no hub needed). Reading is anyone's; promote, demote, forget,
  * supersede and rebuild are a person's (the identity gate refuses agent shells).
  */
-export const MEMORY_USAGE = "usage: ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> | show <id> | graph <id|node> [--hops 1|2] | promote|demote|forget <id> | supersede <old> <new> | rebuild  [--json]";
+export const MEMORY_USAGE = "usage: ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> | show <id> | graph <id|node> [--hops 1|2] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>]  [--json]";
+export const GOAL_USAGE = "usage: ahub goal [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]";
 
 const fail = (message: string): never => { throw new Error(message); };
 const one = (v: View) => `${v.id.slice(0, 8)}  ${v.at.slice(0, 16).replace("T", " ")}  ${v.tier.padEnd(5)} ${v.kind.padEnd(8)} ${v.peer.padEnd(8)} ${v.scope === "shared" ? "shared " : ""}${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 100)}${v.supersededBy ? `  (superseded by ${v.supersededBy.slice(0, 8)})` : ""}`;
@@ -19,7 +21,7 @@ function detail(v: View): string[] {
     ...(v.promotedFrom ? [`promoted from ${v.promotedFrom}`] : []), ...(v.supersededBy ? [`superseded by ${v.supersededBy}`] : []), ...(v.about.length ? [`about: ${v.about.join(", ")}`] : []), "", ...(v.title ? [v.title] : []), v.text];
 }
 
-export function memoryCommand(args: string[], cwd: string, opts: { store?: MemoryStore } = {}): string {
+export async function memoryCommand(args: string[], cwd: string, opts: { store?: MemoryStore; sync?: Omit<SyncOptions, "remote"> } = {}): Promise<string> {
   const json = args.includes("--json");
   const rest = args.filter((a) => a !== "--json");
   const flag = (name: string) => { const i = rest.indexOf(name); if (i < 0) return undefined; const v = rest[i + 1] ?? fail(`${name} needs a value`); rest.splice(i, 2); return v; };
@@ -74,8 +76,96 @@ export function memoryCommand(args: string[], cwd: string, opts: { store?: Memor
         if (rest.length !== 2) fail("usage: ahub memory supersede <old> <new>");
         return store.supersede(rest[0]!, rest[1]!, actor, project) ? `${rest[0]} is superseded by ${rest[1]}` : fail("both ids must name different entries, and the newer one must reach as far: shared for a shared entry, long-term for a long-term one (ahub memory promote it first)");
       }
+      case "sync": {
+        const remote = flag("--remote");
+        if (rest.length) fail("usage: ahub memory sync [--remote <private git url>]");
+        const r = await syncMemory(store, { ...opts.sync, ...(remote ? { remote } : {}) });
+        if (json) return JSON.stringify(r, null, 2);
+        if (!r.ok) fail(`hub memory sync: ${r.error}`);
+        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${r.warning ? `\nnote: ${r.warning}` : ""}`;
+      }
+      case "machine": {
+        const label = flag("--label");
+        const m = label ? setMachineLabel(store.dir, label) : store.machine;
+        return json ? JSON.stringify(m) : `this machine: ${m.id} (${m.label})`;
+      }
       case "rebuild": { store.rebuild(); const c = store.counts(); return `rebuilt the index from ${c.segments} segment${c.segments === 1 ? "" : "s"}: ${c.long} long-term, ${c.short} short-term entries`; }
       default: return fail(MEMORY_USAGE);
+    }
+  } finally { if (!opts.store) store.close(); }
+}
+
+const goalOne = (g: GoalView, me: string) => `${g.id.slice(0, 8)}  ${g.state.padEnd(7)} ${g.title}${g.scope === "shared" ? "  [shared]" : ""}  ${leaseText(g, me)}`;
+function leaseText(g: GoalView, me: string): string {
+  const who = (m: string) => m === me ? "this machine" : `machine ${m.slice(0, 8)}`;
+  if (g.lease.holder) return `held by ${who(g.lease.holder)} until ${g.lease.until}${g.lease.conflict.length ? `, CONFLICT with ${g.lease.conflict.map(who).join(", ")} (the earlier claim holds; a person settles it with ahub goal take --force)` : ""}`;
+  return g.lease.expired ? `free (${who(g.lease.lastHolder!)}'s lease ended ${g.lease.until})` : "free";
+}
+
+/**
+ * #258: `ahub goal`, long-term tasks. Listing and showing are anyone's; new, link, state, done and take are a
+ * person's. A peer links its own board task with hub_task_propose's `goal`.
+ */
+export async function goalCommand(args: string[], cwd: string, opts: { store?: MemoryStore; link?: (goal: string, task: string) => Promise<string> } = {}): Promise<string> {
+  const json = args.includes("--json");
+  const rest = args.filter((a) => a !== "--json");
+  const take = (name: string) => { const out: string[] = []; for (let i = rest.indexOf(name); i >= 0; i = rest.indexOf(name)) { out.push(rest[i + 1] ?? fail(`${name} needs a value`)); rest.splice(i, 2); } return out; };
+  const sub = rest[0] && !rest[0].startsWith("--") ? rest.shift()! : "list";
+  const store = opts.store ?? new MemoryStore();
+  const project = memoryProjectKey(cwd);
+  const me = store.machine.id;
+  // Only this project's long-term tasks and shared ones, like every other lookup an agent may run.
+  const need = (id: string | undefined) => store.goalOf(id?.replace(/^goal:/, "") ?? fail(GOAL_USAGE), project) ?? fail(`no long-term task ${id} for this project (ahub goal list shows them)`);
+  // Agent shells may read goals and a goal syncs to every machine: titles and milestones pass the same screen as notes
+  // (PII patterns, pii.paths; a config that does not load fails closed).
+  const policy = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before using long-term tasks`); } };
+  const clean = (title: string, milestones: string[], of = project) => !looksSecret(`${title}\n${milestones.join("\n")}`) && withoutPii([{ title, text: milestones.join("\n"), project: of }], currentRouting(cwd), cwd, policy()).length > 0;
+  try {
+    switch (sub) {
+      case "list": {
+        const all = rest.includes("--all");
+        const listed = store.goals(project).filter((g) => all || (g.state !== "done" && g.state !== "dropped"));
+        const goals = listed.filter((g) => clean(g.title, g.milestones, g.project)), withheld = listed.length - goals.length;
+        if (json) return JSON.stringify(goals, null, 2);
+        return [...(goals.length ? goals.map((g) => goalOne(g, me)) : [`no ${all ? "" : "open "}long-term tasks for ${project} (ahub goal new <title>)`]),
+          ...(withheld ? [`(${withheld} withheld: they match a PII pattern or a private path)`] : [])].join("\n");
+      }
+      case "show": {
+        const g = need(rest[0]);
+        if (!clean(g.title, g.milestones, g.project)) fail(`${g.id.slice(0, 8)} is withheld: it matches a PII pattern or a private path`);
+        if (json) return JSON.stringify(g, null, 2);
+        return [goalOne(g, me), `${g.id}, project ${g.project}, created ${g.at} on machine ${g.machine.slice(0, 8)}`,
+          ...g.milestones.map((m) => `milestone: ${m}`), ...g.dependsOn.map((d) => `depends on ${d.slice(0, 8)}`),
+          ...(g.links.length ? g.links.map((l) => `board task ${l.task} (linked ${l.at} on machine ${l.machine.slice(0, 8)})`) : ["no board tasks linked yet"])].join("\n");
+      }
+      case "new": {
+        const milestones = take("--milestone"), depends = take("--depends").map((d) => need(d).id);
+        const shared = rest.includes("--shared");
+        const title = rest.filter((a) => a !== "--shared").join(" ").trim() || fail(GOAL_USAGE);
+        if (!clean(title, milestones)) fail("a long-term task syncs to every machine: this one holds a secret, a PII pattern or a private path and is not saved");
+        const id = store.goal({ project, scope: shared ? "shared" : "project", title, milestones, dependsOn: depends, actor: "user" });
+        return `long-term task ${id.slice(0, 8)} created: ${title}`;
+      }
+      case "link": {
+        const g = need(rest[0]);
+        const task = rest[1] ?? fail("usage: ahub goal link <id> <task id>");
+        if (!/^\d+$/.test(task)) fail("the task is a board task id of this project");
+        return await (opts.link ?? fail("linking needs this project's hub running (ahub up)"))(g.id, task);
+      }
+      case "state": case "done": {
+        const g = need(rest[0]);
+        const state = (sub === "done" ? "done" : rest[1]) as GoalState;
+        if (!GOAL_STATES.includes(state)) fail(`the state is one of ${GOAL_STATES.join(", ")}`);
+        store.goalState(g.id, state, "user");
+        return `long-term task ${g.id.slice(0, 8)} is ${state}`;
+      }
+      case "take": {
+        const g = need(rest[0]);
+        const r = store.take(g.id, "user", { force: rest.includes("--force") });
+        if (!r.ok) fail(`held by machine ${r.holder.slice(0, 8)} until ${r.until}; wait for it to expire or take it over with --force`);
+        return `this machine holds long-term task ${g.id.slice(0, 8)} until ${r.until}${rest.includes("--force") ? " (earlier claims are void)" : ""}`;
+      }
+      default: return fail(GOAL_USAGE);
     }
   } finally { if (!opts.store) store.close(); }
 }

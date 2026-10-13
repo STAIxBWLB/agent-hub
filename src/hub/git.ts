@@ -18,9 +18,15 @@ import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncRetur
  * command. GIT_CONFIG_NOSYSTEM/global are left alone: those files are the user's own.
  */
 const SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
+/** Hub memory sync (#258) pushes to the person's own remote: their global credential helper stays, the rest does not. */
+const CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
 
-/** `["git", ...safe options, ...args]`: use instead of a literal "git" argv anywhere under src/. */
-export const hubGitArgv = (args: string[]): string[] => ["git", "--no-pager", ...SAFE_CONFIG.flatMap((c) => ["-c", c]), ...args];
+/**
+ * `["git", ...safe options, ...args]`: use instead of a literal "git" argv anywhere under src/. `credentials` keeps the
+ * person's credential helper, for a repository the hub created itself (the memory store), never a project's.
+ */
+export const hubGitArgv = (args: string[], opts: { credentials?: boolean } = {}): string[] =>
+  ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
 
 /** The caller's env plus the no-prompt switch; existing keys (childEnv, GIT_OPTIONAL_LOCKS=0) pass through. */
 export const hubGitEnv = (env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({ ...env, GIT_TERMINAL_PROMPT: "0" });

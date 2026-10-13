@@ -24,7 +24,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
-import { projectContext, realPath } from "../hub/project.ts";
+import { hubHome, projectContext, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
@@ -56,7 +56,7 @@ import { parseSince, readEvents } from "../hub/events.ts";
 import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
-import { memoryCommand } from "./memory.ts";
+import { goalCommand, memoryCommand } from "./memory.ts";
 import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
@@ -1351,6 +1351,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       const quota = await hub.request({ t: "budget" });
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
       if (status.needs && loadPetConfig(cwd).enabled) console.log(renderPet(petView(status)));
+      // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
+      if (existsSync(join(hubHome(), "memory", "index.db"))) {
+        try { const lines = await goalCommand(["list"], cwd); if (!lines.startsWith("no open")) console.log(`\nlong-term tasks\n${lines}`); } catch { /* memory unreadable: status goes on */ }
+      }
     } finally { hub.close(); }
   },
 
@@ -1421,9 +1425,18 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     fail("usage: ahub bench run|list|status|report|compare|export (ahub help bench)");
   },
-  memory: () => {
+  memory: async () => {
     // #258: the hub's own memory on this machine; reads are anyone's, changes a person's.
-    try { console.log(memoryCommand(args, cwd)); } catch (e) { fail((e as Error).message); }
+    try { console.log(await memoryCommand(args, cwd)); } catch (e) { fail((e as Error).message); }
+  },
+  goal: async () => {
+    // #258: long-term tasks; a link goes through the project's hub, so Tasks validates the board task.
+    const link = async (goal: string, task: string) => {
+      const hub = await connect();
+      try { const r = await hub.request({ t: "goal_link", goal, task: Number(task) }); if (!r.ok) throw new Error(String(r.error)); return String(r.text); }
+      finally { hub.close(); }
+    };
+    try { console.log(await goalCommand(args, cwd, { link })); } catch (e) { fail((e as Error).message); }
   },
   research: () => {
     // #247: measures from the opt-in research records; `export` writes them out, `backfill` builds them from events.jsonl.

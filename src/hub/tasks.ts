@@ -9,7 +9,7 @@ import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { extractNodes, looksSecret, PROMOTED_KINDS, type Kind, type MemoryStore, type Scope, type Tier } from "../memory/store.ts";
+import { extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "../memory/store.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasStarted, planningUndoEntry, type HistoryEntry, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
@@ -695,13 +695,14 @@ export class Tasks {
     return updated; // a failed readback may follow a durable release write
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown }): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; goal?: unknown }): Promise<Task> {
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
     const backlog = input.backlog === true;
     if (backlog && input.owner && !this.d.bus.isRostered(input.owner)) throw new PreEffectToolRefusal(`${input.owner} is off roster; add it before reserving work`);
     // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new PreEffectToolRefusal("title is required");
+    const goal = input.goal == null || input.goal === "" ? undefined : this.goalFor(by, input.goal);
     // Dependencies can only name tasks that exist, so the new task closes no cycle: nothing can depend on it yet.
     // Callers are models: a missing or null `after` is no dependency, and an id is an integer or a digit string.
     let afterIds: unknown[] = [];
@@ -751,6 +752,7 @@ export class Tasks {
     const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
     let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
     if (screening) task = this.screenedTask(task, screened);
+    if (goal) this.linkNative(task, goal, by);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     if (backlog) {
@@ -2057,7 +2059,33 @@ export class Tasks {
   }
 
   /** The task's key in the hub's store: unique across `ahub reset --all`, which restarts the ids. */
-  private memoryKey(task: Task): string { return `${this.d.store!.project}#${task.id}@${task.created}`; }
+  private memoryKey(task: Task): string { return taskKey(this.d.store!.project, task); }
+
+  /**
+   * The long-term task a board task may join (#258). A peer names one of this project's; a person may name any (a link
+   * across projects is a person's). Refused before any board write.
+   */
+  private goalFor(by: PeerId, ref: unknown): GoalView {
+    if (!this.d.store) throw new PreEffectToolRefusal("goal: hub memory is off for this project");
+    const g = typeof ref === "string" && ref.trim() ? this.d.store.store.goalOf(ref.trim().replace(/^goal:/, "")) : undefined;
+    if (!g) throw new PreEffectToolRefusal(`goal: no long-term task ${JSON.stringify(ref).slice(0, 40)} (ahub goal list shows them)`);
+    if (by !== USER && g.project !== this.d.store.project) throw new PreEffectToolRefusal("goal: that long-term task belongs to another project; linking across projects is a person's");
+    if (g.state === "done" || g.state === "dropped") throw new PreEffectToolRefusal(`goal: that long-term task is ${g.state}`);
+    return g;
+  }
+  /** Record that a board task is part of a long-term task; never for a PII task. Fail-open after the board write. */
+  private linkNative(task: Task, goal: GoalView, by: PeerId): string {
+    if (this.isPii(task)) { this.releaseNotice(`task #${task.id} is not linked to a long-term task: nothing about a PII task enters hub memory`); return "not linked (PII task)"; }
+    try { this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
+    catch (e) { this.releaseNotice(`task #${task.id}: the link to long-term task ${goal.id.slice(0, 8)} was not saved (${(e as Error).message})`); return "not linked"; }
+  }
+  /** A person links a board task of this project to a long-term task (`ahub goal link`). */
+  linkGoal(by: PeerId, id: unknown, ref: unknown): string {
+    const task = this.d.board.get(Number(id));
+    if (!task) throw new Error(`no task #${String(id).slice(0, 12)}`);
+    const goal = this.goalFor(by, ref);
+    return `task #${task.id}: ${this.linkNative(task, goal, by)}`;
+  }
 
   /**
    * One note in the hub's own store (#258). Short-term while its task is open; on an approved task, or with horizon
