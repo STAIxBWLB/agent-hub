@@ -198,7 +198,12 @@ export class Tasks {
   private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
-    for (const task of d.board.list("backlog")) this.incomingBacklog.add(task.id);
+    const backlog = d.board.list("backlog");
+    for (const [peer, roles] of Object.entries(d.roles ?? {})) {
+      if (!roles.includes("planner")) continue;
+      const queued = d.bus.queuedBacklogIds(peer);
+      this.addPlannerBacklog(peer, backlog.filter(task => !queued.has(task.id)).map(task => task.id));
+    }
     this.sweepConfig = taskSweepConfig(d.sweep);
     this.cohorts = new Cohorts({
       silence: (owners) => this.turnFree() && owners.every((p) => p !== USER && p !== HUB && (this.d.capable?.(p) ?? false)),
@@ -552,8 +557,7 @@ export class Tasks {
   private addPlannerBacklog(peer: PeerId, ids: readonly number[]): void {
     if (!this.d.roles?.[peer]?.includes("planner") || !this.d.bus.isRostered(peer)) return;
     const pending = this.plannerBacklog.get(peer) ?? new Set<number>();
-    const queued = this.d.bus.queuedBacklogIds(peer);
-    for (const id of ids) if (!queued.has(id) && this.d.board.get(id)?.state === "backlog") pending.add(id);
+    for (const id of ids) if (this.d.board.get(id)?.state === "backlog") pending.add(id);
     if (pending.size) this.plannerBacklog.set(peer, pending);
   }
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
@@ -562,7 +566,10 @@ export class Tasks {
     if (!planners.length) return 0;
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
     const incoming = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
-    for (const peer of planners) this.addPlannerBacklog(peer, incoming);
+    for (const peer of planners) {
+      const queued = this.d.bus.queuedBacklogIds(peer);
+      this.addPlannerBacklog(peer, incoming.filter(id => !queued.has(id)));
+    }
     for (const id of incoming) this.incomingBacklog.delete(id);
     const notified = new Set<number>();
     for (const peer of planners) {

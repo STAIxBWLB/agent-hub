@@ -60,6 +60,7 @@ test("reopened journal planner notices coalesce recovered backlog without duplic
   source.publish(original); source.closeJournal();
   const restored = new Bus({ batchMs: 0, journal: new DeliveryJournal({ ...options, instanceId: "after" }) });
   cleanup.push(() => restored.closeJournal());
+  restored.setRecoveryHold(true);
   const restarted = new Tasks({ ...deps, board, bus: restored });
   const attached = new NoticePeer("claude"); restored.add(attached); await attached.start(); attached.busy();
   expect(restored.queueIds("claude")).toEqual([original.id]);
@@ -83,6 +84,14 @@ test("planner overflow waits for a queue change instead of failing every schedul
   expect(tasks.flushPlannerNotices()).toBe(1);
   expect(bus.pull("claude")![0]!.refs?.backlog).toEqual([task.id]);
   expect(tasks.flushPlannerNotices()).toBe(0);
+});
+
+test("recovery coalesces planner ids before a restored notice is consumed ahead of the first tick", async () => {
+ const {tasks,bus,deps}=rig(),peer=new NoticePeer("claude");bus.add(peer);await peer.start();peer.busy();
+ const task=await tasks.propose(USER,{title:"restored before scheduler",class:"implement",backlog:true});
+ expect(tasks.flushPlannerNotices()).toBe(1);const restarted=new Tasks(deps);
+ expect(bus.pull("claude")![0]!.refs?.backlog).toEqual([task.id]);
+ expect(restarted.flushPlannerNotices()).toBe(0);expect(bus.pull("claude")).toEqual([]);
 });
 
 test("planner notice batches are bounded and recover staged work on restart (#263)", async () => {
