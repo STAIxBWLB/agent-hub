@@ -2004,8 +2004,8 @@
     {
       "id": "split-external-reference-floor",
       "file": "src/hub/board.ts",
-      "search": "if (this.list().some(task => task.id !== id && !ids.has(task.id) && task.deps?.some(dep => ids.has(dep))))",
-      "replacement": "if (false)",
+      "search": "task.deps?.some(dep => ids.has(dep))",
+      "replacement": "false",
       "testFile": "test/planner-split.test.ts",
       "testName": "split undo refuses child references and invalid late writes stay atomic (#263)"
     },
