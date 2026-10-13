@@ -119,3 +119,10 @@ test("planner pull honors original person backlog reservations and pull-only off
   expect(await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"named peer has room"})).toMatchObject({owner:null,reserved:"kimi",state:"proposed"});
   await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("kimi");expect(bus.queued("kimi")).toBeGreaterThan(0);expect(kimi.deliveries).toBe(0);
 });
+
+test("declined planner pulls release the old WIP slot and reroute when another peer attaches", async () => {
+ const {tasks,board,bus}=await rig(),task=await tasks.propose(USER,{title:"declined pull",class:"implement",backlog:true});
+ await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("codex");
+ await tasks.decline("codex",task.id,"cannot take it");expect(board.get(task.id)).toMatchObject({owner:null,reserved:null,state:"proposed"});expect(tasks.wip("codex")).toBe(0);
+ const other=new PullPeer("kimi");bus.add(other);await other.start();await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("kimi");expect(tasks.wip("kimi")).toBe(1);
+});
