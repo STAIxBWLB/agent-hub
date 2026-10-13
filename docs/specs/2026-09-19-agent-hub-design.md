@@ -2656,3 +2656,9 @@ holding (`ponytail:` no consensus; a broker if concurrent cross-machine work nee
 through `hub_task_propose(goal)` to this project's long-term tasks only; a person links across projects. Status, the
 console at hub start, recall and the dashboard's Long-term tasks tab show state and lease.
 
+
+Queued planner batches retain bounded ids-only backlog references and recheck
+the board at actual delivery. A batch containing pulled/removed work is discarded
+before reaching the planner; its remaining backlog ids join the next batch. This
+floor also applies during the legacy stale-notice delivery experiment. No task
+text is copied and no routing/ownership state changes.
