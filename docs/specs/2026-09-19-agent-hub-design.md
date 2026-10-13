@@ -2796,3 +2796,5 @@ After a confirmed GitHub task insertion, failure in later bookkeeping triggers c
 The per-issue intake failure boundary includes existing-row lookup and profile preparation as well as proposal staging, so a later lookup failure retains prior confirmed IDs in the partial response.
 
 Release snapshots group scope rows once and read approval dates once per task. Cross-release audit previews contain at most 32 IDs per category plus exact counts, with truncation disclosed in the UI. Sorted date indexes preserve strict after-cut semantics without rescanning every task history for every release. Full audit pagination remains a future extension.
+
+Release-card invalidation includes the task-state snapshot, so approval of a prerequisite outside the release refreshes blocked counts even when the release row and audit preview are unchanged.

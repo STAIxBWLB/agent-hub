@@ -457,9 +457,9 @@ function renderPlanning(snapshot) {
   const selection=$('planning-task').value;planningOptions($('planning-task'),snapshot.tasks.filter(task=>task.state!=='approved').map(task=>({id:task.id,label:'#'+task.id+' '+task.title})),'Select task',selection);
   if(planningEdit && (!sameBoardContext(planningEdit.context) || !snapshot.tasks.some(task=>task.id===planningEdit.id)))planningEdit=null;
   if(planningEdit && snapshot.tasks.find(task=>task.id===planningEdit.id)?.planningRevision!==planningEdit.revision)$('planning-version').textContent='Task changed. Reload before saving.';
-  update('releases',releases,target=>{
+  const states=new Map(snapshot.tasks.map(task=>[task.id,task.state]));
+  update('releases',{releases,taskStates:[...states]},target=>{
     if(!releases.length)return empty(target,'No releases planned.');
-    const states=new Map(snapshot.tasks.map(task=>[task.id,task.state]));
     const auditIds=(ids,count)=>ids.map(id=>'#'+id).join(', ')+(Number.isSafeInteger(count)&&count>ids.length?' (showing '+ids.length+' of '+count+')':'');
     for(const release of releases){const row=el('div',undefined,'row');row.append(el('strong','#'+release.id+' '+release.name),badge(release.state),el('p',release.goal));
       const scope=Array.isArray(release.tasks)?release.tasks:null, remaining=scope?.filter(task=>task.state!=='approved');
