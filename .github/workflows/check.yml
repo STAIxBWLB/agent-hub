@@ -92,6 +92,9 @@ jobs:
           bun-version: 1.4.2
       - name: Gate (typecheck, bundle and manifest freshness, package contents, tests)
         env:
+          # The expanded suite was still progressing at 600 s on hosted macOS (#378).
+          # Keep the per-test bound and 15-minute job ceiling; Linux retains the default.
+          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '780' || '600' }}
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
       - name: Capture macOS fsmonitor readback diagnostics after a failed gate
