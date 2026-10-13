@@ -301,7 +301,7 @@ function settingRow(row, raise) {
     });
     read = () => choices.map(select => select.value).filter(Boolean);
   } else if (row.type === 'integer') {
-    const input=el('input');input.type='number';input.id=id;input.step='1';input.min=String(row.min ?? 0);input.max=String(row.max ?? Number.MAX_SAFE_INTEGER);input.value=row.value===null ? '' : String(row.value);input.placeholder='Empty inherits';
+    const input=el('input');input.type='number';input.id=id;input.step='1';input.min=String(row.min ?? 0);input.max=String(row.max ?? Number.MAX_SAFE_INTEGER);const current=row.pending!==undefined ? row.pending : row.value;input.value=current===null ? '' : String(current);input.placeholder='Empty inherits';
     read=()=>input.value==='' ? null : Number(input.value);actions.append(input);
   } else if (row.type === 'peers') {
     const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(row.value) ? row.value.join(', ') : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
