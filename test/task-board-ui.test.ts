@@ -18,7 +18,7 @@ class Node {
   emit(name: string, event: any = {}) { for (const fn of this.handlers.get(name) ?? []) fn(event); }
   set innerHTML(_value: string) { throw new Error("unsafe HTML rendering"); }
 }
-function page() {
+function page(options: { cached?: boolean; now?: () => number } = {}) {
   const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
   const source = html.slice(html.indexOf("let boardViewState ="), html.indexOf("function render(snapshot) {"));
   const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
@@ -26,7 +26,9 @@ function page() {
   const scope = { projectId: "project", instanceId: "instance", generation: 1 }, calls: any[] = [];
   const el = (tag: string, text?: unknown, cls = "") => { const node = new Node(tag); if (text !== undefined) node.textContent = String(text); node.className = cls; return node; };
   const elSource = html.match(/const el = [^\n]+/)![0];
-  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true;const taskRows=new Map(),officeCards=new Map(); ${elSource} ${source}; ({draw:renderBoard,draggedCard})`, {
+  const updateSource = options.cached ? html.match(/^function update\(.*$/m)![0] : "";
+  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true;const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard})`, {
+    Date: class extends Date { static override now() { return options.now?.() ?? Date.now(); } },
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
     document: { createElement: (tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string) => el("span", text),
     renderTaskProgress: () => {}, renderTaskStage: (stage: { label: string }) => el("p", stage.label),
@@ -60,6 +62,27 @@ test("board DOM renders five columns public cards and keyboard actions without f
   nodes.find(node => node.textContent === "Assign")!.emit("click");
   expect(calls[1]).toEqual({ action: "assign", id: 2, peer: "claude" });
   expect(all(get("task-legend")).some(node => node.textContent === "WIP 1 / permission ask")).toBe(true);
+});
+
+test("cached board notices deadline crossings without rewriting unchanged cards (#378)", () => {
+  let now = 900;
+  const { api, get, all, peers, snapshot } = page({ cached: true, now: () => now });
+  const timed = { ...snapshot, tasks: snapshot.tasks.map(task => ({ ...task, ...(task.id === 2 || task.id === 4 ? { due: 1000 } : {}) })) };
+  const draw = () => api.draw(timed, peers, Object.keys(peers));
+  const overdue = () => all(get("tasks")).filter(node => node.textContent === "Overdue");
+  draw();
+  const before = get("tasks").children;
+  expect(overdue()).toHaveLength(0);
+  now = 1000; draw();
+  expect(overdue()).toHaveLength(0);
+  expect(get("tasks").children).toBe(before);
+  now = 1001; draw();
+  expect(overdue()).toHaveLength(1);
+  expect(get("tasks").children).not.toBe(before);
+  const after = get("tasks").children;
+  now = 2000; draw();
+  expect(overdue()).toHaveLength(1);
+  expect(get("tasks").children).toBe(after);
 });
 
 test("board drops reject stale project instance generation foreign origins and flow moves (#263)", () => {

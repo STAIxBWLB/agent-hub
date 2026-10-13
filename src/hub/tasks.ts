@@ -564,6 +564,10 @@ export class Tasks {
   private plannerPullRecord(task: Task): HistoryEntry["planning"] {
     return task.history.findLast(entry => entry.event === "backlog pulled" || entry.event === "backlog returned")?.planning;
   }
+  private hasPersonReservation(task: Task): boolean {
+    const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved") && !["backlog pulled", "backlog returned"].includes(entry.event)) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
+    return !!task.reserved && reservation?.by === USER;
+  }
   wip(peer: PeerId, except?: number): number {
     return this.d.board.plannerWip(peer, except);
   }
@@ -604,8 +608,7 @@ export class Tasks {
       }
       const assignment = this.plannerAssignment(task);
       if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
-      const reservation = task.history.findLast(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved") && !["backlog pulled", "backlog returned"].includes(entry.event)) ?? (task.history[0]?.event === "backlogged" ? task.history[0] : undefined);
-      if (task.reserved && reservation?.by === USER && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
+      if (this.hasPersonReservation(task) && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
       return { task, owner: assignment.owner };
     };
     const initial = validate(), withheld = await this.withholds("note", input.reason, initial.task);
@@ -723,6 +726,7 @@ export class Tasks {
       if (task.state === "approved") throw new PreEffectToolRefusal("approved work is final");
       if (by !== USER && (task.state !== "backlog" || taskHasStarted(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
+      if (by !== USER && Object.hasOwn(patch, "reserved") && this.hasPersonReservation(task)) throw new PreEffectToolRefusal("a person's reservation is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
         if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
         if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");

@@ -515,7 +515,7 @@ function dropTarget(node, accepted, payload) {
     void action({...payload, id:card.id});
   });
 }
-function taskCard(task, card, stage, ids) {
+function taskCard(task, card, stage, ids, overdue) {
   const row = el('article', undefined, 'task-card'), head = el('div', undefined, 'row-head');
   row.tabIndex = 0; taskRows.set(task.id,row);
   const trackCard = on => { const sceneCard=officeCards.get(task.id);if(sceneCard)sceneCard.classList.toggle('office-spotlight',on); };
@@ -539,7 +539,7 @@ function taskCard(task, card, stage, ids) {
   if(task.external?.provider==='github'){const source=el('a','GitHub #'+task.external.issue);source.href=task.external.url;source.rel='noreferrer';source.target='_blank';row.append(source);}
   if(task.pinned)row.append(el('p','Pinned','meta'));
   if(task.plannedStart != null || task.due != null)row.append(el('p','Planned '+dateText(task.plannedStart)+' / due '+dateText(task.due),'meta'));
-  if(task.due != null && task.due<Date.now() && task.state!=='approved')row.append(badge('Overdue','warn'));
+  if(overdue)row.append(badge('Overdue','warn'));
   if(task.actualDates)row.append(el('p','Actual start '+dateText(task.actualDates.startedAt)+' / review '+dateText(task.actualDates.reviewAt)+' / done '+dateText(task.actualDates.doneAt),'meta'));
 
   const controls = el('div', undefined, 'actions');
@@ -567,6 +567,7 @@ function renderBoard(snapshot, peers, ids) {
   renderTaskProgress(progress);
   const stages = new Map(progress.stages.map(stage=>[stage.id,stage])), byId = new Map(snapshot.tasks.map(task=>[task.id,task]));
   const cards = new Map(model.columns.flatMap(column=>[...column.ready,...column.waiting]).map(card=>[card.id,card]));
+  const now = Date.now(), overdue = new Set(snapshot.tasks.filter(task=>task.due != null && task.due<now && task.state!=='approved').map(task=>task.id));
   boardViewState={snapshot,peers,ids,cards};
   renderPlanning(snapshot);
   const staged=$('backlog-proposal');staged.disabled=snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext());
@@ -589,7 +590,7 @@ function renderBoard(snapshot, peers, ids) {
     }
     if (!ids.length) empty(target,'No peer status available.');
   });
-  update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone],target=>{
+  update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone,[...overdue]],target=>{
     taskRows.clear();
     const visible=snapshot.tasks.filter(task=>(!taskFilter || (taskFilter==='work' ? ['in_progress','changes_requested'].includes(task.state) : task.state===taskFilter)) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter) && (!releaseFilter || task.release===Number(releaseFilter)));
     const visibleIds=new Set(visible.map(task=>task.id));
@@ -614,7 +615,7 @@ function renderBoard(snapshot, peers, ids) {
         if(hidden) ready=ready.slice(0,10);
         for(const [label,list] of [['Ready',ready],['Waiting',waiting]]) {
           if(column.id==='todo') box.append(el('h4',label+' ('+list.length+')'));
-          for(const card of list) box.append(taskCard(byId.get(card.id),card,stages.get(card.id),eligible));
+          for(const card of list) box.append(taskCard(byId.get(card.id),card,stages.get(card.id),eligible,overdue.has(card.id)));
         }
         if(!ready.length && !waiting.length) empty(box,'No tasks');
         if(hidden){const more=el('button','Show '+hidden+' older Done tasks');more.type='button';more.addEventListener('click',()=>{if(!boardViewState)return;showAllDone=true;renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});box.append(more)}

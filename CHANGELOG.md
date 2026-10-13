@@ -4,6 +4,11 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Preserve person-owned reservations through planner grooming, including same-value changes (#378).
+- Refuse stale Pi roster-return snapshots when native activity changes in flight (#378).
+- Refresh deferred memory indexes for goal and suggestion reads (#378).
+- Update overdue board badges when deadlines pass without rebuilding unchanged cards on every poll (#378).
+
 ## 0.12.24
 
 - Preserve planner notices across queued/uncertain deliveries, stale recipient copies, queue pressure and temporary roster absence (#263).

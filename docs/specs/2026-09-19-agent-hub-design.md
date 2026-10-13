@@ -2798,3 +2798,22 @@ The per-issue intake failure boundary includes existing-row lookup and profile p
 Release snapshots group scope rows once and read approval dates once per task. Cross-release audit previews contain at most 32 IDs per category plus exact counts, with truncation disclosed in the UI. Sorted date indexes preserve strict after-cut semantics without rescanning every task history for every release. Full audit pagination remains a future extension.
 
 Release-card invalidation includes the task-state snapshot, so approval of a prerequisite outside the release refreshes blocked counts even when the release row and audit preview are unchanged.
+
+
+## v0.12.24 audit corrections (#378)
+
+Planner grooming cannot clear, replace or reassert a person-owned reservation;
+only a person may change that decision. Pull and grooming share the same
+reservation provenance, including a return to Backlog after a planner pull.
+
+A personal Pi roster return rejects its snapshot if authenticated, current
+native lifecycle activity was observed while the snapshot was in flight. The
+session remains detached, and a fresh snapshot retry is required before hub
+admission. The owner process and queued deliveries are retained.
+
+Goal and suggestion reads retry deferred segment indexing just as note reads
+do. This adds no log format change and does not invoke unrelated note promotion
+for an already fresh goal or suggestion read.
+
+The board's existing polling notices deadline crossings through derived overdue
+state in its render cache. Unchanged overdue state preserves the current DOM.

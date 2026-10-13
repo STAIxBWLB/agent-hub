@@ -101,6 +101,7 @@ export class PiPeer extends BasePeer {
   private stopping = true;
   private rosterDetached = false;
   private rosterEpoch = 0;
+  private rosterLifecycleRevision = 0;
   /** A personal native turn observed on reattach has no hub reply audience. */
   private rosterUnownedRun = false;
   private exitReported = false;
@@ -437,9 +438,10 @@ export class PiPeer extends BasePeer {
   async resumeFromRoster(): Promise<void> {
     if (!this.rosterDetached) return;
     if (this.opts.mode !== "tui" || this.stopping || !this.rosterDetached || !this.server || !this.verifiedOwner()) throw new Error("Pi roster return has no verified live TUI owner");
-    const epoch = this.rosterEpoch, session = this.sessionId, file = this.sessionFile;
+    const epoch = this.rosterEpoch, lifecycle = this.rosterLifecycleRevision, session = this.sessionId, file = this.sessionFile;
     const snapshot = await this.sendTui({ type: "get_session_state" });
     if (epoch !== this.rosterEpoch || this.stopping || !this.verifiedOwner() || this.activeTools || snapshot?.sessionId !== session || snapshot?.sessionFile !== file || typeof snapshot?.idle !== "boolean") throw new Error("Pi roster return could not verify the current native session");
+    if (lifecycle !== this.rosterLifecycleRevision) throw new Error("Pi native activity changed during roster return; retry with a fresh session snapshot");
     this.rosterDetached = false;
     this.rosterUnownedRun = !snapshot.idle; this.agentRunning = !snapshot.idle;
     this.setState(snapshot.idle ? "idle" : "busy");
@@ -602,9 +604,12 @@ export class PiPeer extends BasePeer {
       // and still-verified owner bind that event to this session; an explicit mismatch never does.
       const bound = !this.stopping && this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId);
       if (bound && event.type === "agent_start" && Number.isSafeInteger(event.generation) && event.generation > this.budgetGeneration) {
+        this.rosterLifecycleRevision++;
         this.budgetGeneration = event.generation;
         this.noteActivity(); // personal native activity also revokes an earlier ID-only empty-resume proof
       }
+      // Snapshot ACKs and lifecycle events use separate requests, so their arrival order is not native state order.
+      if (bound && event.type === "agent_settled" && (event.generation === undefined || event.generation === this.budgetGeneration)) this.rosterLifecycleRevision++;
       if (!bound && event.type !== "session_shutdown") return;
     }
     if (this.rosterDetached && event.type !== "session_shutdown") return;
