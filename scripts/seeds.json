@@ -2960,6 +2960,14 @@
       "replacement": "else if (input.action === \"backlog_split\") {}",
       "testFile": "test/ui.test.ts",
       "testName": "split HTTP applies a bounded per-request deadline without changing ordinary actions"
+    },
+    {
+      "id": "acp-mode-cancellation-barrier",
+      "file": "src/adapters/acp.ts",
+      "search": "await this.cancelWait?.released;",
+      "replacement": "await Promise.resolve();",
+      "testFile": "test/acp.test.ts",
+      "testName": "ACP mode acknowledgement cannot outpace cancellation gate release"
     }
   ]
 }
