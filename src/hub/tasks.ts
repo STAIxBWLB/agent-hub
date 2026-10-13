@@ -2198,6 +2198,7 @@ export class Tasks {
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
+    if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
     if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
@@ -2221,10 +2222,11 @@ export class Tasks {
     if (g.state === "done" || g.state === "dropped") throw new PreEffectToolRefusal(`goal: that long-term task is ${g.state}`);
     return g;
   }
-  /** Record that a board task is part of a long-term task; never for a PII task. Fail-open after the board write. */
+  /** Fence deletion before external memory writes; one marker survives store absence. */
   private markMemoryReference(task: Task, by: PeerId): void {
     if (!this.d.board.get(task.id)?.history.some(entry => entry.event === "memory reference started")) this.d.board.update(task.id, by, "memory reference started", {});
   }
+  /** Record a long-term link, never for PII; failures remain notices. */
   private linkNative(task: Task, goal: GoalView, by: PeerId): string {
     if (this.isPii(task)) { this.releaseNotice(`task #${task.id} is not linked to a long-term task: nothing about a PII task enters hub memory`); return "not linked (PII task)"; }
     try { this.markMemoryReference(task, by); this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
@@ -2309,7 +2311,10 @@ export class Tasks {
     const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
     this.saveNative(by, kind, text, title, task);
-    if (this.d.memory) void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
+    if (this.d.memory) {
+      try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
+      void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
+    }
   }
 
   private tell(task: Task, body: string, pii: boolean): void {
