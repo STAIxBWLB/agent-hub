@@ -143,7 +143,7 @@ test("after a crash: sessions are resumed with the same identity, the report say
   const second = await startRuntime({ noPeer: true, stateDir: first.stateDir, autoResume: true });
   const after = await consoleClient(second.stateDir);
   const log = () => readFileSync(join(second.stateDir, "hub.log"), "utf8");
-  await until(() => log().includes("crash recovery: kimi resumed"), "kimi resumed");
+  await until(() => { const text = log(); return text.includes("crash recovery: kimi resumed") && text.includes("crash recovery: claude: the Claude Code plugin reconnects by itself while that session is still open"); }, "all recorded peer recovery reports");
   expect(readFileSync(join(second.stateDir, "acp-load.txt"), "utf8")).toBe("s1"); // session/load, not a new session
   expect(log()).toContain("crash recovery: the previous hub run stopped without shutting down; 1 deliveries it had in flight are in needs_review (ahub queue list)");
   expect(log()).toContain("crash recovery: claude: the Claude Code plugin reconnects by itself while that session is still open");
