@@ -408,7 +408,7 @@ export class MemoryStore {
         e.kind, e.peer, e.title ?? null, e.text, e.task ?? null, JSON.stringify(e.about.map(String)), e.supersedes ?? null, e.promotedFrom ?? null, e.source ?? "hub", typeof e.expires === "string" ? e.expires : null);
       for (const node of e.about) this.db.query("INSERT OR IGNORE INTO edges (src, dst) VALUES (?, ?)").run(id, String(node));
     } else if (e.op === "goal") {
-      if (typeof e.title !== "string" || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
+      if (!str(e.title, 400) || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400) || !opt(e.actor) || !opt(e.scope)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
       this.db.query("INSERT OR IGNORE INTO goals (id, at, machine, project, scope, title, milestones, depends, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.title, JSON.stringify(e.milestones.map(String)), JSON.stringify(e.dependsOn.map(String)), e.actor ?? "");
     } else if (["forget", "supersede", "demote", "settle", "goal_state", "goal_link", "lease", "lease_force"].includes(e.op)) {

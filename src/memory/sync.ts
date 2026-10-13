@@ -18,13 +18,15 @@ const STEP_MS = 60_000;
 async function git(dir: string, args: string[], signal?: AbortSignal, ms = STEP_MS): Promise<{ code: number; out: string; err: string }> {
   if (signal?.aborted) return { code: -1, out: "", err: "stopped" };
   const p = Bun.spawn(hubGitArgv(["-C", dir, ...args], { credentials: true }), { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: hubGitEnv() });
-  const kill = () => p.kill("SIGKILL");
+  // SIGTERM first, so git removes its lock files; SIGKILL only if it is still there after a grace period.
+  let hard: ReturnType<typeof setTimeout> | undefined;
+  const kill = () => { p.kill("SIGTERM"); hard ??= setTimeout(() => p.kill("SIGKILL"), 2_000); };
   const timer = setTimeout(kill, ms);
   signal?.addEventListener("abort", kill, { once: true });
   try {
     const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
     return { code, out: out.trim(), err: err.trim() };
-  } finally { clearTimeout(timer); signal?.removeEventListener("abort", kill); }
+  } finally { clearTimeout(timer); if (hard) clearTimeout(hard); signal?.removeEventListener("abort", kill); }
 }
 
 /** GitHub remotes are asked through `gh`; any other host, or a `gh` that cannot answer, is unknown. */
@@ -78,6 +80,9 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
   const release = lock(dir);
   if (!release) return fail("another sync is running on this machine");
   try {
+    // Holding sync.lock, no other git runs in this repository: what a killed one left behind is stale.
+    rmSync(join(dir, ".git", "index.lock"), { force: true });
+    if (existsSync(join(dir, ".git", "MERGE_HEAD"))) await git(dir, ["merge", "--abort"]);
     if (!existsSync(join(dir, ".git"))) {
       const init = await git(dir, ["init", "-q"], opts.signal);
       if (init.code !== 0) return fail(`git init failed: ${init.err.slice(0, 200)}`);
@@ -99,7 +104,8 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
 
     const own = `log/${store.machine.id}.jsonl`;
     const who = ["-c", "user.name=agent-hub", "-c", `user.email=agent-hub@${store.machine.id}.invalid`];
-    await git(dir, ["add", "--", ".gitignore", ...(existsSync(join(dir, own)) ? [own] : [])]);
+    const staged = await git(dir, ["add", "--", ".gitignore", ...(existsSync(join(dir, own)) ? [own] : [])], opts.signal);
+    if (staged.code !== 0) return fail(`git add failed: ${staged.err.slice(0, 200)}`); // never a push that left this machine's entries out
     if ((await git(dir, ["diff", "--cached", "--quiet"], opts.signal)).code === 1) {
       const commit = await git(dir, [...who, "commit", "-q", "--no-verify", "-m", `memory: ${store.machine.label}`], opts.signal);
       if (commit.code !== 0) return fail(`commit failed: ${commit.err.slice(0, 200)}`);
@@ -114,7 +120,7 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
       }
       // Each machine writes only its own segment, and every machine starts its own history: unrelated, never conflicting.
       const merge = await git(dir, [...who, "merge", "-q", "--no-edit", "--no-verify", "--allow-unrelated-histories", "refs/remotes/origin/main"], opts.signal);
-      if (merge.code !== 0) { await git(dir, ["merge", "--abort"], opts.signal); return `merge failed: ${merge.err.slice(0, 200)}`; }
+      if (merge.code !== 0) { await git(dir, ["merge", "--abort"]); return `merge failed: ${merge.err.slice(0, 200)}`; } // cleanup runs even when stopping
       return undefined;
     };
     const pulled = await pull();

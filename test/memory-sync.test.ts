@@ -154,3 +154,24 @@ test("through the hub: a peer links its claimed task to a long-term task, workin
   expect(await memoryCommand(["machine", "--label", "office mac"], root, { store })).toContain("office mac");
   writeFileSync(join(root, "unused"), "");
 }, 30_000);
+
+test("review of #354: a lock a killed git left behind never hides this machine's entries, a poisoned goal line is skipped, and goals pass the PII screen", async () => {
+  const { remote, a, b } = machines();
+  a.note(note("one"));
+  expect((await syncMemory(a, { remote, ...privately })).ok).toBe(true);
+  a.note(note("two"));
+  writeFileSync(join(a.dir, ".git", "index.lock"), ""); // what a git killed mid-commit leaves
+  expect(await syncMemory(a, privately)).toMatchObject({ ok: true, pushed: true });
+  await syncMemory(b, { remote, ...privately });
+  expect(b.list().map((v) => v.text).sort()).toEqual(["one", "two"]);
+  // A goal line whose actor is not a string (another version, a buggy writer) is skipped, never fatal to the store.
+  const bad = { schema: "agent-hub.memory/v1", at: "2026-10-12T00:00:00.000Z", machine: a.machine.id, op: "goal", project: "work/app", scope: "project", title: "t", milestones: [], dependsOn: [], actor: { x: 1 } } as const;
+  const { entryId } = await import("../src/memory/store.ts");
+  const line = JSON.stringify({ ...bad, id: entryId(bad as never) }) + "\n";
+  writeFileSync(join(a.dir, "log", `${a.machine.id}.jsonl`), line, { flag: "a" });
+  expect(() => a.refresh()).not.toThrow();
+  // A goal that would sync a PII pattern is refused; one already there is withheld from agent-readable output.
+  const cwd = temp("goalcwd");
+  await expect(goalCommand(["new", "call 900101-1234567"], cwd, { store: a })).rejects.toThrow("not saved");
+  expect(await goalCommand(["new", "ship memory"], cwd, { store: a })).toContain("created");
+}, 60_000);

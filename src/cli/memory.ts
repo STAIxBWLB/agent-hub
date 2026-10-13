@@ -1,4 +1,4 @@
-import { GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "../memory/store.ts";
+import { GOAL_STATES, KINDS, looksSecret, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "../memory/store.ts";
 import { syncMemory, type SyncOptions } from "../memory/sync.ts";
 import { memoryProjectKey, promotionScreen, withoutPii } from "../memory/recall.ts";
 import { currentRouting } from "../hub/routing.ts";
@@ -116,16 +116,23 @@ export async function goalCommand(args: string[], cwd: string, opts: { store?: M
   const me = store.machine.id;
   // Only this project's long-term tasks and shared ones, like every other lookup an agent may run.
   const need = (id: string | undefined) => store.goalOf(id?.replace(/^goal:/, "") ?? fail(GOAL_USAGE), project) ?? fail(`no long-term task ${id} for this project (ahub goal list shows them)`);
+  // Agent shells may read goals and a goal syncs to every machine: titles and milestones pass the same screen as notes
+  // (PII patterns, pii.paths; a config that does not load fails closed).
+  const policy = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before using long-term tasks`); } };
+  const clean = (title: string, milestones: string[], of = project) => !looksSecret(`${title}\n${milestones.join("\n")}`) && withoutPii([{ title, text: milestones.join("\n"), project: of }], currentRouting(cwd), cwd, policy()).length > 0;
   try {
     switch (sub) {
       case "list": {
         const all = rest.includes("--all");
-        const goals = store.goals(project).filter((g) => all || (g.state !== "done" && g.state !== "dropped"));
+        const listed = store.goals(project).filter((g) => all || (g.state !== "done" && g.state !== "dropped"));
+        const goals = listed.filter((g) => clean(g.title, g.milestones, g.project)), withheld = listed.length - goals.length;
         if (json) return JSON.stringify(goals, null, 2);
-        return goals.length ? goals.map((g) => goalOne(g, me)).join("\n") : `no ${all ? "" : "open "}long-term tasks for ${project} (ahub goal new <title>)`;
+        return [...(goals.length ? goals.map((g) => goalOne(g, me)) : [`no ${all ? "" : "open "}long-term tasks for ${project} (ahub goal new <title>)`]),
+          ...(withheld ? [`(${withheld} withheld: they match a PII pattern or a private path)`] : [])].join("\n");
       }
       case "show": {
         const g = need(rest[0]);
+        if (!clean(g.title, g.milestones, g.project)) fail(`${g.id.slice(0, 8)} is withheld: it matches a PII pattern or a private path`);
         if (json) return JSON.stringify(g, null, 2);
         return [goalOne(g, me), `${g.id}, project ${g.project}, created ${g.at} on machine ${g.machine.slice(0, 8)}`,
           ...g.milestones.map((m) => `milestone: ${m}`), ...g.dependsOn.map((d) => `depends on ${d.slice(0, 8)}`),
@@ -135,6 +142,7 @@ export async function goalCommand(args: string[], cwd: string, opts: { store?: M
         const milestones = take("--milestone"), depends = take("--depends").map((d) => need(d).id);
         const shared = rest.includes("--shared");
         const title = rest.filter((a) => a !== "--shared").join(" ").trim() || fail(GOAL_USAGE);
+        if (!clean(title, milestones)) fail("a long-term task syncs to every machine: this one holds a secret, a PII pattern or a private path and is not saved");
         const id = store.goal({ project, scope: shared ? "shared" : "project", title, milestones, dependsOn: depends, actor: "user" });
         return `long-term task ${id.slice(0, 8)} created: ${title}`;
       }
