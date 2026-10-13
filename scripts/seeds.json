@@ -2712,6 +2712,14 @@
       "replacement": "peer], ...this.health()",
       "testFile": "test/planner-pull.test.ts",
       "testName": "accepted planner work remains unchanged when automatic handoffs have no capacity"
+    },
+    {
+      "id": "github-import-literal-label-floor",
+      "file": "src/hub/github-import.ts",
+      "search": "input.label.includes(\",\")||",
+      "replacement": "false||",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake rejects comma labels before the StringSlice CLI can broaden selection"
     }
   ]
 }
