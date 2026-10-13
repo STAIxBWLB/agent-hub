@@ -211,3 +211,30 @@ test("split records final deterministic privacy instead of an earlier clear scre
  const pending=tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"new-marker"},{title:"ordinary-part"}],reason:"parts"});await entered;patterns=["new-marker"];release();const result=await pending,child=result.children[0]!;
  expect(tasks.isPii(child)).toBe(true);expect(child.history.find(entry=>entry.event==="screened")?.note).toBe("pii: regex");expect(records.find(record=>record.task===child.id)).toEqual({task:child.id,item:"task",label:"pii",source:"regex"});
 });
+
+
+test("split reason retains deterministic privacy across routing policy changes", async () => {
+  for (const initiallyPrivate of [true, false]) {
+    const f = rig();
+    let on = false, patterns = initiallyPrivate ? ["reason-secret"] : [];
+    let release!: () => void, arrived!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { arrived = resolve; });
+    const seen: string[] = [];
+    const tasks = new Tasks({ ...f.deps, routing: () => { const r = f.deps.routing(); return { ...r, signals: { ...r.signals, pii_screen: on ? "local" : "off", pii_patterns: patterns } }; }, piiScreen: async text => {
+      seen.push(text);
+      if (text.includes("held-child")) { arrived(); await held; }
+      return { label: "clear", ms: 0 };
+    } });
+    const parent = await tasks.propose(USER, { title: "public parent", class: "implement", backlog: true });
+    on = true;
+    const pending = tasks.splitBacklog(USER, { id: parent.id, revision: 0, parts: [{ title: "held-child" }, { title: "ordinary-child" }], reason: "reason-secret" });
+    await entered; patterns = initiallyPrivate ? [] : ["reason-secret"]; release();
+    const result = await pending;
+    expect(result.parent.history.find(entry => entry.planning?.split)?.withheld).toBe(true);
+    if (initiallyPrivate) expect(seen).not.toContain("reason-secret");
+    patterns = [];
+    expect(JSON.stringify(tasks.publicView(result.parent))).not.toContain("reason-secret");
+    for (const child of result.children) expect(JSON.stringify(tasks.publicView(child))).not.toContain("reason-secret");
+  }
+});
