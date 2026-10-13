@@ -197,3 +197,10 @@ test("split undo preserves child execution budgets until the person disables the
  const budget=tasks.configureExecutionBudget({id:"child-budget",kind:"task",taskId:split.children[0]!.id,peers:["local"],limits:{model_calls:2}});expect(budget?.taskId).toBe(split.children[0]!.id);const before=JSON.stringify(f.board.list());await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("execution budgets");expect(JSON.stringify(f.board.list())).toBe(before);expect(tasks.executionBudgetStatus("child-budget")).toEqual(budget);
  expect(tasks.disableExecutionBudget("child-budget")).toBe(true);const restored=await tasks.undoPlanning(USER,parent.id,1);expect(restored.id).toBe(parent.id);expect(f.board.list()).toHaveLength(1);
 });
+
+test("split retains initial deterministic privacy after routing changes during screening",async()=>{
+ const f=rig();let on=false,patterns=["policy-secret"],release!:()=>void,arrived!:()=>void;const held=new Promise<void>(resolve=>release=resolve),entered=new Promise<void>(resolve=>arrived=resolve),seen:string[]=[];
+ const tasks=new Tasks({...f.deps,routing:()=>{const r=f.deps.routing();return {...r,signals:{...r.signals,pii_screen:on?"local":"off",pii_patterns:patterns}}},piiScreen:async text=>{seen.push(text);if(text==="hold reason"){arrived();await held}return {label:"clear",ms:0}}});const parent=await tasks.propose(USER,{title:"public parent",class:"implement",backlog:true});on=true;
+ const pending=tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"policy-secret"},{title:"ordinary-part"}],reason:"hold reason"});await entered;patterns=[];release();const result=await pending;
+ expect(seen.some(text=>text.includes("policy-secret"))).toBe(false);expect(tasks.isPii(result.children[0]!)).toBe(true);expect(tasks.publicView(result.children[0]!).title).toBe("[pii]");expect(JSON.stringify(tasks.publicView(result.children[0]!))).not.toContain("policy-secret");
+});

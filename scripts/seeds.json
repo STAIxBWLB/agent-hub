@@ -2060,7 +2060,7 @@
     {
       "id": "split-plan-pii-floor",
       "file": "src/hub/tasks.ts",
-      "search": "signals: [...new Set([...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join(\"\\n\") })",
+      "search": "signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join(\"\\n\") })",
       "replacement": "signals: [...new Set([...this.signalsFor(part)",
       "testFile": "test/planner-split.test.ts",
       "testName": "split plans containing PII are private before any observer or public response (#263)"
@@ -2936,6 +2936,14 @@
       "replacement": "false",
       "testFile": "test/planner-split.test.ts",
       "testName": "split undo preserves child execution budgets until the person disables them"
+    },
+    {
+      "id": "split-initial-deterministic-privacy",
+      "file": "src/hub/tasks.ts",
+      "search": "...initialPrivacy[index]!, ...initialParentPrivacy,",
+      "replacement": "...[],",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split retains initial deterministic privacy after routing changes during screening"
     }
   ]
 }
