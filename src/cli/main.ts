@@ -328,13 +328,13 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false): Promise<string> {
-  const hub = await connect();
+async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false, connection?: ControlClient): Promise<string> {
+  const hub = connection ?? await connect();
   try {
     const res = await hub.request({ t: "task", op, args: a }, op === "github_import" ? 60_000 : 30_000);
     if (!res.ok) { if (throwOnError) throw new Error(res.error); audit("refused"); fail(res.error); }
     return res.text;
-  } finally { hub.close(); }
+  } finally { if (!connection) hub.close(); }
 }
 
 /** Reads hub.db's turn records; `none` when the hub never kept one (snapshots off, no git work tree, an older hub). */
@@ -1099,17 +1099,19 @@ const commands: Record<string, () => Promise<void> | void> = {
     const { one, rest } = takeFlags(args, ["--release", "--release-id"], []);
     if (one["--release"] !== undefined && !one["--release"].trim() || one["--release"] !== undefined && one["--release-id"] !== undefined || one["--release-id"] !== undefined && !/^[1-9]\d*$/.test(one["--release-id"])) fail("choose --release <nonempty name> or --release-id <positive id>");
     const release = one["--release-id"] ? "#"+one["--release-id"] : one["--release"];
+    const boardHub = await connect();
+    try {
     let boardStatus: any;
-    if (release) { const hub = await connect(); try { const reply = await hub.request({ t: "status" }); boardStatus = reply.status; if (!supportsBoardReleaseFilter(boardStatus)) fail("running hub does not support release filters; use a compatible daemon"); } finally { hub.close(); } }
+    if (release) { const reply = await boardHub.request({ t: "status" }); boardStatus = reply.status; if (!supportsBoardReleaseFilter(boardStatus)) fail("running hub does not support release filters; use a compatible daemon"); }
     const ready = rest.includes("--ready"), byColumn = rest.includes("--columns");
     const state = rest.find((a) => !a.startsWith("--"));
-    if (byColumn && !boardStatus) { const hub = await connect(); try { boardStatus = (await hub.request({ t: "status" })).status; } finally { hub.close(); } }
+    if (byColumn && !boardStatus) boardStatus = (await boardHub.request({ t: "status" })).status;
     if (byColumn && !supportsBoardColumnMetadata(boardStatus)) fail("running hub does not support accurate board column metadata; use a compatible daemon");
-    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) })) as any[];
+    const tasks = JSON.parse(await taskOp("hub_task_list", { ...(ready ? { ready: true } : state ? { state } : {}), ...(release ? { release } : {}), ...(byColumn ? { columnMetadata: true } : {}) }, false, boardHub)) as any[];
     if (options.json && !byColumn) return console.log(JSON.stringify(tasks, null, 2));
     let allTasks: any[] | null = tasks;
     if (ready || state || release) {
-      try { allTasks = JSON.parse(await taskOp("hub_task_list", byColumn ? { columnMetadata: true } : {}, true)) as any[]; }
+      try { allTasks = JSON.parse(await taskOp("hub_task_list", byColumn ? { columnMetadata: true } : {}, true, boardHub)) as any[]; }
       catch (error) {
         if (byColumn) fail("board column dependency context unavailable; retry with a complete snapshot");
         allTasks = null;
@@ -1117,10 +1119,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
     }
     if (byColumn) {
-      const hub = await connect();
-      try { const status = boardStatus ?? (await hub.request({ t: "status" })).status; if (!status?.peers) fail("peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, status.peers, options.columns, Date.now(), options.full, allTasks), options.color); }
-      finally { hub.close(); }
+      const status = boardStatus ?? (await boardHub.request({ t: "status" })).status; if (!status?.peers) fail("peer status unavailable"); if (options.json) console.log(JSON.stringify({ tasks, ...boardColumnModel(tasks, status.peers, allTasks) }, null, 2)); else printOutput(renderBoardColumns(tasks, status.peers, options.columns, Date.now(), options.full, allTasks), options.color);
     } else printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
+    } finally { boardHub.close(); }
   },
 
   sdlc: async () => {
