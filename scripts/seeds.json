@@ -2896,6 +2896,14 @@
       "replacement": "||false",
       "testFile": "test/github-import.test.ts",
       "testName": "GitHub intake refuses quoted labels before CSV interpretation"
+    },
+    {
+      "id": "ask-memory-reference-evidence",
+      "file": "src/hub/ask.ts",
+      "search": "t.history.findLast(entry => entry.event !== \"memory reference started\")",
+      "replacement": "t.history.at(-1)",
+      "testFile": "test/ask.test.ts",
+      "testName": "ask evidence skips memory bookkeeping and preserves note privacy"
     }
   ]
 }
