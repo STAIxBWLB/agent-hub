@@ -126,3 +126,10 @@ test("declined planner pulls release the old WIP slot and reroute when another p
  await tasks.decline("codex",task.id,"cannot take it");expect(board.get(task.id)).toMatchObject({owner:null,reserved:null,state:"proposed"});expect(tasks.wip("codex")).toBe(0);
  const other=new PullPeer("kimi");bus.add(other);await other.start();await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("kimi");expect(tasks.wip("kimi")).toBe(1);
 });
+
+test("automatic offline rerouting of planner pulls respects destination WIP",async()=>{
+ const {tasks,board,bus}=await rig();const task=await tasks.propose(USER,{title:"planned",class:"implement",backlog:true});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"ready"});await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("codex");
+ const local=new PullPeer("local");bus.add(local);await local.start();const busy=board.propose(USER,{title:"occupied",class:"implement"});board.update(busy.id,USER,"assigned",{owner:"local",state:"in_progress"});await bus.peers.get("codex")!.stop();
+ await tasks.releaseFromGone("codex",1);expect(board.get(task.id)?.owner).toBe("codex");
+ await tasks.assignTo(task.id,"local");expect(board.get(task.id)?.owner).toBe("local");
+});

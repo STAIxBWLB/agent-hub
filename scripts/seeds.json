@@ -1916,7 +1916,7 @@
     {
       "id": "planner-offer-capacity-recheck",
       "file": "src/hub/tasks.ts",
-      "search": "const plannerFull = opts.planner ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];",
+      "search": "const plannerFull = plannedMove ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];",
       "replacement": "const plannerFull: string[] = [];",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner offers recheck reserved capacity and refuse another peer's slot (#263)"
