@@ -607,7 +607,7 @@ export class Tasks {
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
     const ids = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
     if (!ids.length) return 0;
-    const queued = this.d.bus.publish(newEnvelope(HUB, `Backlog items ${ids.map(id => `#${id}`).join(", ")}. Read hub_backlog_list and plan the next work with a reason for each change.`, { to: planners, kind: "task" }));
+    const queued = this.d.bus.publish(newEnvelope(HUB, `Backlog items ${ids.map(id => `#${id}`).join(", ")}. Read hub_backlog_list and plan the next work with a reason for each change.`, { to: planners, kind: "task", refs: { backlog: ids } }));
     if (planners.every(peer => queued.includes(peer))) for (const id of ids) this.incomingBacklog.delete(id);
     return ids.length;
   }
@@ -1036,6 +1036,16 @@ export class Tasks {
    * for a recorded notice to this peer whose task is gone, has another owner, or left the states it was about.
    */
   relevant = (peer: PeerId, env: Envelope): boolean => {
+    if (env.from === HUB && env.kind === "task" && env.refs?.backlog) {
+      const ids = env.refs.backlog;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 64 || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) return false;
+      const current = ids.filter(id => this.d.board.get(id)?.state === "backlog");
+      if (current.length !== ids.length || !this.d.roles?.[peer]?.includes("planner") || !this.d.bus.isRostered(peer)) {
+        for (const id of current) this.incomingBacklog.add(id);
+        return false;
+      }
+      return true;
+    }
     const c = this.conditional.get(env.id);
     if (!c || c.peer !== peer) return true;
     const t = this.d.board.get(c.task);
