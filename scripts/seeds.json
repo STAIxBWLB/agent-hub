@@ -2124,7 +2124,7 @@
     {
       "id": "role-dashboard-metadata",
       "file": "src/hub/daemon.ts",
-      "search": "roleInfo: daemonStatus.roleInfo",
+      "search": "roleInfo: attentionStatus.roleInfo",
       "replacement": "roleInfo: {}",
       "testFile": "test/role-settings.test.ts",
       "testName": "dashboard role metadata retains separate current and pending catalog guidance (#295)"
