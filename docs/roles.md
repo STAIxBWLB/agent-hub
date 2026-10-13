@@ -28,7 +28,7 @@ Example shared or machine-local config:
 # Commands and current scope
 
 - `ahub role list [--group <group>]` lists metadata, layers and hashes. `ahub role show <id>` displays the selected definition. Both use terminal sanitization. `ahub doctor` reports invalid definitions or assignments.
-- Person catalog assignment/clear, settings controls and pending session marks are supported. Board cards remain a later #263 slice. Task proposal roles and review-duty notices are supported as described below. No CLI or hub tool writes a role definition.
+- Person catalog assignment/clear, settings controls and pending session marks are supported. Board cards show stored task guidance IDs without exposing role body text. Task proposal roles and review-duty notices are supported as described below. No CLI or hub tool writes a role definition.
 - The delivered slices cover the library, bounded config/session publication, read-only diagnostics and task role guidance. Native model ingestion, compaction retention and one live role/task cycle are unverified; no study was run in the solo implementation. The parent #295 remains open for full session records, remaining surfaces and measurement criteria.
 
 # Attribution
@@ -41,7 +41,7 @@ Example shared or machine-local config:
 - `hub_task_propose` accepts an optional `role` catalog id. Tasks refuses unknown ids or class mismatches before storing a row, with the allowed ids for the task base class. Research/writing aliases use their existing base class. Role ids never change routing, flow roles or permission policy.
 - The board persists the id across restart and ownership changes. Assignment notices include bounded sanitized guidance; review requests include the role's Review duties. If this daemon prepared that native session's matching contract, the owner notice names the id without repeating its body. Externally started plugin sessions have no such receipt and retain the task guidance.
 - PII stubs, task events and research records expose only the role id/identity, never the private task text or role body. A removed definition leaves an id-only unavailable notice.
-- Attributed turn preparations are included in opt-in research records as described below. Board cards and native role-ingestion/measurement remain pending. No role tool accepts definition text or edits a role file.
+- Attributed turn preparations are included in opt-in research records as described below. Board-card IDs are implemented; native role-ingestion/measurement remains unverified. No role tool accepts definition text or edits a role file.
 
 - Complete task role guidance, header included, is capped at 2000 characters. An oversized definition is refused before proposal storage; a saved task whose definition later exceeds the cap keeps an id-only notice. Definitions are never truncated.
 
