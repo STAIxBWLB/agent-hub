@@ -1719,3 +1719,7 @@ not a native account or production runtime claim. Served bytes compared against
 phase2 with the same upstream main:146871 before,164034 after (+17163).
 The focused production-boundary correction group passed35/0 (145589 assertions);
 current full platform/seed/review proof remains pending.
+The expanded-footer follow-up group passed7/0 with6687 assertions: primary
+stream rows survive alternate panels and are cleared before queued events return;
+expired notices restore the selected approval id and expiry. No earlier assertion
+was removed. Native terminal/tmux proof and final full gates remain pending.
