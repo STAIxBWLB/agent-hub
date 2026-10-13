@@ -2762,7 +2762,7 @@ owned unfinished work plus unowned planner-pull reservations.
 
 Pending unowned, unstarted pull can be undone at its latest owned revision via
 `hub_backlog_undo` or the existing planning undo control, restoring its earlier
-reservation. Normal release routing offers work only while that reserved peer
+reservation. An ordinary return to Backlog also restores the pre-pull reservation unless a later explicit reservation edit superseded it. Normal release routing offers work only while that reserved peer
 still has capacity; no other peer inherits its slot. Split and one-way import are described below. Native verification remains
 outstanding; exact-head source checks are recorded separately.
 
@@ -2790,6 +2790,8 @@ edits, execution, ownership or outside references refuse it. All writes roll
 back together and observers receive changes only after commit. Exact-head source checks are recorded separately; native verification remains
 unverified.
 
+
+The manager allows split screening, the bounded database wait and forwarding margin before declaring a missing reply unconfirmed. Reload the task before retrying an unconfirmed split. Stored role ids survive unavailable catalog guidance. Task memory-reference markers do not supersede assignment or check results, and dependency recovery ignores them.
 
 ## One-way GitHub intake (#263)
 
