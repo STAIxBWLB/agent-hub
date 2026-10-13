@@ -95,7 +95,7 @@ const MOVES: Record<TaskState, TaskState[]> = {
   proposed: ["in_progress", "backlog"],
   in_progress: ["in_review", "approved", "proposed"], // approved: class without a reviewer; proposed: owner declined or was taken off
   in_review: ["approved", "changes_requested"],
-  changes_requested: ["in_progress"],
+  changes_requested: ["in_progress", "proposed"], // proposed: declined redo waits for reassignment
   approved: [],
 };
 
