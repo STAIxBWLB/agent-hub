@@ -1143,17 +1143,34 @@ function layout(graph) {
 function selectMemoryNode(node) { memoryQuery.node = memoryQuery.node === node ? '' : node; rerenderMemory(); }
 function renderMemory(memory) {
   const tiers = $('memory-tiers');
-  if (!tiers.children.length) for (const [tier, label] of [['short', 'Short-term'], ['long', 'Long-term']]) {
+  if (!tiers.children.length) for (const [tier, label] of [['short', 'Short-term'], ['long', 'Long-term'], ['goals', 'Long-term tasks']]) {
     const chip = el('button', label, 'chip'); chip.type = 'button'; chip.dataset.tier = tier;
     chip.addEventListener('click', () => { memoryQuery.tier = tier; memoryQuery.node = ''; rerenderMemory(); });
     tiers.append(chip);
   }
   for (const chip of tiers.children) chip.setAttribute('aria-pressed', String(chip.dataset.tier === memoryQuery.tier));
   if (!memory) { $('memory-count').textContent = ''; update('memory-list', null, (target) => empty(target, 'Hub memory is off for this project, or nothing is stored yet.')); update('memory-graph', null, () => {}); update('memory-detail', null, () => {}); return; }
-  $('memory-count').textContent = memory.counts.long + ' long-term / ' + memory.counts.short + ' short-term';
+  $('memory-count').textContent = memory.counts.long + ' long-term / ' + memory.counts.short + ' short-term / ' + (memory.counts.goals || 0) + ' open tasks';
+  if (memory.goals) {
+    // Long-term tasks: state, who holds the lease and until when (a conflict when two machines claimed it), linked board tasks.
+    const who = (m) => m === memory.machine ? 'this machine' : 'machine ' + m.slice(0, 8);
+    update('memory-list', {goals: memory.goals, node: memoryQuery.node}, (target) => {
+      if (!memory.goals.length) return empty(target, 'No long-term tasks. A person creates one with ahub goal new <title>.');
+      for (const g of memory.goals) {
+        const row = el('button', undefined, 'memory-row'); row.type = 'button'; row.setAttribute('aria-pressed', String(memoryQuery.node === 'goal:' + g.id));
+        const head = el('div', undefined, 'row-head');
+        head.append(el('span', g.title, 'label'), badge(g.state, g.state === 'done' ? 'ok' : g.state === 'blocked' ? 'err' : g.state === 'active' ? 'info' : ''));
+        const lease = g.lease.holder ? 'held by ' + who(g.lease.holder) + ' until ' + time(g.lease.until) + (g.lease.conflict.length ? ' / conflict: ' + g.lease.conflict.map(who).join(', ') : '') : g.lease.expired ? 'free (lease of ' + who(g.lease.lastHolder) + ' ended ' + time(g.lease.until) + ')' : 'free';
+        row.append(head, el('div', g.id.slice(0, 8) + ' / ' + lease + ' / ' + g.links.length + ' board task' + (g.links.length === 1 ? '' : 's') + (g.milestones.length ? ' / milestones: ' + g.milestones.join('; ') : ''), 'meta'));
+        if (g.lease.conflict.length) row.append(badge('lease conflict', 'warn'));
+        row.addEventListener('click', () => selectMemoryNode('goal:' + g.id));
+        target.append(row);
+      }
+    });
+  }
   memoryOptions('memory-peer', memory.peers, 'All peers', 'peer');
   memoryOptions('memory-machine', memory.machines, 'All machines', 'machine');
-  update('memory-list', {entries: memory.entries, node: memoryQuery.node}, (target) => {
+  if (!memory.goals) update('memory-list', {entries: memory.entries, node: memoryQuery.node}, (target) => {
     if (!memory.entries.length) return empty(target, 'No ' + memory.tier + '-term entries match.');
     for (const entry of memory.entries) {
       const row = el('button', undefined, 'memory-row'); row.type = 'button'; row.setAttribute('aria-pressed', String(memoryQuery.node === 'mem:' + entry.id));
