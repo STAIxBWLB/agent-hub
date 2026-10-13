@@ -811,6 +811,7 @@ export class Tasks {
     const initialPrivacy = initial.drafts.map(part => this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }).filter(signal => signal === "pii" || signal === "pii_path"));
     const initialPrivate = initialPrivacy.map(signals => this.isPii({ signals })), initialParentPrivate = this.isPii(initial.parent);
     const initialParentPrivacy = initial.parent.signals.filter(signal => signal === "pii" || signal === "pii_path");
+    const initialReasonPrivate = initialParentPrivate || !this.nameable(reason);
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const attempt = Promise.all([
       Promise.all(initial.drafts.map((part, index) => screening && !initialParentPrivate && !initialPrivate[index] ? this.screenCall(screenText({ title: part.title, detail: part.detail, plan: part.plan })) : undefined)),
@@ -825,7 +826,7 @@ export class Tasks {
     const verdicts = screenedVerdicts.map((verdict, index) => deterministicPrivate[index] ? undefined : verdict);
     const inherited = current.drafts.map((_part, index) => (initialParentPrivate || this.isPii(current.parent)) && !deterministicPrivate[index]);
     const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!, ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
-    const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld);
+    const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld || initialReasonPrivate || this.isPii(current.parent) || !this.nameable(reason));
     for (const [index, child] of result.children.entries()) {
       this.incomingBacklog.add(child.id);
       if (screening) { this.recordScreen(child.id, "task", verdicts[index], inherited[index]); if (verdicts[index]?.label === "unknown") this.releaseNotice(`task #${child.id}: the PII screen gave no verdict (${verdicts[index]!.miss}); it is handled as a PII task`); }
