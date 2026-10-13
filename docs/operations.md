@@ -2915,3 +2915,5 @@ If a routing pattern adds deterministic privacy during screening, split history 
 Dashboard backlog splits receive a dedicated outer HTTP request bound above manager forwarding, using the shared screening/database bounds and margin. Ordinary action policy remains unchanged. At phone widths, split form grids use one column so native date controls remain inside their panels.
 
 An acknowledged ACP permission-mode change awaits queued cancellation cleanup only when the cancelled prompt response has already been observed. A still-unreported cancelled prompt stays busy under its existing deadline, while mode acknowledgements remain available. A successful mode acknowledgement alone does not prove the peer is idle.
+
+Task idle sweeps ignore body-free memory-reference bookkeeping when finding the last real activity. Saving a task note or goal link does not postpone an idle notice or restart its escalation ladder.
