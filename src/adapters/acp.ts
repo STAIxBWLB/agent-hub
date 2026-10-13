@@ -152,7 +152,7 @@ export class AcpPeer extends BasePeer {
   private activeDeliveryId: string | undefined;
   private activeLegacy: { turn: number; envs: Envelope[] } | undefined;
   private deliveryAccepted = false;
-  private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout> } | undefined;
+  private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout>; released: Promise<void>; release: () => void } | undefined;
   private promptActivity = false;
   private activityOpen = false;
   private activityPrivate = false;
@@ -299,6 +299,8 @@ export class AcpPeer extends BasePeer {
       }
       throw new Error(`${this.id} permission mode ${mode} refused: ${(error as Error).message}`);
     }
+    // A mode reply after a cancelled prompt must also observe its queued cleanup.
+    await this.cancelWait?.released;
     if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown; restart the peer`);
     this.permissionMode = mode;
   }
@@ -434,13 +436,16 @@ export class AcpPeer extends BasePeer {
         }
       }, this.opts.cancelWaitMs ?? HANDSHAKE_MS);
       timer.unref?.();
-      this.cancelWait = { turn: cancelledTurn, successor, timer };
+      let release!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      this.cancelWait = { turn: cancelledTurn, successor, timer, released, release };
     }
   }
 
   private clearCancelWait(): void {
-    if (this.cancelWait) clearTimeout(this.cancelWait.timer);
+    const waiting = this.cancelWait;
     this.cancelWait = undefined;
+    if (waiting) { clearTimeout(waiting.timer); waiting.release(); }
   }
 
   private observeUsage(value: unknown, source: ACPUsageDiagnostic["source"]): void {

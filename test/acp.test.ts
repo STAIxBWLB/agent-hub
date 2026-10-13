@@ -1196,3 +1196,8 @@ test("watchdog withdraws a pending ACP approval and fences a late person answer 
   answer("yes"); await new Promise<void>(resolve => setImmediate(resolve));
   expect(responses).toEqual([{ outcome: "cancelled" }]); expect(acp.state).toBe("offline");
 });
+
+test("ACP mode acknowledgement cannot outpace cancellation gate release",async()=>{
+ class Peer extends AcpPeer{nativeActivity=false;protected override touch(){super.touch();if(this.state==="busy")this.nativeActivity=true}expire(){this.onWatchdog()}}
+ const peer=new Peer("kimi",{cmd:[...FAKE,"--cancel-never-report"],cwd:process.cwd(),cancelWaitMs:150});await peer.start();try{await peer.deliver([newEnvelope("user","CANCEL_WAIT",{to:["kimi"]})]);await until(()=>peer.nativeActivity);peer.expire();expect(peer.state).toBe("busy");await peer.setPermissionMode("ask");expect(peer.state).toBe("offline");}finally{await peer.stop()}
+});
