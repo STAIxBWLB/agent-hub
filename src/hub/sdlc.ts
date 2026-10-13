@@ -215,9 +215,9 @@ export function touchingPrs(prs: { pr: number; paths: string[] }[]): { before: n
   return conflicts;
 }
 
-export type SdlcGh = (args: string[], timeoutMs?: number, cwd?: string) => Promise<{ code: number; stdout: string }>;
+export type SdlcGh = (args: string[], timeoutMs?: number, cwd?: string, maxOutputBytes?: number) => Promise<{ code: number; stdout: string }>;
 /** Read-only, fixed argv. Output and time are bounded; diagnostics never expose credentials or remote text. */
-export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd) => new Promise((resolve) => {
+export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 256 * 1024) => new Promise((resolve) => {
   const outputLimit = Number.isSafeInteger(maxOutputBytes) ? Math.min(2 * 1024 * 1024, Math.max(1, maxOutputBytes)) : 256 * 1024;
   const child = spawn("gh", args, { ...(cwd ? { cwd } : {}), env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
   let stdout = "", failed = false;
