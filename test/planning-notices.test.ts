@@ -94,6 +94,29 @@ test("recovery coalesces planner ids before a restored notice is consumed ahead 
  expect(restarted.flushPlannerNotices()).toBe(0);expect(bus.pull("claude")).toEqual([]);
 });
 
+test("planner recovery coalesces unsettled journal originals without a queued copy", async () => {
+ const {tasks,deps,board}=rig();const task=await tasks.propose(USER,{title:"uncertain staged notice",class:"implement",backlog:true});
+ const options={file:join(deps.cwd,"uncertain.db"),projectRoot:deps.cwd,projectId:"notices",instanceId:"before"};
+ const journal=new DeliveryJournal(options),env=newEnvelope("hub","Backlog items staged.",{to:["claude"],kind:"task",refs:{backlog:[task.id]}});
+ journal.createDelivery({id:"uncertain-notice",peer:"claude",state:"accepted",createdAt:env.ts,originals:[env],out:[env]});journal.close();
+ const reopened=new DeliveryJournal({...options,instanceId:"after"}),bus=new Bus({journal:reopened,batchMs:0});cleanup.push(()=>bus.closeJournal());
+ const restarted=new Tasks({...deps,board,bus}),peer=new NoticePeer("claude");bus.add(peer);await peer.start();
+ expect(bus.queueIds("claude")).toEqual([]);expect(reopened.get("uncertain-notice")!.state).toBe("needs_review");
+ expect(restarted.flushPlannerNotices()).toBe(0);expect(bus.queueIds("claude")).toEqual([]);
+ bus.resolveDelivery("uncertain-notice",reopened.get("uncertain-notice")!.revision,"completed","verified earlier consumption");
+ expect(restarted.flushPlannerNotices()).toBe(0);expect(bus.queueIds("claude")).toEqual([]);
+});
+
+test("configured off-roster planners retain incoming ids until roster admission returns", async () => {
+ const {deps,board}=rig({secondPlanner:true});let piRostered=false;let tasks:Tasks;
+ const bus=new Bus({batchMs:0,rostered:peer=>peer!=="pi"||piRostered,relevant:(peer,env)=>tasks.relevant(peer,env)});tasks=new Tasks({...deps,board,bus});cleanup.push(()=>bus.closeJournal());
+ for(const id of ["claude","pi"]){const peer=new NoticePeer(id);bus.add(peer);await peer.start();peer.busy()}
+ const task=await tasks.propose(USER,{title:"staged during roster absence",class:"implement",backlog:true});
+ expect(tasks.flushPlannerNotices()).toBe(1);expect(bus.pull("claude")![0]!.refs?.backlog).toEqual([task.id]);expect(bus.queued("pi")).toBe(0);
+ piRostered=true;bus.rosterChanged("pi");expect(tasks.flushPlannerNotices()).toBe(1);
+ expect(bus.pull("pi")![0]!.refs?.backlog).toEqual([task.id]);expect(bus.pull("claude")).toEqual([]);expect(tasks.flushPlannerNotices()).toBe(0);
+});
+
 test("planner notice batches are bounded and recover staged work on restart (#263)", async () => {
   const { tasks, bus, notices, deps } = rig();
   for (let i = 0; i < 65; i++) await tasks.propose(USER, { title: `future ${i}`, class: "implement", backlog: true });
