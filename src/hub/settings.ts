@@ -117,7 +117,8 @@ export const settingText = (value: unknown): string => value === null || value =
 /** `ordinary`: a dashboard session from `ahub ui`. `settings`: one from `ahub ui --settings`. `terminal`: `ahub settings`. */
 export type SettingAuthority = "ordinary" | "settings" | "terminal";
 /** Why this authority may not set this value, or undefined. Removing a stored value can raise, so it counts as one. */
-export function settingRefusal(def: SettingDef, value: SettingValue, authority: SettingAuthority): string | undefined {
+export function settingRefusal(def: SettingDef | string, value: SettingValue, authority: SettingAuthority): string | undefined {
+  if (typeof def === "string") return def || "invalid setting definition";
   if (def.risk === "safe" || authority !== "ordinary") return undefined;
   if (value !== null && value === def.floor) return undefined;
   return `${def.key} can widen what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings in a terminal`;
@@ -353,7 +354,7 @@ export interface SettingRow {
   key: string; group: SettingDef["group"]; label: string; type: SettingDef["type"]; values?: readonly string[]; min?: number; max?: number;
   /** The file a write goes to, or "this hub run". */
   file: string;
-  applies: SettingDef["applies"]; risk: SettingDef["risk"]; floor?: string | boolean;
+  applies: SettingDef["applies"]; risk: SettingDef["risk"]; floor?: string | boolean | number;
   /** What is in force now; null when nothing sets it. */
   value: SettingValue;
   /** Which file the value in force comes from. */
