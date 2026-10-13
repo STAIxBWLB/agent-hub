@@ -1828,8 +1828,8 @@
     {
       "id": "planner-notice-role",
       "file": "src/hub/tasks.ts",
-      "search": "roles.includes(\"planner\") && this.d.bus.isRostered(peer)",
-      "replacement": "true && this.d.bus.isRostered(peer)",
+      "search": "to: [peer], kind: \"task\", refs: { backlog: ids }",
+      "replacement": "to: [peer, \"codex\"], kind: \"task\", refs: { backlog: ids }",
       "testFile": "test/planning-notices.test.ts",
       "testName": "incoming backlog notices batch ids only for attached rostered planners (#263)"
     },
