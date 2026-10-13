@@ -1,4 +1,4 @@
-import { afterEach,expect,test } from "bun:test";
+import { afterEach,expect,spyOn,test } from "bun:test";
 import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -46,4 +46,17 @@ test("GitHub external identity remains screened on a later unknown verdict retry
  const result=await tasks.importGitHub(USER,{repo:"sensitive-owner/repo",label:"ready"},async()=>({code:0,stdout:JSON.stringify([{...issue(1),url:"https://github.com/sensitive-owner/repo/issues/1"}])}));
  await tasks.moveBacklog(USER,result.imported[0]!,true);await tasks.rescreen();
  expect(seen).toHaveLength(2);expect(seen[1]).toContain("sensitive-owner");const task=f.board.get(result.imported[0]!)!;expect(tasks.isPii(task)).toBe(true);expect(tasks.publicView(task)).not.toHaveProperty("external");
+});
+
+
+test("GitHub intake reports confirmed partial progress after late final staging", async () => {
+  const f = rig();
+  const clock = spyOn(performance, "now").mockReturnValue(0);
+  cleanup.push(() => clock.mockRestore());
+  f.routing.signals.pii_screen = "local";
+  f.screen.run = () => { clock.mockReturnValue(20_000); };
+  const result = await f.tasks.importGitHub(USER, { repo: "owner/repo", label: "ready" }, async () => ({ code: 0, stdout: JSON.stringify([{ number: 1, title: "last issue", body: "work", url: "https://github.com/owner/repo/issues/1", state: "OPEN" }]) }));
+  expect(result).toEqual({ imported: [1], existing: [], partial: true, complete: false });
+  expect(f.board.list()).toHaveLength(1);
+  expect(f.board.get(1)?.title).toBe("last issue");
 });
