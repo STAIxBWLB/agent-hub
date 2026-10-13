@@ -1,4 +1,5 @@
-import { consoleNeeds, attentionLine, attentionCommand } from "./attention.ts";
+import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attention.ts";
+import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
@@ -12,6 +13,8 @@ export interface Approval {
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
+  /** Older embedding callers omit choices and retain the original STAI/off toggle. */
+  petChoices?: readonly CharacterId[]; petCharacter?: CharacterId; petSize?: PetSize; petGlyphs?: "ascii" | "blocks";
   attentionFacts?: { kind: "review" | "offline"; id: number; peer?: string }[];
   attentionFingerprint?: string;
   petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
@@ -321,9 +324,9 @@ const KEYS: [string, string[]][] = [
   ["Events", ["f peer filter", "g kind filter"]],
 ];
 /** The `?` key table: one group per panel, its keys kept whole and packed into the width after the group column. */
-export function keyTable(columns: number, attention = false): Span[][] {
+export function keyTable(columns: number, attention = false, characters = false): Span[][] {
   const lines: Span[][] = []; const pad = 12;
-  for (const [group, items] of [...KEYS, ...(attention ? [["Attention", ["n next need", "P STAI/off"]] as [string, string[]]] : [])]) {
+  for (const [group, items] of [...KEYS, ...(attention ? [[characters ? "Pet" : "Attention", ["n next need", characters ? "P next character/off" : "P STAI/off"]] as [string, string[]]] : [])]) {
     let text = ""; let head = group;
     const flush = () => { lines.push([span(head.padEnd(pad), head ? "info" : undefined), span(text)]); head = ""; text = ""; };
     for (const item of items) { if (text && pad + Bun.stringWidth(`${text}   ${item}`) > columns) flush(); text = text ? `${text}   ${item}` : item; }
@@ -449,7 +452,13 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   }
   if ((key === "n" || key === "P") && attentionKeyBlocked) return done();
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
-  if (key === "P" && !s.optionChoice && !s.help) { s.petEnabled = !s.petEnabled; return done(); }
+  if (key === "P" && !s.optionChoice && !s.help) {
+    const choices = s.petChoices;
+    if (!choices?.length) s.petEnabled = !s.petEnabled;
+    else if (!s.petEnabled) { s.petEnabled = true; s.petCharacter = choices[0]; }
+    else { const next = choices.indexOf(s.petCharacter ?? "stai") + 1; s.petEnabled = next < choices.length; if (s.petEnabled) s.petCharacter = choices[next]; }
+    return done();
+  }
   if (key === "n" && s.petEnabled && !s.optionChoice && !s.help) {
     const items = consoleNeeds(s, now).items;
     if (!items.length) return done();
@@ -566,6 +575,9 @@ export function renderConsole(s: ConsoleState, columns: number, rows = 24, now =
   return renderConsoleLines(s, columns, rows, now).map(line => paint(line, false));
 }
 const NOTICE_MS = 10_000;
+export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt">, now = Date.now()): boolean {
+  return !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+}
 export const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
@@ -660,6 +672,35 @@ function header(s: ConsoleState, columns: number): Span[] {
 }
 /** The label column is the hub's own: a cut title or option list is marked `(more)` there; Enter shows it whole. */
 const more = (line: Span[], text?: string): Span[] => [span("(more)".padEnd(Bun.stringWidth(line[0]!.text)), "attention"), ...(text === undefined ? line.slice(1) : [span(text)])];
+export function consoleFooterRows(s: ConsoleState, columns: number, rows: number): number {
+  return s.petEnabled ? petFooterRows(petSize(s.petSize, columns, rows)) : 4;
+}
+function decoratePetFooter(s: ConsoleState, columns: number, rows: number, now: number, rule: Span[], footer: Span[][], noticeShown: boolean): Span[][] {
+  if (!s.petEnabled) return [rule, ...footer];
+  const value = consoleNeeds(s, now), character = s.petCharacter ?? "stai", size = petSize(s.petSize, columns, rows);
+  const tone: Tone = value.state === "blocked" ? "failure" : value.act ? "attention" : "muted";
+  if (size === "line") {
+    const text = characterAttentionLine(value, character, now, s.petBlink, true, s.petGlyphs);
+    return [Bun.stringWidth(text) + 4 <= columns ? [span("-".repeat(columns - Bun.stringWidth(text) - 2) + " ", "muted"), span(text.slice(0, 5)), span(text.slice(5), tone), span("-", "muted")] : rule, ...footer];
+  }
+  const pose: PetPose = s.petBlink && value.items.some(item => item.kind === "approval") && Math.floor(now / 1000) % 2 ? "waitingBlink" : value.state;
+  const frame = petFrame(character, pose, size, s.petGlyphs), width = size === "mini" ? 9 : 12, height = size === "mini" ? 3 : 8;
+  const available = columns - width - 1, caption = characterAttentionLine(value, character, now, false).slice(6);
+  const left: Span[][] = [[span(caption, tone)], footer[0]!, footer[1]!];
+  // Notices and source paths stay in their existing views, never beside an expanded character.
+  if (noticeShown || s.confirm?.type === "permission_default") left[2] = [span(`${s.approvals.length} approvals / ${value.act} action / ${value.watch} watch`, tone)];
+  for (let index = 0; index < height - 3; index++) {
+    const item = value.items[index];
+    left.push(item ? [span([item.kind, item.peer, item.id].filter(part => part !== undefined).join(" "), item.level === "act" ? "attention" : "muted")] : []);
+  }
+  const result = left.map((line, index) => {
+    const fitted = fitLine(line, available), text = fitted.map(cell => cell.text).join("");
+    const body = frame[index] ?? " ".repeat(width), accent = CHARACTERS[character].accent?.[size];
+    const bodySpans = accent?.row === index ? [span(body.slice(0, accent.start)), span(body.slice(accent.start, accent.start + accent.length), "attention"), span(body.slice(accent.start + accent.length))] : [span(body)];
+    return [...fitted, span(" ".repeat(Math.max(0, available - Bun.stringWidth(text)) + 1)), ...bodySpans];
+  });
+  return [...result, footer[2]!]; // The prompt line remains full-width and in its original terminal row.
+}
 export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, now = Date.now()): Span[][] {
   const permission = selectedApproval(s);
   let prompt = s.editing ? `: ${s.input}` : hint(s, columns);
@@ -682,7 +723,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
   if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${duration(permission.expiresAt - now)} left`, "muted"));
   else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
-  const noticeShown = !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+  const noticeShown = activeNotice(s, now);
   if (noticeShown) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
   const neverPeer = s.confirm?.type === "permission_default" ? s.confirm.peer : s.confirm?.type === "command" && s.confirm.args[0] === "permission" && s.confirm.args[2] === "never-ask" ? s.confirm.args[1] : undefined;
   const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
@@ -691,9 +732,6 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
-  const attention = s.petEnabled ? consoleNeeds(s, now) : undefined;
-  const pet = attention ? attentionLine(attention, now, s.petBlink) : "";
-  const attentionRule = pet && Bun.stringWidth(pet) + 4 <= columns ? [span("-".repeat(columns - Bun.stringWidth(pet) - 2) + " ", "muted"), span(pet, attention!.state === "blocked" ? "failure" : attention!.act ? "attention" : "muted"), span("-", "muted")] : rule;
   if (s.mode === "stream") {
     const counts = s.taskCounts;
     const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
@@ -701,13 +739,15 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (!noticeShown && defaultSource === undefined && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
       footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
     }
-    return [attentionRule, ...footer];
+    return decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown);
   }
   const progress = taskProgress(s.tasks);
-  const height = rows - 6; // header, rule, body, rule, three footer lines
+  const bodyHeight = rows - 2 - consoleFooterRows(s, columns, rows);
+  const noticeLines = noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== "line" ? wrap(`Notice: ${s.notice}`, columns).slice(0, Math.max(0, bodyHeight - 6)).map(text => [span(text, s.noticeTone ?? "failure")]) : [];
+  const height = bodyHeight - noticeLines.length;
   const lines: Span[][] = [];
   if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
-  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled));
+  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
@@ -748,5 +788,5 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     }
   }
   const body = lines.slice(0, height); while (body.length < height) body.push([]);
-  return [header(s, columns), rule, ...body, attentionRule, ...footer];
+  return [header(s, columns), rule, ...noticeLines, ...body, ...decoratePetFooter(s, columns, rows, now, rule, footer, noticeShown)];
 }

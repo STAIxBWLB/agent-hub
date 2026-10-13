@@ -214,3 +214,9 @@ shared liveness contract and treats missing/unconfirmed evidence as unavailable.
 Recovery uses the existing lock/runner read path; unknown is never absent and
 navigation grants no permission or mutation authority. Larger artwork and web
 integration remain separate phases.
+
+Built-in text-frame characters are literal data, not user files or runtime image
+loads. Presentation config admits only known ids/sizes/glyph modes, never paths
+or arbitrary glyph bodies. Character cycling emits no workflow effects. Larger
+frames carry only structural need ids/counts and exclude source/notice prose;
+private task and approval details remain in their existing operator views.

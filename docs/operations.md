@@ -2774,3 +2774,22 @@ Intentionally person-owned work is not an offline agent. Neither user nor hub
 creates an offline watch item, while person-reviewed tasks remain actionable.
 Status reads only the board's structural id/state/owner/reviewer projection and
 reuses it for retained peer ids, avoiding task body/plan/history decoding.
+
+## Console character choices (#280)
+
+`pet.character` selects stai (default), gyul, lantern, cursor-cat or boxbot.
+`pet.size` selects line (default), mini or full. Mini needs100 columns; full also
+needs40 rows, and smaller terminals fall back automatically. `P` cycles the
+built-ins and off for the current console only. `?` lists this under Pet, even
+while drawing is off. The command prompt keeps its original row and width.
+
+`pet.glyphs` selects auto/ascii/blocks; unsupported locales and dumb/linux
+terminals retain the ASCII floor. `pet.blink:false` is static. Neither choosing
+nor drawing a character changes authority, config files, task state or polling.
+Explicit `ahub pet` and text status use the configured line face; prompt tokens
+remain character-independent. Native glyph width and tmux are unverified.
+
+With mini/full characters, active console notices remain visible away from the
+character: panel body rows show the bounded wrapped notice, and stream mode
+prints each fresh notice once through the existing local stream. Footer prose
+exclusion and fixed prompt/footer geometry remain. No new request or timer.

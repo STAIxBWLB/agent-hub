@@ -1700,3 +1700,34 @@ Regression fixtures cover reserved pseudo-peer ownership, preserved person
 reviews, selected SQL columns and actual status reads with unreadable unrelated
 JSON payloads. The focused tests pass; immutable-head platform/255-guard proof
 is pending. Native/account/artwork/dashboard legs remain unverified.
+
+## Approved character source fixtures (#280, phase 2)
+
+The original STAIx reference and four existing Higgsfield concepts were inspected;
+210 hand-reduced frames satisfy the literal glyph and geometry limits. Actual
+console fixtures exercise all five choices plus off, full scroll geometry,
+resize fallback, keyboard-modal ownership, prompt preservation and unchanged
+config bytes. The focused console/config/geometry/runtime group passed138/0
+with23808 assertions. Immutable-head platform/seed/review proof is pending.
+Light/dark physical terminal, tmux and ambiguous-wide block glyphs are unverified.
+
+The expanded-footer follow-up group passed7/0 with6687 assertions: primary
+stream rows survive alternate panels and are cleared before queued events return;
+expired notices restore the selected approval id and expiry. No earlier assertion
+was removed. Native terminal/tmux proof and final full gates remain pending.
+
+Line-size console faces now honor the resolved ASCII/block selection, with the
+locale fallback retained and ASCII/CLI defaults unchanged. Actual line glyph,
+geometry, modal and runtime regression group passed19/0 with7165 assertions.
+All five faces stayed100 cells wide without colour escapes. Full gates pending.
+
+The first final265-guard run found a surviving line-glyph seed: shipped ASCII
+and block line faces intentionally have identical bytes. Added a separate
+observable catalog fixture, restored in finally, retaining every earlier assertion.
+Local execution of this additional case is admission-deferred, not a pass;
+current immutable-head full platform/seed proof is pending.
+
+Final review found active notices suppressed by expanded footers. Source now
+shows them in panel body or once in the local stream, away from the character.
+Added output/expiry/prompt geometry regressions and two guards. First local
+execution was admission-deferred; final actual proof remains pending.
