@@ -64,7 +64,7 @@ test("person P0 integration order allows its split prerequisites first (#263)",a
   const parent=await tasks.propose(USER,{title:"urgent integration",class:"implement",backlog:true,urgent:true});
   await tasks.planBacklog(USER,{id:parent.id,revision:0,fields:{rank:1,priority:0},reason:"person first goal"});
   const split=await tasks.splitBacklog("claude",{id:parent.id,revision:1,parts:[{title:"first"},{title:"second"}],reason:"prerequisites"});
-  const part=split.children[0]!,pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"required first"}).catch(()=>null);expect(pulled).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
+  const part=split.children[0]!,pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"required first"}).catch(()=>null);expect(pulled).not.toBeNull();expect(pulled).toMatchObject({state:"proposed",owner:null,reserved:"codex"});
   expect(board.get(parent.id)?.state).toBe("backlog");
 });
 
@@ -81,7 +81,7 @@ test("split prerequisites inherit the higher-ranked P0 goal ahead of unrelated w
   const parent=await tasks.propose(USER,{title:"highest goal",class:"implement",backlog:true,urgent:true}),later=await tasks.propose(USER,{title:"lower goal",class:"implement",backlog:true,urgent:true});
   await tasks.planBacklog(USER,{id:parent.id,revision:0,fields:{rank:1,priority:0},reason:"first"});await tasks.planBacklog(USER,{id:later.id,revision:0,fields:{rank:2,priority:0},reason:"later"});
   const split=await tasks.splitBacklog("claude",{id:parent.id,revision:1,parts:[{title:"first"},{title:"second"}],reason:"parts"}),part=split.children[0]!;
-  const pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"highest goal prerequisite"}).catch(()=>null);expect(pulled).toMatchObject({owner:null,state:"proposed",reserved:"codex"});
+  const pulled=await tasks.pullPlanned("claude",{id:part.id,revision:part.planningRevision??0,reason:"highest goal prerequisite"}).catch(()=>null);expect(pulled).not.toBeNull();expect(pulled).toMatchObject({owner:null,state:"proposed",reserved:"codex"});
 });
 
 test("split prerequisites retain P0 ordering after their blocked parent moves to To Do",async()=>{
@@ -153,4 +153,14 @@ test("legacy split parents ignore later custom dev aliases",async()=>{
  const f=rig(),parent=await f.tasks.propose(USER,{title:"legacy",class:"implement",backlog:true});
  const tasks=new Tasks({...f.deps,profile:"dev",profileData:resolveProfile("dev",{classes:{custom:"implement"}})});
  await expect(tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a",class:"custom"},{title:"b"}],reason:"parts"})).rejects.toThrow();expect(f.board.list()).toHaveLength(1);
+});
+
+test("split undo refuses child-scoped memory entries",async()=>{
+ const f=rig(),store=new MemoryStore({home:join(f.dir,"home")});cleanup.push(()=>store.close());const tasks=new Tasks({...f.deps,store:{store,project:"split",repo:"owner/repo"}}),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});
+ const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});await tasks.remember(USER,{text:"child note",task:result.children[0]!.id});await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced");expect(f.board.get(result.children[0]!.id)).toBeDefined();
+});
+test("private parent split records inherited PII without invented regex verdicts",async()=>{
+ const f=rig(),records:ScreenRecord[]=[];const tasks=new Tasks({...f.deps,routing:()=>({...f.deps.routing(),signals:{...f.deps.routing().signals,pii_screen:"local"}}),piiScreen:async()=>({label:"unknown",miss:"failed",ms:2}),recordScreen:record=>records.push(record)});
+ const parent=await tasks.propose(USER,{title:"public words",class:"implement",backlog:true});const result=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});
+ for(const child of result.children){expect(child.history.find(entry=>entry.event==="screened")?.note).toBe("pii: inherited");expect(records.find(record=>record.task===child.id)).toEqual({task:child.id,item:"task",label:"pii",source:"inherited"});}
 });

@@ -168,7 +168,7 @@ export interface ScreenRecord {
   task?: number;
   item: ScreenItem;
   label: "pii" | "clear";
-  source: "regex" | "screen" | "unknown";
+  source: "regex" | "screen" | "unknown" | "inherited";
   category?: PiiCategory;
   miss?: ScreenMiss;
   ms?: number;

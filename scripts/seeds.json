@@ -1916,7 +1916,7 @@
     {
       "id": "planner-offer-capacity-recheck",
       "file": "src/hub/tasks.ts",
-      "search": "const plannerFull = opts.planner ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];",
+      "search": "const plannerFull = plannedMove ? Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; }) : [];",
       "replacement": "const plannerFull: string[] = [];",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner offers recheck reserved capacity and refuse another peer's slot (#263)"
@@ -2728,6 +2728,38 @@
       "replacement": "if (allTasks === null) allTasks = tasks;",
       "testFile": "test/board-followup.test.ts",
       "testName": "filtered board columns reject missing dependency context instead of inventing waiting"
+    },
+    {
+      "id": "github-import-escaped-output-bound",
+      "file": "src/hub/github-import.ts",
+      "search": "new TextEncoder().encode(result.stdout).length>2*1024*1024",
+      "replacement": "new TextEncoder().encode(result.stdout).length>256*1024",
+      "testFile": "test/github-import.test.ts",
+      "testName": "GitHub intake accepts maximum escaped sentinel pages within a bounded reader"
+    },
+    {
+      "id": "split-child-memory-reference",
+      "file": "src/hub/tasks.ts",
+      "search": "[...children].some(key => this.d.store!.store.hasTask(key))",
+      "replacement": "false",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "split undo refuses child-scoped memory entries"
+    },
+    {
+      "id": "split-inherited-pii-source",
+      "file": "src/hub/tasks.ts",
+      "search": "inherited ? { item, label: \"pii\", source: \"inherited\" }",
+      "replacement": "inherited ? { item, label: \"pii\", source: \"regex\" }",
+      "testFile": "test/planner-split.test.ts",
+      "testName": "private parent split records inherited PII without invented regex verdicts"
+    },
+    {
+      "id": "planner-automatic-reroute-capacity",
+      "file": "src/hub/tasks.ts",
+      "search": "const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== \"manual\" || opts.roster);",
+      "replacement": "const plannedMove = opts.planner;",
+      "testFile": "test/planner-pull.test.ts",
+      "testName": "automatic offline rerouting of planner pulls respects destination WIP"
     }
   ]
 }

@@ -20,3 +20,8 @@ test("GitHub import selection is captured before repository resolution awaits (#
  const result=await readGitHubImport(selection,async args=>{calls.push(args);if(args[0]==="repo"){selection.label="--mutated";selection.milestone="changed";return {code:0,stdout:JSON.stringify({nameWithOwner:"Owner/Repo"})};}return {code:0,stdout:JSON.stringify([issue(1)])};});
  expect(result.issues).toHaveLength(1);expect(calls[1]).toContain("approved");expect(calls[1]).toContain("first");expect(calls[1]).not.toContain("--mutated");expect(calls[1]).not.toContain("changed");
 });
+
+test("GitHub intake accepts maximum escaped sentinel pages within a bounded reader",async()=>{
+ const rows=Array.from({length:33},(_,i)=>({...issue(i+1),title:"x".repeat(300),body:String.fromCharCode(1).repeat(8000)}));const stdout=JSON.stringify(rows);expect(new TextEncoder().encode(stdout).length).toBeGreaterThan(256*1024);const bounds:number[]=[];
+ const result=await readGitHubImport({repo:"Owner/Repo",label:"ready"},async(_args,_timeout,bound)=>{bounds.push(bound!);return {code:0,stdout}}).catch(()=>null);expect(result).not.toBeNull();if(!result)return;expect(result.issues).toHaveLength(32);expect(result.partial).toBe(true);expect(bounds).toEqual([2*1024*1024]);
+});
