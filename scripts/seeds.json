@@ -3312,6 +3312,14 @@
       "replacement": "if (false) active.focus({ preventScroll: true });",
       "testFile": "test/office-view.test.ts",
       "testName": "Office preserves keyboard focus on unchanged and reordered card nodes (#394)"
+    },
+    {
+      "id": "office-font-cascade",
+      "file": "src/ui/index.html",
+      "search": ".office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}",
+      "replacement": ".office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}.office-scene text{font-family:system-ui,sans-serif;font-size:1px}",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office fixed scale uses projected viewBox width and stable readable type (#394)"
     }
   ]
 }

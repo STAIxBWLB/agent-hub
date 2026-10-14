@@ -607,6 +607,13 @@ test("Office fixed scale uses projected viewBox width and stable readable type (
  const css=html.match(/<style>([\s\S]*?)<\/style>/)![1]!;
  const rule=(name:string)=>[...css.matchAll(/([^{}]+)\{([^}]+)\}/g)].find(match=>match[1]!.split(",").some(selector=>selector.trim()==="."+name))![2]!;
  const sceneRule=rule("office-scene");expect(sceneRule).toContain("max-width:100%");expect(sceneRule).not.toMatch(/(?:^|;)width:100%/);expect(sceneRule).toContain("height:auto");
+ expect(sceneRule).toContain("font-family:system-ui,sans-serif");expect(sceneRule).toContain("font-size:1px");
+ // Defaults inherit from the SVG root; a descendant text rule would win over simple label classes.
+ for(const match of css.matchAll(/([^{}]+)\{([^}]+)\}/g)){
+  const broad=match[1]!.split(",").some(selector=>/^\.office-scene\s+(?:>\s*)?text(?:$|\s|:|\[)/.test(selector.trim()));
+  if(broad)expect(match[2]).not.toMatch(/(?:^|;)\s*font(?:-size|-family)?\s*:/);
+ }
+ expect(rule("office-room-count")).toContain("font-family:ui-monospace,monospace");
  for(const [name,pixels] of [["office-room-title",13],["office-name",13],["office-room-count",12],["office-card-text",12],["office-state",12],["office-meta",12]] as const){
   const font=Number(/font-size:([\d.]+)px/.exec(rule(name))![1]);expect(Math.abs(font*12-pixels)).toBeLessThanOrEqual(1);
  }
