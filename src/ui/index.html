@@ -1056,23 +1056,22 @@ function officeDeskPaint(node, desk) {
   if (desk.tray.needsReview) tray.push(desk.tray.needsReview + ' to review');
   if (desk.tray.heldBy) tray.push('held by ' + desk.tray.heldBy);
   if (tray.length) children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
-  if (desk.extraCards > 0) {
-    const at = iso ? officeIsoLocal(desk.w / 2, desk.h - 1) : [1, desk.h - 1];
-    if (iso && desk.cards.length) at[1] = Math.max(...desk.cards.map(card => card.drawY - officeProject(desk.x, desk.y)[1] + card.h)) + 1.2;
-    const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + desk.extraCards + ' more tasks owned by ' + desk.id });
-    more.append(officeNode('text', { x: at[0], y: at[1], 'text-anchor': iso ? 'middle' : 'start', class: 'office-more' }, '+' + desk.extraCards + ' more'));
-    const open = event => { event.stopPropagation(); setColumnFocus(null); officeFilter('work'); $('task-peer-filter').value = desk.id; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); switchView('board'); };
-    more.addEventListener('click', open);
-    more.addEventListener('keydown', event => officeKeys(event, () => open(event)));
-    children.push(more);
-  }
   node.replaceChildren(...children);
+}
+// More is a sibling of the desk button, so assistive technology exposes both targets.
+function officeDeskMorePaint(node, desk) {
+  officePlace(node, desk.x, desk.y);
+  node.setAttribute('class', 'office-desk-more');
+  node.setAttribute('aria-label', 'Show ' + desk.extraCards + ' more tasks owned by ' + desk.id);
+  const iso = officeProjection === 'iso', at = iso ? officeIsoLocal(desk.w / 2, desk.h + 1) : [1, desk.h - 1];
+  if (iso) at[1] += 4.1; // below the nameplate and its upright desk name, clear of the front legs
+  node.replaceChildren(officeNode('text', { x: at[0], y: at[1], 'text-anchor': iso ? 'middle' : 'start', class: 'office-more' }, '+' + desk.extraCards + ' more'));
 }
 function officeRoomHeader(node, room) {
   officePlace(node, room.x, room.y, true);
   const iso = officeProjection === 'iso', y = iso ? -1.2 : 2.2, right = iso ? 12 : room.w - 1;
   node.setAttribute('class', 'office-room-header');
-  node.replaceChildren(...(iso ? [officeNode('rect', { x: -0.5, y: -2.55, width: 13, height: 2, rx: 0.5, class: 'office-header-surface' })] : []), officeNode('text', { x: iso ? 0 : 1, y, class: 'office-room-title' }, room.label),
+  node.replaceChildren(...(iso ? [officeNode('rect', { x: -0.5, y: -2.55, width: 12.5, height: 2, rx: 0.5, class: 'office-header-surface' })] : []), officeNode('text', { x: iso ? 0 : 1, y, class: 'office-room-title' }, room.label),
     officeNode('rect', { x: right - 3, y: y - 1.35, width: 3, height: 2, rx: 0.5, class: 'office-count-pill' }),
     officeNode('text', { x: right - 1.5, y, 'text-anchor': 'middle', class: 'office-room-count' }, String(room.count)));
 }
@@ -1165,6 +1164,15 @@ function drawOffice(target, model) {
       const open = () => activateOfficePeer(desk.id);
       node.addEventListener('click', open);
       node.addEventListener('keydown', (event) => officeKeys(event, open));
+    }
+    if (desk.extraCards > 0) {
+      const { node: more, fresh: newMore } = keep('desk-more:' + desk.id, JSON.stringify([desk.id, desk.x, desk.y, desk.w, desk.h, desk.extraCards]), scene.layers.marks, n => officeDeskMorePaint(n, desk), false);
+      if (newMore && !more.getAttribute('tabindex')) {
+        more.setAttribute('tabindex', '0'); more.setAttribute('role', 'button');
+        const open = event => { event.stopPropagation(); setColumnFocus(null); officeFilter('work'); $('task-peer-filter').value = desk.id; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); switchView('board'); };
+        more.addEventListener('click', open);
+        more.addEventListener('keydown', event => officeKeys(event, () => open(event)));
+      }
     }
   }
   const cards = [];

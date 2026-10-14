@@ -817,7 +817,7 @@ test("isometric desk trays and room bands fit without overlap and overflow targe
    }
   }
   const sorted=[...cards].sort((a,b)=>a.y-b.y);expect((sorted[1]!.y-(sorted[0]!.y+sorted[0]!.h))*12).toBeCloseTo(6);
-  const more=desk.findAll(node=>node.attrs["aria-label"]==="Show 1 more tasks owned by "+owner)[0]!;
+  const entry=scene.els.get("desk-more:"+owner);expect(entry).toBeDefined();const more=entry.node as Node;expect(more.parent).toBe(scene.layers.marks);expect(more.attrs["aria-label"]).toBe("Show 1 more tasks owned by "+owner);
   expect(more.text()).toContain("+1 more");f.api.focus("review");expect(f.api.focused()).toBe("review");
   let stopped=false;more.fire("keydown",{key:"Enter",preventDefault(){},stopPropagation(){stopped=true}});
   expect(stopped).toBe(true);expect(f.api.view()).toBe("board");expect(f.api.focused()).toBeNull();expect(f.get("task-filter").value).toBe("work");expect(f.get("task-peer-filter").value).toBe(owner);
@@ -829,5 +829,48 @@ test("isometric desk trays and room bands fit without overlap and overflow targe
  expect(headerTop).toBeGreaterThanOrEqual(deskBottom+1-0.01);expect(roomTop).toBeGreaterThan(headerTop);
  const svg=scene.svg as Node;expect(Number(svg.attrs.width)).toBeCloseTo(Number(svg.attrs.viewBox!.split(" ")[2])*12);
  const extra=startOfficeRuntime(()=>"isometric");extra.api.draw({...data,tasks:Array.from({length:8},(_,index)=>({id:index+100,title:"Additional owned task",class:"implement",state:"in_progress",owner:"claude"}))});
- expect(extra.api.maps.officeCards.size).toBe(2);expect((extra.api.maps.officeDesks.get("claude")! as Node).findAll(node=>node.attrs["aria-label"]==="Show 6 more tasks owned by claude")[0]!.text()).toContain("+6 more");
+ expect(extra.api.maps.officeCards.size).toBe(2);expect((extra.api.scene().els.get("desk-more:claude").node as Node).text()).toContain("+6 more");
+});
+
+test("Office More is a sibling button with stable lifecycle and owner activation (#394)",()=>{
+ const tasks=Array.from({length:3},(_,index)=>({id:index+1,title:"Overflow owner task "+index,class:"implement",state:"in_progress",owner:"claude"}));
+ const data={...snapshot,status:{peers:{claude:{state:"busy",queued:0},codex:{state:"idle",queued:0}}},tasks};
+ let view="flat";const f=startOfficeRuntime(()=>view);f.api.draw(data);expect(f.api.scene().els.has("desk-more:claude")).toBe(false);
+ view="isometric";f.api.draw(data);const entry=f.api.scene().els.get("desk-more:claude");expect(entry).toBeDefined();const more=entry.node as Node;
+ expect(more.parent).toBe(f.api.scene().layers.marks);expect(more.attrs.role).toBe("button");expect(more.attrs.tabindex).toBe("0");expect(more.attrs.class).toContain("office-desk-more");
+ const buttons=(f.api.scene().svg as Node).findAll(node=>node.attrs.role==="button");expect(buttons.length).toBeGreaterThan(2);
+ for(const button of buttons)expect(button.children.flatMap(child=>child.findAll(node=>node.attrs.role==="button"))).toHaveLength(0);
+ for(const activation of ["click","Enter"," "]){
+  f.api.focus("review");let stopped=false,prevented=false;
+  more.fire(activation==="click"?"click":"keydown",{key:activation,preventDefault(){prevented=true},stopPropagation(){stopped=true}});
+  expect(stopped).toBe(true);if(activation!=="click")expect(prevented).toBe(true);
+  expect(f.api.focused()).toBeNull();expect(f.api.view()).toBe("board");expect(f.get("task-filter").value).toBe("work");expect(f.get("task-peer-filter").value).toBe("claude");expect([...f.api.maps.taskRows.keys()]).toEqual([1,2,3]);
+ }
+ f.api.draw({...data,tasks:[...tasks,{id:4,title:"Extra overflow",state:"in_progress",class:"implement",owner:"claude"}]});
+ const repainted=f.api.scene().els.get("desk-more:claude").node as Node;expect(repainted).toBe(more);expect(repainted.attrs.role).toBe("button");expect(repainted.attrs.tabindex).toBe("0");expect(repainted.text()).toContain("+2 more");expect(repainted.listeners.click).toHaveLength(1);expect(repainted.listeners.keydown).toHaveLength(1);
+ view="flat";f.api.draw(data);expect(f.api.scene().els.has("desk-more:claude")).toBe(false);expect(more.parent).toBeNull();
+ view="isometric";f.api.draw({...data,tasks:tasks.slice(0,2)});expect(f.api.scene().els.has("desk-more:claude")).toBe(false);
+ for(const [projection,owned] of [["flat",4],["isometric",3],["isometric",4]] as const){
+  const sceneRuntime=startOfficeRuntime(()=>projection);
+  const ownedTasks=Array.from({length:owned},(_,index)=>({id:index+1,title:"Owned overflow task",state:"in_progress",class:"implement",owner:"claude"}));
+  const proposed=Array.from({length:9},(_,index)=>({id:index+100,title:"Room overflow task",state:"proposed",class:"implement"}));
+  sceneRuntime.api.draw({...data,tasks:[...ownedTasks,...proposed]});const current=sceneRuntime.api.scene(),svg=current.svg as Node;
+  expect(current.els.has("desk-more:claude")).toBe(true);
+  expect(svg.findAll(node=>/^Show \d+ more proposed tasks in the task list$/.test(node.attrs['aria-label'] ?? ''))).toHaveLength(1);
+  const controls=svg.findAll(node=>node.attrs.role==="button");expect(controls.length).toBeGreaterThan(3);
+  for(const control of controls)expect(control.children.flatMap(child=>child.findAll(node=>node.attrs.role==="button"))).toHaveLength(0);
+ }
+});
+
+test("isometric More labels clear desk names and header backdrops meet count pills (#394)",()=>{
+ const f=startOfficeRuntime(()=>"isometric");f.api.draw({...snapshot,tasks:Array.from({length:3},(_,index)=>({id:index+1,title:"Owned",state:"in_progress",class:"implement",owner:"claude"}))});
+ const scene=f.api.scene(),desk=f.api.maps.officeDesks.get("claude")! as Node,name=desk.findAll(hasOfficeClass("office-name"))[0]!,more=scene.els.get("desk-more:claude").node as Node,text=more.findAll(hasOfficeClass("office-more"))[0]!;
+ const [dx,dy]=officeTranslation(desk),[mx,my]=officeTranslation(more),nameX=dx+Number(name.attrs.x),nameY=dy+Number(name.attrs.y),moreX=mx+Number(text.attrs.x),moreY=my+Number(text.attrs.y);
+ expect(moreX).toBeCloseTo(nameX);expect(moreY-nameY).toBeGreaterThanOrEqual(1.5);
+ const plate=desk.findAll(hasOfficeClass("office-nameplate"))[0]!,plateBottom=Math.max(...plate.attrs.points!.split(" ").map(point=>Number(point.split(",")[1])))+dy;
+ expect(moreY-1).toBeGreaterThan(plateBottom);expect(desk.children.flatMap(child=>child.findAll(hasOfficeClass("office-desk-more")))).toHaveLength(0);
+ for(const header of (scene.layers.headers as Node).children){
+  const surface=header.findAll(hasOfficeClass("office-header-surface"))[0]!,pill=header.findAll(hasOfficeClass("office-count-pill"))[0]!;
+  expect(Number(surface.attrs.x)+Number(surface.attrs.width)).toBeCloseTo(Number(pill.attrs.x)+Number(pill.attrs.width));
+ }
 });
