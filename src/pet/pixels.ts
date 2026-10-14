@@ -27,11 +27,18 @@ export function petPixels(frame: readonly string[]): { width: number; height: nu
     "8": ["00100","00100","00100","00100","00100","00100","11111","11111"],
   };
   const pixels: [number, number][] = [];
+  // underlay: solid cell rects behind letter/detail glyphs; detail: the glyph strokes, drawn in a contrast color by layer-aware renderers.
+  const underlay: [number, number, number, number][] = [];
+  const detail: [number, number][] = [];
   for (const [row, text] of frame.entries()) for (const [column, glyph] of [...text].entries()) {
+    const letter = font[glyph];
+    if (letter) underlay.push([column*5, row*8, 5, 8]);
     for (let y=0;y<8;y++) for (let x=0;x<5;x++) {
-      const on = glyph === "█" || glyph === "▀" && y<4 || glyph === "▄" && y>=4 || glyph === "▟" && (y>=4 || x>=2) || glyph === "▙" && (y>=4 || x<3) || font[glyph]?.[y]?.[x] === "1";
+      const stroke = letter?.[y]?.[x] === "1";
+      const on = stroke || glyph === "█" || glyph === "▀" && y<4 || glyph === "▄" && y>=4 || glyph === "▟" && (y>=4 || x>=2) || glyph === "▙" && (y>=4 || x<3);
       if (on) pixels.push([column*5+x,row*8+y]);
+      if (stroke) detail.push([column*5+x,row*8+y]);
     }
   }
-  return { width: Math.max(0,...frame.map(row=>[...row].length))*5, height: frame.length*8, pixels };
+  return { width: Math.max(0,...frame.map(row=>[...row].length))*5, height: frame.length*8, pixels, underlay, detail };
 }

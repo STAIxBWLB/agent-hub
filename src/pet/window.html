@@ -13,11 +13,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid #79dfb2; outline-
 #pet { width: 84px; height: 78px; padding: 0; cursor: grab; touch-action: none; }
 #pet:active { cursor: grabbing; }
 svg { width: 100%; height: 100%; overflow: visible; image-rendering: pixelated; filter: drop-shadow(0 1px 2px #000a) drop-shadow(0 0 1px #fffa) drop-shadow(0 0 1px #0008); }
-rect { fill: #27ae60; }
-[data-state="waiting"] rect { fill: #f39c12; }
-[data-state="blocked"] rect { fill: #e74c3c; }
-[data-state="review"] rect { fill: #8e44ad; }
-[data-state="offline"] rect { fill: #7f8c8d; }
+rect { fill: #16a34a; }
+[data-state="waiting"] rect { fill: #d97706; }
+[data-state="blocked"] rect { fill: #dc2626; }
+[data-state="review"] rect { fill: #7c3aed; }
+[data-state="offline"] rect { fill: #64748b; }
+rect.d { fill: #f8fafc; }
 body[data-state="working"] #frame { animation: working-bob 0.7s steps(3, end) infinite; }
 @keyframes working-bob {
   0%, 100% { transform: translateY(0); }
@@ -43,6 +44,12 @@ const post = body => window.webkit.messageHandlers.pet.postMessage(body);
 const pet = document.getElementById('pet'), frame = document.getElementById('frame');
 const state = document.getElementById('state'), composer = document.getElementById('composer'), input = document.getElementById('message'), result = document.getElementById('result');
 let signature = '', drag, sending = false;
+const draw = (x, y, w, h, cls) => {
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y); rect.setAttribute('width', w); rect.setAttribute('height', h);
+  if (cls) rect.setAttribute('class', cls);
+  return rect;
+};
 window.update = view => {
   if (view.offline) {
     document.body.dataset.state = 'offline'; state.textContent = 'Offline';
@@ -56,10 +63,11 @@ window.update = view => {
   if (signature === next) return;
   signature = next;
   frame.setAttribute('viewBox', '0 0 ' + view.frame.width + ' ' + view.frame.height);
-  frame.replaceChildren(...view.frame.pixels.map(([x,y]) => {
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', x); rect.setAttribute('y', y); rect.setAttribute('width', '1'); rect.setAttribute('height', '1'); return rect;
-  }));
+  frame.replaceChildren(
+    ...(view.frame.underlay || []).map(([x, y, w, h]) => draw(x, y, w, h)),
+    ...view.frame.pixels.map(([x, y]) => draw(x, y, 1, 1)),
+    ...(view.frame.detail || []).map(([x, y]) => draw(x, y, 1, 1, 'd'))
+  );
 };
 window.focusInput = () => { document.body.dataset.composing = ''; composer.hidden = false; input.focus(); };
 window.commandResult = ok => { sending = false; input.disabled = false; result.textContent = ok ? 'Sent' : 'Message was not confirmed; check the dashboard before retrying.'; if (ok) { input.value = ''; composer.hidden = true; delete document.body.dataset.composing; } };

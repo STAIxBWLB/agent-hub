@@ -10,8 +10,11 @@ export function petGlyphs(requested: PetGlyphs = "auto", env: Record<string, str
   const locale = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
   return requested !== "ascii" && /utf-?8/i.test(locale) && !!env.TERM && !["dumb", "linux"].includes(env.TERM) ? "blocks" : "ascii";
 }
+/** Double-height letter cells (the petPixels font digits 1-8) print as their letters in text terminals. */
+const TEXT_GLYPH_ALIAS: Record<string, string> = { "1": "S", "2": "T", "3": "A", "4": "I", "5": "S", "6": "T", "7": "A", "8": "I" };
 export function petFrame(character: CharacterId = "stai", pose: PetPose, size: PetSize = "line", glyphs: "ascii" | "blocks" = "ascii"): readonly string[] {
-  return CHARACTERS[character].frames[glyphs][pose][size];
+  const frame = CHARACTERS[character].frames[glyphs][pose][size];
+  return glyphs === "blocks" ? frame.map(row => [...row].map(glyph => TEXT_GLYPH_ALIAS[glyph] ?? glyph).join("")) : frame;
 }
 /** A full footer reserves the catalog maximum, independent of state and session character cycling. */
 export function petFooterRows(size: PetSize): number { return size === "full" ? 9 : 4; }

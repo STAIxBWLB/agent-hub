@@ -10,6 +10,7 @@ import { processSignature } from "../src/pi/process-signature.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { personEnv } from "../src/hub/child-process.ts";
 import { CHARACTERS } from "../src/pet/characters.ts";
+import { petFrame } from "../src/pet/frame.ts";
 import { petPixels } from "../src/pet/pixels.ts";
 
 const rootPath = join(import.meta.dir, "..");
@@ -135,7 +136,13 @@ test("JXA sends literal text as NSTask argv with silent output and no null compl
   expect(jxa).toContain("$.NSMakeRect(origin.x, origin.y, W, H)");
   // Double-height STAI letters: seven-row blocks frame, 60x56 viewBox pixels.
   expect(CHARACTERS.stai.frames.blocks.waiting.full).toHaveLength(7);
-  expect(petPixels(CHARACTERS.stai.frames.blocks.waiting.full)).toMatchObject({ width: 60, height: 56 });
+  const staiWorking = petPixels(CHARACTERS.stai.frames.blocks.working.full);
+  expect(staiWorking).toMatchObject({ width: 60, height: 56 });
+  expect(staiWorking.underlay.length).toBeGreaterThan(0);
+  expect(staiWorking.detail.length).toBeGreaterThan(0);
+  // Text terminals print the double-height letter cells as their letters.
+  expect(petFrame("stai", "working", "full", "blocks").join("\n")).toContain("STAI");
+  expect(petFrame("stai", "working", "full", "blocks").join("\n")).not.toContain("1234");
   expect(petWindowArgv("/project path")).toEqual([process.execPath, join(rootPath, "src/cli/main.js"), "--project", "/project path"]);
 });
 
