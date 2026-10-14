@@ -5,6 +5,7 @@ import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
 import { terminalText } from "./console-state.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
+import { startPetWindow, closePetWindow } from "../pet/window.ts";
 import { loadPetConfig } from "./pet-config.ts";
 import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
@@ -677,6 +678,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (unattended) console.error(UNATTENDED_WARNING);
     const status = await startProject(registeredProject(), { unattended });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
+    try { if (loadPetConfig(cwd).window) console.log(await startPetWindow(stateDir, cwd)); }
+    catch { console.error("Pet window was not started; run ahub pet --window to inspect it."); }
     if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir });
   },
 
@@ -1359,8 +1362,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
   },
 
-  pet: () => {
-    if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short]");
+  pet: async () => {
+    if (args.includes("--window")) {
+      if (args.some(arg => !["--window", "--close"].includes(arg))) return fail("usage: ahub pet --window [--close]");
+      return console.log(await (args.includes("--close") ? closePetWindow(stateDir) : startPetWindow(stateDir, cwd)));
+    }
+    if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short] | --window [--close]");
     const short = args.includes("--short");
     let character: import("../pet/frame.ts").CharacterId | undefined;
     try { character = loadPetConfig(cwd).character; } catch { /* explicit structural reads remain available with malformed presentation config */ }

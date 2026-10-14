@@ -18,6 +18,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],
     ["ahub console [--panels] [--color=auto|always|never]", "enter the human console; P cycles built-in pet characters/off; exiting leaves the daemon running"],
     ["ahub console --no-pet", "turn off attention for this session; combines with --panels and --color"],
+    ["ahub pet --window [--close]", "start or close the macOS floating window, from a person's terminal"],
     ["ahub pet [--short]", "read attention without connecting; --short prints ahub!N only when action is needed"],
     ["ahub sdlc status [task] | explain <task> | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
     ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...]", "read-only merge and release evidence (person only)"],

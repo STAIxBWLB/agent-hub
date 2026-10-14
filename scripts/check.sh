@@ -8,7 +8,7 @@ bun install --frozen-lockfile >/dev/null
 bun x tsc --noEmit
 bun scripts/check-roles.ts
 bun scripts/build.mjs --check
-node scripts/check-package.mjs
+node scripts/check-package.mjs # includes the standalone pet host, JXA and HTML assets
 
 tests=0
 check_tmp=$(mktemp -d "${TMPDIR:-/tmp}/ahub-check.XXXXXX")

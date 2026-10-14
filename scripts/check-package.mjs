@@ -35,6 +35,7 @@ assert.equal(pack.version, manifest.version);
 const actual = new Set(pack.files.map((file) => file.path));
 for (const path of [
   ...expected,
+  'src/pet/window.ts', 'src/pet/window.jxa.js', 'src/pet/window.html',
   'src/cli/main.js', 'src/cli/main.ts', 'src/cli/statusline-tee.ts',
   '.claude-plugin/marketplace.json', 'plugins/agent-hub/server.js',
   'plugins/agent-hub/.claude-plugin/plugin.json', 'plugins/agent-hub/.mcp.json',
