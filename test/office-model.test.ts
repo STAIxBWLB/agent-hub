@@ -66,10 +66,13 @@ test("officeModel maps a snapshot to desks, conditions, rooms, cards and counts"
   expect(byId.get("codex")!.cards.map((card) => card.id)).toEqual([4]);
   expect(byId.get("local")!.cards.map((card) => [card.id, card.rework])).toEqual([[6, true], [7, false]]);
   expect(byId.get("codex")!.cards[0]!.name).toBe("#4 implement: build feature (in progress)");
+  expect(byId.get("codex")!.cards[0]!.label).toBe("#4 build feature");
   const rooms = new Map(model.rooms.map((room) => [room.id, room]));
   expect(rooms.get("todo")!.count).toBe(2);
   expect(rooms.get("todo")!.cards.map((card) => [card.id, card.waiting])).toEqual([[2, false], [3, true]]);
   expect(rooms.get("todo")!.cards[1]!.name).toContain("waiting on dependencies");
+  expect(rooms.get("todo")!.cards[1]!.label).toBe("#3 waiting task");
+  expect(model.rooms.map((room) => room.label)).toEqual(["To do", "Work floor", "Review", "Done"]);
   expect(rooms.get("work")!.count).toBe(3);
   expect(rooms.get("work")!.cards).toEqual([]); // every work card found its owner's desk
   expect(rooms.get("review")!.count).toBe(1);
@@ -158,6 +161,28 @@ test("the busy bubble appears only when the peer has exactly one in_progress tas
   expect(orphan.placed[9]).toBe("room:work");
 });
 
+test("desk trays keep all three readable cards inside the desk with padding and six pixel gaps", () => {
+  const tasks = Array.from({ length: 3 }, (_, index) => ({ id: index + 1, title: `Desk task ${index + 1}`, class: "implement", state: "in_progress", owner: "codex" }));
+  const snapshot = { status: { peers: { codex: { state: "busy" } } }, tasks };
+  const model = officeModel(snapshot, null, { cols: 4, now: 1000 });
+  const desk = model.desks[0]!;
+  expect(desk).toMatchObject({ slot: 0, x: 0, y: 3, w: 10, h: 20, extraCards: 0 });
+  expect(desk.cards.map((card) => card.id)).toEqual([1, 2, 3]);
+  for (const [index, card] of desk.cards.entries()) {
+    expect(card.x - desk.x).toBeCloseTo(0.8);
+    expect(desk.x + desk.w - card.x - card.w).toBeCloseTo(0.8);
+    expect(card.h * 12).toBe(24);
+    expect(card.h * 12).toBeGreaterThanOrEqual(20);
+    expect(card.y).toBe(desk.y + 8.5 + index * 2.5);
+    expect(desk.y + desk.h - card.y - card.h).toBeGreaterThanOrEqual(0.8);
+    expect(model.placed[card.id]).toBe("desk:codex");
+    if (index) expect((card.y - desk.cards[index - 1]!.y - card.h) * 12).toBe(6);
+  }
+  const overfull = officeModel({ ...snapshot, tasks: [...tasks, { ...tasks[0]!, id: 4 }] }, model, { cols: 4, now: 1100 }).desks[0]!;
+  expect(overfull.cards.map((card) => card.id)).toEqual([1, 2]);
+  expect(overfull.extraCards).toBe(2);
+});
+
 test("caps: 8 cards per room then an overflow count, 12 desks then +N peers", () => {
   const snap: OfficeSnapshotInput = {
     status: { peers: Object.fromEntries(Array.from({ length: 14 }, (_, i) => [`peer-${String(i).padStart(2, "0")}`, { state: "idle" }])) },
@@ -230,13 +255,48 @@ test("MARKER: no body, detail, approval title or PII text enters the serialized 
   expect(JSON.stringify(phased)).not.toContain(MARKER);
   // The PII stub is carried as the public title, nothing more.
   expect(model.desks[0]!.cards[0]!.name).toContain("[pii]");
+  expect(model.desks[0]!.cards[0]!.label).toBe("#1 [pii]");
+  expect(model.rooms[0]!.cards[0]!.label).toBe("#2 public title");
+});
+
+test("room cards fit one padded column at the fixed pixel scale, with space for overflow", () => {
+  const tasks = Array.from({ length: 12 }, (_, index) => ({ id: index + 1, title: `Readable public title ${index + 1}`, class: "implement", state: "proposed" }));
+  const model = officeModel({ status: { peers: {} }, tasks }, null, { cols: 1, now: 1000 });
+  const room = model.rooms[0]!;
+  expect(room).toMatchObject({ x: 0, y: 0, w: 22, h: 29, count: 12, overflow: 4 });
+  expect(room.cards.map((card) => card.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  for (const [index, card] of room.cards.entries()) {
+    expect(card.x).toBe(room.x + 1); // 12 px inner padding
+    expect(card.w).toBe(20);
+    expect(card.h * 12).toBeCloseTo(28);
+    expect(card.y).toBeCloseTo(room.y + 3.4 + index * (34 / 12));
+    expect(card.x + card.w).toBe(room.x + room.w - 1);
+    expect(card.label).toBe(`#${card.id} Readable public title ${card.id}`);
+    expect(model.placed[card.id]).toBe("room:todo");
+    if (index) expect((card.y - room.cards[index - 1]!.y - card.h) * 12).toBeCloseTo(6);
+  }
+  const last = room.cards.at(-1)!;
+  expect(room.y + room.h - last.y - last.h).toBeGreaterThan(3); // overflow line plus bottom padding
+  expect(model.rooms.map((entry) => entry.y)).toEqual([0, 30, 60, 90]);
+  expect(model.height).toBe(119);
+  for (const [index, entry] of model.rooms.entries()) {
+    if (index) expect(entry.y - model.rooms[index - 1]!.y - entry.h).toBe(1);
+  }
+  const empty = officeModel({ status: { peers: {} }, tasks: [] }, null, { cols: 1, now: 1000 });
+  expect(empty.rooms.every((entry) => entry.count === 0 && entry.cards.length === 0 && entry.overflow === 0)).toBe(true);
 });
 
 test("cols reflows rooms: left to right when wide, stacked when narrow", () => {
   const wide = officeModel(fixture(), null, { cols: 4, now: 1000 });
   // Six desks take two rows, so the rooms row starts below the desk grid.
-  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 31], [24, 31], [48, 31], [72, 31]]);
-  expect(wide.width).toBe(94);
+  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [46, 47], [69, 47]]);
+  expect(wide.width).toBe(91);
+  const twoColumns = officeModel(fixture(), null, { cols: 2, now: 1000 });
+  expect(twoColumns.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [0, 77], [23, 77]]);
+  expect(twoColumns.rooms[1]!.x - twoColumns.rooms[0]!.x - twoColumns.rooms[0]!.w).toBe(1);
+  expect(twoColumns.rooms[2]!.y - twoColumns.rooms[0]!.y - twoColumns.rooms[0]!.h).toBe(1);
+  expect(twoColumns.width).toBe(46); // desks extend one unit past the room grid
+  expect(twoColumns.height).toBe(106);
   const narrow = officeModel(fixture(), null, { cols: 1, now: 1000 });
   const ys = narrow.rooms.map((room) => room.y);
   expect(new Set(narrow.rooms.map((room) => room.x)).size).toBe(1);

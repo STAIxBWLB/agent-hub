@@ -3232,6 +3232,126 @@
       "replacement": "));",
       "testFile": "test/path-policy.test.ts",
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
+    },
+    {
+      "id": "office-fixed-pixel-scale",
+      "file": "src/ui/index.html",
+      "search": "const OFFICE_SCALE = 12;",
+      "replacement": "const OFFICE_SCALE = 18;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office fixed scale uses projected viewBox width and stable readable type (#394)"
+    },
+    {
+      "id": "office-nonscaling-hairlines",
+      "file": "src/ui/index.html",
+      "search": "vector-effect:non-scaling-stroke;stroke-width:1px",
+      "replacement": "vector-effect:none;stroke-width:1px",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office fixed scale uses projected viewBox width and stable readable type (#394)"
+    },
+    {
+      "id": "office-empty-done-slots",
+      "file": "src/ui/index.html",
+      "search": "const shown = Math.min(Math.max(0, count), iso ? 3 : 6);",
+      "replacement": "const shown = iso ? 3 : 6;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office empty rooms and Done shelf contain no decorative slots (#394)"
+    },
+    {
+      "id": "office-isometric-depth-order",
+      "file": "src/ui/index.html",
+      "search": "if (officeProjection === 'iso') cards.sort",
+      "replacement": "if (false) cards.sort",
+      "testFile": "test/office-view.test.ts",
+      "testName": "isometric cards paint by depth across occupied rooms (#394)"
+    },
+    {
+      "id": "office-header-top-layer",
+      "file": "src/ui/index.html",
+      "search": "['rooms', 'desks', 'links', 'marks', 'arcs', 'cards', 'cardFocus', 'headers']",
+      "replacement": "['headers', 'rooms', 'desks', 'links', 'marks', 'arcs', 'cards', 'cardFocus']",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office room headers form the final overlay layer with count pills (#394)"
+    },
+    {
+      "id": "office-measured-title-width",
+      "file": "src/ui/index.html",
+      "search": "if (measure(rest) <= width) return prefix + rest;",
+      "replacement": "if (true) return prefix + rest;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office measures CJK and wide glyph titles and clips text to card bounds (#394)"
+    },
+    {
+      "id": "office-title-clip-boundary",
+      "file": "src/ui/index.html",
+      "search": "'clip-path': 'url(#' + clipId + ')'",
+      "replacement": "'data-clip-path': 'url(#' + clipId + ')'",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office measures CJK and wide glyph titles and clips text to card bounds (#394)"
+    },
+    {
+      "id": "office-projection-keyboard-order",
+      "file": "src/ui/index.html",
+      "search": "for (const card of focusCards) {",
+      "replacement": "for (const card of cards) {",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office common visible card keyboard order stays stable across projections (#394)"
+    },
+    {
+      "id": "office-stable-focus-reconcile",
+      "file": "src/ui/index.html",
+      "search": "if (before === node) continue;",
+      "replacement": "if (false) continue;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office preserves keyboard focus on unchanged and reordered card nodes (#394)"
+    },
+    {
+      "id": "office-reorder-focus-restore",
+      "file": "src/ui/index.html",
+      "search": "if (restore) active.focus({ preventScroll: true });",
+      "replacement": "if (false) active.focus({ preventScroll: true });",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office preserves keyboard focus on unchanged and reordered card nodes (#394)"
+    },
+    {
+      "id": "office-font-cascade",
+      "file": "src/ui/index.html",
+      "search": ".office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}",
+      "replacement": ".office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}.office-scene text{font-family:system-ui,sans-serif;font-size:1px}",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office fixed scale uses projected viewBox width and stable readable type (#394)"
+    },
+    {
+      "id": "office-unit-tile-gap",
+      "file": "src/ui/office-model.ts",
+      "search": "ROOM_DX = 23, ROOM_DY = 30;",
+      "replacement": "ROOM_DX = 22, ROOM_DY = 29;",
+      "testFile": "test/office-model.test.ts",
+      "testName": "cols reflows rooms: left to right when wide, stacked when narrow"
+    },
+    {
+      "id": "office-desk-tray-fit",
+      "file": "src/ui/index.html",
+      "search": "function officeDeskCards(desk) { return officeTileCards(desk, desk.w / 2 - 0.5, 9); }",
+      "replacement": "function officeDeskCards(desk) { return desk.cards; }",
+      "testFile": "test/office-view.test.ts",
+      "testName": "isometric desk trays and room bands fit without overlap and overflow targets the owner (#394)"
+    },
+    {
+      "id": "office-desk-room-band",
+      "file": "src/ui/index.html",
+      "search": "officeRoomOffset = officeProjection === 'iso' && model.desks.length",
+      "replacement": "officeRoomOffset = false",
+      "testFile": "test/office-view.test.ts",
+      "testName": "isometric desk trays and room bands fit without overlap and overflow targets the owner (#394)"
+    },
+    {
+      "id": "office-desk-card-height",
+      "file": "src/ui/office-model.ts",
+      "search": "DESK_W - 1.6, 2)),",
+      "replacement": "DESK_W - 1.6, 0.9)),",
+      "testFile": "test/office-model.test.ts",
+      "testName": "desk trays keep all three readable cards inside the desk with padding and six pixel gaps"
     }
   ]
 }

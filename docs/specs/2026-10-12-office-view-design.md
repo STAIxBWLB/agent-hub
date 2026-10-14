@@ -29,8 +29,8 @@ asset is copied.
   No timer, no `requestAnimationFrame`, no request. Colours come from the
   page's theme tokens through CSS classes; every state also carries a glyph
   and a text label.
-- An always-visible View control in the page header offers Off (the default), Flat, and in
-  phase 4 Isometric; the choice persists in the host-scoped `agent-hub-office`
+- The Office view section contains a mode control offering Off (the default),
+  Flat and Isometric; the choice persists in the host-scoped `agent-hub-office`
   cookie with the `agent-hub-theme` attributes and try/catch fallback (#246).
 - Layout: stable desk slots (claude, codex, kimi, pi, local, then others by id;
   sticky across snapshots via the previous scene, so a peer keeps its slot when
@@ -40,7 +40,8 @@ asset is copied.
   section width: rooms left to right when wide, stacked when narrow.
 - Interaction: desks and cards are focusable SVG groups with `role="button"`
   and accessible names; activation scrolls to and highlights the matching list
-  row, and a list row highlights its desk or card on focus and hover. The scene
+  row; a card also opens the shared task detail dialog (#391). A list row
+  highlights its desk or card on focus and hover. The scene
   performs no action and sends no request; the closed action list is unchanged.
 - Room counts equal `taskProgress(tasks).counts` for the same snapshot (pinned
   by a test, including randomized boards).
@@ -64,7 +65,7 @@ Phase 1 decisions within the spec:
 - The primary condition of a desk is the first of offline, paused, waiting on
   approval, busy, idle; the raised-hand count, inbox tray, mode badge and break
   sign are independent marks that combine freely with it.
-- Work-floor cards sit at the owner's desk (at most 3, then "+N more" as text);
+- Work-floor cards sit at the owner's desk (at most 3 in Flat, then an owner-filtered "+N more" control);
   a card whose owner has no visible desk waits in the Work floor room. Tasks in
   an unknown state are counted (`counts.unknown`) but placed nowhere.
 - The busy bubble names the task only when the peer has exactly one
@@ -142,11 +143,30 @@ Phase 4 decisions within the spec:
   parallelogram polygons (the linear image of their rect); cards, text labels,
   bubbles, marks and arc labels stay upright. No WebGL, no library, no new
   route, no CSP change.
-- The DOM is projection-independent: the same keyed nodes in the same order
-  with the same accessible names, so focus order is identical (AC7, tested by
-  comparing serialized tab order between Flat and Isometric). The viewBox is
-  the projected bounding box with a small margin; the SVG keeps `width: 100%`,
-  so phone width scales without horizontal page scroll.
+- Keyboard targets follow model order independently of visual paint depth. Each
+  visible card has one transparent, focusable hit target with its full accessible
+  name; a separate `aria-hidden` paint layer is ordered back to front under
+  Isometric. Click, Enter and Space open the same task detail. Shared visible
+  cards retain their relative tab order across projections and switching back
+  restores Flat's model order. Correctly placed nodes are untouched during
+  snapshots; actual reorders use state-preserving DOM movement when available
+  and restore active focus without scrolling on the insertBefore fallback.
+  #394 allows Isometric to omit cards that do not
+  fit and expose the omitted count through the existing "+N more" control, so
+  its visible target inventory can be smaller than Flat's.
+- #394 fixed-scale amendment (2026-10-14): the SVG width attribute is its actual
+  occupied projected viewBox width times 12 px/unit, with `max-width: 100%` and
+  automatic height. It remains centered and shrinks only when the panel is
+  narrower than this intrinsic width. Flat uses up to four room columns;
+  Isometric uses two on wide screens and bounds the occupied tiles rather than
+  blank grid corners, keeping the two-peer scene at the same scale at 1280 and
+  1920 px. The cos-30/sin-30 projection and desk slots remain unchanged.
+  Desk trays use 24 px card bodies with 6 px gaps and padding inside a 20-unit
+  desk. Isometric fits upright cards wholly inside the tile (two per desk),
+  preserving omitted counts in a keyboard-accessible owner-filtered board link.
+  Its room band shifts vertically below desk legs and labels, with a one-unit
+  gap before the top-layer room headers; header backdrops associate each count
+  with its room.
 - A projection switch repaints every node in place (the projection is part of
   each reconcile signature) and is treated as a settle: positions jump, no
   transform transition storms. Card moves under Isometric animate through the
@@ -154,7 +174,9 @@ Phase 4 decisions within the spec:
 - Size accounting against the issue's 30 KB budget (page base 59,329 bytes at
   phase 1 branch point): phase 1 +11,040, phase 2 +7,340, phase 3 +2,141,
   phase 4 +1,704, art polish +3,559; final 89,113 bytes, +25,784 total,
-  inside the budget. The iso shelf's base skirt was dropped to stay under it.
+  inside the original phase-4 budget. These are historical #264 figures; #394
+  adds a separately reviewed visual refinement. The iso shelf's base skirt was
+  dropped to stay under the original budget.
 - Art polish (2026-10-12): two reference concept images (a flat view and an
   isometric view) were generated with Higgsfield (nano_banana_pro) and kept
   outside the repo (scratchpad); they served as drawing references only. Per
@@ -168,7 +190,24 @@ Phase 4 decisions within the spec:
   wireframe iso room boxes with small-caps labels at the base, a Done shelf
   cabinet (flat) and stacked boxes on a slab (iso) with the count kept as
   text, two-column room cards with thin dividers, and arc arrowheads at the
-  target end.
+  target end. #394 supersedes the wireframe posts, small-caps base labels,
+  decorative empty shelf slots and two-column cards:
+  - Room names are sentence case, 13 px/600 in `--ink`; count pills are 12 px
+    monospace with tabular figures. Desk names are 13 px; card/state/meta text
+    is 12 px. Shapes use 1 px non-scaling hairlines; focus is 2 px.
+  - Room tiles have a one-unit gap horizontally and vertically. Room cards
+    use one 20-unit padded column, 28 px height and 6 px gap, keeping
+    the eight-card model cap and public fields. Labels show id plus public
+    title. Canvas measures the actual system/monospace fonts before clipping at
+    a nearby word boundary; an internal SVG clipPath guarantees the card text
+    boundary. The full title remains in SVG title, aria-label and task detail.
+  - Room title/count groups paint last above all tiles. Isometric cards remain
+    upright, fit wholly inside padded tile bounds and paint by projected depth;
+    omitted cards contribute to "+N more". Empty rooms and the empty Done shelf
+    show "No tasks"; populated shelf slots correspond to existing done count
+    up to the current Flat/Isometric caps.
+  - Existing theme tokens, public-view privacy, counts/placement classifications,
+    animations, reduced motion, keyboard activation and mode cookie remain.
 
 ## Verification
 
@@ -186,6 +225,11 @@ Phase 4 decisions within the spec:
   timer/request/colour literal in the scene code, reduced-motion and motion CSS
   scans, no DOM write on an unchanged snapshot (counting fake document), focus
   and activation highlighting, "+N more" filtering, `resetView` clearing;
+  #394: fixed font/scene scale, 1 px hairlines, top-layer headers, actual shelf
+  counts, measured Latin/CJK title clipping and hard SVG bounds, cross-room
+  depth order, projection-independent shared-target tab order and Flat restore,
+  0/4/12-task two-peer geometry, count-stable placement changes and light/dark
+  text token contrast at least 4.5:1;
   phase 2: card moves keep their node and animate by transform, arcs/marks/
   latch draw once with fade timing, departure fade purges on animationend;
   phase 3: the exact bubble, finishing-a-turn line, check-running mark and

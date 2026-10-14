@@ -81,7 +81,7 @@ export interface OfficeCard {
   rework: boolean;
   /** The task's check is running; the card stays at its owner's desk. */
   checking: boolean;
-  /** Visible text: "#id class". */
+  /** Visible text: "#id public title". */
   label: string;
   /** Accessible name: "#id class: public title (state)", plus waiting/rework/review marks. */
   name: string;
@@ -182,8 +182,9 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const GLYPHS: Record<string, string> = { idle: "○", busy: "●", offline: "×", paused: "‖", waiting: "⚑", unknown: "?" };
   const LABELS: Record<string, string> = { idle: "idle", busy: "busy", offline: "offline", paused: "paused", waiting: "waiting on approval" };
   const DESK_CAP = 12, ROOM_CARDS = 8, DESK_CARDS = 3;
-  const DESK_W = 10, DESK_H = 12, DESK_DX = 12, DESK_DY = 14, DESK_COLS = 4, DESK_TOP = 3;
-  const ROOM_W = 22, ROOM_H = 16, ROOM_DX = 24, ROOM_DY = 18;
+  const DESK_W = 10, DESK_H = 20, DESK_DX = 12, DESK_DY = 22, DESK_COLS = 4, DESK_TOP = 3;
+  const ROOM_W = 22, ROOM_H = 29, ROOM_DX = 23, ROOM_DY = 30;
+  const ROOM_CARD_H = 7 / 3, ROOM_CARD_GAP = 0.5;
   const ARC_MS = 10_000, LATCH_MS = 3_000, SETTLE_GAP_MS = 3_000, SETTLE_MAX_MOVES = 6, ARC_CAP = 12, ALERT_CAP = 12;
   const text = (value: unknown) => typeof value === "string" ? value : "";
   const num = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -270,7 +271,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     if (rework) name += ", rework";
     if (checking) name += ", check running";
     if (state === "in_review") name += `, ${owner || "unassigned"} reviewed by ${reviewer || "unassigned"}`;
-    return { id: task.id, taskClass, state, owner, reviewer, waiting, rework, checking, label: `#${task.id} ${taskClass}`, name, x, y, w, h };
+    return { id: task.id, taskClass, state, owner, reviewer, waiting, rework, checking, label: `#${task.id} ${text(task.title)}`, name, x, y, w, h };
   };
 
   const desks: OfficeDesk[] = shownIds.map((id) => {
@@ -317,7 +318,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       tray: { queued: num(peer.queued), important: num(peer.queuedImportant), heldBy: text(peer.heldBy), needsReview: num(peer.needsReview) },
       mode: text(peer.permissionMode), bubble, breakNote, breakResetsAt,
       finishing,
-      cards: shown.map((task, index) => card(task, x + 0.8, y + 9 + index * 1.05, DESK_W - 1.6, 0.95)),
+      cards: shown.map((task, index) => card(task, x + 0.8, y + 8.5 + index * 2.5, DESK_W - 1.6, 2)),
       extraCards: work.length - shown.length,
     };
   });
@@ -325,18 +326,18 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const desksBottom = Math.max(0, ...desks.map(desk => desk.y + desk.h));
   const roomsY = desksBottom ? desksBottom + 2 : 0;
   const roomDefs = [
-    { id: "todo", label: "To Do", filterState: "proposed", list: todo, count: counts.proposed + counts.waiting },
+    { id: "todo", label: "To do", filterState: "proposed", list: todo, count: counts.proposed + counts.waiting },
     { id: "work", label: "Work floor", filterState: "work", list: workUnplaced, count: counts.in_progress + counts.changes_requested },
     { id: "review", label: "Review", filterState: "in_review", list: review, count: counts.in_review },
-    { id: "done", label: "Done shelf", filterState: "", list: [] as OfficeTaskInput[], count: counts.approved },
+    { id: "done", label: "Done", filterState: "", list: [] as OfficeTaskInput[], count: counts.approved },
   ];
   const rooms: OfficeRoom[] = roomDefs.map((def, index) => {
     const x = (index % cols) * ROOM_DX;
     const y = roomsY + Math.floor(index / cols) * ROOM_DY;
     return {
       id: def.id, label: def.label, filterState: def.filterState, count: def.count,
-      // Two tidy columns per room, eight cards at most; "+N more" is the overflow.
-      cards: def.list.slice(0, ROOM_CARDS).map((task, row) => card(task, x + 1 + (row % 2) * 10.5, y + 3.4 + Math.floor(row / 2) * 2.5, 9.5, 2.2)),
+      // One column at 12 px per unit: 28 px cards, 6 px gaps, eight cards at most.
+      cards: def.list.slice(0, ROOM_CARDS).map((task, row) => card(task, x + 1, y + 3.4 + row * (ROOM_CARD_H + ROOM_CARD_GAP), ROOM_W - 2, ROOM_CARD_H)),
       overflow: Math.max(0, def.list.length - ROOM_CARDS),
       x, y, w: ROOM_W, h: ROOM_H,
     };
@@ -411,7 +412,6 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const settle = !previous ? true : moves === 0 ? previous.settle : now - previous.at > SETTLE_GAP_MS || moves > SETTLE_MAX_MOVES;
   const at = !previous || moves > 0 ? now : previous.at;
 
-  const roomRows = Math.ceil(rooms.length / cols);
   const desksWidth = Math.max(0, ...desks.map(desk => desk.x + desk.w));
   // Phase 3 warning lines: validated down to the three kinds and their id lists; nothing else is copied.
   const links: OfficeLink[] = [];
@@ -431,8 +431,8 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   }
   return {
     cols,
-    width: Math.max(desksWidth, Math.min(rooms.length, cols) * ROOM_DX - 2, 1),
-    height: roomsY + roomRows * ROOM_DY - 2,
+    width: Math.max(desksWidth, ...rooms.map(room => room.x + room.w), 1),
+    height: Math.max(desksBottom, ...rooms.map(room => room.y + room.h), 1),
     desks, extraPeers, rooms, counts, transitions, slots, placed,
     links,
     arcs: keptArcs, alerts: keptAlerts, latched, settle, at, eventTime, lastSeq,
