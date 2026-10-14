@@ -6,7 +6,7 @@ import { TextProjections } from "../hub/text-projection.ts";
 import { terminalText } from "./console-state.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
 import { startPetWindow, closePetWindow } from "../pet/window.ts";
-import { loadPetConfig } from "./pet-config.ts";
+import { loadPetConfig, savePetPalette } from "./pet-config.ts";
 import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
@@ -1367,7 +1367,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (args.some(arg => !["--window", "--close"].includes(arg))) return fail("usage: ahub pet --window [--close]");
       return console.log(await (args.includes("--close") ? closePetWindow(stateDir) : startPetWindow(stateDir, cwd)));
     }
-    if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short] | --window [--close]");
+    if (args.includes("--palette")) {
+      if (args.length !== 2 || args[0] !== "--palette") return fail("usage: ahub pet [--short] | --window [--close] | --palette <blue|teal|violet|ochre>");
+      try { return console.log(savePetPalette(cwd, args[1]!)); }
+      catch (error) { return fail((error as Error).message); }
+    }
+    if (args.some(arg => arg !== "--short")) return fail("usage: ahub pet [--short] | --window [--close] | --palette <blue|teal|violet|ochre>");
     const short = args.includes("--short");
     let character: import("../pet/frame.ts").CharacterId | undefined;
     try { character = loadPetConfig(cwd).character; } catch { /* explicit structural reads remain available with malformed presentation config */ }

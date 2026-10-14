@@ -89,6 +89,14 @@ const postHotspot = () => {
   const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
   post({ kind: 'hotspot', x, y, w: Math.max(a.right, b.right) - x, h: Math.max(a.bottom, b.bottom) - y });
 };
+// While the panel is key, 1/2/3/4 switch the palette (blue/teal/violet/ochre) and save it.
+const KEY_PALETTES = { '1': 'blue', '2': 'teal', '3': 'violet', '4': 'ochre' };
+document.addEventListener('keydown', event => {
+  const palette = KEY_PALETTES[event.key];
+  if (!palette || event.target === input) return;
+  document.body.dataset.palette = palette;
+  post({ kind: 'palette', palette });
+});
 pet.addEventListener('pointerdown', event => { drag = { x: event.screenX, y: event.screenY, moved: false }; pet.setPointerCapture(event.pointerId); });
 pet.addEventListener('pointermove', event => {
   if (!drag) return;

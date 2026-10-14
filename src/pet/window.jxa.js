@@ -19,12 +19,11 @@ function savePosition() {
   $(JSON.stringify({ x: origin.x, y: origin.y })).writeToFileAtomicallyEncodingError(positionPath, true, $.NSUTF8StringEncoding, null);
 }
 function quit() { exiting = true; savePosition(); app.terminate(null); }
-function runCommand(command, text, argv) {
+function runCommand(command, extra, argv) {
   if (exiting || commands.length >= 8) return;
   var task = $.NSTask.alloc.init;
   task.executableURL = $.NSURL.fileURLWithPath(argv[0]);
-  var args = argv.slice(1).concat([command]);
-  if (command === 'say') args = args.concat(['--', text]);
+  var args = argv.slice(1).concat([command]).concat(extra);
   task.arguments = $(args); // argv array only; message text is a single argument.
   task.standardInput = $.NSFileHandle.fileHandleWithNullDevice;
   task.standardOutput = $.NSFileHandle.fileHandleWithNullDevice;
@@ -55,8 +54,10 @@ ObjC.registerSubclass({ name: 'AhubPetBridge', superclass: 'NSObject', methods: 
     } else if (body.kind === 'hotspot' && typeof body.x === 'number' && typeof body.y === 'number' && typeof body.w === 'number' && typeof body.h === 'number' && isFinite(body.x) && isFinite(body.y) && Math.abs(body.x) <= 500 && Math.abs(body.y) <= 500 && body.w > 0 && body.h > 0 && body.w <= 500 && body.h <= 500) {
       hotspot = { x: body.x, y: body.y, w: body.w, h: body.h };
     } else if (body.kind === 'send' && typeof body.text === 'string' && body.text.trim() && body.text.length <= 65536 && body.text.indexOf('\0') === -1) {
-      runCommand('say', body.text, cliArgv);
-    } else if (body.kind === 'open') runCommand('ui', undefined, cliArgv);
+      runCommand('say', ['--', body.text], cliArgv);
+    } else if (body.kind === 'palette' && typeof body.palette === 'string' && /^(blue|teal|violet|ochre)$/.test(body.palette)) {
+      runCommand('pet', ['--palette', body.palette], cliArgv);
+    } else if (body.kind === 'open') runCommand('ui', [], cliArgv);
     else if (body.kind === 'close') quit();
   } },
   'tick:': { types: ['void', ['id']], implementation: function(sender) { tick(); } },

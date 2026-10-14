@@ -2980,7 +2980,8 @@ The 150x150 panel keeps the status pill and message composer hidden until the
 pointer is over the character. Deep state colors and a dark rim shadow keep the
 pixel silhouette readable on light backgrounds. `pet.palette` selects the base
 color: teal (default, b), blue (a), violet (c) or ochre (d), each with its own
-rim line; the waiting/blocked/review/offline colors stay fixed.
+rim line; the waiting/blocked/review/offline colors stay fixed. While the
+window is key, 1/2/3/4 switch blue/teal/violet/ochre and save the choice.
 While working, the pixel art bobs in a 0.7-second stepped CSS loop; reduced-motion preferences keep it still.
 
 A detached Bun host refreshes `pet-view.json` once per second using `readPet`

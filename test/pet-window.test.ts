@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { claimPetWindow, closePetWindow, petWindowArgv, PET_WINDOW_UNSUPPORTED, startPetWindow, windowView, writePetView } from "../src/pet/window.ts";
-import { loadPetConfig } from "../src/pet/config.ts";
+import { loadPetConfig, savePetPalette } from "../src/pet/config.ts";
 import { readPet } from "../src/cli/pet.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
@@ -107,6 +107,14 @@ test("window config merges its local opt-in without changing terminal defaults",
     writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "red" } }));
     expect(loadPetConfig(f.root).palette).toBeUndefined();
     expect(loadPetConfig(f.root).notice).toBeDefined();
+    // Key-switched palettes are saved through the CLI into config.local.json, preserving other keys.
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { character: "gyul" }, other: true }));
+    expect(savePetPalette(f.root, "d")).toBe("Pet palette set to ochre.");
+    expect(JSON.parse(readFileSync(join(f.root, ".agenthub/config.local.json"), "utf8"))).toEqual({ pet: { character: "gyul", palette: "ochre" }, other: true });
+    expect(loadPetConfig(f.root).palette).toBe("ochre");
+    expect(() => savePetPalette(f.root, "red")).toThrow("Unknown pet palette");
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), "broken");
+    expect(() => savePetPalette(f.root, "blue")).toThrow("malformed");
   } finally { f.dispose(); }
 });
 
@@ -120,8 +128,10 @@ test("JXA sends literal text as NSTask argv with silent output and no null compl
   runInNewContext(jxa, context);
   const argv = ["/bun path", "/cli path", "--project", "/project path"];
   const text = '@claude --flag $(touch /should-not-exist); "quotes"\nsecond line';
-  context.runCommand("say", text, argv);
+  context.runCommand("say", ["--", text], argv);
   expect(tasks[0].arguments).toEqual(["/cli path", "--project", "/project path", "say", "--", text]);
+  context.runCommand("pet", ["--palette", "violet"], argv);
+  expect(tasks[1].arguments).toEqual(["/cli path", "--project", "/project path", "pet", "--palette", "violet"]);
   expect(tasks[0].executableURL).toBe("/bun path");
   expect(tasks[0].standardOutput).toBe("null-device"); expect(tasks[0].standardError).toBe("null-device");
   expect(jxa).not.toContain("doShellScript");
@@ -200,8 +210,15 @@ test("page recovers its pencil after transient offline and sends keyboard text w
   };
   const posted: unknown[] = [];
   const page: any = { webkit: { messageHandlers: { pet: { postMessage: (body: unknown) => posted.push(body) } } } };
-  const doc: any = { body: { dataset: {}, handlers: {} as Record<string, () => void>, addEventListener(name: string, callback: any) { this.handlers[name] = callback; } }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) };
+  const doc: any = { body: { dataset: {}, handlers: {} as Record<string, () => void>, addEventListener(name: string, callback: any) { this.handlers[name] = callback; } }, handlers: {} as Record<string, (event: any) => void>, addEventListener(name: string, callback: any) { this.handlers[name] = callback; }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) };
   runInNewContext(script, { window: page, document: doc });
+  // 1/2/3/4 switch and save the palette while the panel is key, except while typing in the composer.
+  doc.handlers.keydown({ key: "3", target: null });
+  expect(doc.body.dataset.palette).toBe("violet");
+  expect(posted.at(-1)).toEqual({ kind: "palette", palette: "violet" });
+  doc.handlers.keydown({ key: "1", target: elements.message });
+  expect(posted.at(-1)).toEqual({ kind: "palette", palette: "violet" });
+  expect(html).toContain("'1': 'blue', '2': 'teal', '3': 'violet', '4': 'ochre'");
   // Hover reveal comes from the native host polling the posted hotspot rect (pet + pill),
   // so it works while the accessory panel is inactive and survives crossing onto the pill.
   page.hoverChanged(true); expect(doc.body.dataset.hover).toBe("");

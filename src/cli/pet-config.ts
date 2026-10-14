@@ -1,1 +1,1 @@
-export { loadPetConfig, type PetConfig } from "../pet/config.ts";
+export { loadPetConfig, savePetPalette, type PetConfig } from "../pet/config.ts";
