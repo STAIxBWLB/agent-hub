@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Shrink the floating pet window to a compact 150x150 panel with the original pixel art and state colors, strengthen the silhouette shadow so it reads on light backgrounds, reveal the status pill and message composer only while the pointer is over the character, and drop the pill shadow (#391 follow-up).
+- Shrink the floating pet window to a compact 150x150 panel with the original pixel art in deeper state colors and a stronger silhouette shadow so it reads on light backgrounds, reveal the status pill and message composer only while the pointer is over the character, and drop the pill shadow (#391 follow-up).
 - Split the local dashboard into cookie-backed views, compact task cards with shared dialog/column details, and exact-id attention badges; move character presentation to the standalone pet window (#391 Task A).
 - Add an opt-in macOS floating pet window with built-in pixels, counts-only local state, a console message pencil, saved position and signed process ownership; keep terminal pet reads available to agent shells (#391 Task B).
 
