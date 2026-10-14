@@ -92,10 +92,6 @@ function applyDashboardView() {
 function switchView(view) {
   if (!DASHBOARD_VIEWS.includes(view)) return;
   currentView = view; dashboardCookie.set('agent-hub-view', view); applyDashboardView();
-  if (lastSnapshot && snapshotValid && !stopped) {
-    if (view === 'office') { renderOffice(lastSnapshot); applyDashboardView(); }
-    if (view === 'board') renderBoard(lastSnapshot, boardViewState?.peers || {}, boardViewState?.ids || []);
-  }
 }
 function initializeDashboardNavigation() {
   for (const button of document.querySelectorAll('button[data-view-target]')) button.addEventListener('click', () => switchView(button.dataset.viewTarget));
