@@ -94,6 +94,7 @@ function run(argv) {
   panel.level = $.NSFloatingWindowLevel;
   panel.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorStationary;
   panel.hidesOnDeactivate = false;
+  panel.acceptsMouseMovedEvents = true; // accessory panels are inactive; without this :hover/pointerenter may never fire
   var config = $.WKWebViewConfiguration.alloc.init;
   bridge = $.AhubPetBridge.alloc.init;
   config.userContentController.addScriptMessageHandlerName(bridge, 'pet');

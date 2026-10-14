@@ -31,7 +31,7 @@ body[data-state="working"] #frame { animation: working-bob 0.7s steps(3, end) in
 #composer { width: 100%; background: #242936f5; padding: 5px; border-radius: 10px; box-sizing: border-box; }
 #composer[hidden] { display: none; }
 #pill, #composer { opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility 0s linear .25s; }
-#pet:hover ~ #pill, #pet:focus-visible ~ #pill, #pill:hover, #pill:focus-within, body[data-composing] #pill, #composer:not([hidden]) { opacity: 1; visibility: visible; transition-delay: 0s; }
+#pet:hover ~ #pill, #pet:focus-visible ~ #pill, #pill:hover, #pill:focus-within, body[data-hover] #pill, body[data-composing] #pill, #composer:not([hidden]) { opacity: 1; visibility: visible; transition-delay: 0s; }
 input { width: 100%; box-sizing: border-box; border: 1px solid #657081; border-radius: 6px; padding: 5px; background: #111722; color: #eceef3; font: 13px system-ui; }
 #result { margin-top: 4px; min-height: 12px; font-size: 11px; }
 </style>
@@ -73,6 +73,8 @@ input.addEventListener('keydown', event => {
     event.preventDefault(); sending = true; input.disabled = true; result.textContent = 'Sending'; post({ kind: 'send', text: input.value });
   }
 });
+pet.addEventListener('pointerenter', () => { document.body.dataset.hover = ''; });
+pet.addEventListener('pointerleave', () => { delete document.body.dataset.hover; });
 pet.addEventListener('pointerdown', event => { drag = { x: event.screenX, y: event.screenY, moved: false }; pet.setPointerCapture(event.pointerId); });
 pet.addEventListener('pointermove', event => {
   if (!drag) return;

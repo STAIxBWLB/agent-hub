@@ -191,7 +191,13 @@ test("page recovers its pencil after transient offline and sends keyboard text w
   };
   const posted: unknown[] = [];
   const page: any = { webkit: { messageHandlers: { pet: { postMessage: (body: unknown) => posted.push(body) } } } };
-  runInNewContext(script, { window: page, document: { body: { dataset: {} }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) } });
+  const doc: any = { body: { dataset: {} }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) };
+  runInNewContext(script, { window: page, document: doc });
+  // Hover reveal also runs on JS pointer events: an inactive accessory panel may not fire CSS :hover.
+  elements.pet.handlers.pointerenter(); expect(doc.body.dataset.hover).toBe("");
+  elements.pet.handlers.pointerleave(); expect(doc.body.dataset.hover).toBeUndefined();
+  expect(html).toContain("body[data-hover] #pill");
+  expect(jxa).toContain("acceptsMouseMovedEvents = true");
   page.update({ offline: true }); expect(elements.pencil.disabled).toBe(true);
   page.update({ state: "idle", act: 0, watch: 0, frame: { width: 1, height: 1, pixels: [[0, 0]] } });
   expect(elements.pencil.disabled).toBe(false);
