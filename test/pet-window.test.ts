@@ -126,6 +126,13 @@ test("JXA sends literal text as NSTask argv with silent output and no null compl
   const html = readFileSync(join(rootPath, "src/pet/window.html"), "utf8");
   expect(html).toMatch(/body\[data-state="working"\] #frame\s*\{[^}]*animation:[^}]*steps\([^)]*\)[^}]*infinite;[^}]*\}[\s\S]*@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*body\[data-state="working"\] #frame\s*\{\s*animation:\s*none;\s*\}/);
   expect(html).toContain("connect-src 'none'"); expect(html).not.toMatch(/\bfetch\(|XMLHttpRequest|new WebSocket/);
+  // Compact panel, dual-background state colors, hover-revealed pill, no pill shadow.
+  expect(html).toContain("width: 190px; height: 170px");
+  expect(html).toContain("#pet:hover ~ #pill");
+  expect(html).toContain("body[data-composing] #pill");
+  expect(html).not.toMatch(/#pill\s*\{[^}]*box-shadow/);
+  expect(jxa).toContain("var W = 190, H = 170");
+  expect(jxa).toContain("$.NSMakeRect(origin.x, origin.y, W, H)");
   expect(petWindowArgv("/project path")).toEqual([process.execPath, join(rootPath, "src/cli/main.js"), "--project", "/project path"]);
 });
 

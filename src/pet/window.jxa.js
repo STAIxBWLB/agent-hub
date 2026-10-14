@@ -76,7 +76,8 @@ function run(argv) {
   app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   var screen = $.NSScreen.mainScreen.visibleFrame;
-  var origin = { x: screen.origin.x + screen.size.width - 300, y: screen.origin.y + 80 };
+  var W = 190, H = 170;
+  var origin = { x: screen.origin.x + screen.size.width - (W + 20), y: screen.origin.y + 80 };
   try {
     var saved = JSON.parse(ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(positionPath, $.NSUTF8StringEncoding, null)));
     if (typeof saved.x === 'number' && typeof saved.y === 'number' && isFinite(saved.x) && isFinite(saved.y)) origin = saved;
@@ -85,10 +86,10 @@ function run(argv) {
   var visible = false;
   for (var i = 0; i < screens.count; i++) {
     var frame = screens.objectAtIndex(i).visibleFrame;
-    if (origin.x >= frame.origin.x && origin.y >= frame.origin.y && origin.x + 280 <= frame.origin.x + frame.size.width && origin.y + 250 <= frame.origin.y + frame.size.height) visible = true;
+    if (origin.x >= frame.origin.x && origin.y >= frame.origin.y && origin.x + W <= frame.origin.x + frame.size.width && origin.y + H <= frame.origin.y + frame.size.height) visible = true;
   }
-  if (!visible) origin = { x: screen.origin.x + screen.size.width - 300, y: screen.origin.y + 80 };
-  panel = $.AhubPetPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(origin.x, origin.y, 280, 250), $.NSWindowStyleMaskBorderless | $.NSWindowStyleMaskNonactivatingPanel, $.NSBackingStoreBuffered, false);
+  if (!visible) origin = { x: screen.origin.x + screen.size.width - (W + 20), y: screen.origin.y + 80 };
+  panel = $.AhubPetPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(origin.x, origin.y, W, H), $.NSWindowStyleMaskBorderless | $.NSWindowStyleMaskNonactivatingPanel, $.NSBackingStoreBuffered, false);
   panel.title = 'agent-hub pet'; panel.opaque = false; panel.backgroundColor = $.NSColor.clearColor;
   panel.level = $.NSFloatingWindowLevel;
   panel.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorStationary;
@@ -96,7 +97,7 @@ function run(argv) {
   var config = $.WKWebViewConfiguration.alloc.init;
   bridge = $.AhubPetBridge.alloc.init;
   config.userContentController.addScriptMessageHandlerName(bridge, 'pet');
-  web = $.WKWebView.alloc.initWithFrameConfiguration($.NSMakeRect(0, 0, 280, 250), config);
+  web = $.WKWebView.alloc.initWithFrameConfiguration($.NSMakeRect(0, 0, W, H), config);
   web.setValueForKey(false, 'drawsBackground');
   panel.contentView = web;
   web.loadFileURLAllowingReadAccessToURL($.NSURL.fileURLWithPath(htmlPath), $.NSURL.fileURLWithPath(htmlPath));
