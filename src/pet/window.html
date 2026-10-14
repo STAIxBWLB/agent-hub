@@ -7,10 +7,10 @@
 <style>
 :root { color-scheme: dark; font: 12px system-ui, sans-serif; color: #eceef3; }
 html, body { margin: 0; background: transparent; overflow: hidden; }
-body { width: 190px; height: 190px; display: flex; align-items: center; flex-direction: column; justify-content: flex-end; gap: 8px; padding-bottom: 8px; box-sizing: border-box; }
+body { width: 150px; height: 150px; display: flex; align-items: center; flex-direction: column; justify-content: flex-end; gap: 6px; padding-bottom: 6px; box-sizing: border-box; }
 button { font: inherit; color: inherit; cursor: pointer; border: 0; background: transparent; border-radius: 10px; }
 button:focus-visible, input:focus-visible { outline: 2px solid #79dfb2; outline-offset: 2px; }
-#pet { width: 84px; height: 78px; padding: 0; cursor: grab; touch-action: none; }
+#pet { width: 63px; height: 58px; padding: 0; cursor: grab; touch-action: none; }
 #pet:active { cursor: grabbing; }
 svg { width: 100%; height: 100%; overflow: visible; image-rendering: pixelated; filter: drop-shadow(0 1px 2px #000a) drop-shadow(0 0 1px #fffa) drop-shadow(0 0 1px #0008); }
 rect { fill: url(#g-working); }
@@ -22,19 +22,19 @@ rect.d { fill: #f8fafc; }
 body[data-state="working"] #frame { animation: working-bob 0.7s steps(3, end) infinite; }
 @keyframes working-bob {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
+  50% { transform: translateY(-4px); }
 }
 @media (prefers-reduced-motion: reduce) {
   body[data-state="working"] #frame { animation: none; }
 }
-#pill { display: flex; align-items: center; gap: 6px; border-radius: 18px; padding: 4px 8px; background: #242936ed; }
-#pill button { padding: 3px 5px; }
-#composer { width: 100%; background: #242936f5; padding: 6px; border-radius: 12px; box-sizing: border-box; }
+#pill { display: flex; align-items: center; gap: 4px; border-radius: 14px; padding: 3px 7px; background: #242936ed; font-size: 11px; }
+#pill button { padding: 2px 4px; }
+#composer { width: 100%; background: #242936f5; padding: 5px; border-radius: 10px; box-sizing: border-box; }
 #composer[hidden] { display: none; }
 #pill, #composer { opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility 0s linear .25s; }
 #pet:hover ~ #pill, #pet:focus-visible ~ #pill, #pill:hover, #pill:focus-within, body[data-composing] #pill, #composer:not([hidden]) { opacity: 1; visibility: visible; transition-delay: 0s; }
-input { width: 100%; box-sizing: border-box; border: 1px solid #657081; border-radius: 6px; padding: 6px; background: #111722; color: #eceef3; font: 14px system-ui; }
-#result { margin-top: 5px; min-height: 15px; }
+input { width: 100%; box-sizing: border-box; border: 1px solid #657081; border-radius: 6px; padding: 5px; background: #111722; color: #eceef3; font: 13px system-ui; }
+#result { margin-top: 4px; min-height: 12px; font-size: 11px; }
 </style>
 <button id="pet" aria-label="Open agent-hub dashboard"><svg id="frame" role="img" aria-label="Pet" viewBox="0 0 60 64"><defs>
 <linearGradient id="g-working" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="64"><stop offset="0" stop-color="#22c55e"/><stop offset="1" stop-color="#15803d"/></linearGradient>
