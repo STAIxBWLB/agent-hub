@@ -447,8 +447,7 @@ function renderStarts(target, starts) {
 }
 let boardViewState = null, showAllDone = false;
 const BOARD_FOCUS_COLUMNS = ['backlog','todo','progress','review','done'];
-let columnFocus = dashboardCookie.get('agent-hub-column-focus') || null, taskDetailId = null;
-if (!BOARD_FOCUS_COLUMNS.includes(columnFocus)) columnFocus = null;
+let columnFocus, taskDetailId = null;
 let planningEdit = null, releaseEdit = null;
 const loadedPlanningDates = new Map();
 const localDateInput = value => {
@@ -644,6 +643,10 @@ function openTaskDetail(id) {
   const dialog = $('task-detail-dialog'); if (taskDetailId !== null && !dialog.open) dialog.showModal();
 }
 function renderBoard(snapshot, peers, ids) {
+  if (columnFocus === undefined) {
+    columnFocus = dashboardCookie.get('agent-hub-column-focus') || null;
+    if (!BOARD_FOCUS_COLUMNS.includes(columnFocus)) columnFocus = null;
+  }
   if (!Array.isArray(snapshot.tasks)) { boardViewState=null; closeTaskDetail(); return update('tasks','unavailable',target=>empty(target,'Task board unavailable.')); }
   const progress = taskProgress(snapshot.tasks), model = boardColumns(snapshot.tasks, peers);
   renderTaskProgress(progress);

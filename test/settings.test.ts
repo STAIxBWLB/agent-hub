@@ -446,7 +446,7 @@ test("AC7: the Settings section renders every row from the registry with its sou
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
   expect(scripts).toHaveLength(2);
   for (const source of scripts) expect(() => new Script(source)).not.toThrow();
-  expect(html.match(/<section aria-labelledby="settings-title">/g)).toHaveLength(1);
+  expect(html.match(/<section aria-labelledby="settings-title" data-view="settings" hidden>/g)).toHaveLength(1);
   // The new roster group has its own removal confirmation, preview and active-turn control.
   context.settings = { rows: [{ key: "roster.kimi", group: "Roster", label: "kimi: participates", type: "boolean", file: "config.local.json", applies: "live", risk: "raises", floor: false, value: true, source: "default" }] };
   runInNewContext(`${code}; renderSettings(settings)`, context);
