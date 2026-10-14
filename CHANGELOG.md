@@ -2,8 +2,9 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.27
 
+- Refine the dashboard Office view with an intrinsic 12 px/unit scale, 1 px non-scaling hairlines and padded room cards in flat and isometric themes, and un-nest the desk More control into a separately reconciled sibling button so screen readers can reach it (#394).
 - Shrink the floating pet window to a compact 150x150 panel with the original pixel art in deeper state colors and a configurable base palette (`pet.palette`, or 1/2/3/4 while the window is key: blue, teal, violet, ochre) with a matching rim line so it reads on light backgrounds, reveal the status pill and message composer only while the pointer is over the character, and drop the pill shadow (#391 follow-up).
 - Split the local dashboard into cookie-backed views, compact task cards with shared dialog/column details, and exact-id attention badges; move character presentation to the standalone pet window (#391 Task A).
 - Add an opt-in macOS floating pet window with built-in pixels, counts-only local state, a console message pencil, saved position and signed process ownership; keep terminal pet reads available to agent shells (#391 Task B).
