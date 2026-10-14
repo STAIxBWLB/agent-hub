@@ -2978,7 +2978,9 @@ box (Enter sends through `ahub say`, Esc cancels). Drag the body to move it;
 saved display has disappeared. The panel joins all Spaces without a Dock icon.
 The 150x150 panel keeps the status pill and message composer hidden until the
 pointer is over the character. Deep state colors and a dark rim shadow keep the
-pixel silhouette readable on light backgrounds.
+pixel silhouette readable on light backgrounds. `pet.palette` selects the base
+color: teal (default, b), blue (a), violet (c) or ochre (d), each with its own
+rim line; the waiting/blocked/review/offline colors stay fixed.
 While working, the pixel art bobs in a 0.7-second stepped CSS loop; reduced-motion preferences keep it still.
 
 A detached Bun host refreshes `pet-view.json` once per second using `readPet`
