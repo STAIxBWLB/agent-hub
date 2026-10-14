@@ -111,6 +111,7 @@ export interface PetWindowHostOptions {
 export async function runPetWindowHost(stateDir: string, projectDir: string, options: PetWindowHostOptions = {}): Promise<void> {
   const claim = claimPetWindow(stateDir);
   if (!claim) return;
+  const readyFile = join(stateDir, `pet-window-ready-${claim.owner.token}`);
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   const refresh = () => {
@@ -127,7 +128,6 @@ export async function runPetWindowHost(stateDir: string, projectDir: string, opt
     process.on("SIGTERM", stop); process.on("SIGINT", stop);
     timer = setInterval(() => { try { refresh(); } catch { stop(); } }, 1000);
     // The child posts this file only once its panel and page have loaded.
-    const readyFile = join(stateDir, `pet-window-ready-${child.pid}`);
     const readyDeadline = Date.now() + 4000;
     while (!existsSync(readyFile) && child.exitCode === null && Date.now() < readyDeadline) await Bun.sleep(50);
     if (existsSync(readyFile)) {
@@ -142,6 +142,7 @@ export async function runPetWindowHost(stateDir: string, projectDir: string, opt
   } finally {
     if (timer) clearInterval(timer);
     process.off("SIGTERM", stop); process.off("SIGINT", stop);
+    rmSync(readyFile, { force: true });
     claim.release();
   }
 }

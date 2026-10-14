@@ -71,7 +71,8 @@ function run(argv) {
   if (!Array.isArray(cliArgv) || cliArgv.length !== 4 || cliArgv.some(function(arg) { return typeof arg !== 'string'; }) || cliArgv[2] !== '--project') throw new Error('Invalid CLI argv');
   var stateDir = ObjC.unwrap($(viewPath).stringByDeletingLastPathComponent);
   positionPath = stateDir + '/pet-window-pos.json';
-  readyPath = stateDir + '/pet-window-ready-' + $.NSProcessInfo.processInfo.processIdentifier;
+  var owner = JSON.parse(ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(stateDir + '/pet-window.pid', $.NSUTF8StringEncoding, null)));
+  readyPath = stateDir + '/pet-window-ready-' + owner.token;
   app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   var screen = $.NSScreen.mainScreen.visibleFrame;

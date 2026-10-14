@@ -16181,6 +16181,8 @@ var package_default = {
   files: [
     ".claude-plugin",
     "src",
+    "src/pet/window.jxa.js",
+    "src/pet/window.html",
     "plugins",
     "templates",
     "scripts/check-docs.mjs",

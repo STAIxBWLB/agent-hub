@@ -143,7 +143,7 @@ test("host exits with its child, reloads state/config, writes offline, and --clo
   const f = fixture();
   const hostModule = join(rootPath, "src/pet/window.ts");
   const worker = join(f.root, "worker.ts"), host = join(f.root, "host.ts");
-  writeFileSync(worker, `import { writeFileSync, readFileSync } from 'node:fs'; import { join } from 'node:path'; const state = process.argv[2]!; writeFileSync(join(state, 'pet-window-ready-' + process.pid), 'ready'); const timer = setInterval(() => { if (JSON.parse(readFileSync(join(state, 'pet-view.json'), 'utf8')).offline) { clearInterval(timer); process.exit(0); } }, 20);`);
+  writeFileSync(worker, `import { writeFileSync, readFileSync } from 'node:fs'; import { join } from 'node:path'; const state = process.argv[2]!; const owner = JSON.parse(readFileSync(join(state, 'pet-window.pid'), 'utf8')); writeFileSync(join(state, 'pet-window-ready-' + owner.token), 'ready'); const timer = setInterval(() => { if (JSON.parse(readFileSync(join(state, 'pet-view.json'), 'utf8')).offline) { clearInterval(timer); process.exit(0); } }, 20);`);
   writeFileSync(host, `import { runPetWindowHost } from ${JSON.stringify(hostModule)}; await runPetWindowHost(process.argv[2]!, process.argv[3]!, { childArgv: [process.execPath, ${JSON.stringify(worker)}, process.argv[2]!] });`);
   let child: ReturnType<typeof Bun.spawn> | undefined;
   try {
