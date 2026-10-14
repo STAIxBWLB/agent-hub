@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesPolicy, policyPaths } from "../src/hub/path-policy.ts";
@@ -91,4 +91,160 @@ test("glob discovery entry ceiling protects rather than treating an incomplete e
   const dir = root(); mkdirSync(join(dir, "data"));
   for (let i = 0; i < 4097; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
   expect(matchesPolicy(dir, "output.txt", ["data/**/*.csv"])).toBe(true);
+});
+
+for (const policy of ["data", "data/*", "data/**"]) {
+  test(`${policy} aliases direct directory links and refreshes their targets (#385)`, () => {
+    const dir = root();
+    for (const name of ["data", "other", "public"]) mkdirSync(join(dir, name));
+    writeFileSync(join(dir, "other/f.csv"), "fixture");
+    symlinkSync("../other", join(dir, "data/link"));
+    expect(matchesPolicy(dir, "other/f.csv", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "data/link/f.csv", [policy])).toBe(true);
+    rmSync(join(dir, "data/link")); symlinkSync("../public", join(dir, "data/link"));
+    expect(matchesPolicy(dir, "other/f.csv", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "public/f.csv", [policy])).toBe(true);
+  });
+  test(`${policy} does not alias links deeper than one level (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data/sub"), { recursive: true }); mkdirSync(join(dir, "other"));
+    symlinkSync("../../other", join(dir, "data/sub/link"));
+    expect(matchesPolicy(dir, "other/f.csv", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "data/sub/link/f.csv", [policy])).toBe(true);
+  });
+  test(`${policy} aliases direct file links and protects containing directory scopes (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "private"));
+    writeFileSync(join(dir, "private/input"), "fixture"); symlinkSync("../private/input", join(dir, "data/raw.csv"));
+    expect(matchesPolicy(dir, "private/input", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "private", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "private", [policy], true)).toBe(true);
+    expect(matchesPolicy(dir, "private/other", [policy])).toBe(false);
+  });
+}
+for (const policy of ["data", "data/**"]) {
+  test(`${policy} protects dangling direct targets precisely and refreshes after retargeting (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src/app.ts"), "public"); symlinkSync("../missing", join(dir, "data/link"));
+    expect(matchesPolicy(dir, "missing/future.csv", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "missing", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+    mkdirSync(join(dir, "missing")); writeFileSync(join(dir, "missing/future.csv"), "later");
+    expect(matchesPolicy(dir, "missing/future.csv", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+    rmSync(join(dir, "data/link")); symlinkSync("../replacement", join(dir, "data/link"));
+    expect(matchesPolicy(dir, "missing/future.csv", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "replacement/future.csv", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+  });
+  test(`${policy} discards incomplete direct alias scans without making unrelated files private (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data"));
+    for (let i = 0; i < 2049; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "src/app.ts", [policy, policy])).toBe(false);
+    expect(matchesPolicy(dir, "src/app.ts", [policy, policy, "src"])).toBe(true);
+  });
+  test(`${policy} skips unresolvable direct cycles while retaining valid aliases (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "other"));
+    symlinkSync("b", join(dir, "data/a")); symlinkSync("a", join(dir, "data/b"));
+    symlinkSync("../other", join(dir, "data/valid"));
+    expect(matchesPolicy(dir, "other/file", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+  });
+  test(`${policy} discards every alias from an over-budget root regardless of directory entry order (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "other"));
+    // Every immediate entry is a matching alias: whichever order readdir returns, a premature
+    // positive match is observable. The over-budget root must contribute no alias at all.
+    for (let i = 0; i < 4097; i++) symlinkSync("../other", join(dir, "data", `link-${i}`));
+    expect(matchesPolicy(dir, "other/future.csv", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "data/future.csv", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "other/future.csv", [policy, "other"])).toBe(true);
+  });
+}
+
+test("star-segment discovery keeps its existing fail-closed dangling-link behavior (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data")); symlinkSync("../missing", join(dir, "data/link"));
+  expect(matchesPolicy(dir, "src/app.ts", ["data/*"])).toBe(true);
+});
+
+test("all policy forms discover direct aliases through case-compatible directory spellings (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "private"));
+  symlinkSync("../private", join(dir, "data/link"));
+  for (const policy of ["DATA", "DATA/*", "DATA/**"]) {
+    expect(matchesPolicy(dir, "private/file", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "elsewhere/file", [policy])).toBe(false);
+  }
+});
+
+test("direct unresolvable alias cycles are skipped only for subtree roots while deeper cycles are never traversed (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data/sub"), { recursive: true });
+  symlinkSync("b", join(dir, "data/sub/a")); symlinkSync("a", join(dir, "data/sub/b"));
+  for (const policy of ["data", "data/*", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(false);
+  symlinkSync("b", join(dir, "data/a")); symlinkSync("a", join(dir, "data/b"));
+  for (const policy of ["data", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(false);
+  expect(matchesPolicy(dir, "other/file", ["data/*"])).toBe(true);
+});
+
+test("immediate entry exhaustion discards subtree-root aliases but keeps star-segment discovery fail-closed (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data"));
+  for (let i = 0; i < 4097; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
+  for (const policy of ["data", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(false);
+  expect(matchesPolicy(dir, "other/file", ["data/*"])).toBe(true);
+  mkdirSync(join(dir, "other")); symlinkSync("other", join(dir, "legacy-root"));
+  expect(matchesPolicy(dir, "other/file", ["data", "legacy-*/**"])).toBe(true);
+  expect(matchesPolicy(dir, "other/file", ["data/**", "legacy-*/**"])).toBe(true);
+});
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unreadable protected roots fail closed for every policy form (#385)", () => {
+  const dir = root(), data = join(dir, "data"); mkdirSync(data); chmodSync(data, 0);
+  try {
+    for (const policy of ["data", "data/*", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(true);
+  } finally { chmodSync(data, 0o700); }
+});
+
+test("different direct roots share the remaining budget without poisoning unrelated scopes (#385)", () => {
+  const dir = root();
+  for (const name of ["data-a", "data-b", "other-a", "other-b"]) mkdirSync(join(dir, name));
+  for (const name of ["a", "b"]) {
+    for (let i = 0; i < 2048; i++) writeFileSync(join(dir, `data-${name}`, `entry-${i}`), "");
+    symlinkSync(`../other-${name}`, join(dir, `data-${name}/link`));
+  }
+  for (const policies of [["data-a", "data-b"], ["data-a/**", "data-b/**"]]) {
+    expect(matchesPolicy(dir, "other-a/file", policies)).toBe(true);
+    expect(matchesPolicy(dir, "other-b/file", policies)).toBe(false);
+    expect(matchesPolicy(dir, "src/app.ts", policies)).toBe(false);
+    expect(matchesPolicy(dir, "other-b/file", [...policies, "other-b"])).toBe(true);
+  }
+});
+
+test("dangling direct aliases resolve a dangling ancestor to its precise future target (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "aliases"));
+  symlinkSync("missing", join(dir, "aliases/channel")); symlinkSync("../aliases/channel/input", join(dir, "data/link"));
+  for (const policy of ["data", "data/**"]) {
+    expect(matchesPolicy(dir, "aliases/missing/input", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+  }
+});
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unreadable matched roots still fail closed after an earlier root exhausts the budget (#385)", () => {
+  const dir = root(), denied = join(dir, "denied"); mkdirSync(join(dir, "data")); mkdirSync(denied);
+  for (let i = 0; i < 4097; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
+  chmodSync(denied, 0);
+  // Linux CI exposed that opening a handle alone need not report EACCES before readSync.
+  // The exhausted-budget path must check readability without consuming another entry.
+  try {
+    for (const policies of [["data", "denied"], ["data/**", "denied/**"]]) expect(matchesPolicy(dir, "src/app.ts", policies)).toBe(true);
+  } finally { chmodSync(denied, 0o700); }
+});
+
+test("long dangling direct aliases distinguish a future target from native ELOOP (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "links"));
+  symlinkSync("../links/step-1", join(dir, "data/link"));
+  for (let i = 1; i < 40; i++) symlinkSync(i === 39 ? "../future/input" : `step-${i + 1}`, join(dir, "links", `step-${i}`));
+  let nativeCode = "";
+  try { realPath(join(dir, "data/link")); } catch (error) { nativeCode = (error as NodeJS.ErrnoException).code ?? ""; }
+  expect(["ENOENT", "ELOOP"]).toContain(nativeCode);
+  for (const policy of ["data", "data/**"]) {
+    expect(matchesPolicy(dir, "future/input", [policy])).toBe(nativeCode === "ENOENT");
+    expect(matchesPolicy(dir, "src/app.ts", [policy])).toBe(false);
+  }
 });

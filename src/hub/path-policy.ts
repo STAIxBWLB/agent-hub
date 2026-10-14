@@ -1,4 +1,4 @@
-import { lstatSync, opendirSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, opendirSync, readlinkSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "./project.ts";
 import { foldSegment } from "./permission-mode.ts";
@@ -24,6 +24,47 @@ const lowerBeneath = (path: string, root: string) => within(path.toLowerCase(), 
 export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
+}
+type DiscoveryBudget = { entries: number };
+/** A dangling direct child names a future lexical target; an ELOOP child opens no file. */
+function directAliasTarget(path: string): string | undefined {
+  let target = path;
+  // Include the final target resolution after the last bounded redirect.
+  for (let hops = 0; hops <= 40; hops++) {
+    try { return policyRealPath(target); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ELOOP") return undefined;
+      if (code !== "ENOENT") throw error;
+    }
+    let ancestor = target;
+    while (!existing(ancestor)) {
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return undefined;
+      ancestor = parent;
+    }
+    if (!lstatSync(ancestor).isSymbolicLink()) return undefined;
+    target = resolve(dirname(ancestor), readlinkSync(ancestor), relative(ancestor, target));
+  }
+  return undefined;
+}
+/** Only a completed bounded scan contributes aliases; a truncated root contributes none. */
+function aliasScope(dir: string, lexical: string, actual: string, includeParents: boolean, budget: DiscoveryBudget): boolean {
+  // Readability must not depend on reaching readSync after an exhausted-budget return.
+  accessSync(dir, constants.R_OK);
+  const handle = opendirSync(dir);
+  let matched = false;
+  try {
+    if (budget.entries >= 4096) return false;
+    for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
+      if (budget.entries >= 4096) return false;
+      budget.entries++;
+      if (!entry.isSymbolicLink()) continue;
+      const target = directAliasTarget(join(dir, entry.name));
+      if (target !== undefined && (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual)))) matched = true;
+    }
+  } finally { handle.closeSync(); }
+  return matched;
 }
 /**
  * Either spelling protects: the lowercase comparison keeps `?` matching one code point whose fold expands (ß, ﬁ), and
@@ -69,7 +110,7 @@ function patternScope(pattern: string[], states: Set<number>, path: string, incl
   return includeParents && states.size > 0; // this scope can contain a future protected descendant
 }
 /** Resolve wildcard directory aliases without trusting a cached expansion. Bound all filesystem discovery. */
-function globScope(root: string, lexical: string, actual: string, path: string, includeParents: boolean, budget: { entries: number }): boolean {
+function globScope(root: string, lexical: string, actual: string, path: string, includeParents: boolean, budget: DiscoveryBudget, roots: Set<string>, aliasDiscovery = false): boolean {
   const pattern = path.split("/").filter(p => p && p !== ".");
   const start = closure(pattern, new Set([0]));
   if (patternScope(pattern, start, relative(root, lexical), includeParents) || patternScope(pattern, start, relative(root, actual), includeParents)) return true;
@@ -77,6 +118,8 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
     const real = policyRealPath(dir);
     if (states.has(pattern.length)) {
       if (beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual))) return true;
+      // Defer new child aliases until every pre-existing policy match has had its discovery budget.
+      if (pattern.at(-1) === "**" && existing(real) && statSync(real).isDirectory()) roots.add(real);
       // An earlier `**` can still match deeper: an alias below this match (`ss/ß -> other` for `**/ß`) is searched too.
       // A trailing `**` only re-matches everything below, so it never walks the subtree (as before, for paths outside it).
       states = new Set([...states].filter(i => i !== pattern.length && !(i === pattern.length - 1 && pattern[i] === "**")));
@@ -88,11 +131,13 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
     if (!lowerBeneath(real, root)) throw new Error("policy glob discovery outside project");
     const info = statSync(dir);
     if (!info.isDirectory()) return false;
+    if (aliasDiscovery && budget.entries >= 4096) return false;
     if (depth > 32 || ancestors.has(real) || budget.entries > 4096) throw new Error("policy glob discovery unavailable");
     const chain = new Set(ancestors); chain.add(real);
     const handle = opendirSync(dir);
     try {
       for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
+        if (aliasDiscovery && budget.entries >= 4096) return false;
         if (++budget.entries > 4096) throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
         if (next.size && visit(join(dir, entry.name), next, depth + 1, chain)) return true;
@@ -102,14 +147,28 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
   };
   return visit(root, start, 0, new Set());
 }
-/** Compare declared spelling, real targets and wildcard aliases. Unknown discovery conservatively protects. */
+/** Compare declared spelling, real targets and bounded aliases; legacy discovery errors fail closed. */
 export function matchesPolicy(cwd: string, path: string, paths: string[], includeParents = false): boolean {
   if (!paths.length) return false;
   try {
     if (path.length > 4096) return true;
     const root = realPath(cwd), lexical = resolve(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync(lexical).isDirectory();
-    const budget = { entries: 0 };
-    return paths.some(entry => /[?*]/.test(entry) ? globScope(root, lexical, actual, entry, includeParents, budget) : policyTargets(root, [entry]).some(target => beneath(lexical, target) || beneath(actual, target) || (includeParents && (beneath(target, lexical) || beneath(target, actual)))));
+    const budget = { entries: 0 }, roots = new Set<string>(), exact: string[] = [];
+    if (paths.some(entry => {
+      if (/[?*]/.test(entry)) return globScope(root, lexical, actual, entry, includeParents, budget, roots);
+      const targets = policyTargets(root, [entry]);
+      if (targets.some(target => beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual)))) return true;
+      const real = targets.at(-1)!;
+      if (existing(real) && statSync(real).isDirectory()) roots.add(real);
+      exact.push(entry);
+      return false;
+    })) return true;
+    // New exact-root discovery cannot consume the budget before legacy wildcard matches are checked.
+    for (const entry of exact) {
+      if (globScope(root, lexical, actual, `${entry}/**`, includeParents, budget, roots, true)) return true;
+    }
+    for (const dir of roots) if (aliasScope(dir, lexical, actual, includeParents, budget)) return true;
+    return false;
   } catch { return true; }
 }
