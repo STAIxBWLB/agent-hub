@@ -715,7 +715,7 @@ test("Office measures CJK and wide glyph titles and clips text to card bounds (#
   for(const task of tasks){
    const proxy=f.api.maps.officeCards.get(task.id)! as Node,card=f.api.scene().els.get("paint:card:"+task.id).node as Node,text=card.findAll(hasOfficeClass("office-card-text"))[0]!,spans=text.children;
    const visible=spans.map(span=>span.textContent).join("");expect(visible).toContain("#"+task.id);expect(visible).toEndWith("...");expect(visible).not.toContain(task.title);
-   expect(text.attrs["clip-path"]).toMatch(/^url\(#[^)]+\)$/);
+   expect(text.attrs["clip-path"] ?? "").toMatch(/^url\(#[^)]+\)$/);
    const clipId=/^url\(#([^)]*)\)$/.exec(text.attrs["clip-path"]!)![1]!,clip=card.findAll(node=>node.tag==="clipPath"&&node.attrs.id===clipId)[0]!;
    expect(clip.attrs.clipPathUnits).toBe("userSpaceOnUse");const bounds=clip.children[0]!,outer=card.findAll(hasOfficeClass("office-card"))[0]!,inner=Number(bounds.attrs.width)*12;
    expect(Number(bounds.attrs.x)).toBeGreaterThan(0);expect(Number(bounds.attrs.x)+Number(bounds.attrs.width)).toBeLessThanOrEqual(Number(outer.attrs.width)-0.8-(task.checking?1:0)+0.00001);
