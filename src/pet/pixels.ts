@@ -1,5 +1,5 @@
 /** Self-contained glyph pixels for the shared literal frame data; browser injection needs no font/image decoder. */
-export function petPixels(frame: readonly string[]): { width: number; height: number; pixels: [number, number][] } {
+export function petPixels(frame: readonly string[]): { width: number; height: number; pixels: [number, number][]; underlay: [number, number, number, number][]; detail: [number, number][] } {
   const font: Record<string, string[]> = {
     O:["01110","10001","10001","10001","10001","10001","01110"],
     o:["00000","00000","01110","10001","10001","01110","00000"],
