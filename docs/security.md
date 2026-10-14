@@ -226,11 +226,14 @@ owner/reviewer ids, approval ids and numeric times, peer delivery states and
 budget pause times. It is assembled from the same allowlisted input as status;
 task text, plans, approval prose, error text and paths are excluded. This input
 is supplied only inside console-authorized dashboard snapshots, never ordinary
-status replies or status.json. The pet creates trusted inline SVG pixel nodes
-from built-in literal frames with existing theme colours, without HTML insertion,
-inline handlers, style attributes or external assets. Existing CSP hashing,
-headers, origin and session authorization remain in force. Clicking scrolls and
-focuses only; it cannot grant permissions or invoke a mutation.
+status replies or status.json. The #391 dashboard projects this input into nav
+and tab-title counts; the in-page pet and its character/pixel injection are gone.
+Attention navigation switches a local view and focuses an exact visible row id,
+with structural guidance when missing. It cannot grant permissions or invoke a
+mutation. Compact-card detail/dialog controls retain the existing authenticated
+workflow actions and project/instance fencing. Existing CSP hashing, headers,
+origin and session authorization remain in force; data uses text/DOM nodes,
+without HTML insertion, inline handlers or external assets.
 
 
 ## Hub-owned structured memory (#258)

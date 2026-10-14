@@ -710,7 +710,11 @@ fragment ticket for an HttpOnly, SameSite=Strict browser session. The control li
 retains its blanket Origin refusal. The browser receives no control token.
 
 One static HTML file, without a build step or runtime dependency, polls public
-snapshots once per second. The latest 200 redacted bus events are retained only
+snapshots once per second. #391 Task A keeps this `/` surface and poll while
+splitting its sections into Board/Office/Stream/Agents/Message/Memory/Settings
+views with a cookie-backed selection. Compact task cards open a native dialog;
+one `taskDetail` function renders both the dialog and expanded-column cards.
+Filters, exact-id attention navigation and existing workflow controls remain. The latest 200 redacted bus events are retained only
 once the listener starts. The API exposes only permission answers, peer
 pause/resume, console messages, task proposal and assignment. All task changes
 use `Tasks`; budget pauses keep the terminal's override requirement.
@@ -731,7 +735,9 @@ project registry and adds explicit project selection, authenticated instance
 ownership and a separate optional dashboard manager. Runtime data and routing
 remain per project. Native memory aliases remain compatible and shared.
 Control protocol 7 adds project/instance identity and console-only dashboard
-snapshot/action forwarding. Existing project-local UI security rules still apply.
+snapshot/action forwarding. Existing project-local UI security rules still apply. #391 Task A changes only client view selection;
+project/instance fencing still invalidates open task details and stale controls.
+No additional project route, request or timer is introduced.
 
 
 ## Amendment: externally managed Ollama MLX (issue #51)
@@ -2678,21 +2684,21 @@ C/dumb/linux/unknown locale surfaces use ASCII even when blocks were requested.
 Body foreground is uncoloured; only the Gyul leaf uses an existing accent tone.
 Native terminal/font/tmux proof remains a separate verification leg.
 
-## Shared dashboard attention (#280, phase 4)
+## Shared dashboard attention (#280, replaced by #391 Task A)
 
-The existing authenticated UI snapshot receives an optional allowlisted attention
-input and enabled/character/blink presentation fields. Status wire/file callers
-retain their phase3 summary/items projection and never receive this input. The
-page invokes the same injected needs function on this body-free input, renders
-the selected built-in full block frame as SVG pixels and exposes state/counts
-through an accessible button. Its click only reaches an exact visible list row
-or the relevant heading with fixed structural guidance; no action request occurs.
+The authenticated snapshot retains optional body-free needs input. The same
+injected pure needs function drives global nav action/watch counts and the
+existing tab-title action count; status/file readers retain their summary/items
+projection. The Agents button separately shows live pending approvals. The
+in-page character, SVG, character frames and pixel injection are removed; the
+standalone #391 Task B window owns that presentation.
 
-DOM writes and title counts follow the derived signature, not every poll. A
-waiting pulse uses CSS transform/opacity only, with a static reduced-motion and
-blink-off escape. There is no extra timer, request, route or authority; legacy
-or invalid snapshots make attention unavailable. Project changes clear stale
-attention and restore the title. The existing CSP/header policy is unchanged.
+Attention activation switches views and selects only the exact visible
+approval/task id. Default/delivery/budget items without a visible exact target
+show their related heading and fixed id-only guidance, never a peer or first-row
+fallback. Filters and workflow state are unchanged. Signature guards suppress
+unchanged DOM writes, invalid legacy input stays unavailable, and project
+changes reset attention and close stale dialogs. CSP/header policy remains.
 
 ## Amendment: hub memory, tiers and graph (#258, phase 1)
 
@@ -2710,20 +2716,12 @@ and rebuilds; the dashboard's Memory section is read-only inside the existing CS
 long-term tasks with leases (decision 9's amendment), claude-mem import and model-suggested edges follow in later phases.
 
 
-## Dashboard attention projection (#280, phase 4 in progress)
+## Dashboard attention projection (#280, superseded by #391)
 
-The existing dashboard snapshot supplies optional allowlisted needs input and
-known presentation choices; normal status/file payloads do not gain that input.
-The header independently projects the shared pure needs function into literal
-built-in SVG pixels and an accessible state/count label. Unchanged state and
-choices do not rewrite pet DOM. Clicks navigate only to exact visible rows or
-related headings, never issue actions or alter filters. Missing/invalid legacy
-input hides the widget. Project resets clear retained navigation and title.
+#391 Task A replaces the in-page pixel widget with nav/title counts as defined
+in Shared dashboard attention above. Native character presentation is the
+standalone Task B window; browser attention uses no character data or frames.
 
-The two approved waiting frames alternate in CSS once per second only while
-a live approval exists. Reduced motion and blink-off remain static. Every other
-state stays still. No timer/request or new asset dependency is introduced;
-existing header policy and computed CSP hashes apply.
 ## Amendment: hub memory between machines and long-term tasks (#258, phase 2)
 
 Decision 9 is amended for memory only: the memory directory is a git repository that tracks `log/*.jsonl` and syncs
@@ -2864,3 +2862,20 @@ The repaired Mac spike verified a transparent floating key panel and both
 bridge directions. Real input/drag/Spaces and end-to-end stream delivery remain
 manual acceptance evidence on the implementation PR, not inferred from the
 spike's process metrics or automated fixtures.
+
+## Amendment: dashboard views and task detail (#391 Task A)
+
+The existing page has one nav button per view, with `aria-current`; sections
+carry `data-view` and selection toggles only `hidden`. A shared cookie helper
+stores theme, Office mode, selected view and optional board column focus.
+The one-time ticket keeps exclusive use of the URL fragment. Projects and
+Benchmarks join peers, approvals and budgets under Agents.
+
+Compact task cards retain drag/drop, id/title, priority, owner dot and
+check/overdue markers. Click/Enter opens a native `dialog` via `showModal()`.
+`taskDetail` supplies full current public content and existing controls to that
+dialog and to a focused column's one-wide-list cards. Each snapshot updates the
+open detail; disappearance/project reset closes it. Back restores compact mode,
+and state/peer/release filters remain active in focus. Attention targets exact
+visible row ids with heading guidance when absent. No new route, API request,
+timer, source text/ref/history projection or external asset is introduced.
