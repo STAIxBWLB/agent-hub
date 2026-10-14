@@ -2858,6 +2858,7 @@ inline text box key, sends a console message through NSTask argv to `ahub say`,
 opens the dashboard through `ahub ui`, or closes. Enter sends; Esc cancels.
 No shell evaluation, new dependency, compile step, HTTP listener or network
 request is added. Message contents are not logged by this surface.
+Working animates only the pixel SVG through a 0.7-second stepped CSS bob, disabled by prefers-reduced-motion; no frame, timer or view-file change is added.
 
 The repaired Mac spike verified a transparent floating key panel and both
 bridge directions. Real input/drag/Spaces and end-to-end stream delivery remain

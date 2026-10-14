@@ -18,6 +18,14 @@ rect { fill: #a7e3bf; }
 [data-state="blocked"] rect { fill: #edaba4; }
 [data-state="review"] rect { fill: #c5b1f0; }
 [data-state="offline"] rect { fill: #aaaeb8; }
+body[data-state="working"] #frame { animation: working-bob 0.7s steps(3, end) infinite; }
+@keyframes working-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body[data-state="working"] #frame { animation: none; }
+}
 #pill { display: flex; align-items: center; gap: 6px; border-radius: 18px; padding: 5px 9px; background: #242936ed; box-shadow: 0 2px 6px #0004; }
 #pill button { padding: 3px 5px; }
 #composer { width: 256px; background: #242936f5; padding: 8px; border-radius: 12px; box-sizing: border-box; }

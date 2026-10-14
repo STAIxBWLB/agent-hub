@@ -2960,6 +2960,7 @@ choice. Its body opens `ahub ui`; the pencil opens an inline console message
 box (Enter sends through `ahub say`, Esc cancels). Drag the body to move it;
 `pet-window-pos.json` remembers the position, with an on-screen fallback if a
 saved display has disappeared. The panel joins all Spaces without a Dock icon.
+While working, the pixel art bobs in a 0.7-second stepped CSS loop; reduced-motion preferences keep it still.
 
 A detached Bun host refreshes `pet-view.json` once per second using `readPet`
 and `loadPetConfig`. The file contains only state/counts/character/blink and

@@ -124,6 +124,7 @@ test("JXA sends literal text as NSTask argv with silent output and no null compl
   expect(jxa).toContain("NSWindowCollectionBehaviorCanJoinAllSpaces");
   expect(jxa).toContain("savePosition()");
   const html = readFileSync(join(rootPath, "src/pet/window.html"), "utf8");
+  expect(html).toMatch(/body\[data-state="working"\] #frame\s*\{[^}]*animation:[^}]*steps\([^)]*\)[^}]*infinite;[^}]*\}[\s\S]*@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*body\[data-state="working"\] #frame\s*\{\s*animation:\s*none;\s*\}/);
   expect(html).toContain("connect-src 'none'"); expect(html).not.toMatch(/\bfetch\(|XMLHttpRequest|new WebSocket/);
   expect(petWindowArgv("/project path")).toEqual([process.execPath, join(rootPath, "src/cli/main.js"), "--project", "/project path"]);
 });
