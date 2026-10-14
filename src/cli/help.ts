@@ -110,7 +110,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub memory search <words> | show <id> | graph <id|node> [--hops 1|2] [--json]", "find entries, read one with its provenance, or list its graph neighbourhood"],
     ["ahub memory promote|demote|forget <id> | supersede <old> <new> | rebuild", "a person's changes to memory: move an entry between tiers, forget it, mark it superseded, or rebuild the index from the logs"],
     ["ahub memory sync [--remote <private git url>] | machine [--label <name>]", "sync hub memory with your other machines through a private git remote (a person's), or show or name this machine"],
-    ["ahub memory import claude-mem [--db <path>] [--limit N] | suggestions | confirm|reject <id>", "copy the hub's notes from claude-mem into hub memory (a person's); review the model's suggested edges"],
+    ["ahub memory import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <id>", "copy the hub's notes from claude-mem into hub memory (a person's); review the model's suggested edges"],
     ["ahub goal [list] [--all] | show <id> [--json]", "long-term tasks: state, which machine holds each and until when, linked board tasks"],
     ["ahub goal new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task> | state <id> <state> | done <id> | take <id> [--force]", "a person's changes to long-term tasks; take --force voids other machines' claims"],
   ]],
