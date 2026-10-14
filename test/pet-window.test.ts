@@ -184,20 +184,24 @@ test("page recovers its pencil after transient offline and sends keyboard text w
   const html = readFileSync(join(rootPath, "src/pet/window.html"), "utf8");
   const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]!;
   const elements: Record<string, any> = {};
-  for (const id of ["pet", "frame", "state", "composer", "message", "result", "pencil", "close"]) elements[id] = {
+  for (const id of ["pet", "frame", "state", "composer", "message", "result", "pencil", "close", "pill"]) elements[id] = {
     disabled: false, hidden: true, value: "", handlers: {} as Record<string, (event: any) => void>,
     setAttribute() {}, replaceChildren() {}, focus() {}, setPointerCapture() {},
+    getBoundingClientRect() { return { x: 0, y: 0, right: 1, bottom: 1 }; },
     addEventListener(name: string, callback: any) { this.handlers[name] = callback; },
   };
   const posted: unknown[] = [];
   const page: any = { webkit: { messageHandlers: { pet: { postMessage: (body: unknown) => posted.push(body) } } } };
   const doc: any = { body: { dataset: {}, handlers: {} as Record<string, () => void>, addEventListener(name: string, callback: any) { this.handlers[name] = callback; } }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) };
   runInNewContext(script, { window: page, document: doc });
-  // Hover reveal is bound at body level, so crossing from the pet onto the pill never drops it.
-  doc.body.handlers.pointerenter(); expect(doc.body.dataset.hover).toBe("");
-  doc.body.handlers.pointerleave(); expect(doc.body.dataset.hover).toBeUndefined();
+  // Hover reveal comes from the native host polling the posted hotspot rect (pet + pill),
+  // so it works while the accessory panel is inactive and survives crossing onto the pill.
+  page.hoverChanged(true); expect(doc.body.dataset.hover).toBe("");
+  page.hoverChanged(false); expect(doc.body.dataset.hover).toBeUndefined();
+  expect(posted).toContainEqual({ kind: "hotspot", x: 0, y: 0, w: 1, h: 1 });
   expect(html).toContain("body[data-hover] #pill");
   expect(jxa).toContain("acceptsMouseMovedEvents = true");
+  expect(jxa).toContain("$.NSEvent.mouseLocation");
   // The pill never leaves the accessibility tree, and the result line never wraps taller.
   expect(html).not.toMatch(/#pill[^{]*\{[^}]*visibility/);
   expect(html).toMatch(/#result\s*\{[^}]*white-space:\s*nowrap[^}]*text-overflow:\s*ellipsis[^}]*\}/);

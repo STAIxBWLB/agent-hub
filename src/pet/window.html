@@ -41,7 +41,7 @@ input { width: 100%; box-sizing: border-box; border: 1px solid #657081; border-r
 <div id="composer" hidden><input id="message" aria-label="Console message" placeholder="Message, Enter to send" maxlength="65536"><div id="result" role="status">Esc to cancel</div></div>
 <script>
 const post = body => window.webkit.messageHandlers.pet.postMessage(body);
-const pet = document.getElementById('pet'), frame = document.getElementById('frame');
+const pet = document.getElementById('pet'), frame = document.getElementById('frame'), pill = document.getElementById('pill');
 const state = document.getElementById('state'), composer = document.getElementById('composer'), input = document.getElementById('message'), result = document.getElementById('result');
 let signature = '', drag, sending = false;
 const draw = (x, y, w, h) => {
@@ -74,9 +74,14 @@ input.addEventListener('keydown', event => {
     event.preventDefault(); sending = true; input.disabled = true; result.textContent = 'Sending'; post({ kind: 'send', text: input.value });
   }
 });
-// Body-level hover mirror: the pill must stay revealed while the pointer crosses onto it, even when an inactive accessory panel never fires CSS :hover.
-document.body.addEventListener('pointerenter', () => { document.body.dataset.hover = ''; });
-document.body.addEventListener('pointerleave', () => { delete document.body.dataset.hover; });
+// The native host polls the global mouse position against this rect (pet + pill) and
+// calls hoverChanged, because an inactive accessory panel never fires CSS :hover.
+window.hoverChanged = on => { if (on) document.body.dataset.hover = ''; else delete document.body.dataset.hover; };
+const postHotspot = () => {
+  const a = pet.getBoundingClientRect(), b = pill.getBoundingClientRect();
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  post({ kind: 'hotspot', x, y, w: Math.max(a.right, b.right) - x, h: Math.max(a.bottom, b.bottom) - y });
+};
 pet.addEventListener('pointerdown', event => { drag = { x: event.screenX, y: event.screenY, moved: false }; pet.setPointerCapture(event.pointerId); });
 pet.addEventListener('pointermove', event => {
   if (!drag) return;
@@ -88,6 +93,7 @@ pet.addEventListener('pointermove', event => {
 pet.addEventListener('pointerup', () => { const moved = drag?.moved; drag = null; if (!moved) post({ kind: 'open' }); });
 pet.addEventListener('pointercancel', () => { drag = null; });
 pet.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); post({ kind: 'open' }); } });
+postHotspot();
 post({ kind: 'ready' });
 </script>
 </html>

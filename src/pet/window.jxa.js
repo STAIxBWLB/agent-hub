@@ -1,10 +1,19 @@
 // Local AppKit/WebKit surface. No shell evaluation or remote content.
 ObjC.import('Cocoa');
 ObjC.import('WebKit');
-var panel, web, app, viewPath, positionPath, readyPath, cliArgv, timer, bridge;
-var offlineAt = 0, commands = [], exiting = false;
+var panel, web, app, viewPath, positionPath, readyPath, cliArgv, timer, hoverTimer, bridge;
+var offlineAt = 0, commands = [], exiting = false, hotspot = null, hovering = false;
 function ignoreCompletion(result, error) {}
 function evaluate(source) { web.evaluateJavaScriptCompletionHandler(source, ignoreCompletion); }
+// An inactive accessory panel receives no mouse-moved events, so hover reveal is
+// polled from the global mouse position against the hotspot rect the page posts.
+function pollHover() {
+  if (!hotspot || exiting) return;
+  var mouse = $.NSEvent.mouseLocation, frame = panel.frame;
+  var x = mouse.x - frame.origin.x, y = frame.origin.y + frame.size.height - mouse.y;
+  var inside = x >= hotspot.x && x <= hotspot.x + hotspot.w && y >= hotspot.y && y <= hotspot.y + hotspot.h;
+  if (inside !== hovering) { hovering = inside; evaluate('hoverChanged(' + inside + ')'); }
+}
 function savePosition() {
   var origin = panel.frame.origin;
   $(JSON.stringify({ x: origin.x, y: origin.y })).writeToFileAtomicallyEncodingError(positionPath, true, $.NSUTF8StringEncoding, null);
@@ -43,12 +52,15 @@ ObjC.registerSubclass({ name: 'AhubPetBridge', superclass: 'NSObject', methods: 
       var origin = panel.frame.origin;
       panel.setFrameOrigin($.NSMakePoint(origin.x + body.dx, origin.y - body.dy));
       savePosition();
+    } else if (body.kind === 'hotspot' && typeof body.x === 'number' && typeof body.y === 'number' && typeof body.w === 'number' && typeof body.h === 'number' && isFinite(body.x) && isFinite(body.y) && Math.abs(body.x) <= 500 && Math.abs(body.y) <= 500 && body.w > 0 && body.h > 0 && body.w <= 500 && body.h <= 500) {
+      hotspot = { x: body.x, y: body.y, w: body.w, h: body.h };
     } else if (body.kind === 'send' && typeof body.text === 'string' && body.text.trim() && body.text.length <= 65536 && body.text.indexOf('\0') === -1) {
       runCommand('say', body.text, cliArgv);
     } else if (body.kind === 'open') runCommand('ui', undefined, cliArgv);
     else if (body.kind === 'close') quit();
   } },
-  'tick:': { types: ['void', ['id']], implementation: function(sender) { tick(); } }
+  'tick:': { types: ['void', ['id']], implementation: function(sender) { tick(); } },
+  'hover:': { types: ['void', ['id']], implementation: function(sender) { pollHover(); } }
 } });
 function tick() {
   var value;
@@ -94,7 +106,7 @@ function run(argv) {
   panel.level = $.NSFloatingWindowLevel;
   panel.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorStationary;
   panel.hidesOnDeactivate = false;
-  panel.acceptsMouseMovedEvents = true; // accessory panels are inactive; without this :hover/pointerenter may never fire
+  panel.acceptsMouseMovedEvents = true; // CSS :hover while key; pollHover() covers the inactive case
   var config = $.WKWebViewConfiguration.alloc.init;
   bridge = $.AhubPetBridge.alloc.init;
   config.userContentController.addScriptMessageHandlerName(bridge, 'pet');
@@ -104,5 +116,6 @@ function run(argv) {
   web.loadFileURLAllowingReadAccessToURL($.NSURL.fileURLWithPath(htmlPath), $.NSURL.fileURLWithPath(htmlPath));
   panel.orderFrontRegardless; panel.makeKeyWindow;
   timer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(1, bridge, 'tick:', null, true);
+  hoverTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.1, bridge, 'hover:', null, true);
   app.run;
 }
