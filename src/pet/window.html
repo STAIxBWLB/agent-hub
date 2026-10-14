@@ -7,7 +7,7 @@
 <style>
 :root { color-scheme: dark; font: 12px system-ui, sans-serif; color: #eceef3; }
 html, body { margin: 0; background: transparent; overflow: hidden; }
-body { width: 150px; height: 150px; display: flex; align-items: center; flex-direction: column; justify-content: flex-end; gap: 6px; padding-bottom: 6px; box-sizing: border-box; }
+body { width: 150px; height: 150px; display: flex; align-items: center; flex-direction: column; justify-content: flex-end; gap: 4px; padding-bottom: 4px; box-sizing: border-box; }
 button { font: inherit; color: inherit; cursor: pointer; border: 0; background: transparent; border-radius: 10px; }
 button:focus-visible, input:focus-visible { outline: 2px solid #79dfb2; outline-offset: 2px; }
 #pet { width: 63px; height: 58px; padding: 0; cursor: grab; touch-action: none; }
@@ -28,12 +28,13 @@ body[data-state="working"] #frame { animation: working-bob 0.7s steps(3, end) in
 }
 #pill { display: flex; align-items: center; gap: 4px; border-radius: 14px; padding: 3px 7px; background: #242936ed; font-size: 11px; }
 #pill button { padding: 2px 4px; }
-#composer { width: 100%; background: #242936f5; padding: 5px; border-radius: 10px; box-sizing: border-box; }
+#composer { width: 100%; background: #242936f5; padding: 4px; border-radius: 10px; box-sizing: border-box; }
 #composer[hidden] { display: none; }
-#pill, #composer { opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility 0s linear .25s; }
-#pet:hover ~ #pill, #pet:focus-visible ~ #pill, #pill:hover, #pill:focus-within, body[data-hover] #pill, body[data-composing] #pill, #composer:not([hidden]) { opacity: 1; visibility: visible; transition-delay: 0s; }
+/* Hidden by opacity only: visibility would drop the #state live region from the a11y tree. */
+#pill { opacity: 0; pointer-events: none; transition: opacity .12s ease; }
+#pet:hover ~ #pill, #pet:focus-visible ~ #pill, #pill:hover, #pill:focus-within, body[data-hover] #pill, body[data-composing] #pill { opacity: 1; pointer-events: auto; }
 input { width: 100%; box-sizing: border-box; border: 1px solid #657081; border-radius: 6px; padding: 5px; background: #111722; color: #eceef3; font: 13px system-ui; }
-#result { margin-top: 4px; min-height: 12px; font-size: 11px; }
+#result { margin-top: 2px; min-height: 12px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 <button id="pet" aria-label="Open agent-hub dashboard"><svg id="frame" role="img" aria-label="Pet" viewBox="0 0 60 64"></svg></button>
 <div id="pill"><span id="state" aria-live="polite">Starting</span><button id="pencil" aria-label="Write a console message">✎</button><button id="close" aria-label="Close pet window">×</button></div>
@@ -64,7 +65,7 @@ window.update = view => {
   frame.replaceChildren(...view.frame.pixels.map(([x, y]) => draw(x, y, 1, 1)));
 };
 window.focusInput = () => { document.body.dataset.composing = ''; composer.hidden = false; input.focus(); };
-window.commandResult = ok => { sending = false; input.disabled = false; result.textContent = ok ? 'Sent' : 'Message was not confirmed; check the dashboard before retrying.'; if (ok) { input.value = ''; composer.hidden = true; delete document.body.dataset.composing; } };
+window.commandResult = ok => { sending = false; input.disabled = false; result.textContent = ok ? 'Sent' : 'Not confirmed; check the dashboard.'; if (ok) { input.value = ''; composer.hidden = true; delete document.body.dataset.composing; } };
 document.getElementById('pencil').addEventListener('click', () => post({ kind: 'pencil' }));
 document.getElementById('close').addEventListener('click', () => post({ kind: 'close' }));
 input.addEventListener('keydown', event => {
@@ -73,8 +74,9 @@ input.addEventListener('keydown', event => {
     event.preventDefault(); sending = true; input.disabled = true; result.textContent = 'Sending'; post({ kind: 'send', text: input.value });
   }
 });
-pet.addEventListener('pointerenter', () => { document.body.dataset.hover = ''; });
-pet.addEventListener('pointerleave', () => { delete document.body.dataset.hover; });
+// Body-level hover mirror: the pill must stay revealed while the pointer crosses onto it, even when an inactive accessory panel never fires CSS :hover.
+document.body.addEventListener('pointerenter', () => { document.body.dataset.hover = ''; });
+document.body.addEventListener('pointerleave', () => { delete document.body.dataset.hover; });
 pet.addEventListener('pointerdown', event => { drag = { x: event.screenX, y: event.screenY, moved: false }; pet.setPointerCapture(event.pointerId); });
 pet.addEventListener('pointermove', event => {
   if (!drag) return;

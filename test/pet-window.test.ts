@@ -191,13 +191,16 @@ test("page recovers its pencil after transient offline and sends keyboard text w
   };
   const posted: unknown[] = [];
   const page: any = { webkit: { messageHandlers: { pet: { postMessage: (body: unknown) => posted.push(body) } } } };
-  const doc: any = { body: { dataset: {} }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) };
+  const doc: any = { body: { dataset: {}, handlers: {} as Record<string, () => void>, addEventListener(name: string, callback: any) { this.handlers[name] = callback; } }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) };
   runInNewContext(script, { window: page, document: doc });
-  // Hover reveal also runs on JS pointer events: an inactive accessory panel may not fire CSS :hover.
-  elements.pet.handlers.pointerenter(); expect(doc.body.dataset.hover).toBe("");
-  elements.pet.handlers.pointerleave(); expect(doc.body.dataset.hover).toBeUndefined();
+  // Hover reveal is bound at body level, so crossing from the pet onto the pill never drops it.
+  doc.body.handlers.pointerenter(); expect(doc.body.dataset.hover).toBe("");
+  doc.body.handlers.pointerleave(); expect(doc.body.dataset.hover).toBeUndefined();
   expect(html).toContain("body[data-hover] #pill");
   expect(jxa).toContain("acceptsMouseMovedEvents = true");
+  // The pill never leaves the accessibility tree, and the result line never wraps taller.
+  expect(html).not.toMatch(/#pill[^{]*\{[^}]*visibility/);
+  expect(html).toMatch(/#result\s*\{[^}]*white-space:\s*nowrap[^}]*text-overflow:\s*ellipsis[^}]*\}/);
   page.update({ offline: true }); expect(elements.pencil.disabled).toBe(true);
   page.update({ state: "idle", act: 0, watch: 0, frame: { width: 1, height: 1, pixels: [[0, 0]] } });
   expect(elements.pencil.disabled).toBe(false);
