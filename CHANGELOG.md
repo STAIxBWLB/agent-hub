@@ -2,6 +2,12 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.26
+
+- Import claude-mem observations under a checkout-independent identity, so the same observation is one entry on every machine after sync however the checkouts differ; scan the source database project-aware with a persisted machine-local cursor (`--restart` re-scans), so unrelated projects cannot starve the requested one; reconcile legacy duplicate imports with `ahub memory dedupe` through append-only supersede operations (#380).
+- Protect the targets of direct-child symlinks of a protected directory under every data-policy form (exact entry, `data/*`, `data/**`), with case-compatible on-disk root discovery and a streaming scan inside the shared 4096-entry bound: a dangling link covers its lexical target, an unresolvable link loop aliases nothing, a root whose discovery budget is exhausted contributes no aliases, and an unreadable protected root still fails closed (#385).
+- State the document converter's project-scoped read guarantee and the bounded, cleared-when-full failure record precisely in code comments and docs (#386).
+
 ## 0.12.25
 
 - Preserve person-owned reservations through planner grooming, including same-value changes (#378).
