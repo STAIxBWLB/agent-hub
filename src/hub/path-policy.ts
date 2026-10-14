@@ -1,4 +1,4 @@
-import { lstatSync, opendirSync, statSync } from "node:fs";
+import { lstatSync, opendirSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "./project.ts";
 import { foldSegment } from "./permission-mode.ts";
@@ -24,6 +24,18 @@ const lowerBeneath = (path: string, root: string) => within(path.toLowerCase(), 
 export function policyTargets(cwd: string, paths: string[]): string[] {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap(path => { const lexical = resolve(root, path); return [lexical, policyRealPath(lexical)]; }))];
+}
+/** Alias only immediate symlink children of a protected subtree root, never recursively. */
+function aliasScope(dir: string, lexical: string, actual: string, includeParents: boolean, budget: { entries: number }): boolean {
+  const entries = readdirSync(dir, { withFileTypes: true });
+  budget.entries += entries.length;
+  if (budget.entries > 4096) throw new Error("policy alias discovery unavailable");
+  for (const entry of entries) {
+    if (!entry.isSymbolicLink()) continue;
+    const target = policyRealPath(join(dir, entry.name));
+    if (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))) return true;
+  }
+  return false;
 }
 /**
  * Either spelling protects: the lowercase comparison keeps `?` matching one code point whose fold expands (ß, ﬁ), and
@@ -77,6 +89,8 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
     const real = policyRealPath(dir);
     if (states.has(pattern.length)) {
       if (beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual))) return true;
+      // Only trailing ** names a subtree root here; * already resolves the links it matches.
+      if (pattern.at(-1) === "**" && existing(real) && statSync(real).isDirectory() && aliasScope(real, lexical, actual, includeParents, budget)) return true;
       // An earlier `**` can still match deeper: an alias below this match (`ss/ß -> other` for `**/ß`) is searched too.
       // A trailing `**` only re-matches everything below, so it never walks the subtree (as before, for paths outside it).
       states = new Set([...states].filter(i => i !== pattern.length && !(i === pattern.length - 1 && pattern[i] === "**")));
@@ -110,6 +124,12 @@ export function matchesPolicy(cwd: string, path: string, paths: string[], includ
     const root = realPath(cwd), lexical = resolve(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync(lexical).isDirectory();
     const budget = { entries: 0 };
-    return paths.some(entry => /[?*]/.test(entry) ? globScope(root, lexical, actual, entry, includeParents, budget) : policyTargets(root, [entry]).some(target => beneath(lexical, target) || beneath(actual, target) || (includeParents && (beneath(target, lexical) || beneath(target, actual)))));
+    return paths.some(entry => {
+      if (/[?*]/.test(entry)) return globScope(root, lexical, actual, entry, includeParents, budget);
+      const targets = policyTargets(root, [entry]);
+      if (targets.some(target => beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual)))) return true;
+      const dir = policyRealPath(resolve(root, entry));
+      return existing(dir) && statSync(dir).isDirectory() && aliasScope(dir, lexical, actual, includeParents, budget);
+    });
   } catch { return true; }
 }

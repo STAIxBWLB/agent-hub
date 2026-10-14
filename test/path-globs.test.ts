@@ -92,3 +92,41 @@ test("glob discovery entry ceiling protects rather than treating an incomplete e
   for (let i = 0; i < 4097; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
   expect(matchesPolicy(dir, "output.txt", ["data/**/*.csv"])).toBe(true);
 });
+
+for (const policy of ["data", "data/*", "data/**"]) {
+  test(`${policy} aliases direct directory links and refreshes their targets (#385)`, () => {
+    const dir = root();
+    for (const name of ["data", "other", "public"]) mkdirSync(join(dir, name));
+    writeFileSync(join(dir, "other/f.csv"), "fixture");
+    symlinkSync("../other", join(dir, "data/link"));
+    expect(matchesPolicy(dir, "other/f.csv", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "data/link/f.csv", [policy])).toBe(true);
+    rmSync(join(dir, "data/link")); symlinkSync("../public", join(dir, "data/link"));
+    expect(matchesPolicy(dir, "other/f.csv", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "public/f.csv", [policy])).toBe(true);
+  });
+  test(`${policy} does not alias links deeper than one level (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data/sub"), { recursive: true }); mkdirSync(join(dir, "other"));
+    symlinkSync("../../other", join(dir, "data/sub/link"));
+    expect(matchesPolicy(dir, "other/f.csv", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "data/sub/link/f.csv", [policy])).toBe(true);
+  });
+  test(`${policy} aliases direct file links and protects containing directory scopes (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "private"));
+    writeFileSync(join(dir, "private/input"), "fixture"); symlinkSync("../private/input", join(dir, "data/raw.csv"));
+    expect(matchesPolicy(dir, "private/input", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "private", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "private", [policy], true)).toBe(true);
+    expect(matchesPolicy(dir, "private/other", [policy])).toBe(false);
+  });
+}
+for (const policy of ["data", "data/**"]) {
+  test(`${policy} fails closed for dangling direct aliases and shares the discovery ceiling (#385)`, () => {
+    const dir = root(); mkdirSync(join(dir, "data")); symlinkSync("../missing", join(dir, "data/link"));
+    expect(matchesPolicy(dir, "outside.txt", [policy])).toBe(true);
+    rmSync(join(dir, "data/link"));
+    for (let i = 0; i < 2049; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
+    expect(matchesPolicy(dir, "outside.txt", [policy])).toBe(false);
+    expect(matchesPolicy(dir, "outside.txt", [policy, policy])).toBe(true);
+  });
+}
