@@ -13,11 +13,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid #79dfb2; outline-
 #pet { width: 84px; height: 78px; padding: 0; cursor: grab; touch-action: none; }
 #pet:active { cursor: grabbing; }
 svg { width: 100%; height: 100%; overflow: visible; image-rendering: pixelated; filter: drop-shadow(0 1px 2px #000a) drop-shadow(0 0 1px #fffa) drop-shadow(0 0 1px #0008); }
-rect { fill: #16a34a; }
-[data-state="waiting"] rect { fill: #d97706; }
-[data-state="blocked"] rect { fill: #dc2626; }
-[data-state="review"] rect { fill: #7c3aed; }
-[data-state="offline"] rect { fill: #64748b; }
+rect { fill: url(#g-working); }
+[data-state="waiting"] rect { fill: url(#g-waiting); }
+[data-state="blocked"] rect { fill: url(#g-blocked); }
+[data-state="review"] rect { fill: url(#g-review); }
+[data-state="offline"] rect { fill: url(#g-offline); }
 rect.d { fill: #f8fafc; }
 body[data-state="working"] #frame { animation: working-bob 0.7s steps(3, end) infinite; }
 @keyframes working-bob {
@@ -36,12 +36,18 @@ body[data-state="working"] #frame { animation: working-bob 0.7s steps(3, end) in
 input { width: 100%; box-sizing: border-box; border: 1px solid #657081; border-radius: 6px; padding: 6px; background: #111722; color: #eceef3; font: 14px system-ui; }
 #result { margin-top: 5px; min-height: 15px; }
 </style>
-<button id="pet" aria-label="Open agent-hub dashboard"><svg id="frame" role="img" aria-label="Pet" viewBox="0 0 60 64"></svg></button>
+<button id="pet" aria-label="Open agent-hub dashboard"><svg id="frame" role="img" aria-label="Pet" viewBox="0 0 60 64"><defs>
+<linearGradient id="g-working" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="64"><stop offset="0" stop-color="#22c55e"/><stop offset="1" stop-color="#15803d"/></linearGradient>
+<linearGradient id="g-waiting" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="64"><stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#b45309"/></linearGradient>
+<linearGradient id="g-blocked" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="64"><stop offset="0" stop-color="#ef4444"/><stop offset="1" stop-color="#b91c1c"/></linearGradient>
+<linearGradient id="g-review" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="64"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#6d28d9"/></linearGradient>
+<linearGradient id="g-offline" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="64"><stop offset="0" stop-color="#94a3b8"/><stop offset="1" stop-color="#475569"/></linearGradient>
+</defs><g id="art"></g></svg></button>
 <div id="pill"><span id="state" aria-live="polite">Starting</span><button id="pencil" aria-label="Write a console message">✎</button><button id="close" aria-label="Close pet window">×</button></div>
 <div id="composer" hidden><input id="message" aria-label="Console message" placeholder="Message, Enter to send" maxlength="65536"><div id="result" role="status">Esc to cancel</div></div>
 <script>
 const post = body => window.webkit.messageHandlers.pet.postMessage(body);
-const pet = document.getElementById('pet'), frame = document.getElementById('frame');
+const pet = document.getElementById('pet'), frame = document.getElementById('frame'), art = document.getElementById('art');
 const state = document.getElementById('state'), composer = document.getElementById('composer'), input = document.getElementById('message'), result = document.getElementById('result');
 let signature = '', drag, sending = false;
 const draw = (x, y, w, h, cls) => {
@@ -63,7 +69,7 @@ window.update = view => {
   if (signature === next) return;
   signature = next;
   frame.setAttribute('viewBox', '0 0 ' + view.frame.width + ' ' + view.frame.height);
-  frame.replaceChildren(
+  art.replaceChildren(
     ...(view.frame.underlay || []).map(([x, y, w, h]) => draw(x, y, w, h)),
     ...view.frame.pixels.map(([x, y]) => draw(x, y, 1, 1)),
     ...(view.frame.detail || []).map(([x, y]) => draw(x, y, 1, 1, 'd'))

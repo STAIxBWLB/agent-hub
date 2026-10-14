@@ -16,28 +16,38 @@ export function petPixels(frame: readonly string[]): { width: number; height: nu
     "\\": ["10000","10000","01000","00100","00010","00001","00001"],
     "-": ["00000","00000","00000","11111"],
     "'": ["00100","00100"],
-    // Double-height STAI letters for the blocks full frame: tops 1-4, bottoms 5-8 (vertical 2x stretch of S,T,A,I).
-    "1": ["01111","01111","10000","10000","10000","10000","01110","01110"],
-    "2": ["11111","11111","00100","00100","00100","00100","00100","00100"],
-    "3": ["01110","01110","10001","10001","10001","10001","11111","11111"],
-    "4": ["11111","11111","00100","00100","00100","00100","00100","00100"],
-    "5": ["01110","01110","00001","00001","00001","00001","11110","11110"],
-    "6": ["00100","00100","00100","00100","00100","00100","00100","00100"],
-    "7": ["11111","11111","10001","10001","10001","10001","10001","10001"],
-    "8": ["00100","00100","00100","00100","00100","00100","11111","11111"],
+    // Double-width, double-height STAI letters for the blocks full frame: each letter spans 2x2 cells
+    // (10x16 px). Tops u,v,w,x,y,z,9,0 and bottoms j,k,l,m,n,p,q,r, in S,T,A,I order.
+    u:["00111","00111","11000","11000","11000","11000","00111","00111"],
+    v:["11111","11111","00000","00000","00000","00000","11100","11100"],
+    w:["11111","11111","00001","00001","00001","00001","00001","00001"],
+    x:["11111","11111","10000","10000","10000","10000","10000","10000"],
+    y:["00111","00111","11000","11000","11000","11000","11111","11111"],
+    z:["11100","11100","00011","00011","00011","00011","11111","11111"],
+    "9":["11111","11111","00001","00001","00001","00001","00001","00001"],
+    "0":["11111","11111","10000","10000","10000","10000","10000","10000"],
+    j:["00111","00111","00000","00000","00000","00000","11111","11111"],
+    k:["11100","11100","00011","00011","00011","00011","11100","11100"],
+    l:["00001","00001","00001","00001","00001","00001","00001","00001"],
+    m:["10000","10000","10000","10000","10000","10000","10000","10000"],
+    n:["11111","11111","11000","11000","11000","11000","11000","11000"],
+    p:["11111","11111","00011","00011","00011","00011","00011","00011"],
+    q:["00001","00001","00001","00001","00001","00001","11111","11111"],
+    r:["10000","10000","10000","10000","10000","10000","11111","11111"],
   };
   const pixels: [number, number][] = [];
   // underlay: solid cell rects behind letter/detail glyphs; detail: the glyph strokes, drawn in a contrast color by layer-aware renderers.
   const underlay: [number, number, number, number][] = [];
   const detail: [number, number][] = [];
   for (const [row, text] of frame.entries()) for (const [column, glyph] of [...text].entries()) {
-    const letter = font[glyph];
-    if (letter) underlay.push([column*5, row*8, 5, 8]);
+    // Arm strokes (the slash glyphs) stay body-colored; other font glyphs are light details on a solid cell.
+    const letter = font[glyph], isDetail = letter && glyph !== "/" && glyph !== "\\";
+    if (isDetail) underlay.push([column*5, row*8, 5, 8]);
     for (let y=0;y<8;y++) for (let x=0;x<5;x++) {
       const stroke = letter?.[y]?.[x] === "1";
       const on = stroke || glyph === "█" || glyph === "▀" && y<4 || glyph === "▄" && y>=4 || glyph === "▟" && (y>=4 || x>=2) || glyph === "▙" && (y>=4 || x<3);
       if (on) pixels.push([column*5+x,row*8+y]);
-      if (stroke) detail.push([column*5+x,row*8+y]);
+      if (stroke && isDetail) detail.push([column*5+x,row*8+y]);
     }
   }
   return { width: Math.max(0,...frame.map(row=>[...row].length))*5, height: frame.length*8, pixels, underlay, detail };
