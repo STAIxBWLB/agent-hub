@@ -75,17 +75,19 @@ const snapshot = {
 };
 
 /** Runs the real scene block and the real render() against a counting fake document. */
-function startOfficeRuntime(view: () => string) {
+function startOfficeRuntime(view: () => string, measurement?: (text:string,font:string)=>number) {
   const board = html.slice(html.indexOf("let boardViewState ="),html.indexOf("function render(snapshot)"));
   const scope = ["canMutate", "context"].map(name=>html.split("\n").find(line=>line.startsWith("function "+name+"("))!).join("\n");
   const renderSlice = html.slice(html.indexOf("function render(snapshot)"), html.indexOf("async function poll("));
   const nodes = new Map<string, Node>();
   const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   const el = (tag: string, text?: unknown, cls?: string) => { const node = new Node(); node.tag = tag; if (text !== undefined) node.textContent = String(text); node.className = cls ?? ""; return node; };
+  const measurements:{text:string;font:string}[]=[];
+  const canvasContext={font:"",measureText(text:string){measurements.push({text,font:this.font});return{width:measurement?.(text,this.font) ?? 0}}};
   const context = {
     get, el, officeModel, taskProgress, boardColumns, peerPalette: PEER_PALETTE, location: {origin:"http://127.0.0.1:4000"},
     officeView: { get: view, set: () => {} },
-    document: { createElement: (tag: string) => { const node = new Node(); node.tag = tag; return node; }, createElementNS: (_ns: string, tag: string) => { const node = new Node(); node.tag = tag; return node; } },
+    document: { createElement: (tag: string) => { if(tag==="canvas")return{getContext:()=>measurement?canvasContext:null};const node = new Node(); node.tag = tag; return node; }, createElementNS: (_ns: string, tag: string) => { const node = new Node(); node.tag = tag; return node; } },
   };
   const api = runInNewContext(`
     let stopped=false, managerMode=false, selectedProjectId='', selectedInstanceId='', snapshotValid=true, viewGeneration=0, lastSnapshot=null, eventCount=0, cursor=0, draftChoicesPending=false, officePrev=null;
@@ -110,7 +112,7 @@ function startOfficeRuntime(view: () => string) {
       scene(){ return officeScene; },
       maps: { peerRows, taskRows, officeDesks, officeCards },
     })`, context);
-  return { api, get };
+  return { api, get, measurements };
 }
 
 test("the served page injects the shared office model and stays within the CSP rules", async () => {
@@ -371,8 +373,9 @@ test("phase 3: the exact task bubble, finishing-a-turn and the check-running mar
   expect(kimi.text()).toContain("finishing a turn"); // under the Break sign
   expect(kimi.text().indexOf("Break: quota exhausted")).toBeLessThan(kimi.text().indexOf("finishing a turn"));
   const card = api.maps.officeCards.get(4)!;
-  expect(card.attrs.class).toContain("office-card-checking");
-  expect(card.text()).toContain("⟳");
+  const paint=api.scene().els.get("paint:card:4").node as Node;
+  expect(paint.attrs.class).toContain("office-card-checking");
+  expect(paint.text()).toContain("⟳");
   expect(card.attrs["aria-label"]).toContain("check running");
   expect(get("office").findAll((node) => (node.attrs.class ?? "").includes("office-checking"))).toHaveLength(1);
 });
@@ -526,7 +529,8 @@ test("office task activation reveals filtered rows and card/desk handlers live i
   expect(opened).toEqual([4]);expect(views).toEqual(["board"]);expect(focuses).toEqual([null]);
   const original=taskRows.get(4)!;api.activate(999);expect(opened).toEqual([4]);expect(original.scrolled).toBe(1);expect(taskRows.get(4)?.scrolled).toBe(0);
   const model=officeModel(snapshot,null,{cols:4,now:20000});api.draw(get("office"),model);
-  const scene=api.scene();expect(scene.els.get("card:4").node.parent).toBe(scene.layers.cards);
+  const scene=api.scene();expect(scene.els.get("card:4").node.parent).toBe(scene.layers.cardFocus);
+  expect(scene.els.get("paint:card:4").node.parent).toBe(scene.layers.cards);
   expect(scene.layers.cards.parent).toBe(scene.layers.desks.parent);
 });
 
@@ -582,7 +586,7 @@ test("office task focus and combined Work filter follow five-column board cards 
 
 const hasOfficeClass=(name:string)=>(node:Node)=>(node.attrs.class ?? "").split(" ").includes(name);
 function officeRect(node:Node){
- const [x,y]=/translate\(([-\d.]+)px,([-\d.]+)px\)/.exec(node.style.transform)!.slice(1).map(Number);
+ const [x,y]=/translate\(([-\d.]+)px,([-\d.]+)px\)/.exec(node.style.transform ?? '')!.slice(1).map(Number);
  const rect=node.findAll(hasOfficeClass("office-card"))[0]!;
  return{x:x!+Number(rect.attrs.x || 0),y:y!+Number(rect.attrs.y || 0),w:Number(rect.attrs.width),h:Number(rect.attrs.height)};
 }
@@ -633,11 +637,11 @@ test("Office cards expose full public titles while clipping readable labels at w
  const title="Improve routing reliability during release readiness checks";
  for(const view of ["flat","isometric"]){
   const f=startOfficeRuntime(()=>view);f.api.draw({...snapshot,tasks:[{id:101,title,state:"proposed",class:"implement"}]});
-  const card=f.api.maps.officeCards.get(101)! as Node;expect(card.attrs["aria-label"]).toContain(title);
+  const proxy=f.api.maps.officeCards.get(101)! as Node,card=f.api.scene().els.get("paint:card:101").node as Node;expect(proxy.attrs["aria-label"]).toContain(title);
   expect(card.findAll(node=>node.tag==="title")[0]!.textContent).toContain(title);
   const label=card.findAll(hasOfficeClass("office-card-text"))[0]!.children.map(node=>node.textContent).join("");expect(label).toContain("#101");expect(label).toContain("Improve routing");expect(label.length).toBeGreaterThan(18);
   if(label.endsWith("...")){const clipped=label.slice(0,-3).trim();expect(("#101 "+title).startsWith(clipped+" ")).toBe(true);}
-  card.fire("keydown",{key:"Enter",preventDefault(){}});expect(f.get("task-detail-dialog").open).toBe(true);expect(f.get("task-detail-content").text()).toContain(title);
+  proxy.fire("keydown",{key:"Enter",preventDefault(){}});expect(f.get("task-detail-dialog").open).toBe(true);expect(f.get("task-detail-content").text()).toContain(title);
  }
 });
 
@@ -645,11 +649,11 @@ test("isometric room cards stay inside tiles without overlap and account for omi
  for(const count of [0,4,12]){
   const data={...snapshot,status:{peers:{claude:{state:"idle",queued:0},codex:{state:"idle",queued:0}}},tasks:Array.from({length:count},(_,index)=>({id:index+1,title:"Readable task title "+index,state:"proposed",class:"implement"}))};
   const f=startOfficeRuntime(()=>"isometric");f.api.draw(data);const model=officeModel(data,null,{cols:2}),room=model.rooms.find(item=>item.id==="todo")!;
-  const cards=[...f.api.maps.officeCards.values()] as Node[],rects=cards.map(officeRect);
+  const cards=[...f.api.maps.officeCards.keys()].map(id=>f.api.scene().els.get("paint:card:"+id).node) as Node[],rects=cards.map(officeRect);
   if(count)expect(cards.length).toBeGreaterThan(0);else expect(cards).toHaveLength(0);
   for(const rect of rects){
    expect(rect.w).toBeGreaterThan(0);expect(rect.h).toBeGreaterThan(0);
-   for(const [x,y] of [[rect.x,rect.y],[rect.x+rect.w,rect.y],[rect.x,rect.y+rect.h],[rect.x+rect.w,rect.y+rect.h]]){
+   for(const [x,y] of [[rect.x,rect.y],[rect.x+rect.w,rect.y],[rect.x,rect.y+rect.h],[rect.x+rect.w,rect.y+rect.h]] as const){
     const gx=y+x/(2*0.8660254),gy=y-x/(2*0.8660254);
     expect(gx).toBeGreaterThanOrEqual(room.x+1-0.00001);expect(gx).toBeLessThanOrEqual(room.x+room.w-1+0.00001);
     expect(gy).toBeGreaterThanOrEqual(room.y+1-0.00001);expect(gy).toBeLessThanOrEqual(room.y+room.h-1+0.00001);
@@ -699,4 +703,41 @@ test("isometric cards paint by depth across occupied rooms (#394)",()=>{
  const y=layer.children.map(officeRect).map(rect=>rect.y);expect(y).toEqual([...y].sort((a,b)=>a-b));
  // Construction visits Work before Review; depth order must interleave their visible chips.
  expect(ids.indexOf(9)).toBeLessThan(ids.indexOf(7));
+});
+
+
+test("Office measures CJK and wide glyph titles and clips text to card bounds (#394)",()=>{
+ const titleWidth=(text:string,font:string)=>font.includes("monospace")?[...text].length*7.2:[...text].reduce((width,char)=>width+(/^[ -~]$/.test(char)?char==="W"?13.2:6:12.5),0);
+ const fallbackWidth=(text:string,monospace:boolean)=>[...text].reduce((width,char)=>width+(!/^[ -~]$/.test(char)?12:monospace?7.2:/[MW@#%]/.test(char)?10.8:/[ilI., ']/.test(char)?3.6:6.6),0);
+ const tasks=[{id:201,title:"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW routing",state:"proposed",class:"implement"},{id:202,title:"한국어제목너비측정과안전한표시영역을확인하는회귀검증입니다",state:"proposed",class:"implement",checking:true}];
+ for(const measured of [true,false])for(const view of ["flat","isometric"]){
+  const f=startOfficeRuntime(()=>view,measured?titleWidth:undefined);f.api.draw({...snapshot,tasks});
+  for(const task of tasks){
+   const proxy=f.api.maps.officeCards.get(task.id)! as Node,card=f.api.scene().els.get("paint:card:"+task.id).node as Node,text=card.findAll(hasOfficeClass("office-card-text"))[0]!,spans=text.children;
+   const visible=spans.map(span=>span.textContent).join("");expect(visible).toContain("#"+task.id);expect(visible).toEndWith("...");expect(visible).not.toContain(task.title);
+   expect(text.attrs["clip-path"]).toMatch(/^url\(#[^)]+\)$/);
+   const clipId=/^url\(#([^)]*)\)$/.exec(text.attrs["clip-path"]!)![1]!,clip=card.findAll(node=>node.tag==="clipPath"&&node.attrs.id===clipId)[0]!;
+   expect(clip.attrs.clipPathUnits).toBe("userSpaceOnUse");const bounds=clip.children[0]!,outer=card.findAll(hasOfficeClass("office-card"))[0]!,inner=Number(bounds.attrs.width)*12;
+   expect(Number(bounds.attrs.x)).toBeGreaterThan(0);expect(Number(bounds.attrs.x)+Number(bounds.attrs.width)).toBeLessThanOrEqual(Number(outer.attrs.width)-0.8-(task.checking?1:0)+0.00001);
+   expect(Number(bounds.attrs.y)).toBe(0);expect(Number(bounds.attrs.height)).toBe(Number(outer.attrs.height));
+   const visibleWidth=measured?titleWidth(spans[0]!.textContent,"12px ui-monospace,monospace")+titleWidth(spans[1]!.textContent,"12px system-ui,sans-serif"):fallbackWidth(spans[0]!.textContent,true)+fallbackWidth(spans[1]!.textContent,false);
+   expect(visibleWidth).toBeLessThanOrEqual(inner+0.00001);
+   expect(card.findAll(node=>node.tag==="title")[0]!.textContent).toBe("#"+task.id+" "+task.title);expect(proxy.attrs["aria-label"]).toContain(task.title);
+   proxy.fire("keydown",{key:"Enter",preventDefault(){}});expect(f.get("task-detail-dialog").open).toBe(true);expect(f.get("task-detail-content").text()).toContain(task.title);
+  }
+  if(measured){expect(f.measurements.some(call=>call.font==="12px ui-monospace,monospace")).toBe(true);expect(f.measurements.some(call=>call.font==="12px system-ui,sans-serif")).toBe(true);}else expect(f.measurements).toHaveLength(0);
+ }
+});
+
+
+test("Office common visible card keyboard order stays stable across projections (#394)",()=>{
+ const tasks=Array.from({length:12},(_,index)=>({id:index+1,title:"Keyboard order task "+(index+1),class:"implement",state:index<4?"proposed":index<8?"in_progress":"in_review",...(index>=4&&index<8?{owner:"ghost"}:{})}));
+ const data={...snapshot,status:{peers:{claude:{state:"idle",queued:0},codex:{state:"idle",queued:0}}},tasks};
+ let view="flat";const f=startOfficeRuntime(()=>view);
+ const focusIds=()=>((f.api.scene().layers.cardFocus as Node).children.filter(node=>node.attrs.tabindex==="0").map(node=>Number(/^#(\d+) /.exec(node.attrs["aria-label"]!)![1])));
+ f.api.draw(data);const flat=focusIds();expect(flat).toEqual([1,2,3,4,5,6,7,8,9,10,11,12]);
+ view="isometric";f.api.draw(data);const iso=focusIds();expect(iso).toEqual([1,2,3,5,6,7,9,10,11]);expect(flat.filter(id=>iso.includes(id))).toEqual(iso);
+ const paintLayer=f.api.scene().layers.cards as Node;expect(paintLayer.children).toHaveLength(9);
+ for(const paint of paintLayer.children){expect(paint.attrs['aria-hidden']).toBe("true");expect(paint.attrs.tabindex).toBeUndefined();expect(paint.attrs.role).toBeUndefined();}
+ view="flat";f.api.draw(data);expect(focusIds()).toEqual(flat);
 });

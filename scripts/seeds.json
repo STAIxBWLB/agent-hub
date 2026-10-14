@@ -3268,10 +3268,34 @@
     {
       "id": "office-header-top-layer",
       "file": "src/ui/index.html",
-      "search": "['rooms', 'desks', 'links', 'marks', 'arcs', 'cards', 'headers']",
-      "replacement": "['headers', 'rooms', 'desks', 'links', 'marks', 'arcs', 'cards']",
+      "search": "['rooms', 'desks', 'links', 'marks', 'arcs', 'cards', 'cardFocus', 'headers']",
+      "replacement": "['headers', 'rooms', 'desks', 'links', 'marks', 'arcs', 'cards', 'cardFocus']",
       "testFile": "test/office-view.test.ts",
       "testName": "Office room headers form the final overlay layer with count pills (#394)"
+    },
+    {
+      "id": "office-measured-title-width",
+      "file": "src/ui/index.html",
+      "search": "if (measure(rest) <= width) return prefix + rest;",
+      "replacement": "if (true) return prefix + rest;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office measures CJK and wide glyph titles and clips text to card bounds (#394)"
+    },
+    {
+      "id": "office-title-clip-boundary",
+      "file": "src/ui/index.html",
+      "search": "'clip-path': 'url(#' + clipId + ')'",
+      "replacement": "'data-clip-path': 'url(#' + clipId + ')'",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office measures CJK and wide glyph titles and clips text to card bounds (#394)"
+    },
+    {
+      "id": "office-projection-keyboard-order",
+      "file": "src/ui/index.html",
+      "search": "for (const card of focusCards) {",
+      "replacement": "for (const card of cards) {",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office common visible card keyboard order stays stable across projections (#394)"
     }
   ]
 }
