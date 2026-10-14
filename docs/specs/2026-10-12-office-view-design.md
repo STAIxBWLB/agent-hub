@@ -148,7 +148,10 @@ Phase 4 decisions within the spec:
   name; a separate `aria-hidden` paint layer is ordered back to front under
   Isometric. Click, Enter and Space open the same task detail. Shared visible
   cards retain their relative tab order across projections and switching back
-  restores Flat's model order. #394 allows Isometric to omit cards that do not
+  restores Flat's model order. Correctly placed nodes are untouched during
+  snapshots; actual reorders use state-preserving DOM movement when available
+  and restore active focus without scrolling on the insertBefore fallback.
+  #394 allows Isometric to omit cards that do not
   fit and expose the omitted count through the existing "+N more" control, so
   its visible target inventory can be smaller than Flat's.
 - #394 fixed-scale amendment (2026-10-14): the SVG width attribute is its actual

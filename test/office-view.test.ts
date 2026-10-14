@@ -27,7 +27,11 @@ class Node {
   open = false; focused = 0;
   showModal() { this.open = true; }
   close() { this.open = false; }
-  focus() { this.focused++; }
+  focusState?: {activeElement:Node|null};
+  moves=0;focusOptions:unknown;moveBefore?: (node:Node,before:Node|null)=>void;
+  focus(options?:unknown) { this.focused++;this.focusOptions=options;if(this.focusState)this.focusState.activeElement=this; }
+  contains(node:Node):boolean{return node===this||this.children.some(child=>child.contains(node))}
+  insertBefore(node:Node,before:Node|null){this.moves++;const original=before===node?this.children.indexOf(node):null;node.remove();const index=original ?? (before?this.children.indexOf(before):this.children.length);if(index<0)throw Error("unknown reference node");node.parent=this;node.focusState ??= this.focusState;this.children.splice(index,0,node);return node;}
   value = "";
   checked = false;
   clientWidth = 1200;
@@ -43,11 +47,11 @@ class Node {
     toggle: (name: string, force?: boolean) => { const on = force ?? !this.classes.has(name); if (on) this.classes.add(name); else this.classes.delete(name); },
     contains: (name: string) => this.classes.has(name),
   };
-  append(...nodes: Node[]) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }
+  append(...nodes: Node[]) { for (const node of nodes) { node.remove(); node.parent = this;node.focusState ??= this.focusState; this.children.push(node); } }
   replaceChildren(...nodes: Node[]) { this.children = []; this.replacements++; this.append(...nodes); }
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
   getAttribute(key: string) { return this.attrs[key] ?? null; }
-  remove() { if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this); this.parent = null; }
+  remove() {if(this.parent&&this.focusState?.activeElement&&this.contains(this.focusState.activeElement))this.focusState.activeElement=null; if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this); this.parent = null; }
   addEventListener(name: string, listener: (event?: unknown) => void) { (this.listeners[name] ??= []).push(listener); }
   fire(name: string, event: unknown = { preventDefault() {}, key: "" }) { for (const listener of this.listeners[name] ?? []) listener(event); }
   scrollIntoView() { this.scrolled++; }
@@ -75,19 +79,21 @@ const snapshot = {
 };
 
 /** Runs the real scene block and the real render() against a counting fake document. */
-function startOfficeRuntime(view: () => string, measurement?: (text:string,font:string)=>number) {
+function startOfficeRuntime(view: () => string, measurement?: (text:string,font:string)=>number,nativeMove=false) {
   const board = html.slice(html.indexOf("let boardViewState ="),html.indexOf("function render(snapshot)"));
   const scope = ["canMutate", "context"].map(name=>html.split("\n").find(line=>line.startsWith("function "+name+"("))!).join("\n");
   const renderSlice = html.slice(html.indexOf("function render(snapshot)"), html.indexOf("async function poll("));
+  const focusState:{activeElement:Node|null}={activeElement:null};
+  const create=(tag="div")=>{const node=new Node();node.tag=tag;node.focusState=focusState;if(nativeMove)node.moveBefore=(moving,before)=>{const active=focusState.activeElement;node.insertBefore(moving,before);focusState.activeElement=active};return node;};
   const nodes = new Map<string, Node>();
-  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
-  const el = (tag: string, text?: unknown, cls?: string) => { const node = new Node(); node.tag = tag; if (text !== undefined) node.textContent = String(text); node.className = cls ?? ""; return node; };
+  const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, create()); return nodes.get(id)!; };
+  const el = (tag: string, text?: unknown, cls?: string) => { const node = create(tag); if (text !== undefined) node.textContent = String(text); node.className = cls ?? ""; return node; };
   const measurements:{text:string;font:string}[]=[];
   const canvasContext={font:"",measureText(text:string){measurements.push({text,font:this.font});return{width:measurement?.(text,this.font) ?? 0}}};
   const context = {
     get, el, officeModel, taskProgress, boardColumns, peerPalette: PEER_PALETTE, location: {origin:"http://127.0.0.1:4000"},
     officeView: { get: view, set: () => {} },
-    document: { createElement: (tag: string) => { if(tag==="canvas")return{getContext:()=>measurement?canvasContext:null};const node = new Node(); node.tag = tag; return node; }, createElementNS: (_ns: string, tag: string) => { const node = new Node(); node.tag = tag; return node; } },
+    document: {get activeElement(){return focusState.activeElement}, createElement: (tag: string) => { if(tag==="canvas")return{getContext:()=>measurement?canvasContext:null};const node = create(tag); return node; }, createElementNS: (_ns: string, tag: string) => { const node = create(tag); return node; } },
   };
   const api = runInNewContext(`
     let stopped=false, managerMode=false, selectedProjectId='', selectedInstanceId='', snapshotValid=true, viewGeneration=0, lastSnapshot=null, eventCount=0, cursor=0, draftChoicesPending=false, officePrev=null;
@@ -112,7 +118,7 @@ function startOfficeRuntime(view: () => string, measurement?: (text:string,font:
       scene(){ return officeScene; },
       maps: { peerRows, taskRows, officeDesks, officeCards },
     })`, context);
-  return { api, get, measurements };
+  return { api, get, measurements, focusState };
 }
 
 test("the served page injects the shared office model and stays within the CSP rules", async () => {
@@ -740,4 +746,20 @@ test("Office common visible card keyboard order stays stable across projections 
  const paintLayer=f.api.scene().layers.cards as Node;expect(paintLayer.children).toHaveLength(9);
  for(const paint of paintLayer.children){expect(paint.attrs['aria-hidden']).toBe("true");expect(paint.attrs.tabindex).toBeUndefined();expect(paint.attrs.role).toBeUndefined();}
  view="flat";f.api.draw(data);expect(focusIds()).toEqual(flat);
+});
+
+
+test("Office preserves keyboard focus on unchanged and reordered card nodes (#394)",()=>{
+ for(const nativeMove of [false,true]){
+  const f=startOfficeRuntime(()=>"flat",undefined,nativeMove),tasks=[1,2,3].map(id=>({id,title:"Focus task "+id,class:"implement",state:"proposed"}));
+  const data={...snapshot,tasks};f.api.draw(data);const active=f.api.maps.officeCards.get(3)! as Node;active.focus();
+  const layer=f.api.scene().layers.cardFocus as Node,moves=layer.moves;
+  f.api.draw({...data,tasks:tasks.map(task=>({...task,title:task.id===2?"Changed public title":task.title}))});
+  expect(f.focusState.activeElement).toBe(active);expect(active.focused).toBe(1);expect(layer.moves).toBe(moves);
+  f.api.draw({...data,tasks:tasks.map(task=>({...task,...(task.id===3?{state:"in_progress",owner:"codex"}:{})}))});
+  expect(f.api.maps.officeCards.get(3)).toBe(active);expect(f.focusState.activeElement).toBe(active);
+  expect(layer.children.map(node=>Number(/^#(\d+) /.exec(node.attrs["aria-label"]!)![1]))).toEqual([3,1,2]);
+  expect(layer.moves).toBeGreaterThan(moves);expect(active.focused).toBe(nativeMove?1:2);
+  if(!nativeMove)expect(active.focusOptions).toEqual({preventScroll:true});
+ }
 });

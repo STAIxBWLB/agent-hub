@@ -3296,6 +3296,22 @@
       "replacement": "for (const card of cards) {",
       "testFile": "test/office-view.test.ts",
       "testName": "Office common visible card keyboard order stays stable across projections (#394)"
+    },
+    {
+      "id": "office-stable-focus-reconcile",
+      "file": "src/ui/index.html",
+      "search": "if (before === node) continue;",
+      "replacement": "if (false) continue;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office preserves keyboard focus on unchanged and reordered card nodes (#394)"
+    },
+    {
+      "id": "office-reorder-focus-restore",
+      "file": "src/ui/index.html",
+      "search": "if (restore) active.focus({ preventScroll: true });",
+      "replacement": "if (false) active.focus({ preventScroll: true });",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office preserves keyboard focus on unchanged and reordered card nodes (#394)"
     }
   ]
 }

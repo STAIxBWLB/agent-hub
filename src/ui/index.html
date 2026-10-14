@@ -859,6 +859,15 @@ const officeRound = (v) => Math.round(v * 100) / 100;
 function officeIsoLocal(x, y) { return [(x - y) * 0.8660254, (x + y) * 0.5]; }
 function officeProject(x, y) { return officeProjection === 'iso' ? officeIsoLocal(x, y) : [x, y]; }
 function officePlace(node, x, y) { const p = officeProject(x, y); node.style.transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)'; }
+function officeOrderNodes(parent, nodes) {
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index], before = parent.children[index] || null;
+    if (before === node) continue;
+    const active = document.activeElement, restore = active && (active === node || node.contains?.(active));
+    if (typeof parent.moveBefore === 'function') parent.moveBefore(node, before);
+    else { parent.insertBefore(node, before); if (restore) active.focus({ preventScroll: true }); }
+  }
+}
 function officePolygon(points, cls) { return officeNode('polygon', { points: points.map((p) => p.map(officeRound).join(',')).join(' '), class: cls }); }
 function officeTile(w, h, cls) {
   if (officeProjection !== 'iso') return officeNode('rect', { x: 0, y: 0, width: w, height: h, rx: 2 / 3, class: cls });
@@ -1149,9 +1158,10 @@ function drawOffice(target, model) {
     const p = card.drawX === undefined ? officeProject(card.x, card.y) : [card.drawX, card.drawY], transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)';
     if (node.style.transform !== transform) node.style.transform = transform; // the only animated property
   };
+  const paintNodes = [], focusNodes = [];
   for (const card of cards) {
     const { node } = keep('paint:card:' + card.id, JSON.stringify([card.label, card.name, card.waiting, card.rework, card.checking, card.w, card.h]), scene.layers.cards, n => { officeCardPaint(n, card); n.setAttribute('aria-hidden', 'true'); });
-    scene.layers.cards.append(node); placeCard(node, card);
+    paintNodes.push(node); placeCard(node, card);
   }
   for (const card of focusCards) {
     const { node, fresh } = keep('card:' + card.id, JSON.stringify([card.label, card.name, card.w, card.h]), scene.layers.cardFocus, n => {
@@ -1164,8 +1174,9 @@ function drawOffice(target, model) {
       node.addEventListener('click', open);
       node.addEventListener('keydown', (event) => officeKeys(event, open));
     }
-    scene.layers.cardFocus.append(node); placeCard(node, card);
+    focusNodes.push(node); placeCard(node, card);
   }
+  officeOrderNodes(scene.layers.cards, paintNodes); officeOrderNodes(scene.layers.cardFocus, focusNodes);
   for (const room of model.rooms) keep('header:' + room.id, JSON.stringify([room.x, room.y, room.w, room.count, room.label]), scene.layers.headers, node => officeRoomHeader(node, room), false);
   if (model.extraPeers > 0) {
     keep('extra:peers', String(model.extraPeers) + ':' + model.width, scene.layers.marks,
