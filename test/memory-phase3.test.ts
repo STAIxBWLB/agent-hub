@@ -144,7 +144,7 @@ test("claude-mem project filtering prevents starvation and the local cursor adva
   const before = s.dump(); s.rebuild(); expect(s.dump()).toBe(before);
 });
 
-test("claude-mem cursor survives reopen, resets for recreated sources, and fails open for malformed state", () => {
+test("claude-mem cursor survives reopen and resets a recreated project source even when unrelated rows have higher ids", () => {
   const file = sourceRows([{ text: "old one" }, { text: "old two" }]);
   const s = open();
   const opts = { project: "github.com/o/app", chain: ["app"], isPii: () => false, db: file };
@@ -152,13 +152,18 @@ test("claude-mem cursor survives reopen, resets for recreated sources, and fails
   const otherHandle = new MemoryStore({ home: s.dir.slice(0, -"/memory".length) });
   cleanup.push(() => otherHandle.close());
   expect(importClaudeMem(otherHandle, opts)).toMatchObject({ read: 0, added: 0, cursor: 2 });
-  // Recreate the database at the same real path, with a lower maximum autoincrement id.
+  // Recreate the database at the same real path: this project restarted below the cursor,
+  // while unrelated projects already have ids above it. A global MAX(id) must not hide the reset.
   unlinkSync(file);
   const db = new Database(file);
   db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
   db.run(`INSERT INTO observations (project, text, created_at_epoch, metadata) VALUES ('app', 'new source', 1790000000000, '{"peer":"codex"}')`);
+  for (const text of ["foreign two", "foreign three", "foreign four"]) db.query("INSERT INTO observations (project, text, created_at_epoch, metadata) VALUES (?, ?, ?, ?)").run("other", text, 1_790_000_000_000, '{"peer":"codex"}');
+  expect(db.query("SELECT MAX(id) AS id FROM observations").get()).toEqual({ id: 4 });
   db.close();
-  expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 1, cursor: 1 });
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 1, more: false, cursor: 1 });
+  expect(s.list().map((v) => v.text).sort()).toEqual(["new source", "old one", "old two"]);
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 0, added: 0, more: false, cursor: 1 });
   writeFileSync(join(s.dir, "import-state.json"), "{broken");
   expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 0, cursor: 1 });
 });

@@ -220,7 +220,7 @@ and secret-looking text are skipped. The source database is opened read-only and
 - A machine-local `memory/import-state.json` records the last fully handled row, including all skips. The cursor key
   combines the source DB's real path, claude-mem project name and hub project key. The file uses mode 0600 and atomic
   replacement; it never syncs. Unreadable or malformed state replays from zero, write failure logs a warning and preserves
-  the import result, and a database whose max id is below the cursor resets it. Completed progress is saved even if a later
+  the import result, and a source whose maximum candidate id for this project is below the cursor resets it (unrelated projects cannot mask a recreated source). Completed progress is saved even if a later
   row throws. `--restart` starts from zero; use it after changing a PII policy to revisit rows skipped under the old policy.
 - The default limit is 10000. JSON reports `read` (project-matched, peer-tagged SQL rows this run), `added`,
   `skipped.model`, `skipped.pii`, `skipped.secret`, `cursor` (last handled id), and `more` (`read === limit`). Malformed
