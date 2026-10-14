@@ -76,7 +76,7 @@ function run(argv) {
   app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   var screen = $.NSScreen.mainScreen.visibleFrame;
-  var W = 190, H = 170;
+  var W = 190, H = 190;
   var origin = { x: screen.origin.x + screen.size.width - (W + 20), y: screen.origin.y + 80 };
   try {
     var saved = JSON.parse(ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(positionPath, $.NSUTF8StringEncoding, null)));

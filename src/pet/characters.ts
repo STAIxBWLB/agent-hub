@@ -150,7 +150,8 @@ export const CHARACTERS: Record<CharacterId, Character> = {
           "full": [
             "  ▄██████▄  ",
             "\\▟  O  O  ▙/",
-            "█   STAI   █",
+            "█   1234   █",
+            "█   5678   █",
             "█    ><    █",
             " ▀████████▀ ",
             "   █▄█ █▄█  "
@@ -168,7 +169,8 @@ export const CHARACTERS: Record<CharacterId, Character> = {
           "full": [
             "  ▄██████▄  ",
             " ▟  X  X  ▙ ",
-            "█   STAI   █",
+            "█   1234   █",
+            "█   5678   █",
             "█    ><    █",
             " ▀████████▀ ",
             "   █▄█ █▄█  "
@@ -186,7 +188,8 @@ export const CHARACTERS: Record<CharacterId, Character> = {
           "full": [
             "  ▄██████▄  ",
             " ▟  o  o  ▙ ",
-            "█   STAI   █",
+            "█   1234   █",
+            "█   5678   █",
             "█    ><    █",
             " ▀████████▀ ",
             "   █▄█ █▄█  "
@@ -204,7 +207,8 @@ export const CHARACTERS: Record<CharacterId, Character> = {
           "full": [
             "  ▄██████▄  ",
             " ▟  >  <  ▙ ",
-            "█   STAI   █",
+            "█   1234   █",
+            "█   5678   █",
             "█    ><    █",
             " ▀████████▀ ",
             "  █▄█   █▄█ "
@@ -222,7 +226,8 @@ export const CHARACTERS: Record<CharacterId, Character> = {
           "full": [
             "  ▄██████▄  ",
             " ▟  O  O  ▙ ",
-            "█   STAI   █",
+            "█   1234   █",
+            "█   5678   █",
             "█    ><    █",
             " ▀████████▀ ",
             "   █▄█ █▄█  "
@@ -240,7 +245,8 @@ export const CHARACTERS: Record<CharacterId, Character> = {
           "full": [
             "  ▄██████▄  ",
             " ▟  -  -  ▙ ",
-            "█   STAI   █",
+            "█   1234   █",
+            "█   5678   █",
             "█    ><    █",
             " ▀████████▀ ",
             "   █▄█ █▄█  "
@@ -258,7 +264,8 @@ export const CHARACTERS: Record<CharacterId, Character> = {
           "full": [
             "  ▄██████▄  ",
             "\\▟  -  -  ▙/",
-            "█   STAI   █",
+            "█   1234   █",
+            "█   5678   █",
             "█    ><    █",
             " ▀████████▀ ",
             "   █▄█ █▄█  "
