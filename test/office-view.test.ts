@@ -114,6 +114,8 @@ function startOfficeRuntime(view: () => string, measurement?: (text:string,font:
     ({
       draw(snap){ lastSnapshot=snap; render(snap); },
       filter(state){ officeFilter(state); },
+      focus(column){ setColumnFocus(column); },
+      focused(){ return columnFocus; },
       view(){ return currentView; },
       scene(){ return officeScene; },
       maps: { peerRows, taskRows, officeDesks, officeCards },
@@ -428,7 +430,7 @@ test("isometric renders the same model with the same focus order and accessible 
   expect(isoDesk.style.transform).toBe(`translate(${(12 - 3) * 0.8660254}px,${(12 + 3) * 0.5}px)`);
   const tile = isoDesk.findAll((node: Node) => node.attrs.class === "office-desk-surface")[0]!;
   expect(tile.tag).toBe("polygon");
-  expect(tile.attrs.points).toBe("0,0 8.66,5 -1.73,11 -10.39,6"); // desk top is 10 x 12 grid units
+  expect(tile.attrs.points).toBe("0,0 8.66,5 -8.66,15 -17.32,10"); // desk top is 10 x 20 grid units
   // The extruded desk: two thin front legs, a standing avatar behind it, a name plate on the front edge.
   expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-desk-leg")).toHaveLength(2);
   expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-nameplate")).toHaveLength(1);
@@ -441,9 +443,9 @@ test("isometric renders the same model with the same focus order and accessible 
   const w=model.width,h=model.height; // geometry is validated in office-model.test.ts
   expect(flat.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox).toBe(`0 0 ${w} ${h}`);
   const isoBox = iso.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox!.split(" ").map(Number);
-  const isoModel=officeModel(snapshot,null,{cols:2});
-  const corners=[...isoModel.rooms,...isoModel.desks].flatMap(tile=>[[tile.x,tile.y],[tile.x+tile.w,tile.y],[tile.x,tile.y+tile.h],[tile.x+tile.w,tile.y+tile.h]]).map(([x,y])=>[(x!-y!)*0.8660254,(x!+y!)*0.5]);
-  const xs=corners.map(point=>point[0]!),ys=corners.map(point=>point[1]!);
+  const scene=iso.api.scene(),roomGroups=(scene.layers.rooms as Node).children,deskGroups=(scene.layers.desks as Node).children;
+  const corners=[...roomGroups.flatMap(group=>officeTilePoints(group,"office-room")),...deskGroups.flatMap(group=>officeTilePoints(group,"office-desk-surface"))];
+  const xs=corners.map(point=>point[0]),ys=corners.map(point=>point[1]);
   expect(isoBox[0]).toBeCloseTo(Math.min(...xs)-3);
   expect(isoBox[1]).toBeCloseTo(Math.min(...ys)-6);
   expect(isoBox[2]).toBeCloseTo(Math.max(...xs)-Math.min(...xs)+6);
@@ -591,10 +593,17 @@ test("office task focus and combined Work filter follow five-column board cards 
 });
 
 const hasOfficeClass=(name:string)=>(node:Node)=>(node.attrs.class ?? "").split(" ").includes(name);
+function officeTranslation(node:Node):[number,number]{
+ const match=/translate\(([-\d.]+)px,([-\d.]+)px\)/.exec(node.style.transform ?? '')!;
+ return[Number(match[1]),Number(match[2])];
+}
+function officeTilePoints(group:Node,cls:string):[number,number][]{
+ const [dx,dy]=officeTranslation(group),tile=group.findAll(hasOfficeClass(cls))[0]!;
+ return tile.attrs.points!.split(" ").map(point=>{const [x,y]=point.split(",").map(Number);return[x!+dx,y!+dy]});
+}
 function officeRect(node:Node){
- const [x,y]=/translate\(([-\d.]+)px,([-\d.]+)px\)/.exec(node.style.transform ?? '')!.slice(1).map(Number);
- const rect=node.findAll(hasOfficeClass("office-card"))[0]!;
- return{x:x!+Number(rect.attrs.x || 0),y:y!+Number(rect.attrs.y || 0),w:Number(rect.attrs.width),h:Number(rect.attrs.height)};
+ const [x,y]=officeTranslation(node),rect=node.findAll(hasOfficeClass("office-card"))[0]!;
+ return{x:x+Number(rect.attrs.x || 0),y:y+Number(rect.attrs.y || 0),w:Number(rect.attrs.width),h:Number(rect.attrs.height)};
 }
 test("Office fixed scale uses projected viewBox width and stable readable type (#394)",()=>{
  const data={...snapshot,status:{peers:{claude:{state:"idle",queued:0},codex:{state:"busy",queued:1}}}};
@@ -631,7 +640,8 @@ test("Office room headers form the final overlay layer with count pills (#394)",
   expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-count"))).toHaveLength(4);
   expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-title"))).toHaveLength(0);
   expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-wire"))).toHaveLength(0);
-  expect((scene.layers.headers as Node).findAll(node=>node.tag==="rect")).toHaveLength(4);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-count-pill"))).toHaveLength(4);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-header-surface"))).toHaveLength(view==="isometric"?4:0);
  }
 });
 
@@ -667,9 +677,10 @@ test("isometric room cards stay inside tiles without overlap and account for omi
   for(const rect of rects){
    expect(rect.w).toBeGreaterThan(0);expect(rect.h).toBeGreaterThan(0);
    for(const [x,y] of [[rect.x,rect.y],[rect.x+rect.w,rect.y],[rect.x,rect.y+rect.h],[rect.x+rect.w,rect.y+rect.h]] as const){
-    const gx=y+x/(2*0.8660254),gy=y-x/(2*0.8660254);
-    expect(gx).toBeGreaterThanOrEqual(room.x+1-0.00001);expect(gx).toBeLessThanOrEqual(room.x+room.w-1+0.00001);
-    expect(gy).toBeGreaterThanOrEqual(room.y+1-0.00001);expect(gy).toBeLessThanOrEqual(room.y+room.h-1+0.00001);
+    const group=(f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-roombox-todo"))[0]!,[originX,originY]=officeTranslation(group);
+    const localX=x-originX,localY=y-originY,gx=localY+localX/(2*0.8660254),gy=localY-localX/(2*0.8660254);
+    expect(gx).toBeGreaterThanOrEqual(1-0.00001);expect(gx).toBeLessThanOrEqual(room.w-1+0.00001);
+    expect(gy).toBeGreaterThanOrEqual(1-0.00001);expect(gy).toBeLessThanOrEqual(room.h-1+0.00001);
    }
   }
   for(let i=0;i<rects.length;i++)for(let j=i+1;j<rects.length;j++){
@@ -769,4 +780,54 @@ test("Office preserves keyboard focus on unchanged and reordered card nodes (#39
   expect(layer.moves).toBeGreaterThan(moves);expect(active.focused).toBe(nativeMove?1:2);
   if(!nativeMove)expect(active.focusOptions).toEqual({preventScroll:true});
  }
+});
+
+test("flat desk trays keep three 24 px cards inside padding with 6 px gaps (#394)",()=>{
+ const tasks=Array.from({length:6},(_,index)=>({id:index+1,title:"Desk tray task "+(index+1),class:"implement",state:"in_progress",owner:index<3?"claude":"codex"}));
+ const data={...snapshot,status:{peers:{claude:{state:"busy",queued:0},codex:{state:"busy",queued:0}}},tasks};
+ const f=startOfficeRuntime(()=>"flat");f.api.draw(data);expect([...f.api.maps.officeCards.keys()].sort((a,b)=>a-b)).toEqual([1,2,3,4,5,6]);
+ for(const owner of ["claude","codex"]){
+  const desk=f.api.maps.officeDesks.get(owner)! as Node,[dx,dy]=officeTranslation(desk),tile=desk.findAll(hasOfficeClass("office-desk-surface"))[0]!,width=Number(tile.attrs.width),height=Number(tile.attrs.height);
+  const rects=tasks.filter(task=>task.owner===owner).map(task=>officeRect(f.api.scene().els.get("paint:card:"+task.id).node)).sort((a,b)=>a.y-b.y);
+  expect(rects).toHaveLength(3);
+  for(const rect of rects){expect(rect.h*12).toBe(24);expect(rect.x-dx).toBeGreaterThanOrEqual(0.8-0.00001);expect(rect.x+rect.w-dx).toBeLessThanOrEqual(width-0.8+0.00001);expect(rect.y-dy).toBeGreaterThanOrEqual(0.8);expect(rect.y+rect.h-dy).toBeLessThanOrEqual(height-0.8);}
+  for(let index=1;index<rects.length;index++)expect((rects[index]!.y-(rects[index-1]!.y+rects[index-1]!.h))*12).toBeCloseTo(6);
+ }
+});
+
+
+test("isometric desk trays and room bands fit without overlap and overflow targets the owner (#394)",()=>{
+ const tasks=Array.from({length:12},(_,index)=>({id:index+1,title:"Mixed desk and room task "+(index+1),class:"implement",state:index<6?"in_progress":index<9?"proposed":"in_review",...(index<6?{owner:index<3?"claude":"codex"}:{})}));
+ const data={...snapshot,status:{peers:{claude:{state:"busy",queued:0},codex:{state:"busy",queued:0}}},tasks};
+ const f=startOfficeRuntime(()=>"isometric");f.api.draw(data);const scene=f.api.scene(),paint=scene.layers.cards as Node;
+ expect([...f.api.maps.officeCards.keys()].sort((a,b)=>a-b)).toEqual([1,2,4,5,7,8,9,10,11,12]);
+ const rects=paint.children.map(officeRect);expect(rects).toHaveLength(10);
+ for(let i=0;i<rects.length;i++)for(let j=i+1;j<rects.length;j++){
+  const a=rects[i]!,b=rects[j]!;expect(a.x+a.w<=b.x || b.x+b.w<=a.x || a.y+a.h<=b.y || b.y+b.h<=a.y).toBe(true);
+ }
+ for(const owner of ["claude","codex"]){
+  const desk=f.api.maps.officeDesks.get(owner)! as Node,[dx,dy]=officeTranslation(desk),model=officeModel(data,null,{cols:2}).desks.find(item=>item.id===owner)!;
+  const owned=tasks.filter(task=>task.owner===owner&&f.api.maps.officeCards.has(task.id));expect(owned).toHaveLength(2);
+  const cards=owned.map(task=>officeRect(scene.els.get("paint:card:"+task.id).node));
+  for(const rect of cards){
+   expect(rect.h*12).toBe(24);
+   for(const [x,y] of [[rect.x,rect.y],[rect.x+rect.w,rect.y],[rect.x,rect.y+rect.h],[rect.x+rect.w,rect.y+rect.h]] as const){
+    const lx=x-dx,ly=y-dy,gx=ly+lx/(2*0.8660254),gy=ly-lx/(2*0.8660254);
+    expect(gx).toBeGreaterThanOrEqual(1-0.00001);expect(gx).toBeLessThanOrEqual(model.w-1+0.00001);expect(gy).toBeGreaterThanOrEqual(1-0.00001);expect(gy).toBeLessThanOrEqual(model.h-1+0.00001);
+   }
+  }
+  const sorted=[...cards].sort((a,b)=>a.y-b.y);expect((sorted[1]!.y-(sorted[0]!.y+sorted[0]!.h))*12).toBeCloseTo(6);
+  const more=desk.findAll(node=>node.attrs["aria-label"]==="Show 1 more tasks owned by "+owner)[0]!;
+  expect(more.text()).toContain("+1 more");f.api.focus("review");expect(f.api.focused()).toBe("review");
+  let stopped=false;more.fire("keydown",{key:"Enter",preventDefault(){},stopPropagation(){stopped=true}});
+  expect(stopped).toBe(true);expect(f.api.view()).toBe("board");expect(f.api.focused()).toBeNull();expect(f.get("task-filter").value).toBe("work");expect(f.get("task-peer-filter").value).toBe(owner);
+  expect([...f.api.maps.taskRows.keys()].sort((a,b)=>a-b)).toEqual(tasks.filter(task=>task.owner===owner).map(task=>task.id));
+ }
+ const deskBottom=Math.max(...(scene.layers.desks as Node).children.flatMap(group=>[...officeTilePoints(group,"office-desk-surface"),...group.findAll(hasOfficeClass("office-desk-leg")).flatMap(leg=>{const [dx,dy]=officeTranslation(group);return leg.attrs.points!.split(" ").map(point=>{const [x,y]=point.split(",").map(Number);return[x!+dx,y!+dy] as const})})]).map(point=>point[1]));
+ const headerTop=Math.min(...(scene.layers.headers as Node).children.map(group=>{const [,y]=officeTranslation(group),surface=group.findAll(hasOfficeClass("office-header-surface"))[0]!;return y+Number(surface.attrs.y)}));
+ const roomTop=Math.min(...(scene.layers.rooms as Node).children.flatMap(group=>officeTilePoints(group,"office-room")).map(point=>point[1]));
+ expect(headerTop).toBeGreaterThanOrEqual(deskBottom+1-0.01);expect(roomTop).toBeGreaterThan(headerTop);
+ const svg=scene.svg as Node;expect(Number(svg.attrs.width)).toBeCloseTo(Number(svg.attrs.viewBox!.split(" ")[2])*12);
+ const extra=startOfficeRuntime(()=>"isometric");extra.api.draw({...data,tasks:Array.from({length:8},(_,index)=>({id:index+100,title:"Additional owned task",class:"implement",state:"in_progress",owner:"claude"}))});
+ expect(extra.api.maps.officeCards.size).toBe(2);expect((extra.api.maps.officeDesks.get("claude")! as Node).findAll(node=>node.attrs["aria-label"]==="Show 6 more tasks owned by claude")[0]!.text()).toContain("+6 more");
 });

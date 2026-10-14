@@ -23,7 +23,7 @@ const dashboardTheme = (() => {
 /* PEER_PALETTE_CSS */
 .task-board-section{grid-column:1/-1}.board-columns{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:18px}.board-column{min-width:0;background:var(--panel-soft);border:1px solid var(--line);border-radius:6px;padding:10px}.board-column h3{font-size:14px;margin:0 0 12px}.board-column h4{font-size:12px;color:var(--muted);margin:12px 0 8px}.task-card{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:12px;margin:0 0 10px;overflow-wrap:anywhere}.task-card .row-head{align-items:flex-start}.task-card .label{font-size:14px}.task-card .actions{display:grid;gap:8px}.task-card .actions select{max-width:none;width:100%}.task-card button,.task-card select,.agent-legend button{min-height:44px}.task-card .body{font-size:13px}.task-card .task-stage{font-size:12px}.board-columns .empty{padding:8px 0}.board-lane{border-top:1px solid var(--line)}.board-lane>h3{padding:14px 18px 0;font-size:15px}.peer-mark{display:inline-flex;align-items:center;gap:6px}.peer-color-dot{width:9px;height:9px;display:inline-block;border-radius:50%;background:var(--peer-color);flex-shrink:0}.peer-color-dot.reviewer{background:transparent;border:2px solid var(--peer-color)}.agent-legend{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-bottom:1px solid var(--line)}.agent-legend .agent-slot{border:1px solid var(--line);border-radius:5px;padding:10px;flex:1 1 180px;min-width:0}.agent-legend .meta{overflow-wrap:anywhere}.board-drop-active{outline:2px solid var(--green);outline-offset:2px}.board-toolbar{padding:12px 18px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}.board-toolbar label{margin:0}.board-toolbar select{width:auto;max-width:220px}.board-unknown{padding:12px 18px;color:var(--amber)}.task-list{max-height:none;overflow:visible}.progress-backlog{fill:var(--dot)}
 @media(max-width:1100px){.board-columns{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:600px){.split{grid-template-columns:minmax(0,1fr)}.board-columns{grid-template-columns:1fr;padding:12px}.board-toolbar{align-items:stretch}.board-toolbar select{max-width:none;width:100%}.board-toolbar label{width:100%}}
-.office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}.office-scene :is(rect,path,line,polygon,circle){vector-effect:non-scaling-stroke;stroke-width:1px}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-room-count{fill:var(--ink);font-size:1px;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}.office-count-pill{fill:var(--panel);stroke:var(--line)}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed .office-avatar{opacity:.55}.office-name{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-state,.office-meta,.office-empty{fill:var(--muted);font-size:1px}.office-glyph,.office-hand{font-size:1px}.office-idle .office-glyph{fill:var(--green)}.office-busy .office-glyph{fill:var(--amber)}.office-offline .office-glyph,.office-unknown .office-glyph{fill:var(--muted)}.office-paused .office-glyph{fill:var(--amber)}.office-waiting .office-glyph{fill:var(--red)}.office-hand{fill:var(--red)}.office-bubble{fill:var(--panel);stroke:var(--blue)}.office-bubble-text{fill:var(--ink);font-size:1px}.office-mode{fill:var(--muted);font-size:1px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1px}.office-card-id{font-family:ui-monospace,monospace}.office-card-accent{fill:var(--line)}.office-waiting-card .office-card-accent{fill:var(--waiting)}.office-rework-card .office-card-accent{fill:var(--red)}.office-card-checking .office-card-accent{fill:var(--blue)}.office-more{fill:var(--blue);font-size:1px}.office-scene .office-spotlight .office-desk-surface,.office-scene .office-spotlight .office-card,.office-scene [role="button"]:focus-visible > .office-card{stroke:var(--focus);stroke-width:2px}.office-card-hit{fill:transparent;stroke:none;pointer-events:all}.office-card-focus:focus-visible{outline:none}.row.spotlight{background:var(--hover)}
+.office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}.office-scene :is(rect,path,line,polygon,circle){vector-effect:non-scaling-stroke;stroke-width:1px}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-room-count{fill:var(--ink);font-size:1px;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}.office-header-surface{fill:var(--panel);stroke:var(--line)}.office-count-pill{fill:var(--panel);stroke:var(--line)}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed .office-avatar{opacity:.55}.office-name{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-state,.office-meta,.office-empty{fill:var(--muted);font-size:1px}.office-glyph,.office-hand{font-size:1px}.office-idle .office-glyph{fill:var(--green)}.office-busy .office-glyph{fill:var(--amber)}.office-offline .office-glyph,.office-unknown .office-glyph{fill:var(--muted)}.office-paused .office-glyph{fill:var(--amber)}.office-waiting .office-glyph{fill:var(--red)}.office-hand{fill:var(--red)}.office-bubble{fill:var(--panel);stroke:var(--blue)}.office-bubble-text{fill:var(--ink);font-size:1px}.office-mode{fill:var(--muted);font-size:1px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1px}.office-card-id{font-family:ui-monospace,monospace}.office-card-accent{fill:var(--line)}.office-waiting-card .office-card-accent{fill:var(--waiting)}.office-rework-card .office-card-accent{fill:var(--red)}.office-card-checking .office-card-accent{fill:var(--blue)}.office-more{fill:var(--blue);font-size:1px}.office-scene .office-spotlight .office-desk-surface,.office-scene .office-spotlight .office-card,.office-scene [role="button"]:focus-visible > .office-card{stroke:var(--focus);stroke-width:2px}.office-card-hit{fill:transparent;stroke:none;pointer-events:all}.office-card-focus:focus-visible{outline:none}.row.spotlight{background:var(--hover)}
 
 .office-movable{transition:transform .8s ease}.office-arc .office-arc-path{fill:none;stroke:var(--blue);stroke-width:1px}.office-arc .office-arc-head{fill:var(--blue)}.office-arc-important .office-arc-path{stroke:var(--amber)}.office-arc-important .office-arc-head{fill:var(--amber)}.office-arc-dropped .office-arc-path{stroke:var(--red);stroke-dasharray:.6 .4}.office-arc-dropped .office-arc-head{fill:var(--red)}.office-arc-label{fill:var(--muted);font-size:1px}.office-alert{fill:var(--red);font-size:1px}.office-latch{fill:var(--amber);font-size:1px}.office-link-line{fill:none;stroke-width:1px;stroke-dasharray:.8 .5}.office-link-overlap .office-link-line{stroke:var(--amber)}.office-link-conflict .office-link-line{stroke:var(--red)}.office-link-cohort .office-link-line{stroke:var(--blue)}.office-link-label{font-size:1px;fill:var(--muted)}.office-link-conflict .office-link-label{fill:var(--red)}.office-link-overlap .office-link-label{fill:var(--amber)}.office-link-cohort .office-link-label{fill:var(--blue)}.office-checking{fill:var(--blue);font-size:.916667px}
 .office-avatar{fill:var(--muted)}.office-idle .office-avatar{fill:var(--dot-ok)}.office-busy .office-avatar{fill:var(--dot-warn)}.office-offline .office-avatar{fill:var(--dot)}.office-paused .office-avatar{fill:var(--dot-warn)}.office-waiting .office-avatar{fill:var(--amber)}.office-waiting .office-desk-surface{stroke:var(--amber)}.office-glyph-shape{fill:none;stroke-width:1px}.office-idle .office-glyph-shape{stroke:var(--dot-ok)}.office-busy .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-paused .office-glyph-shape{stroke:var(--dot-warn);fill:var(--dot-warn)}.office-offline .office-glyph-shape{stroke:var(--dot)}.office-handshape{fill:none;stroke:var(--dot-err);stroke-width:1px}.office-desk-leg{fill:var(--panel-soft);stroke:var(--line);stroke-width:1px}.office-nameplate{fill:var(--control);stroke:var(--control-border);stroke-width:1px}.office-room-wire{fill:none;stroke:var(--line);stroke-width:1px}.office-divider{fill:none;stroke:var(--line);stroke-width:1px}.office-shelf{fill:var(--panel-soft);stroke:var(--line);stroke-width:1px}.office-shelf-card{fill:var(--green-soft);stroke:var(--green);stroke-width:1px}.office-box-top{fill:var(--control);stroke:var(--control-border);stroke-width:1px}.office-box-left{fill:var(--panel-soft);stroke:var(--line);stroke-width:1px}.office-box-right{fill:var(--panel);stroke:var(--line);stroke-width:1px}.office-busy .office-glyph,.office-hand{animation:office-pulse 1.2s ease-in-out infinite}.office-appear{animation:office-appear .5s ease-out}.office-leaving{pointer-events:none;animation:office-fade .4s linear forwards}.office-fadeout{animation-name:office-fade;animation-duration:1s;animation-timing-function:linear;animation-fill-mode:forwards}.office-settle .office-movable{transition:none}.office-settle .office-appear{animation:none}
@@ -855,10 +855,11 @@ async function poll() {
 const OFFICE_SCALE = 12;
 let officeProjection = 'flat';
 let officeLastProjection = '';
+let officeRoomOffset = 0;
 const officeRound = (v) => Math.round(v * 100) / 100;
 function officeIsoLocal(x, y) { return [(x - y) * 0.8660254, (x + y) * 0.5]; }
 function officeProject(x, y) { return officeProjection === 'iso' ? officeIsoLocal(x, y) : [x, y]; }
-function officePlace(node, x, y) { const p = officeProject(x, y); node.style.transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)'; }
+function officePlace(node, x, y, room = false) { const p = officeProject(x, y); if (room) p[1] += officeRoomOffset; node.style.transform = 'translate(' + p[0] + 'px,' + p[1] + 'px)'; }
 function officeOrderNodes(parent, nodes) {
   for (let index = 0; index < nodes.length; index++) {
     const node = nodes[index], before = parent.children[index] || null;
@@ -875,7 +876,7 @@ function officeTile(w, h, cls) {
 }
 function officeViewBox(w, h, model) {
   if (officeProjection !== 'iso') return '0 0 ' + w + ' ' + h;
-  const corners = model ? [...model.rooms, ...model.desks].flatMap(tile => [officeProject(tile.x, tile.y), officeProject(tile.x + tile.w, tile.y), officeProject(tile.x, tile.y + tile.h), officeProject(tile.x + tile.w, tile.y + tile.h)]) : [officeProject(0, 0), officeProject(w, 0), officeProject(0, h), officeProject(w, h)];
+  const corners = model ? [...model.rooms, ...model.desks].flatMap(tile => [officeProject(tile.x, tile.y), officeProject(tile.x + tile.w, tile.y), officeProject(tile.x, tile.y + tile.h), officeProject(tile.x + tile.w, tile.y + tile.h)].map(([x, y]) => [x, y + (model.rooms.includes(tile) ? officeRoomOffset : 0)])) : [officeProject(0, 0), officeProject(w, 0), officeProject(0, h), officeProject(w, h)];
   const xs = corners.map((p) => p[0]), ys = corners.map((p) => p[1]), m = 3;
   const minX = Math.min(...xs), minY = Math.min(...ys);
   return (minX - m) + ' ' + (minY - 6) + ' ' + (Math.max(...xs) - minX + 2 * m) + ' ' + (Math.max(...ys) - minY + 9);
@@ -956,21 +957,24 @@ function officeCardLabel(card, width) {
   return prefix + clipped.trimEnd() + suffix;
 }
 // Upright chips follow the tile grid; omit any that cannot fit wholly inside its padded footprint.
-function officeRoomCards(room) {
-  if (officeProjection !== 'iso') return room.cards;
-  const origin = officeProject(room.x, room.y), visible = [];
-  for (let i = 0; i < room.cards.length; i++) {
-    const card = room.cards[i], at = officeIsoLocal(room.w / 2, 8 + i * (card.h + 0.5) * 2);
+function officeTileCards(tile, centerX, startY, lift = 0) {
+  if (officeProjection !== 'iso') return tile.cards;
+  const origin = officeProject(tile.x, tile.y), visible = [];
+  for (let i = 0; i < tile.cards.length; i++) {
+    const card = tile.cards[i], at = officeIsoLocal(centerX, startY + i * (card.h + 0.5) * 2);
     const left = at[0] - card.w / 2, top = at[1];
     const corners = [[left, top], [left + card.w, top], [left, top + card.h], [left + card.w, top + card.h]];
     const fits = corners.every(([x, y]) => {
       const gx = (x / 0.8660254 + y / 0.5) / 2, gy = (y / 0.5 - x / 0.8660254) / 2;
-      return gx >= 1 && gx <= room.w - 1 && gy >= 1 && gy <= room.h - 1;
+      return gx >= 1 && gx <= tile.w - 1 && gy >= 1 && gy <= tile.h - 1;
     });
-    if (fits) visible.push({ ...card, drawX: origin[0] + left, drawY: origin[1] + top });
+    if (fits) visible.push({ ...card, drawX: origin[0] + left, drawY: origin[1] + top + lift });
   }
   return visible;
 }
+function officeRoomCards(room) { return officeTileCards(room, room.w / 2, 8, officeRoomOffset); }
+function officeDeskCards(desk) { return officeTileCards(desk, desk.w / 2 - 0.5, 9); }
+
 function officeNode(tag, attrs, text) { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const key in attrs) node.setAttribute(key, String(attrs[key])); if (text !== undefined) node.textContent = text; return node; }
 function officeKeys(event, activate) { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } }
 let spotlitRow = null;
@@ -1052,20 +1056,29 @@ function officeDeskPaint(node, desk) {
   if (desk.tray.needsReview) tray.push(desk.tray.needsReview + ' to review');
   if (desk.tray.heldBy) tray.push('held by ' + desk.tray.heldBy);
   if (tray.length) children.push(officeNode('text', { x: 1, y: line, class: 'office-meta' }, officeClip(tray.join(' / '), 38)));
-  if (desk.extraCards > 0) children.push(officeNode('text', { x: 1, y: desk.h - 0.4, class: 'office-meta' }, '+' + desk.extraCards + ' more'));
+  if (desk.extraCards > 0) {
+    const at = iso ? officeIsoLocal(desk.w / 2, desk.h - 1) : [1, desk.h - 1];
+    if (iso && desk.cards.length) at[1] = Math.max(...desk.cards.map(card => card.drawY - officeProject(desk.x, desk.y)[1] + card.h)) + 1.2;
+    const more = officeNode('g', { tabindex: '0', role: 'button', 'aria-label': 'Show ' + desk.extraCards + ' more tasks owned by ' + desk.id });
+    more.append(officeNode('text', { x: at[0], y: at[1], 'text-anchor': iso ? 'middle' : 'start', class: 'office-more' }, '+' + desk.extraCards + ' more'));
+    const open = event => { event.stopPropagation(); setColumnFocus(null); officeFilter('work'); $('task-peer-filter').value = desk.id; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); switchView('board'); };
+    more.addEventListener('click', open);
+    more.addEventListener('keydown', event => officeKeys(event, () => open(event)));
+    children.push(more);
+  }
   node.replaceChildren(...children);
 }
 function officeRoomHeader(node, room) {
-  officePlace(node, room.x, room.y);
+  officePlace(node, room.x, room.y, true);
   const iso = officeProjection === 'iso', y = iso ? -1.2 : 2.2, right = iso ? 12 : room.w - 1;
   node.setAttribute('class', 'office-room-header');
-  node.replaceChildren(officeNode('text', { x: iso ? 0 : 1, y, class: 'office-room-title' }, room.label),
+  node.replaceChildren(...(iso ? [officeNode('rect', { x: -0.5, y: -2.55, width: 13, height: 2, rx: 0.5, class: 'office-header-surface' })] : []), officeNode('text', { x: iso ? 0 : 1, y, class: 'office-room-title' }, room.label),
     officeNode('rect', { x: right - 3, y: y - 1.35, width: 3, height: 2, rx: 0.5, class: 'office-count-pill' }),
     officeNode('text', { x: right - 1.5, y, 'text-anchor': 'middle', class: 'office-room-count' }, String(room.count)));
 }
 function officeRoomPaint(node, room) {
   node.setAttribute('class', 'office-roombox office-roombox-' + room.id);
-  officePlace(node, room.x, room.y);
+  officePlace(node, room.x, room.y, true);
   const iso = officeProjection === 'iso', children = [officeTile(room.w, room.h, 'office-room')];
   const emptyAt = iso ? officeIsoLocal(room.w / 2, 10) : [1, 5];
   if (room.id === 'done') children.push(...officeShelf(iso, room.count));
@@ -1111,6 +1124,9 @@ function officeLeave(scene, key) {
 }
 function drawOffice(target, model) {
   const scene = officeEnsure(target), els = scene.els, now = Date.now();
+  // Separate upright desk labels and room headers by one projected unit, including the desk legs.
+  officeRoomOffset = officeProjection === 'iso' && model.desks.length
+    ? Math.max(0, Math.max(...model.desks.map(desk => officeProject(desk.x + desk.w, desk.y + desk.h)[1] + 2.4)) + 1 - Math.min(...model.rooms.map(room => officeProject(room.x, room.y)[1] - 2.55))) : 0;
   const viewBox = officeViewBox(model.width, model.height, model);
   scene.svg.setAttribute('viewBox', viewBox);
   scene.svg.setAttribute('width', Number(viewBox.split(' ')[2]) * OFFICE_SCALE);
@@ -1122,7 +1138,7 @@ function drawOffice(target, model) {
   const seen = new Set();
   const keep = (key, sig, layer, paint, appear) => {
     seen.add(key);
-    sig = officeProjection + '|' + sig; // a projection switch repaints every node in place
+    sig = officeProjection + '|' + officeRoomOffset + '|' + sig; // a projection switch repaints every node in place
     const entry = els.get(key);
     if (entry && entry.sig === sig) return { node: entry.node, fresh: false };
     const node = entry ? entry.node : officeNode('g', {});
@@ -1140,8 +1156,10 @@ function drawOffice(target, model) {
     const visible = roomCards.get(original.id), room = { ...original, cards: visible, overflow: original.overflow + original.cards.length - visible.length };
     keep('room:' + room.id, JSON.stringify({ ...room, cards: undefined, visibleCount: room.cards.length }), scene.layers.rooms, (node) => officeRoomPaint(node, room), false);
   }
-  for (const desk of model.desks) {
-    const { node, fresh } = keep('desk:' + desk.id, JSON.stringify({ ...desk, cards: undefined }), scene.layers.desks, (n) => officeDeskPaint(n, desk));
+  const deskCards = new Map(model.desks.map(desk => [desk.id, officeDeskCards(desk)]));
+  for (const original of model.desks) {
+    const visible = deskCards.get(original.id), desk = { ...original, cards: visible, extraCards: original.extraCards + original.cards.length - visible.length };
+    const { node, fresh } = keep('desk:' + desk.id, JSON.stringify({ ...desk, cards: undefined, visibleCount: desk.cards.length }), scene.layers.desks, (n) => officeDeskPaint(n, desk));
     if (fresh && !node.getAttribute('tabindex')) {
       node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
       const open = () => activateOfficePeer(desk.id);
@@ -1150,7 +1168,7 @@ function drawOffice(target, model) {
     }
   }
   const cards = [];
-  for (const desk of model.desks) cards.push(...desk.cards);
+  for (const desk of model.desks) cards.push(...deskCards.get(desk.id));
   for (const room of model.rooms) cards.push(...roomCards.get(room.id));
   const focusCards = [...cards]; // Model order stays stable while visual depth changes.
   if (officeProjection === 'iso') cards.sort((a, b) => (a.drawY ?? officeProject(a.x, a.y)[1]) - (b.drawY ?? officeProject(b.x, b.y)[1]) || a.id - b.id);

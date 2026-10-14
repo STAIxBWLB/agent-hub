@@ -182,7 +182,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const GLYPHS: Record<string, string> = { idle: "○", busy: "●", offline: "×", paused: "‖", waiting: "⚑", unknown: "?" };
   const LABELS: Record<string, string> = { idle: "idle", busy: "busy", offline: "offline", paused: "paused", waiting: "waiting on approval" };
   const DESK_CAP = 12, ROOM_CARDS = 8, DESK_CARDS = 3;
-  const DESK_W = 10, DESK_H = 12, DESK_DX = 12, DESK_DY = 14, DESK_COLS = 4, DESK_TOP = 3;
+  const DESK_W = 10, DESK_H = 20, DESK_DX = 12, DESK_DY = 22, DESK_COLS = 4, DESK_TOP = 3;
   const ROOM_W = 22, ROOM_H = 29, ROOM_DX = 23, ROOM_DY = 30;
   const ROOM_CARD_H = 7 / 3, ROOM_CARD_GAP = 0.5;
   const ARC_MS = 10_000, LATCH_MS = 3_000, SETTLE_GAP_MS = 3_000, SETTLE_MAX_MOVES = 6, ARC_CAP = 12, ALERT_CAP = 12;
@@ -318,7 +318,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       tray: { queued: num(peer.queued), important: num(peer.queuedImportant), heldBy: text(peer.heldBy), needsReview: num(peer.needsReview) },
       mode: text(peer.permissionMode), bubble, breakNote, breakResetsAt,
       finishing,
-      cards: shown.map((task, index) => card(task, x + 0.8, y + 9 + index * 1.05, DESK_W - 1.6, 0.95)),
+      cards: shown.map((task, index) => card(task, x + 0.8, y + 8.5 + index * 2.5, DESK_W - 1.6, 2)),
       extraCards: work.length - shown.length,
     };
   });

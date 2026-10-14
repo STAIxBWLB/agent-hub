@@ -161,6 +161,28 @@ test("the busy bubble appears only when the peer has exactly one in_progress tas
   expect(orphan.placed[9]).toBe("room:work");
 });
 
+test("desk trays keep all three readable cards inside the desk with padding and six pixel gaps", () => {
+  const tasks = Array.from({ length: 3 }, (_, index) => ({ id: index + 1, title: `Desk task ${index + 1}`, class: "implement", state: "in_progress", owner: "codex" }));
+  const snapshot = { status: { peers: { codex: { state: "busy" } } }, tasks };
+  const model = officeModel(snapshot, null, { cols: 4, now: 1000 });
+  const desk = model.desks[0]!;
+  expect(desk).toMatchObject({ slot: 0, x: 0, y: 3, w: 10, h: 20, extraCards: 0 });
+  expect(desk.cards.map((card) => card.id)).toEqual([1, 2, 3]);
+  for (const [index, card] of desk.cards.entries()) {
+    expect(card.x - desk.x).toBeCloseTo(0.8);
+    expect(desk.x + desk.w - card.x - card.w).toBeCloseTo(0.8);
+    expect(card.h * 12).toBe(24);
+    expect(card.h * 12).toBeGreaterThanOrEqual(20);
+    expect(card.y).toBe(desk.y + 8.5 + index * 2.5);
+    expect(desk.y + desk.h - card.y - card.h).toBeGreaterThanOrEqual(0.8);
+    expect(model.placed[card.id]).toBe("desk:codex");
+    if (index) expect((card.y - desk.cards[index - 1]!.y - card.h) * 12).toBe(6);
+  }
+  const overfull = officeModel({ ...snapshot, tasks: [...tasks, { ...tasks[0]!, id: 4 }] }, model, { cols: 4, now: 1100 }).desks[0]!;
+  expect(overfull.cards.map((card) => card.id)).toEqual([1, 2]);
+  expect(overfull.extraCards).toBe(2);
+});
+
 test("caps: 8 cards per room then an overflow count, 12 desks then +N peers", () => {
   const snap: OfficeSnapshotInput = {
     status: { peers: Object.fromEntries(Array.from({ length: 14 }, (_, i) => [`peer-${String(i).padStart(2, "0")}`, { state: "idle" }])) },
@@ -267,14 +289,14 @@ test("room cards fit one padded column at the fixed pixel scale, with space for 
 test("cols reflows rooms: left to right when wide, stacked when narrow", () => {
   const wide = officeModel(fixture(), null, { cols: 4, now: 1000 });
   // Six desks take two rows, so the rooms row starts below the desk grid.
-  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 31], [23, 31], [46, 31], [69, 31]]);
+  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [46, 47], [69, 47]]);
   expect(wide.width).toBe(91);
   const twoColumns = officeModel(fixture(), null, { cols: 2, now: 1000 });
-  expect(twoColumns.rooms.map((room) => [room.x, room.y])).toEqual([[0, 31], [23, 31], [0, 61], [23, 61]]);
+  expect(twoColumns.rooms.map((room) => [room.x, room.y])).toEqual([[0, 47], [23, 47], [0, 77], [23, 77]]);
   expect(twoColumns.rooms[1]!.x - twoColumns.rooms[0]!.x - twoColumns.rooms[0]!.w).toBe(1);
   expect(twoColumns.rooms[2]!.y - twoColumns.rooms[0]!.y - twoColumns.rooms[0]!.h).toBe(1);
   expect(twoColumns.width).toBe(46); // desks extend one unit past the room grid
-  expect(twoColumns.height).toBe(90);
+  expect(twoColumns.height).toBe(106);
   const narrow = officeModel(fixture(), null, { cols: 1, now: 1000 });
   const ys = narrow.rooms.map((room) => room.y);
   expect(new Set(narrow.rooms.map((room) => room.x)).size).toBe(1);

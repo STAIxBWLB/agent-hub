@@ -65,7 +65,7 @@ Phase 1 decisions within the spec:
 - The primary condition of a desk is the first of offline, paused, waiting on
   approval, busy, idle; the raised-hand count, inbox tray, mode badge and break
   sign are independent marks that combine freely with it.
-- Work-floor cards sit at the owner's desk (at most 3, then "+N more" as text);
+- Work-floor cards sit at the owner's desk (at most 3 in Flat, then an owner-filtered "+N more" control);
   a card whose owner has no visible desk waits in the Work floor room. Tasks in
   an unknown state are counted (`counts.unknown`) but placed nowhere.
 - The busy bubble names the task only when the peer has exactly one
@@ -161,6 +161,12 @@ Phase 4 decisions within the spec:
   Isometric uses two on wide screens and bounds the occupied tiles rather than
   blank grid corners, keeping the two-peer scene at the same scale at 1280 and
   1920 px. The cos-30/sin-30 projection and desk slots remain unchanged.
+  Desk trays use 24 px card bodies with 6 px gaps and padding inside a 20-unit
+  desk. Isometric fits upright cards wholly inside the tile (two per desk),
+  preserving omitted counts in a keyboard-accessible owner-filtered board link.
+  Its room band shifts vertically below desk legs and labels, with a one-unit
+  gap before the top-layer room headers; header backdrops associate each count
+  with its room.
 - A projection switch repaints every node in place (the projection is part of
   each reconcile signature) and is treated as a settle: positions jump, no
   transform transition storms. Card moves under Isometric animate through the
