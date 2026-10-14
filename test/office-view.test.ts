@@ -43,7 +43,7 @@ class Node {
     toggle: (name: string, force?: boolean) => { const on = force ?? !this.classes.has(name); if (on) this.classes.add(name); else this.classes.delete(name); },
     contains: (name: string) => this.classes.has(name),
   };
-  append(...nodes: Node[]) { for (const node of nodes) { node.parent = this; this.children.push(node); } }
+  append(...nodes: Node[]) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }
   replaceChildren(...nodes: Node[]) { this.children = []; this.replacements++; this.append(...nodes); }
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
   getAttribute(key: string) { return this.attrs[key] ?? null; }
@@ -107,6 +107,7 @@ function startOfficeRuntime(view: () => string) {
       draw(snap){ lastSnapshot=snap; render(snap); },
       filter(state){ officeFilter(state); },
       view(){ return currentView; },
+      scene(){ return officeScene; },
       maps: { peerRows, taskRows, officeDesks, officeCards },
     })`, context);
   return { api, get };
@@ -195,7 +196,7 @@ test("flat renders focusable desks and cards with accessible names; an unchanged
   // Room counts on the scene equal the taskProgress counts of the same snapshot.
   const counts = taskProgress(snapshot.tasks).counts;
   const text = office.text();
-  expect(text).toContain("To Do");
+  expect(text).toContain("To do");
   expect(text).toContain(String(counts.proposed + counts.waiting));
   expect(text).toContain(String(counts.in_review));
   expect(text).toContain(String(counts.approved));
@@ -423,17 +424,21 @@ test("isometric renders the same model with the same focus order and accessible 
   expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-desk-leg")).toHaveLength(2);
   expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-nameplate")).toHaveLength(1);
   expect(isoDesk.findAll((node: Node) => node.attrs.class === "office-avatar")[0]!.attrs.cy).toBe("-3.7");
-  // Rooms are faint wireframe floor boxes in iso, with a shelf of boxes for Done.
-  expect(iso.get("office").findAll((node: Node) => node.attrs.class === "office-room-wire").length).toBeGreaterThan(0);
-  expect(iso.get("office").findAll((node: Node) => node.attrs.class === "office-box-top")).toHaveLength(3);
+  // Room posts and decorative empty shelf boxes are removed in #394.
+  expect(iso.get("office").findAll((node: Node) => node.attrs.class === "office-room-wire")).toHaveLength(0);
+  expect(iso.get("office").findAll((node: Node) => node.attrs.class === "office-box-top")).toHaveLength(0);
   // The viewBox covers the projected extents with a margin.
-  const w = 94, h = 33; // flat viewBox of this fixture: four rooms in a row, one desk row
+  const model=officeModel(snapshot,null,{cols:4});
+  const w=model.width,h=model.height; // geometry is validated in office-model.test.ts
   expect(flat.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox).toBe(`0 0 ${w} ${h}`);
   const isoBox = iso.get("office").findAll((node) => node.tag === "svg")[0]!.attrs.viewBox!.split(" ").map(Number);
-  expect(isoBox[0]).toBeCloseTo(-h * 0.8660254 - 3);
-  expect(isoBox[1]).toBeCloseTo(-3);
-  expect(isoBox[2]).toBeCloseTo((w + h) * 0.8660254 + 6);
-  expect(isoBox[3]).toBeCloseTo((w + h) * 0.5 + 6);
+  const isoModel=officeModel(snapshot,null,{cols:2});
+  const corners=[...isoModel.rooms,...isoModel.desks].flatMap(tile=>[[tile.x,tile.y],[tile.x+tile.w,tile.y],[tile.x,tile.y+tile.h],[tile.x+tile.w,tile.y+tile.h]]).map(([x,y])=>[(x!-y!)*0.8660254,(x!+y!)*0.5]);
+  const xs=corners.map(point=>point[0]!),ys=corners.map(point=>point[1]!);
+  expect(isoBox[0]).toBeCloseTo(Math.min(...xs)-3);
+  expect(isoBox[1]).toBeCloseTo(Math.min(...ys)-6);
+  expect(isoBox[2]).toBeCloseTo(Math.max(...xs)-Math.min(...xs)+6);
+  expect(isoBox[3]).toBeCloseTo(Math.max(...ys)-Math.min(...ys)+9);
 });
 
 test("motion and the settle rule work under isometric, and a view switch jumps", () => {
@@ -462,19 +467,18 @@ test("motion and the settle rule work under isometric, and a view switch jumps",
   expect(card.style.transform).not.toBe(isoAt);
 });
 
-test("the polished flat scene: avatar, outline glyphs, hand shape, shelf cabinet and dividers", () => {
+test("the polished flat scene: avatar, outline glyphs, hand shape and populated Done shelf", () => {
   const { api, get } = startOfficeRuntime(() => "flat");
-  api.draw({ ...snapshot, permissions: [{ peer: "claude" }] });
+  api.draw({ ...snapshot, permissions: [{ peer: "claude" }],tasks:[...snapshot.tasks,...Array.from({length:6},(_,index)=>({id:100+index,title:"done",state:"approved",class:"implement"}))] });
   const claude = api.maps.officeDesks.get("claude")!;
   expect(claude.findAll((node: Node) => node.attrs.class === "office-avatar")).toHaveLength(2); // head + shoulders
   expect(claude.findAll((node: Node) => node.attrs.class === "office-handshape")).toHaveLength(2); // condition glyph + approval mark
   expect(claude.text()).toContain("waiting on approval"); // the label still carries the state in words
   expect(api.maps.officeDesks.get("kimi")!.findAll((node: Node) => node.attrs.class === "office-glyph-shape")).toHaveLength(1);
   const office = get("office");
-  expect(office.findAll((node) => node.attrs.class === "office-shelf")).toHaveLength(1);
+
   expect(office.findAll((node) => node.attrs.class === "office-shelf-card")).toHaveLength(6);
-  expect(office.findAll((node) => node.attrs.class === "office-divider").length).toBeGreaterThan(0); // between room columns
-  expect(office.text()).toContain("Done shelf");
+  expect(office.text()).toContain("Done");
 });
 
 function mergeOfficeRuntime(reduced: { value: boolean }, clock: { value: number }) {
@@ -574,4 +578,125 @@ test("office task focus and combined Work filter follow five-column board cards 
   get("task-peer-filter").value="kimi";api.draw(current);expect(api.maps.taskRows.has(4)).toBe(false);
   api.maps.officeCards.get(4)!.fire("click");expect(api.maps.taskRows.has(4)).toBe(true);
   expect(api.maps.taskRows.get(4)!.scrolled).toBe(1);expect(get("task-peer-filter").value).toBe("");
+});
+
+const hasOfficeClass=(name:string)=>(node:Node)=>(node.attrs.class ?? "").split(" ").includes(name);
+function officeRect(node:Node){
+ const [x,y]=/translate\(([-\d.]+)px,([-\d.]+)px\)/.exec(node.style.transform)!.slice(1).map(Number);
+ const rect=node.findAll(hasOfficeClass("office-card"))[0]!;
+ return{x:x!+Number(rect.attrs.x || 0),y:y!+Number(rect.attrs.y || 0),w:Number(rect.attrs.width),h:Number(rect.attrs.height)};
+}
+test("Office fixed scale uses projected viewBox width and stable readable type (#394)",()=>{
+ const data={...snapshot,status:{peers:{claude:{state:"idle",queued:0},codex:{state:"busy",queued:1}}}};
+ for(const view of ["flat","isometric"]){
+  const f=startOfficeRuntime(()=>view);f.get("office-section").clientWidth=1180;f.api.draw(data);
+  const svg=f.api.scene().svg as Node,box=svg.attrs.viewBox!.split(" ").map(Number),width=Number(svg.attrs.width);
+  expect(width).toBeCloseTo(box[2]!*12);expect(width).toBeLessThanOrEqual(1180);expect(svg.attrs.height).toBeUndefined();
+  f.get("office-section").clientWidth=1820;f.api.draw(data);expect(Number(svg.attrs.width)).toBe(width);expect(svg.attrs.viewBox!.split(" ").map(Number)).toEqual(box);
+ }
+ const css=html.match(/<style>([\s\S]*?)<\/style>/)![1]!;
+ const rule=(name:string)=>[...css.matchAll(/([^{}]+)\{([^}]+)\}/g)].find(match=>match[1]!.split(",").some(selector=>selector.trim()==="."+name))![2]!;
+ const sceneRule=rule("office-scene");expect(sceneRule).toContain("max-width:100%");expect(sceneRule).not.toMatch(/(?:^|;)width:100%/);expect(sceneRule).toContain("height:auto");
+ for(const [name,pixels] of [["office-room-title",13],["office-name",13],["office-room-count",12],["office-card-text",12],["office-state",12],["office-meta",12]] as const){
+  const font=Number(/font-size:([\d.]+)px/.exec(rule(name))![1]);expect(Math.abs(font*12-pixels)).toBeLessThanOrEqual(1);
+ }
+ expect(rule("office-room-title")).not.toMatch(/letter-spacing|text-transform/);expect(rule("office-room-title")).toContain("fill:var(--ink)");
+ const waiting=[...css.matchAll(/([^{}]+)\{([^}]+)\}/g)].find(match=>match[1]!.split(",").some(selector=>selector.trim()===".office-waiting .office-desk-surface"));
+ expect(waiting?.[2]).not.toMatch(/stroke-width:(?!1px(?:;|$))[^;]+/);
+ expect(css).toContain("vector-effect:non-scaling-stroke");expect(css).toContain("stroke-width:1px");expect(css).toContain("stroke-width:2px");
+});
+
+test("Office room headers form the final overlay layer with count pills (#394)",()=>{
+ for(const view of ["flat","isometric"]){
+  const f=startOfficeRuntime(()=>view);f.api.draw(snapshot);const scene=f.api.scene();
+  expect(scene.svg.children.at(-1)).toBe(scene.layers.headers);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-title")).map(node=>node.textContent)).toEqual(["To do","Work floor","Review","Done"]);
+  expect((scene.layers.headers as Node).findAll(hasOfficeClass("office-room-count"))).toHaveLength(4);
+  expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-title"))).toHaveLength(0);
+  expect((scene.layers.rooms as Node).findAll(hasOfficeClass("office-room-wire"))).toHaveLength(0);
+  expect((scene.layers.headers as Node).findAll(node=>node.tag==="rect")).toHaveLength(4);
+ }
+});
+
+test("Office empty rooms and Done shelf contain no decorative slots (#394)",()=>{
+ for(const view of ["flat","isometric"]){
+  for(const count of [0,1,3,12]){
+   const f=startOfficeRuntime(()=>view);f.api.draw({...snapshot,tasks:Array.from({length:count},(_,index)=>({id:index+1,title:"finished",state:"approved",class:"implement"}))});
+   const office=f.get("office"),slotClass=view==="flat"?"office-shelf-card":"office-box-top";
+   expect(office.findAll(hasOfficeClass(slotClass))).toHaveLength(Math.min(count,view==="flat"?6:3));
+   expect(office.findAll(node=>node.textContent==="No tasks")).toHaveLength(count?3:4);
+  }
+ }
+});
+
+test("Office cards expose full public titles while clipping readable labels at words (#394)",()=>{
+ const title="Improve routing reliability during release readiness checks";
+ for(const view of ["flat","isometric"]){
+  const f=startOfficeRuntime(()=>view);f.api.draw({...snapshot,tasks:[{id:101,title,state:"proposed",class:"implement"}]});
+  const card=f.api.maps.officeCards.get(101)! as Node;expect(card.attrs["aria-label"]).toContain(title);
+  expect(card.findAll(node=>node.tag==="title")[0]!.textContent).toContain(title);
+  const label=card.findAll(hasOfficeClass("office-card-text"))[0]!.children.map(node=>node.textContent).join("");expect(label).toContain("#101");expect(label).toContain("Improve routing");expect(label.length).toBeGreaterThan(18);
+  if(label.endsWith("...")){const clipped=label.slice(0,-3).trim();expect(("#101 "+title).startsWith(clipped+" ")).toBe(true);}
+  card.fire("keydown",{key:"Enter",preventDefault(){}});expect(f.get("task-detail-dialog").open).toBe(true);expect(f.get("task-detail-content").text()).toContain(title);
+ }
+});
+
+test("isometric room cards stay inside tiles without overlap and account for omitted tasks (#394)",()=>{
+ for(const count of [0,4,12]){
+  const data={...snapshot,status:{peers:{claude:{state:"idle",queued:0},codex:{state:"idle",queued:0}}},tasks:Array.from({length:count},(_,index)=>({id:index+1,title:"Readable task title "+index,state:"proposed",class:"implement"}))};
+  const f=startOfficeRuntime(()=>"isometric");f.api.draw(data);const model=officeModel(data,null,{cols:2}),room=model.rooms.find(item=>item.id==="todo")!;
+  const cards=[...f.api.maps.officeCards.values()] as Node[],rects=cards.map(officeRect);
+  if(count)expect(cards.length).toBeGreaterThan(0);else expect(cards).toHaveLength(0);
+  for(const rect of rects){
+   expect(rect.w).toBeGreaterThan(0);expect(rect.h).toBeGreaterThan(0);
+   for(const [x,y] of [[rect.x,rect.y],[rect.x+rect.w,rect.y],[rect.x,rect.y+rect.h],[rect.x+rect.w,rect.y+rect.h]]){
+    const gx=y+x/(2*0.8660254),gy=y-x/(2*0.8660254);
+    expect(gx).toBeGreaterThanOrEqual(room.x+1-0.00001);expect(gx).toBeLessThanOrEqual(room.x+room.w-1+0.00001);
+    expect(gy).toBeGreaterThanOrEqual(room.y+1-0.00001);expect(gy).toBeLessThanOrEqual(room.y+room.h-1+0.00001);
+   }
+  }
+  for(let i=0;i<rects.length;i++)for(let j=i+1;j<rects.length;j++){
+   const a=rects[i]!,b=rects[j]!;expect(a.x+a.w<=b.x || b.x+b.w<=a.x || a.y+a.h<=b.y || b.y+b.h<=a.y).toBe(true);
+  }
+  const order=(f.api.scene().layers.cards as Node).children.map(officeRect).map(rect=>rect.y);expect(order).toEqual([...order].sort((a,b)=>a-b));
+  const roomNode=(f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-roombox-todo"))[0]!,more=roomNode.findAll(hasOfficeClass("office-more"));
+  const omitted=count-cards.length;if(omitted){expect(more).toHaveLength(1);expect(more[0]!.textContent).toBe("+"+omitted+" more");more[0]!.parent!.fire("keydown",{key:"Enter",preventDefault(){}});expect(f.get("task-filter").value).toBe("proposed");expect([...f.api.maps.taskRows.keys()]).toHaveLength(count);}else expect(more).toHaveLength(0);
+  const rooms=model.rooms;expect(rooms[1]!.x-(rooms[0]!.x+rooms[0]!.w)).toBeGreaterThanOrEqual(1);
+ }
+});
+
+test("Office room empty marker refreshes when placements change but total count stays constant (#394)",()=>{
+ const f=startOfficeRuntime(()=>"flat"),task={id:77,title:"moves to desk",state:"in_progress",class:"implement",owner:"ghost"};
+ const draw=(owner:string)=>f.api.draw({...snapshot,tasks:[{...task,owner}]});
+ const room=()=>((f.api.scene().layers.rooms as Node).findAll(hasOfficeClass("office-roombox-work"))[0]!);
+ const count=()=>((f.api.scene().layers.headers as Node).children[1]!.findAll(hasOfficeClass("office-room-count"))[0]!.textContent);
+ draw("ghost");expect(count()).toBe("1");expect(room().findAll(hasOfficeClass("office-empty"))).toHaveLength(0);expect(f.api.maps.officeCards.has(77)).toBe(true);
+ draw("codex");expect(count()).toBe("1");expect(room().findAll(hasOfficeClass("office-empty"))[0]!.textContent).toBe("No tasks");expect(f.api.maps.officeDesks.get("codex")).toBeDefined();
+ draw("ghost");expect(count()).toBe("1");expect(room().findAll(hasOfficeClass("office-empty"))).toHaveLength(0);
+});
+
+
+test("Office text palette meets 4.5 contrast in light and dark themes (#394)",()=>{
+ const css=html.match(/<style>([\s\S]*?)<\/style>/)![1]!;
+ const luminance=(hex:string)=>{
+  const channels=[0,2,4].map(offset=>parseInt(hex.slice(offset,offset+2),16)/255).map(value=>value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4);
+  return channels[0]!*0.2126+channels[1]!*0.7152+channels[2]!*0.0722;
+ };
+ for(const pattern of [/:root\{([^}]+)\}/,/:root\[data-theme="dark"\]\{([^}]+)\}/]){
+  const tokens=new Map([...pattern.exec(css)![1]!.matchAll(/--([a-z-]+):#([0-9a-f]{6})/g)].map(match=>[match[1]!,match[2]!]));
+  for(const [foreground,background] of [["ink","panel-soft"],["ink","panel"],["ink","control"],["muted","panel"],["muted","panel-soft"],["blue","control"],["blue","panel-soft"],["red","panel"],["green","panel"],["amber","panel"]]){
+   const a=luminance(tokens.get(foreground!)!),b=luminance(tokens.get(background!)!);expect((Math.max(a,b)+0.05)/(Math.min(a,b)+0.05)).toBeGreaterThanOrEqual(4.5);
+  }
+ }
+});
+
+test("isometric cards paint by depth across occupied rooms (#394)",()=>{
+ const tasks=Array.from({length:12},(_,index)=>({id:index+1,title:"Depth order task "+(index+1),class:"implement",state:index<4?"proposed":index<8?"in_progress":"in_review",...(index>=4&&index<8?{owner:"ghost"}:{})}));
+ const data={...snapshot,status:{peers:{claude:{state:"idle",queued:0},codex:{state:"idle",queued:0}}},tasks};
+ const f=startOfficeRuntime(()=>"isometric");f.api.draw(data);const layer=f.api.scene().layers.cards as Node;
+ const ids=layer.children.map(node=>Number(/^#(\d+) /.exec(node.attrs["aria-label"]!)![1]));
+ expect(ids).toHaveLength(9);expect([...ids].sort((a,b)=>a-b)).toEqual([1,2,3,5,6,7,9,10,11]);
+ const y=layer.children.map(officeRect).map(rect=>rect.y);expect(y).toEqual([...y].sort((a,b)=>a-b));
+ // Construction visits Work before Review; depth order must interleave their visible chips.
+ expect(ids.indexOf(9)).toBeLessThan(ids.indexOf(7));
 });

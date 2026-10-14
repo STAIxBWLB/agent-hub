@@ -3232,6 +3232,46 @@
       "replacement": "));",
       "testFile": "test/path-policy.test.ts",
       "testName": "glob policies match decomposed, compatibility and long-s spellings of protected names"
+    },
+    {
+      "id": "office-fixed-pixel-scale",
+      "file": "src/ui/index.html",
+      "search": "const OFFICE_SCALE = 12;",
+      "replacement": "const OFFICE_SCALE = 18;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office fixed scale uses projected viewBox width and stable readable type (#394)"
+    },
+    {
+      "id": "office-nonscaling-hairlines",
+      "file": "src/ui/index.html",
+      "search": "vector-effect:non-scaling-stroke;stroke-width:1px",
+      "replacement": "vector-effect:none;stroke-width:1px",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office fixed scale uses projected viewBox width and stable readable type (#394)"
+    },
+    {
+      "id": "office-empty-done-slots",
+      "file": "src/ui/index.html",
+      "search": "const shown = Math.min(Math.max(0, count), iso ? 3 : 6);",
+      "replacement": "const shown = iso ? 3 : 6;",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office empty rooms and Done shelf contain no decorative slots (#394)"
+    },
+    {
+      "id": "office-isometric-depth-order",
+      "file": "src/ui/index.html",
+      "search": "if (officeProjection === 'iso') cards.sort",
+      "replacement": "if (false) cards.sort",
+      "testFile": "test/office-view.test.ts",
+      "testName": "isometric cards paint by depth across occupied rooms (#394)"
+    },
+    {
+      "id": "office-header-top-layer",
+      "file": "src/ui/index.html",
+      "search": "['rooms', 'desks', 'links', 'marks', 'arcs', 'cards', 'headers']",
+      "replacement": "['headers', 'rooms', 'desks', 'links', 'marks', 'arcs', 'cards']",
+      "testFile": "test/office-view.test.ts",
+      "testName": "Office room headers form the final overlay layer with count pills (#394)"
     }
   ]
 }
