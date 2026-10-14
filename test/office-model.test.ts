@@ -255,10 +255,10 @@ test("room cards fit one padded column at the fixed pixel scale, with space for 
   }
   const last = room.cards.at(-1)!;
   expect(room.y + room.h - last.y - last.h).toBeGreaterThan(3); // overflow line plus bottom padding
-  expect(model.rooms.map((entry) => entry.y)).toEqual([0, 31, 62, 93]);
-  expect(model.height).toBe(122);
+  expect(model.rooms.map((entry) => entry.y)).toEqual([0, 30, 60, 90]);
+  expect(model.height).toBe(119);
   for (const [index, entry] of model.rooms.entries()) {
-    if (index) expect(entry.y - model.rooms[index - 1]!.y - entry.h).toBe(2);
+    if (index) expect(entry.y - model.rooms[index - 1]!.y - entry.h).toBe(1);
   }
   const empty = officeModel({ status: { peers: {} }, tasks: [] }, null, { cols: 1, now: 1000 });
   expect(empty.rooms.every((entry) => entry.count === 0 && entry.cards.length === 0 && entry.overflow === 0)).toBe(true);
@@ -267,8 +267,14 @@ test("room cards fit one padded column at the fixed pixel scale, with space for 
 test("cols reflows rooms: left to right when wide, stacked when narrow", () => {
   const wide = officeModel(fixture(), null, { cols: 4, now: 1000 });
   // Six desks take two rows, so the rooms row starts below the desk grid.
-  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 31], [24, 31], [48, 31], [72, 31]]);
-  expect(wide.width).toBe(94);
+  expect(wide.rooms.map((room) => [room.x, room.y])).toEqual([[0, 31], [23, 31], [46, 31], [69, 31]]);
+  expect(wide.width).toBe(91);
+  const twoColumns = officeModel(fixture(), null, { cols: 2, now: 1000 });
+  expect(twoColumns.rooms.map((room) => [room.x, room.y])).toEqual([[0, 31], [23, 31], [0, 61], [23, 61]]);
+  expect(twoColumns.rooms[1]!.x - twoColumns.rooms[0]!.x - twoColumns.rooms[0]!.w).toBe(1);
+  expect(twoColumns.rooms[2]!.y - twoColumns.rooms[0]!.y - twoColumns.rooms[0]!.h).toBe(1);
+  expect(twoColumns.width).toBe(46); // desks extend one unit past the room grid
+  expect(twoColumns.height).toBe(90);
   const narrow = officeModel(fixture(), null, { cols: 1, now: 1000 });
   const ys = narrow.rooms.map((room) => room.y);
   expect(new Set(narrow.rooms.map((room) => room.x)).size).toBe(1);

@@ -3320,6 +3320,14 @@
       "replacement": ".office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}.office-scene text{font-family:system-ui,sans-serif;font-size:1px}",
       "testFile": "test/office-view.test.ts",
       "testName": "Office fixed scale uses projected viewBox width and stable readable type (#394)"
+    },
+    {
+      "id": "office-unit-tile-gap",
+      "file": "src/ui/office-model.ts",
+      "search": "ROOM_DX = 23, ROOM_DY = 30;",
+      "replacement": "ROOM_DX = 22, ROOM_DY = 29;",
+      "testFile": "test/office-model.test.ts",
+      "testName": "cols reflows rooms: left to right when wide, stacked when narrow"
     }
   ]
 }

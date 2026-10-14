@@ -189,7 +189,8 @@ Phase 4 decisions within the spec:
   - Room names are sentence case, 13 px/600 in `--ink`; count pills are 12 px
     monospace with tabular figures. Desk names are 13 px; card/state/meta text
     is 12 px. Shapes use 1 px non-scaling hairlines; focus is 2 px.
-  - Room cards use one 20-unit padded column, 28 px height and 6 px gap, keeping
+  - Room tiles have a one-unit gap horizontally and vertically. Room cards
+    use one 20-unit padded column, 28 px height and 6 px gap, keeping
     the eight-card model cap and public fields. Labels show id plus public
     title. Canvas measures the actual system/monospace fonts before clipping at
     a nearby word boundary; an internal SVG clipPath guarantees the card text

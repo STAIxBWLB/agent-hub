@@ -183,7 +183,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const LABELS: Record<string, string> = { idle: "idle", busy: "busy", offline: "offline", paused: "paused", waiting: "waiting on approval" };
   const DESK_CAP = 12, ROOM_CARDS = 8, DESK_CARDS = 3;
   const DESK_W = 10, DESK_H = 12, DESK_DX = 12, DESK_DY = 14, DESK_COLS = 4, DESK_TOP = 3;
-  const ROOM_W = 22, ROOM_H = 29, ROOM_DX = 24, ROOM_DY = 31;
+  const ROOM_W = 22, ROOM_H = 29, ROOM_DX = 23, ROOM_DY = 30;
   const ROOM_CARD_H = 7 / 3, ROOM_CARD_GAP = 0.5;
   const ARC_MS = 10_000, LATCH_MS = 3_000, SETTLE_GAP_MS = 3_000, SETTLE_MAX_MOVES = 6, ARC_CAP = 12, ALERT_CAP = 12;
   const text = (value: unknown) => typeof value === "string" ? value : "";
@@ -412,7 +412,6 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   const settle = !previous ? true : moves === 0 ? previous.settle : now - previous.at > SETTLE_GAP_MS || moves > SETTLE_MAX_MOVES;
   const at = !previous || moves > 0 ? now : previous.at;
 
-  const roomRows = Math.ceil(rooms.length / cols);
   const desksWidth = Math.max(0, ...desks.map(desk => desk.x + desk.w));
   // Phase 3 warning lines: validated down to the three kinds and their id lists; nothing else is copied.
   const links: OfficeLink[] = [];
@@ -432,8 +431,8 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   }
   return {
     cols,
-    width: Math.max(desksWidth, Math.min(rooms.length, cols) * ROOM_DX - 2, 1),
-    height: roomsY + roomRows * ROOM_DY - 2,
+    width: Math.max(desksWidth, ...rooms.map(room => room.x + room.w), 1),
+    height: Math.max(desksBottom, ...rooms.map(room => room.y + room.h), 1),
     desks, extraPeers, rooms, counts, transitions, slots, placed,
     links,
     arcs: keptArcs, alerts: keptAlerts, latched, settle, at, eventTime, lastSeq,
