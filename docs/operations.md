@@ -170,8 +170,8 @@ is tracked in `docs/smoke.md` and remains unverified until performed.
 The dashboard Office section (#264, phase 1 of 4) draws the same snapshot as a
 static flat office: one desk per peer in a stable slot (claude, codex, kimi, pi,
 local, then others by id; a peer going offline dims its desk and never moves
-another), rooms for the board columns in a fixed order (To Do, Work floor,
-Review, Done shelf as a count only), at most 8 cards per room with "+N more"
+another), rooms for the board columns in a fixed order (To do, Work floor,
+Review, Done as a count only), at most 8 cards per room with "+N more"
 filtering the task list to that state, and at most 12 desks with "+N peers".
 Work-floor cards sit at the owner's desk, marked for rework; a busy peer's task
 bubble names its task only when it has exactly one in progress. Every peer
@@ -2982,6 +2982,8 @@ pixel silhouette readable on light backgrounds. `pet.palette` selects the base
 color: teal (default, b), blue (a), violet (c) or ochre (d), each with its own
 rim line; the waiting/blocked/review/offline colors stay fixed. While the
 window is key, 1/2/3/4 switch blue/teal/violet/ochre and save the choice.
+From a terminal, `ahub pet --palette <blue|teal|violet|ochre>` writes the
+choice to `pet.palette` in `.agenthub/config.local.json`.
 While working, the pixel art bobs in a 0.7-second stepped CSS loop; reduced-motion preferences keep it still.
 
 A detached Bun host refreshes `pet-view.json` once per second using `readPet`

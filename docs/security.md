@@ -109,7 +109,7 @@ Please report vulnerabilities privately through GitHub's "Report a vulnerability
 
 - `ahub ui` uses the authenticated console control connection to start an ephemeral HTTP listener on `127.0.0.1`. No UI listener exists before that command. The control and Codex proxy ports continue to refuse every `Origin` header.
 - The daemon issues a cryptographically random, single-use bootstrap ticket valid for 60 seconds. The CLI opens the dashboard with that ticket in the URL fragment, never a query string or the control token. The static page removes the fragment immediately and exchanges it with a same-origin POST. Tickets are consumed once; expired tickets cannot create sessions.
-- The exchange creates a separate random session, valid for one hour without renewal, in an `HttpOnly; SameSite=Strict; Path=/` cookie named for this listener's port. Sessions and tickets live only in memory and die with the daemon. The page itself keeps one more cookie, `agent-hub-theme` (issue #246): script-set, `SameSite=Strict`, kept for a year for the whole `127.0.0.1` host, and read back only as one of `system`, `light` or `dark`. A second script-set cookie, `agent-hub-office` (issue #264), keeps the Office view choice under the same attributes and is read back only as `off`, `flat` or `isometric`. HTTP is loopback-only; the cookie is not a substitute for the origin checks.
+- The exchange creates a separate random session, valid for one hour without renewal, in an `HttpOnly; SameSite=Strict; Path=/` cookie named for this listener's port. Sessions and tickets live only in memory and die with the daemon. The page itself keeps one more cookie, `agent-hub-theme` (issue #246): script-set, `SameSite=Strict`, kept for a year for the whole `127.0.0.1` host, and read back only as one of `system`, `light` or `dark`. A second script-set cookie, `agent-hub-office` (issue #264), keeps the Office view choice under the same attributes and is read back only as `off`, `flat` or `isometric`. The #391 view split adds two more script-set cookies under the same attributes: `agent-hub-view`, read back only as one of the seven view names, and `agent-hub-column-focus`, read back only as one of the five board columns or empty. HTTP is loopback-only; the cookie is not a substitute for the origin checks.
 - Every request must have the exact listener Host. Every data or action request, including the ticket exchange and snapshot polling, must be POST with the exact listener Origin and JSON content type. Foreign and missing origins, missing or expired sessions, oversized bodies and unknown actions are rejected. There is no CORS support. The only unauthenticated GET is the fixed, data-free HTML shell. No files or paths are served dynamically.
 - Responses are non-cacheable, cannot be framed, suppress referrers, and use a content security policy restricting scripts/styles to the shipped inline content and connections to this origin. Browser text is rendered with textContent, never interpreted as HTML.
 - The browser receives a bounded redacted event stream, peer states and queue counts, public task views, budget windows, pending approvals, the settings rows (closed values and ids, the file each comes from) and each startable peer's start plan (issue #269), benchmark run summaries (issue #251): the newest runs in `~/.agenthub/bench/`, whichever project on this machine ran them, by suite name, arm label, state, the task id in progress, counts, tokens and times, never suite text, and the office view's optional fields (issue #264): each peer's open turn (start time, attributed task id, attribution kind), a `checking` flag on tasks whose check is running, and warning `links` of overlapping, conflicting or cohort tasks (task and peer ids only, never paths, symbols or reasons; a PII task never joins a link, and a private or PII-attributed turn exposes no task id). Private envelope bodies and PII task text never cross this endpoint. Local-worker and Pi approval titles can contain PII, so their details remain terminal-only; the dashboard identifies the request and directs the operator to `ahub tail` before allowing it. Budget checkpoint summaries are also omitted.
@@ -260,18 +260,22 @@ person confirms them. Operational details and limits: [hub memory](memory.md).
 The macOS window reads local files only. Its detached host reuses `readPet`,
 including signed-daemon liveness and recovery-lock handling, and publishes an
 atomic counts-only `pet-view.json` (state, act/watch, known character, blink,
-built-in pixel frame). It excludes item ids, task titles/text, refs, paths,
+palette from the closed list, built-in pixel frame). It excludes item ids,
+task titles/text, refs, paths,
 notices and approval prose. Missing or unconfirmed status produces only
 `{offline:true}`. Process and position files are separate from this view.
 
 The local WKWebView has a deny-by-default CSP, with only its shipped inline
 script/style allowed and network connections forbidden. Text never becomes
 HTML or executable source. The retained JXA bridge accepts fixed drag/send/
-open/close operations; `NSTask` invokes the host-supplied Bun/CLI/project argv
-and appends `say`, `--` and a single message argument. It does not evaluate a
+palette/open/close operations; `NSTask` invokes the host-supplied Bun/CLI/project argv
+and appends `say`, `--` and a single message argument, or `pet`, `--palette`
+and one closed palette name. It does not evaluate a
 shell string. Message text is never logged by the window/host; command stdout
 and stderr go to the null device. `ahub say` keeps its existing console-message
 authority and recording behavior, and `ahub ui` opens its existing session.
 The CLI restricts `pet --window` (including close) to console identity, while
-plain terminal pet reads remain available to agent shells. Signed pidfiles
+plain terminal pet reads and `pet --palette` remain available to agent shells;
+the palette write merges only the closed name into `.agenthub/config.local.json`,
+validated and replaced by temp file and rename. Signed pidfiles
 fence instance ownership and close; unknown owners are never signalled.
