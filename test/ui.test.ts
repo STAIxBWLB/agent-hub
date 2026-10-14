@@ -266,7 +266,7 @@ test("shared public progress executes in the hashed dashboard and matches consol
   const document = { createElement: () => new Node(), createElementNS: () => new Node() };
   const consumers = html.slice(html.indexOf("function renderTaskProgress("), html.indexOf("function render(snapshot)"));
   const updateStart = html.indexOf("function update("); const updateSource = html.slice(updateStart, html.indexOf("\n", updateStart));
-  const renderers = runInNewContext(`const $ = () => target; const el = (tag,text,cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); node.className = cls || ''; return node; }; const signatures=new Map(); ${updateSource} ${consumers}; ({renderTaskProgress,renderTaskStage})`, { document, target });
+  const renderers = runInNewContext(`const $ = () => target; const el = (tag,text,cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); node.className = cls || ''; return node; }; const signatures=new Map(),dashboardCookie={get(){return ""}}; ${updateSource} ${consumers}; ({renderTaskProgress,renderTaskStage})`, { document, target });
   renderers.renderTaskProgress(progress);
   expect(target.children[0]?.textContent).toBe("2/7 approved (28%)");
   expect(target.children[2]?.textContent).toContain("waiting 1");
@@ -285,7 +285,7 @@ test("shared public progress executes in the hashed dashboard and matches consol
   const nodes = new Map<string, Node>(); const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get('task-progress').append(new Node());
   const reset = html.slice(html.indexOf('function resetView('), html.indexOf('function projectName('));
-  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null; const officeDesks=new Map(),officeCards=new Map(); const managerMode=true; const signatures=new Map(); const $=get; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
+  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null; const officeDesks=new Map(),officeCards=new Map(); const managerMode=true; const signatures=new Map(); const $=get; const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{}; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
   expect(get('task-progress').children).toHaveLength(0); expect(get('task-progress').textContent).toBe('No project selected.');
   renderers.renderTaskProgress(browserModel([]));
   expect(target.children[0]?.textContent).toBe("0/0 approved (0%)");
@@ -391,7 +391,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
   const clearTimer = (id: number) => { timers.delete(id); };
   const api = runInNewContext(`
     let stopped=false, timer, projectsTimer, managerMode=${manager}, selectedProjectId='p1',selectedInstanceId='i1',snapshotValid=true,viewGeneration=1,lastSnapshot=null,eventCount=0,cursor=0,draftChoicesPending=false;
-    const pendingButtons=new WeakSet(),pendingStarts=new Map(),signatures=new Map();
+    let currentView="board";const dashboardCookie={get(){return ""},set(){}};const switchView=()=>{},applyDashboardView=()=>{};const pendingButtons=new WeakSet(),pendingStarts=new Map(),signatures=new Map();
     const peerRows=new Map(),taskRows=new Map(),officeDesks=new Map(),officeCards=new Map();
     let officePrev=null;
     const renderOffice=()=>{};

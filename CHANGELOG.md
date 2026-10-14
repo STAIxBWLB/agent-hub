@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Split the local dashboard into cookie-backed views, compact task cards with shared dialog/column details, and exact-id attention badges; move character presentation to the standalone pet window (#391 Task A).
+
 - Add an opt-in macOS floating pet window with built-in pixels, counts-only local state, a console message pencil, saved position and signed process ownership; keep terminal pet reads available to agent shells (#391 Task B).
 
 ## 0.12.26

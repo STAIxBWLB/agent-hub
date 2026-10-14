@@ -5,12 +5,16 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>agent-hub | Local dashboard</title>
 <script>
+const dashboardCookie = {
+  get: (name, fallback = '') => { try { return document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith(name + '='))?.slice(name.length + 1) ?? fallback; } catch { return fallback; } },
+  set: (name, value) => { try { document.cookie = `${name}=${value}; Path=/; Max-Age=31536000; SameSite=Strict`; } catch {} }
+};
 const dashboardTheme = (() => {
   let choice = 'system';
-  try { const saved = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('agent-hub-theme='))?.slice('agent-hub-theme='.length); if (['system','light','dark'].includes(saved)) choice = saved; } catch {}
+  const saved = dashboardCookie.get('agent-hub-theme'); if (['system','light','dark'].includes(saved)) choice = saved;
   const apply = () => { document.documentElement.dataset.theme = choice; };
   apply();
-  return { get: () => choice, set: (value) => { choice = ['system','light','dark'].includes(value) ? value : 'system'; apply(); try { document.cookie = `agent-hub-theme=${choice}; Path=/; Max-Age=31536000; SameSite=Strict`; } catch {} } };
+  return { get: () => choice, set: (value) => { choice = ['system','light','dark'].includes(value) ? value : 'system'; apply(); dashboardCookie.set('agent-hub-theme', choice) } };
 })();
 </script>
 <style>
@@ -25,46 +29,79 @@ const dashboardTheme = (() => {
 @keyframes office-pulse{50%{opacity:.45}}@keyframes office-appear{from{opacity:0}}@keyframes office-fade{to{opacity:0}}
 @media(prefers-reduced-motion:reduce){.office-scene,.office-scene *{transition:none!important;animation:none!important}}
 
-.pet-container[hidden]{display:none}.pet-container{display:flex;justify-content:flex-end;padding:8px 24px}.pet-control{display:flex;align-items:center;gap:12px;min-height:64px;min-width:40px;font-variant-numeric:tabular-nums}.pet-art{width:72px;height:64px;fill:currentColor}.pet-pixel{shape-rendering:crispEdges}.pet-accent{fill:var(--amber)}.pet-blink{opacity:0}.pet-waiting .pet-open{animation:pet-open 2s steps(1,end) infinite}.pet-waiting .pet-blink{animation:pet-blink 2s steps(1,end) infinite}@keyframes pet-open{50%{opacity:0}}@keyframes pet-blink{50%{opacity:1}}@media(prefers-reduced-motion:reduce){.pet-waiting .pet-open,.pet-waiting .pet-blink{animation:none}}
+
+[hidden]{display:none!important}main{display:block}main>.stack{margin-top:24px}.view-nav{max-width:1440px;margin:auto;padding:16px 32px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.view-nav button{min-height:44px}.view-nav button[aria-current="page"]{background:var(--green);color:var(--on-accent);border-color:var(--green)}.view-nav .attention-badge{margin-left:auto}.view-nav .badge{margin-left:4px}.task-card.compact{cursor:pointer;min-height:44px}.task-card.compact:hover{border-color:var(--focus)}.task-card.compact .row-head{gap:6px;flex-wrap:wrap}.task-card.compact .label{flex:1 1 100px}.task-detail .actions{display:flex;flex-wrap:wrap}.task-detail .actions select{width:auto;max-width:260px}.task-detail button,.task-detail select{min-height:44px}.board-focus{grid-template-columns:minmax(0,1fr)}.column-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:12px}.column-head h3{margin:0}.column-head button{min-height:44px;font-size:12px}#task-detail-dialog{width:min(720px,calc(100% - 32px));max-height:85vh;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);padding:20px}#task-detail-dialog::backdrop{background:rgba(0,0,0,.35)}.dialog-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}.dialog-head button{min-height:44px}@media(max-width:600px){.view-nav{padding:12px}.view-nav .attention-badge{margin-left:0}.board-focus{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
-<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div><div class="filters"><label for="office-view">View</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></header>
-<div id="pet-container" class="pet-container" hidden></div>
+<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div></header>
+<nav id="dashboard-nav" class="view-nav" aria-label="Dashboard views">
+<button type="button" data-view-target="board" aria-current="page">Board</button>
+<button type="button" data-view-target="office">Office</button>
+<button type="button" data-view-target="stream">Stream</button>
+<button type="button" data-view-target="agents">Agents <span id="agents-approval-count" class="badge warn" hidden></span></button>
+<button type="button" data-view-target="message">Message</button>
+<button type="button" data-view-target="memory">Memory</button>
+<button type="button" data-view-target="settings">Settings</button>
+<button type="button" id="attention-badge" class="attention-badge" aria-label="Global attention" hidden>(0)</button>
+</nav>
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
-<section class="task-board-section" aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div><details><summary>Plan a task</summary><form id="planning"><div class="field"><label for="planning-task">Task</label><select id="planning-task"><option value="">Select task</option></select></div><div class="split"><label>Priority<select id="planning-priority"><option value="">Default</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></label><label>Order<input id="planning-rank" type="number" min="0" step="1"></label><label>Release<select id="planning-release"><option value="">No release</option></select></label><label>Planned start<input id="planning-start" type="datetime-local" step="any"></label><label>Due<input id="planning-due" type="datetime-local" step="any"></label></div><label><input id="planning-pinned" type="checkbox">Pin against planner changes</label><label>Reason<input id="planning-reason" maxlength="1000" required></label><div class="actions"><button id="planning-save" type="submit" data-mutation="project">Save plan</button><button id="planning-undo" type="button" data-mutation="project">Undo latest plan</button><button id="planning-reload" type="button">Reload current values</button></div><p id="planning-version" class="meta"></p></form></details><details id="split-panel" hidden><summary>Split the selected backlog task</summary><form id="split-backlog"><label>Part titles, one per line<textarea id="split-titles" maxlength="2408" required></textarea></label><label><input id="split-sequential" type="checkbox">Each part waits for the previous part</label><label>Reason<input id="split-reason" maxlength="1000" required></label><p class="meta">Two to eight parts. The original task retains integration and acceptance. Unused parts can be undone from its current plan.</p><button id="split-save" type="submit" data-mutation="project">Stage parts</button></form></details><details><summary>Releases</summary><div id="releases" class="content"></div><form id="release-new"><div class="split"><label>Name<input id="release-name" maxlength="64" required></label><label>Order<input id="release-order" type="number" min="0" value="0" step="1" required></label></div><label>Goal<input id="release-goal" maxlength="1000" required></label><button type="submit" data-mutation="project">Create release</button></form><form id="release-plan"><label>Release<select id="release-edit"><option value="">Select release</option></select></label><div class="split"><label>Planned start<input id="release-start" type="datetime-local" step="any"></label><label>Cut<input id="release-cut" type="datetime-local" step="any"></label><label>Ship<input id="release-ship" type="datetime-local" step="any"></label></div><button id="release-save" type="submit" data-mutation="project">Save dates</button><button id="release-reload" type="button">Reload current release</button><p id="release-version" class="meta"></p></form></details><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
+<section class="task-board-section" aria-labelledby="tasks-title" data-view="board"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><button id="board-back" type="button" hidden>Back to board</button><span id="board-focus-title" class="meta" hidden></span><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div><details><summary>Plan a task</summary><form id="planning"><div class="field"><label for="planning-task">Task</label><select id="planning-task"><option value="">Select task</option></select></div><div class="split"><label>Priority<select id="planning-priority"><option value="">Default</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></label><label>Order<input id="planning-rank" type="number" min="0" step="1"></label><label>Release<select id="planning-release"><option value="">No release</option></select></label><label>Planned start<input id="planning-start" type="datetime-local" step="any"></label><label>Due<input id="planning-due" type="datetime-local" step="any"></label></div><label><input id="planning-pinned" type="checkbox">Pin against planner changes</label><label>Reason<input id="planning-reason" maxlength="1000" required></label><div class="actions"><button id="planning-save" type="submit" data-mutation="project">Save plan</button><button id="planning-undo" type="button" data-mutation="project">Undo latest plan</button><button id="planning-reload" type="button">Reload current values</button></div><p id="planning-version" class="meta"></p></form></details><details id="split-panel" hidden><summary>Split the selected backlog task</summary><form id="split-backlog"><label>Part titles, one per line<textarea id="split-titles" maxlength="2408" required></textarea></label><label><input id="split-sequential" type="checkbox">Each part waits for the previous part</label><label>Reason<input id="split-reason" maxlength="1000" required></label><p class="meta">Two to eight parts. The original task retains integration and acceptance. Unused parts can be undone from its current plan.</p><button id="split-save" type="submit" data-mutation="project">Stage parts</button></form></details><details><summary>Releases</summary><div id="releases" class="content"></div><form id="release-new"><div class="split"><label>Name<input id="release-name" maxlength="64" required></label><label>Order<input id="release-order" type="number" min="0" value="0" step="1" required></label></div><label>Goal<input id="release-goal" maxlength="1000" required></label><button type="submit" data-mutation="project">Create release</button></form><form id="release-plan"><label>Release<select id="release-edit"><option value="">Select release</option></select></label><div class="split"><label>Planned start<input id="release-start" type="datetime-local" step="any"></label><label>Cut<input id="release-cut" type="datetime-local" step="any"></label><label>Ship<input id="release-ship" type="datetime-local" step="any"></label></div><button id="release-save" type="submit" data-mutation="project">Save dates</button><button id="release-reload" type="button">Reload current release</button><p id="release-version" class="meta"></p></form></details><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <div class="stack">
-<section id="office-section" aria-labelledby="office-title" hidden><div class="section-head"><h2 id="office-title">Office</h2></div><div id="office" class="content"></div></section>
-<section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
+<section id="office-section" aria-labelledby="office-title" data-view="office" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">Office mode</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
+<section aria-labelledby="stream-title" data-view="stream" hidden><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 
-<section aria-labelledby="memory-title"><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
-<section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
-<section aria-labelledby="settings-title"><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
+<section aria-labelledby="memory-title" data-view="memory" hidden><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
+<section aria-labelledby="compose-title" data-view="message" hidden><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
+<section aria-labelledby="settings-title" data-view="settings" hidden><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
 </div>
 <div class="stack">
-<section id="projects-panel" aria-labelledby="projects-title"><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
-<section aria-labelledby="peers-title"><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"></div></section>
-<section aria-labelledby="permissions-title"><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
-<section aria-labelledby="budget-title"><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div></section>
-<section aria-labelledby="bench-title"><div class="section-head"><h2 id="bench-title">Benchmarks</h2><span id="bench-count" class="meta"></span></div><div id="bench"></div></section>
+<section id="projects-panel" aria-labelledby="projects-title" data-view="agents" hidden><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
+<section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"></div></section>
+<section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
+<section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div></section>
+<section aria-labelledby="bench-title" data-view="agents" hidden><div class="section-head"><h2 id="bench-title">Benchmarks</h2><span id="bench-count" class="meta"></span></div><div id="bench"></div></section>
 </div>
 </main>
+<dialog id="task-detail-dialog" aria-labelledby="task-detail-title"><div class="dialog-head"><h2 id="task-detail-title">Task details</h2><button id="task-detail-close" type="button" autofocus>Close details</button></div><div id="task-detail-content"></div></dialog>
 <footer>Loopback session. Private task content stays in the terminal. Reopen with <code>ahub ui</code> when your session expires.</footer>
 <script>
 'use strict';
 /* TASK_PROGRESS_MODEL */
 /* PEER_START_RETRY_MS */
 /* BOARD_MODEL */
-/* PET_MODEL */
+/* NEEDS_MODEL */
 /* OFFICE_MODEL */
 const officeView = (() => {
   let choice = 'off';
-  try { const saved = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('agent-hub-office='))?.slice('agent-hub-office='.length); if (['off','flat','isometric'].includes(saved)) choice = saved; } catch {}
-  return { get: () => choice, set: (value) => { choice = ['off','flat','isometric'].includes(value) ? value : 'off'; try { document.cookie = `agent-hub-office=${choice}; Path=/; Max-Age=31536000; SameSite=Strict`; } catch {} } };
+  const saved = dashboardCookie.get('agent-hub-office'); if (['off','flat','isometric'].includes(saved)) choice = saved;
+  return { get: () => choice, set: (value) => { choice = ['off','flat','isometric'].includes(value) ? value : 'off'; dashboardCookie.set('agent-hub-office', choice) } };
 })();
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
-const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; });
+const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; applyDashboardView(); });
+// dashboard-navigation-begin
+const DASHBOARD_VIEWS = ['board','office','stream','agents','message','memory','settings'];
+let currentView = dashboardCookie.get('agent-hub-view', 'board');
+if (!DASHBOARD_VIEWS.includes(currentView)) currentView = 'board';
+function applyDashboardView() {
+  for (const section of document.querySelectorAll('main section[data-view]')) section.hidden = section.dataset.view !== currentView;
+  for (const stack of document.querySelectorAll('main > .stack')) stack.hidden = ![...stack.children].some(section => section.dataset.view === currentView);
+  for (const button of document.querySelectorAll('button[data-view-target]')) button.setAttribute('aria-current', button.dataset.viewTarget === currentView ? 'page' : 'false');
+}
+function switchView(view) {
+  if (!DASHBOARD_VIEWS.includes(view)) return;
+  currentView = view; dashboardCookie.set('agent-hub-view', view); applyDashboardView();
+}
+function initializeDashboardNavigation() {
+  for (const button of document.querySelectorAll('button[data-view-target]')) button.addEventListener('click', () => switchView(button.dataset.viewTarget));
+  $('attention-badge').addEventListener('click', reachAttention);
+  $('board-back').addEventListener('click', () => setColumnFocus(null));
+  $('task-detail-close').addEventListener('click', closeTaskDetail);
+  $('task-detail-dialog').addEventListener('close', () => { if ($('task-detail-dialog').open) return; taskDetailId = null; $('task-detail-content').replaceChildren(); signatures.delete('task-detail-content'); });
+  applyDashboardView();
+}
+// dashboard-navigation-end
 let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
@@ -166,8 +203,7 @@ function resetView(id, instance) {
   lastSnapshot = null;
   officePrev = null; officeDesks.clear(); officeCards.clear(); officeScene = null;
   $('office').replaceChildren(); $('office-section').hidden = true;
-  const pet=$('pet-container');if(pet){pet.replaceChildren();pet.hidden=true;}
-  if(typeof petSignature!=='undefined')petSignature='';if(typeof petFirst!=='undefined')petFirst=undefined;if(typeof petBaseTitle!=='undefined')document.title=petBaseTitle;
+  closeTaskDetail(); renderNeedsAttention(null); applyDashboardView();
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
@@ -410,6 +446,8 @@ function renderStarts(target, starts) {
   }
 }
 let boardViewState = null, showAllDone = false;
+const BOARD_FOCUS_COLUMNS = ['backlog','todo','progress','review','done'];
+let columnFocus, taskDetailId = null;
 let planningEdit = null, releaseEdit = null;
 const loadedPlanningDates = new Map();
 const localDateInput = value => {
@@ -515,13 +553,8 @@ function dropTarget(node, accepted, payload) {
     void action({...payload, id:card.id});
   });
 }
-function taskCard(task, card, stage, ids, overdue) {
-  const row = el('article', undefined, 'task-card'), head = el('div', undefined, 'row-head');
-  row.tabIndex = 0; taskRows.set(task.id,row);
-  const trackCard = on => { const sceneCard=officeCards.get(task.id);if(sceneCard)sceneCard.classList.toggle('office-spotlight',on); };
-  row.addEventListener('mouseenter',()=>trackCard(true));row.addEventListener('mouseleave',()=>trackCard(false));
-  row.addEventListener('focus',()=>trackCard(true));row.addEventListener('blur',()=>trackCard(false));
-
+function taskDetail(task, card, stage, ids, overdue) {
+  const row = el('article', undefined, 'task-detail'), head = el('div', undefined, 'row-head');
   row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
   head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), badge('P' + card.priority));
   if (card.starred) { const star = el('span', '★'); star.setAttribute('aria-hidden','true'); head.append(star); }
@@ -552,6 +585,30 @@ function taskCard(task, card, stage, ids, overdue) {
     assign.addEventListener('click', () => { if(!sameBoardContext(expected))return notice('The project changed. Use its current board.',true);if(select.value)void action({action:'assign',id:task.id,peer:select.value},assign);else notice('Select a peer before assigning this task.',true); }); controls.append(select,assign);
   }
   if (controls.children.length) row.append(controls);
+  return row;
+}
+function taskCard(task, card, stage, ids, overdue, compact = true) {
+  const row = compact ? el('article', undefined, 'task-card compact') : taskDetail(task, card, stage, ids, overdue);
+  if (!compact) row.classList.add('task-card');
+  row.tabIndex = 0; taskRows.set(task.id,row);
+  const trackCard = on => { const sceneCard=officeCards.get(task.id);if(sceneCard)sceneCard.classList.toggle('office-spotlight',on); };
+  row.addEventListener('mouseenter',()=>trackCard(true));row.addEventListener('mouseleave',()=>trackCard(false));
+  row.addEventListener('focus',()=>trackCard(true));row.addEventListener('blur',()=>trackCard(false));
+  if (compact) {
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
+    if (task.role) row.setAttribute('aria-label', row.getAttribute('aria-label') + ', Task guidance: ' + task.role + ' (grants no authority)');
+    if (task.release != null) { const release=boardViewState?.snapshot.releases?.find(release=>release.id===task.release);row.setAttribute('aria-label',row.getAttribute('aria-label')+', Release #'+task.release+' '+(release?.name || '(label unavailable)')); }
+    const head = el('div', undefined, 'row-head'); head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), badge('P' + card.priority));
+    const owner = el('span', undefined, 'peer-mark peer-' + (Object.hasOwn(peerPalette, task.owner || '') ? task.owner : 'other'));
+    owner.setAttribute('aria-label', 'owner: ' + (task.owner || 'unassigned')); owner.title = 'owner: ' + (task.owner || 'unassigned'); owner.append(el('span', undefined, 'peer-color-dot')); head.append(owner);
+    if (card.starred) { const star=el('span','★');star.setAttribute('aria-hidden','true');head.append(star); }
+    row.append(head);
+    if (overdue) row.append(badge('Overdue','warn'));
+    if (task.checking) row.append(badge('Check running','info'));
+    row.addEventListener('click', () => openTaskDetail(task.id));
+    row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTaskDetail(task.id); } });
+  }
   if (card.pull || card.assignable) {
     row.draggable = true; row.title = 'Drag to an available peer or Backlog/To Do, or use the buttons.';
     row.addEventListener('dragstart', event => {
@@ -561,8 +618,36 @@ function taskCard(task, card, stage, ids, overdue) {
   }
   return row;
 }
+function setColumnFocus(column) {
+  if (column !== null && !BOARD_FOCUS_COLUMNS.includes(column)) return;
+  columnFocus = column; dashboardCookie.set('agent-hub-column-focus', column || ''); switchView('board');
+  if (boardViewState) renderBoard(boardViewState.snapshot, boardViewState.peers, boardViewState.ids);
+}
+function closeTaskDetail() {
+  taskDetailId = null; const dialog = $('task-detail-dialog'); if (dialog.open) dialog.close();
+  $('task-detail-content').replaceChildren(); signatures.delete('task-detail-content');
+}
+function refreshTaskDetail() {
+  if (taskDetailId === null) return;
+  const snapshot = boardViewState?.snapshot, task = snapshot?.tasks?.find(task => task.id === taskDetailId), card = boardViewState?.cards.get(taskDetailId);
+  if (!task || !card) return closeTaskDetail();
+  const stage = taskProgress(snapshot.tasks).stages.find(stage => stage.id === taskDetailId);
+  const ids = boardViewState.ids.filter(id => ['idle','busy'].includes(boardViewState.peers[id]?.state) && boardViewState.peers[id]?.attached !== false && boardViewState.peers[id]?.rostered !== false);
+  const overdue = task.due != null && task.due < Date.now() && task.state !== 'approved';
+  $('task-detail-title').textContent = 'Task #' + task.id;
+  update('task-detail-content', [task, card, stage, ids, overdue, boardContext()], target => target.append(taskDetail(task, card, stage, ids, overdue)));
+}
+function openTaskDetail(id) {
+  if (stopped || !Number.isSafeInteger(id) || !snapshotValid || !boardViewState?.cards.has(id)) return;
+  switchView('board'); taskDetailId = id; refreshTaskDetail();
+  const dialog = $('task-detail-dialog'); if (taskDetailId !== null && !dialog.open) dialog.showModal();
+}
 function renderBoard(snapshot, peers, ids) {
-  if (!Array.isArray(snapshot.tasks)) { boardViewState=null; return update('tasks','unavailable',target=>empty(target,'Task board unavailable.')); }
+  if (columnFocus === undefined) {
+    columnFocus = dashboardCookie.get('agent-hub-column-focus') || null;
+    if (!BOARD_FOCUS_COLUMNS.includes(columnFocus)) columnFocus = null;
+  }
+  if (!Array.isArray(snapshot.tasks)) { boardViewState=null; closeTaskDetail(); return update('tasks','unavailable',target=>empty(target,'Task board unavailable.')); }
   const progress = taskProgress(snapshot.tasks), model = boardColumns(snapshot.tasks, peers);
   renderTaskProgress(progress);
   const stages = new Map(progress.stages.map(stage=>[stage.id,stage])), byId = new Map(snapshot.tasks.map(task=>[task.id,task]));
@@ -577,6 +662,8 @@ function renderBoard(snapshot, peers, ids) {
   const taskFilter=$('task-filter').value, ownerFilter=peerFilter.value, releaseFilter=$('task-release-filter').value, lanes=$('task-lanes').value;
   const eligible=ids.filter(id=>['idle','busy'].includes(peers[id].state) && peers[id].attached!==false && peers[id].rostered!==false);
   $('task-count').textContent=snapshot.tasks.length+' tasks';
+  $('board-back').hidden = columnFocus === null; $('board-focus-title').hidden = columnFocus === null;
+  $('board-focus-title').textContent = columnFocus ? model.columns.find(column => column.id === columnFocus)?.label || '' : '';
   update('task-legend',[snapshot.boardLegend,peers],target=>{
     for (const id of ids) {
       const data=(snapshot.boardLegend || []).find(item=>item.peer===id), row=el('div',undefined,'agent-slot');
@@ -590,11 +677,11 @@ function renderBoard(snapshot, peers, ids) {
     }
     if (!ids.length) empty(target,'No peer status available.');
   });
-  update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone,[...overdue]],target=>{
+  update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone,[...overdue],columnFocus],target=>{
     taskRows.clear();
     const visible=snapshot.tasks.filter(task=>(!taskFilter || (taskFilter==='work' ? ['in_progress','changes_requested'].includes(task.state) : task.state===taskFilter)) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter) && (!releaseFilter || task.release===Number(releaseFilter)));
     const visibleIds=new Set(visible.map(task=>task.id));
-    const owners=lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : lanes==='releases' ? [...new Set(visible.map(task=>task.release ?? 0))] : [null];
+    const owners=columnFocus ? [null] : lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : lanes==='releases' ? [...new Set(visible.map(task=>task.release ?? 0))] : [null];
     if (!owners.length) owners.push(null);
     for (const [laneIndex, owner] of owners.entries()) {
       const lane=el('div',undefined,'board-lane');
@@ -603,19 +690,22 @@ function renderBoard(snapshot, peers, ids) {
         if(lanes==='agents' && eligible.includes(owner)) dropTarget(heading,card=>card.assignable,{action:'assign',peer:owner});
         lane.append(heading);
       }
-      const grid=el('div',undefined,'board-columns');
+      const grid=el('div',undefined,'board-columns' + (columnFocus ? ' board-focus' : ''));
       const inLane=card=>visibleIds.has(card.id) && (owner===null || (lanes==='releases' ? (byId.get(card.id)?.release ?? 0)===owner : (byId.get(card.id)?.owner || '')===owner));
       for (const column of model.columns) {
-        const box=el('div',undefined,'board-column'), heading=el('h3',column.label);heading.id='board-lane-'+laneIndex+'-'+column.id;box.setAttribute('role','group');box.setAttribute('aria-labelledby',heading.id);box.append(heading);
+        if (columnFocus && column.id !== columnFocus) continue;
+        const box=el('div',undefined,'board-column'), heading=el('h3',column.label);heading.id='board-lane-'+laneIndex+'-'+column.id;box.setAttribute('role','group');box.setAttribute('aria-labelledby',heading.id);const columnHead = el('div',undefined,'column-head'); columnHead.append(heading);
+        if (!columnFocus) { const expand=el('button','Expand');expand.type='button';expand.setAttribute('aria-label','Expand '+column.label);expand.addEventListener('click',()=>setColumnFocus(column.id));columnHead.append(expand); }
+        box.append(columnHead);
         if (column.id==='backlog' && snapshot.boardCapabilities?.backlog===true) dropTarget(box,card=>card.returnable,{action:'backlog_return'});
         if (column.id==='todo' && snapshot.boardCapabilities?.backlog===true) dropTarget(box,card=>card.pull,{action:'backlog_pull'});
         let ready=column.ready.filter(inLane), waiting=column.waiting.filter(inLane);
         if(column.id==='done') ready.sort((a,b)=>(byId.get(b.id)?.updated || 0)-(byId.get(a.id)?.updated || 0) || b.id-a.id);
-        const hidden=column.id==='done' && !showAllDone ? Math.max(0,ready.length-10) : 0;
+        const hidden=column.id==='done' && !columnFocus && !showAllDone ? Math.max(0,ready.length-10) : 0;
         if(hidden) ready=ready.slice(0,10);
         for(const [label,list] of [['Ready',ready],['Waiting',waiting]]) {
           if(column.id==='todo') box.append(el('h4',label+' ('+list.length+')'));
-          for(const card of list) box.append(taskCard(byId.get(card.id),card,stages.get(card.id),eligible,overdue.has(card.id)));
+          for(const card of list) box.append(taskCard(byId.get(card.id),card,stages.get(card.id),eligible,overdue.has(card.id),columnFocus === null));
         }
         if(!ready.length && !waiting.length) empty(box,'No tasks');
         if(hidden){const more=el('button','Show '+hidden+' older Done tasks');more.type='button';more.addEventListener('click',()=>{if(!boardViewState)return;showAllDone=true;renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});box.append(more)}
@@ -625,43 +715,36 @@ function renderBoard(snapshot, peers, ids) {
     }
     const unknown=model.unknown.filter(id=>visibleIds.has(id));if(unknown.length) target.append(el('p','Unsupported task states: '+unknown.map(id=>'#'+id).join(', '),'board-unknown'));
   });
+  refreshTaskDetail();
 }
-const petBaseTitle = typeof document === 'undefined' ? 'agent-hub | Local dashboard' : document.title;
-let petSignature = '', petFirst;
-function reachPetNeed() {
-  if (!snapshotValid || !petFirst) return;
-  const item = petFirst;
-  const row = item.kind === 'review' || item.kind === 'offline' ? taskRows.get(item.id) : item.kind === 'delivery' || item.kind === 'default' ? peerRows.get(item.peer) : item.kind === 'approval' ? document.querySelector('[data-permission-id="'+item.id+'"]') : undefined;
+const attentionBaseTitle = typeof document === 'undefined' ? 'agent-hub | Local dashboard' : document.title;
+let attentionSignature = '', attentionFirst;
+function reachAttention() {
+  if (!snapshotValid || !attentionFirst) return;
+  const item = attentionFirst, view = ['review','offline'].includes(item.kind) ? 'board' : 'agents';
+  switchView(view);
+  const row = ['review','offline'].includes(item.kind) ? taskRows.get(item.id) : item.kind === 'approval' ? [...document.querySelectorAll('[data-permission-id]')].find(row => row.dataset.permissionId === String(item.id)) : undefined;
   if (row) { row.scrollIntoView({block:'center',behavior:'instant'}); row.focus?.(); return; }
   const heading = item.kind === 'approval' ? 'permissions-title' : ['review','offline'].includes(item.kind) ? 'tasks-title' : item.kind === 'budget' ? 'budget-title' : 'peers-title';
   $(heading)?.scrollIntoView({block:'start',behavior:'instant'});
   notice('Attention: '+item.kind+(item.peer?' '+item.peer:'')+(item.id?' '+item.id:''));
 }
-function renderPetAttention(snapshot) {
-  const valid = snapshot && snapshot.pet?.enabled === true && typeof snapshot.pet.character === 'string' && Object.hasOwn(petCharacters,snapshot.pet.character) && snapshot.attention && typeof snapshot.attention === 'object' && !Array.isArray(snapshot.attention);
-  const target=$('pet-container');if(!target)return;
-  const input=snapshot?.attention;
-  const shape=valid && Array.isArray(input.approvals) && Array.isArray(input.defaults) && Array.isArray(input.tasks) && input.peers && typeof input.peers==='object' && !Array.isArray(input.peers) && input.budget && typeof input.budget==='object' && !Array.isArray(input.budget) && typeof input.storageBlocked==='boolean';
-  let value;try{if(shape)value=needs(input,Date.now());}catch{ /* malformed optional attention never breaks the existing dashboard */ }
-  const signature = JSON.stringify(value ? [snapshot.pet.character,snapshot.pet.blink,value] : null);
-  if(signature===petSignature)return;
-  petSignature=signature;petFirst=value?.items[0];
-  target.replaceChildren();target.hidden=!value;
-  const title=value?.act?'('+value.act+') agent-hub':petBaseTitle;if(document.title!==title)document.title=title;
-  if(!value)return;
-  const character=petCharacters[snapshot.pet.character],frame=character.frames.blocks[value.state].full,model=petPixels(frame);
-  const blink = snapshot.pet.blink!==false && value.items.some(item=>item.kind==='approval');
-  const button=el('button',undefined,'pet-control'+(blink?' pet-waiting':''));button.type='button';
-  const label=character.name+': '+value.state+', '+value.act+' action, '+value.watch+' watch';button.setAttribute('aria-label',label);button.addEventListener('click',reachPetNeed);
-  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 '+model.width+' '+model.height);svg.setAttribute('class','pet-art');svg.setAttribute('aria-hidden','true');
-  const accent=character.accent?.full;
-  const poses=blink?[['pet-open',model],['pet-blink',petPixels(character.frames.blocks.waitingBlink.full)]]:[['pet-open',model]];
-  for(const [cls,pose] of poses){const group=document.createElementNS('http://www.w3.org/2000/svg','g');group.setAttribute('class',cls);
-    for(const [x,y] of pose.pixels){const pixel=document.createElementNS('http://www.w3.org/2000/svg','rect');pixel.setAttribute('x',String(x));pixel.setAttribute('y',String(y));pixel.setAttribute('width','1');pixel.setAttribute('height','1');pixel.setAttribute('class',accent && Math.floor(y/8)===accent.row && Math.floor(x/5)>=accent.start && Math.floor(x/5)<accent.start+accent.length?'pet-pixel pet-accent':'pet-pixel');group.append(pixel);}svg.append(group);}
-  button.append(svg,el('span',value.state+' / '+value.act+' action'+(value.watch?' +'+value.watch+' watch':'')));target.append(button);
+function renderNeedsAttention(snapshot) {
+  const input = snapshot?.attention;
+  const shape = input && typeof input === 'object' && !Array.isArray(input) && Array.isArray(input.approvals) && Array.isArray(input.defaults) && Array.isArray(input.tasks) && input.peers && typeof input.peers==='object' && !Array.isArray(input.peers) && input.budget && typeof input.budget==='object' && !Array.isArray(input.budget) && typeof input.storageBlocked==='boolean';
+  let value;try{if(shape)value=needs(input,Date.now());}catch{ /* malformed optional attention remains unavailable */ }
+  const approvalCount = Array.isArray(snapshot?.permissions) ? snapshot.permissions.filter(permission => permission && (permission.expiresAt === undefined || permission.expiresAt > Date.now())).length : value?.items.filter(item => item.kind === 'approval').length || 0;
+  const signature = JSON.stringify([value || null, approvalCount]);
+  if(signature===attentionSignature)return;
+  attentionSignature=signature;attentionFirst=value?.items[0];
+  const target=$('attention-badge');target.hidden=!value;target.disabled=!value?.items.length;
+  target.textContent=value?'('+value.act+')'+(value.watch?' +'+value.watch+' watch':''):'(0)';
+  target.setAttribute('aria-label',value?'Global attention: '+value.act+' action, '+value.watch+' watch':'Attention unavailable');
+  const approvals=$('agents-approval-count');approvals.textContent=approvalCount?'('+approvalCount+')':'';approvals.hidden=!approvalCount;
+  const title=value?.act?'('+value.act+') agent-hub':attentionBaseTitle;if(document.title!==title)document.title=title;
 }
 function render(snapshot) {
-  renderPetAttention(snapshot);
+  renderNeedsAttention(snapshot);
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id]}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
@@ -745,7 +828,7 @@ function render(snapshot) {
   if ($('follow').checked) stream.scrollTop = stream.scrollHeight;
   refreshRelativeTimes(document);
   refreshStreamEmpty();
-  syncMutationControls();
+  syncMutationControls(); applyDashboardView();
 }
 async function poll() {
   if (stopped) return;
@@ -834,8 +917,8 @@ function officeNode(tag, attrs, text) { const node = document.createElementNS('h
 function officeKeys(event, activate) { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } }
 let spotlitRow = null;
 function spotlightRow(row) { if (spotlitRow && spotlitRow !== row) spotlitRow.classList.remove('spotlight'); spotlitRow = row; if (row) row.classList.add('spotlight'); }
-function activateOfficePeer(id) { const row = peerRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
-function activateOfficeTask(id) { if (!taskRows.has(id)) officeFilter(''); const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); }
+function activateOfficePeer(id) { switchView('agents'); const row = peerRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); row.focus?.(); }
+function activateOfficeTask(id) { setColumnFocus(null); if (!taskRows.has(id)) officeFilter(''); const row = taskRows.get(id); if (!row) return; spotlightRow(row); row.scrollIntoView({ block: 'nearest' }); openTaskDetail(id); }
 function officeFilter(state) { $('task-filter').value = state; $('task-peer-filter').value = ''; $('task-release-filter').value = ''; if (!stopped && snapshotValid && lastSnapshot) render(lastSnapshot); }
 // Fade timing for a transient mark: it holds, then fades over the final second so it is gone at `until`.
 // Applied once at creation; later renders leave the running animation alone.
@@ -1086,7 +1169,7 @@ function renderOffice(snapshot) {
   section.hidden = view === 'off';
   if (view === 'off') {
     if (signatures.has('office')) { signatures.delete('office'); $('office').replaceChildren(); officeScene = null; }
-    officePrev = null; officeDesks.clear(); officeCards.clear(); return;
+    officePrev = null; officeDesks.clear(); officeCards.clear(); $('office').replaceChildren(el('p','Office is off. Choose Flat or Isometric above.','empty')); return;
   }
   const cols = (section.clientWidth || 0) >= 1000 ? 4 : (section.clientWidth || 0) >= 700 ? 2 : 1;
   const model = officeModel(snapshot, officePrev, { cols, now: Date.now() });
@@ -1306,6 +1389,7 @@ $('task-filter').addEventListener('change', () => { if (!stopped && snapshotVali
 window.addEventListener('resize', () => { if (!stopped && officeView.get() !== 'off' && snapshotValid && lastSnapshot) renderOffice(lastSnapshot); });
 $('send').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter) && generation === viewGeneration) $('message').value = ''; });
 $('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if ($('backlog-proposal').checked) { if(boardViewState?.snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext())) return notice('Backlog is unavailable for this project snapshot.',true);payload.backlog=true; } if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
+initializeDashboardNavigation();
 (async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; renderStreamChips(); await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
 </script>
 </body>
