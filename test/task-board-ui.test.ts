@@ -116,6 +116,9 @@ test("older snapshots cannot silently offer a requested backlog task or expose u
   api.draw({ ...snapshot, boardCapabilities: undefined }, peers, Object.keys(peers));
   expect(get("backlog-proposal").disabled).toBe(true);
   expect(all(get("tasks")).some(node => node.textContent === "Pull into To Do")).toBe(false);
+  api.open(1);
+  expect(get("task-detail-dialog").open).toBe(true);
+  expect(all(get("task-detail-content")).some(node => node.textContent === "Pull into To Do")).toBe(false);
 });
 
 
