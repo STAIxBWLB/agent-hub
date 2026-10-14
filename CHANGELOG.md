@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Shrink the floating pet window to a compact 150x150 panel and redraw the STAI blocks frame as a squared solid orb in a vertical state-color gradient (working/waiting/blocked/review/offline) with light double-width letter and face details layered on top, so it reads on light and dark backgrounds; reveal the status pill and message composer only while the pointer is over the character, and drop the pill shadow (#391 follow-up).
+- Shrink the floating pet window to a compact 150x150 panel with the original pixel art and state colors, strengthen the silhouette shadow so it reads on light backgrounds, reveal the status pill and message composer only while the pointer is over the character, and drop the pill shadow (#391 follow-up).
 - Add an opt-in macOS floating pet window with built-in pixels, counts-only local state, a console message pencil, saved position and signed process ownership; keep terminal pet reads available to agent shells (#391 Task B).
 
 ## 0.12.26

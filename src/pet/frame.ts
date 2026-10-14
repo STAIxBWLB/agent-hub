@@ -10,11 +10,8 @@ export function petGlyphs(requested: PetGlyphs = "auto", env: Record<string, str
   const locale = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
   return requested !== "ascii" && /utf-?8/i.test(locale) && !!env.TERM && !["dumb", "linux"].includes(env.TERM) ? "blocks" : "ascii";
 }
-/** Double-width letter cells (the petPixels font glyphs u,v,w,x,y,z,9,0,j,k,l,m,n,p,q,r) print as letter tiles in text terminals. */
-const TEXT_GLYPH_ALIAS: Record<string, string> = { u: "S", v: "█", w: "T", x: "█", y: "A", z: "█", "9": "I", "0": "█", j: "S", k: "█", l: "T", m: "█", n: "A", p: "█", q: "I", r: "█" };
 export function petFrame(character: CharacterId = "stai", pose: PetPose, size: PetSize = "line", glyphs: "ascii" | "blocks" = "ascii"): readonly string[] {
-  const frame = CHARACTERS[character].frames[glyphs][pose][size];
-  return glyphs === "blocks" ? frame.map(row => [...row].map(glyph => TEXT_GLYPH_ALIAS[glyph] ?? glyph).join("")) : frame;
+  return CHARACTERS[character].frames[glyphs][pose][size];
 }
 /** A full footer reserves the catalog maximum, independent of state and session character cycling. */
 export function petFooterRows(size: PetSize): number { return size === "full" ? 9 : 4; }

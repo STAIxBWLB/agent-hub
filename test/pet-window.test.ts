@@ -10,7 +10,6 @@ import { processSignature } from "../src/pi/process-signature.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { personEnv } from "../src/hub/child-process.ts";
 import { CHARACTERS } from "../src/pet/characters.ts";
-import { petFrame } from "../src/pet/frame.ts";
 import { petPixels } from "../src/pet/pixels.ts";
 
 const rootPath = join(import.meta.dir, "..");
@@ -134,17 +133,6 @@ test("JXA sends literal text as NSTask argv with silent output and no null compl
   expect(html).not.toMatch(/#pill\s*\{[^}]*box-shadow/);
   expect(jxa).toContain("var W = 150, H = 150");
   expect(jxa).toContain("$.NSMakeRect(origin.x, origin.y, W, H)");
-  // Double-width double-height STAI letters on a squared solid body, gradient fills, light detail layer.
-  expect(CHARACTERS.stai.frames.blocks.waiting.full).toHaveLength(7);
-  const staiWorking = petPixels(CHARACTERS.stai.frames.blocks.working.full);
-  expect(staiWorking).toMatchObject({ width: 60, height: 56 });
-  expect(staiWorking.underlay.length).toBeGreaterThan(0);
-  expect(staiWorking.detail.length).toBeGreaterThan(0);
-  expect(CHARACTERS.stai.frames.blocks.working.full.join("\n")).toContain("██uvwxyz90██");
-  expect(html).toContain('fill: url(#g-working)');
-  // Text terminals print the double-width letter cells as letter tiles.
-  expect(petFrame("stai", "working", "full", "blocks").join("\n")).toContain("S█T█A█I");
-  expect(petFrame("stai", "working", "full", "blocks").join("\n")).not.toContain("uvwxyz");
   expect(petWindowArgv("/project path")).toEqual([process.execPath, join(rootPath, "src/cli/main.js"), "--project", "/project path"]);
 });
 
@@ -196,7 +184,7 @@ test("page recovers its pencil after transient offline and sends keyboard text w
   const html = readFileSync(join(rootPath, "src/pet/window.html"), "utf8");
   const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]!;
   const elements: Record<string, any> = {};
-  for (const id of ["pet", "frame", "art", "state", "composer", "message", "result", "pencil", "close"]) elements[id] = {
+  for (const id of ["pet", "frame", "state", "composer", "message", "result", "pencil", "close"]) elements[id] = {
     disabled: false, hidden: true, value: "", handlers: {} as Record<string, (event: any) => void>,
     setAttribute() {}, replaceChildren() {}, focus() {}, setPointerCapture() {},
     addEventListener(name: string, callback: any) { this.handlers[name] = callback; },
