@@ -764,8 +764,8 @@
     {
       "id": "data-private-parent-scope",
       "file": "src/hub/path-policy.ts",
-      "search": "(includeParents && (beneath(target, lexical) || beneath(target, actual)))",
-      "replacement": "false",
+      "search": "includeParents &&= !existing(lexical) || statSync(lexical).isDirectory();",
+      "replacement": "includeParents = false;",
       "testFile": "test/path-policy.test.ts",
       "testName": "private declared paths force local-only before triage even with pattern constraint off (#259)"
     },
