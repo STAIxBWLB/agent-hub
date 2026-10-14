@@ -196,21 +196,58 @@ ahub memory demote 1a2b3c4d              # a long-term entry becomes short-term 
 ahub memory forget 1a2b3c4d              # gone from the index here, and on other machines once synced
 ahub memory supersede <old> <new>        # the old one is dropped from briefs and recall
 ahub memory rebuild
+ahub memory dedupe                     # inspect legacy claude-mem duplicate groups
+ahub memory dedupe --apply             # append supersede relations, never rewrite log bytes
 ```
 
 A forgotten long-term entry stays in the log file and in the sync remote's git history; removing it from there is a
-person's rewrite of that history.
+person's rewrite of that history. Forgetting a claude-mem import forgets every known non-forgotten member of its tuple group (source, project, source timestamp and text), including hidden duplicates, so they cannot reappear when their replacement is forgotten.
 
 ## Importing from claude-mem
 
-`ahub memory import claude-mem [--db <path>] [--limit N]` (a person's) copies the hub's own notes from claude-mem
+`ahub memory import claude-mem [--db <path>] [--limit N] [--restart]` (a person's) copies the hub's own notes from claude-mem
 (observations whose metadata names a `peer`: `hub_remember` and the hub's task notes) into long-term hub memory as
-`source: claude-mem`, for this project only (claude-mem files them under the repository's own name; a superproject's
-notes stay out, and two unrelated repositories with one name share it). Model answers from `ahub ask --remember`, text
-matching a PII pattern, text about a path the project's `pii.paths` makes private and secret-looking text are skipped. An
-imported note is placed in the graph by the paths and symbols in its text (claude-mem keeps no task proposal time).
-claude-mem's database is opened read-only and never changed; an observation always maps to the same entry, on any
-machine, so importing again adds nothing.
+`source: claude-mem`, for this project only. The SQL filters by the repository's basename before applying the limit;
+a superproject's notes stay out, while two unrelated repositories with one basename still share claude-mem's namespace.
+Model answers from `ahub ask --remember`, PII-pattern text, text about a path made private by the project's `pii.paths`
+and secret-looking text are skipped. The source database is opened read-only and never changed.
+
+- Import graph nodes are derived from text only: no checkout existence check and no machine-local `local.deny`.
+  Built-in denylisted names, relative-path normalization, absolute/parent exclusion, sorting and the 64-node cap still apply.
+  The source's timestamp and the existing content hash stay unchanged. Matching observations on different checkouts now
+  produce the same id; old ids, references and content validation remain valid. The local tuple fallback keeps re-import
+  idempotent even for legacy ids (its known ceiling is that the tuple excludes title).
+- A machine-local `memory/import-state.json` records the last fully handled row, including all skips. The cursor key
+  combines the source DB's real path, claude-mem project name and hub project key. The file uses mode 0600 and atomic
+  replacement; it never syncs. Unreadable or malformed state replays from zero, write failure logs a warning and preserves
+  the import result, and a database whose max id is below the cursor resets it. Completed progress is saved even if a later
+  row throws. `--restart` starts from zero; use it after changing a PII policy to revisit rows skipped under the old policy.
+- The default limit is 10000. JSON reports `read` (project-matched, peer-tagged SQL rows this run), `added`,
+  `skipped.model`, `skipped.pii`, `skipped.secret`, `cursor` (last handled id), and `more` (`read === limit`). Malformed
+  metadata, non-string peers and empty text count only in `read`; already imported rows add nothing. `more` asks for
+  another run, which can return zero rows when the last batch exactly filled the limit. There is no project-skip counter.
+- Repository identity still depends on the local real path without an origin remote, and non-GitHub remotes spelled
+  differently can yield different project keys. These affect all hub memory and remain outside this import fix.
+
+### Legacy duplicate imports
+
+`ahub memory dedupe [--apply] [--json]` is console-only, including the listing, because it shows unscreened note text.
+It groups this project's non-forgotten claude-mem entries by `(source, project, at, text)`. Listing reports only actionable
+groups, their members, heads and chosen target; `--apply` appends ordinary supersede operations in this machine's log.
+Historical log bytes are never rewritten. Forget operates on the whole known tuple group.
+
+- Heads have no current replacement. Existing replacement relations, including a person's distinct outside notes, stay
+  intact. If every head can reach a valid synced outside terminal (shared when any head is shared), the newest qualifying
+  terminal by `(at, id)` replaces all heads, even a single head. Otherwise multiple heads converge onto the smallest id
+  among the heads; zero heads or one head without a qualifying outside terminal require no writes. A refused supersede
+  is reported as an error. Re-running after convergence writes nothing.
+- When `A -> B` already exists inside a group, dedupe connects another head `C -> B`, without trying the cyclic `B -> A`.
+  When `B -> X` and `C -> Y` name outside user replacements, `X` and `Y` both remain visible; a remaining head moves to
+  the newer qualifying terminal. A later outside replacement can make a previously settled group actionable again.
+- Old or mixed extractor versions can still introduce duplicate ids. Run dedupe after syncing them. Two machines acting
+  on divergent prior relations can choose different targets; sync folds relations deterministically using the existing
+  latest-relation and cycle guards. If several group members remain visible, one more dedupe run converges them. New
+  same-version imports with stable project keys converge automatically in either sync order.
 
 ## Measuring it
 

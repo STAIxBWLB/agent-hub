@@ -1,12 +1,13 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { goalCommand, memoryCommand } from "../src/cli/memory.ts";
-import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
+import { extractNodes, MemoryStore, type NoteInput } from "../src/memory/store.ts";
 import { syncMemory, type Visibility } from "../src/memory/sync.ts";
 
 // #258 phase 2: two machines simulated by two homes and a bare git remote; long-term tasks and their leases.
@@ -174,4 +175,66 @@ test("review of #354: a lock a killed git left behind never hides this machine's
   const cwd = temp("goalcwd");
   await expect(goalCommand(["new", "call 900101-1234567"], cwd, { store: a })).rejects.toThrow("not saved");
   expect(await goalCommand(["new", "ship memory"], cwd, { store: a })).toContain("created");
+}, 60_000);
+
+
+function importSource(name: string, text: string) {
+  const file = join(temp("import-source"), "claude-mem.db"), db = new Database(file);
+  db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
+  db.query("INSERT INTO observations (project, title, text, created_at_epoch, metadata) VALUES (?, 'same title', ?, 1790000000000, ?)").run(name, text, '{"peer":"codex","kind":"decision"}');
+  db.close(); return file;
+}
+
+test("CLI claude-mem imports use text-only nodes across checkouts and local deny policies, then converge in either sync order", async () => {
+  for (const reverse of [false, true]) {
+    const { remote, a, b } = machines();
+    const parentA = temp("checkout-a"), parentB = temp("checkout-b"), rootA = join(parentA, "app"), rootB = join(parentB, "app");
+    for (const root of [rootA, rootB]) {
+      mkdirSync(join(root, ".agenthub"), { recursive: true }); git(root, "init", "-q"); git(root, "remote", "add", "origin", "https://github.com/o/app.git");
+    }
+    mkdirSync(join(rootA, "src")); writeFileSync(join(rootA, "src", "csv.ts"), "export {};\n");
+    writeFileSync(join(rootA, ".agenthub", "config.json"), JSON.stringify({ local: { deny: ["src/csv.ts"] } }));
+    writeFileSync(join(rootB, ".agenthub", "config.json"), JSON.stringify({ local: { deny: ["src/unrelated.ts"] } }));
+    const file = importSource("app", "Read src/csv.ts before modifying the parser");
+    const beforeSource = readFileSync(file);
+    for (const [root, store] of [[rootA, a], [rootB, b]] as const) {
+      expect(JSON.parse(await memoryCommand(["import", "claude-mem", "--db", file, "--json"], root, { store }))).toMatchObject({ read: 1, added: 1 });
+    }
+    const av = a.list()[0]!, bv = b.list()[0]!;
+    expect(av.about).toEqual(["path:src/csv.ts"]); expect(bv.about).toEqual(av.about); expect(bv.id).toBe(av.id);
+    // Ordinary extraction still requires existence; the import-only option preserves the built-in denylist and bounds.
+    expect(extractNodes("src/csv.ts", { cwd: rootB, project: "p", repo: "o/app" })).toEqual([]);
+    expect(extractNodes("src/csv.ts .maru/secrets/key.json ../outside.ts /absolute.ts", { cwd: rootB, project: "p", repo: "o/app", checkExists: false })).toEqual(["path:src/csv.ts"]);
+    const [first, second] = reverse ? [b, a] : [a, b];
+    expect((await syncMemory(first!, { remote, ...privately })).ok).toBe(true);
+    expect((await syncMemory(second!, { remote, ...privately })).ok).toBe(true);
+    expect((await syncMemory(first!, privately)).ok).toBe(true);
+    for (const s of [a, b]) { expect(s.list().map((v) => v.id)).toEqual([av.id]); const dump = s.dump(); s.rebuild(); expect(s.dump()).toBe(dump); }
+    expect(readFileSync(file)).toEqual(beforeSource);
+    expect(git(remote, "ls-tree", "-r", "--name-only", "main")).not.toContain("import-state.json");
+  }
+}, 60_000);
+
+test("legacy duplicate dedupe syncs append-only and divergent prior relations converge after a re-run", async () => {
+  const { remote, clock, a, b } = machines();
+  const at = "2026-10-12T00:00:00.000Z";
+  const first = a.importNote(note("same legacy text", { source: "claude-mem", about: ["path:src/a.ts"] }), at).id;
+  const second = b.importNote(note("same legacy text", { source: "claude-mem", about: ["path:src/b.ts"] }), at).id;
+  await syncMemory(a, { remote, ...privately }); await syncMemory(b, { remote, ...privately }); await syncMemory(a, privately);
+  expect(a.list()).toHaveLength(2); expect(b.list()).toHaveLength(2);
+  const [small, large] = [first, second].sort();
+  const segment = join(a.dir, "log", `${a.machine.id}.jsonl`), before = readFileSync(segment, "utf8");
+  expect(a.dedupe("work/app", true).applied).toBe(1);
+  expect(a.list().map((v) => v.id)).toEqual([small!]);
+  expect(readFileSync(segment, "utf8").startsWith(before)).toBe(true);
+  // b has not seen a's dedupe: its person's opposite relation is later intent.
+  clock.t += 1000; expect(b.supersede(small!, large!, "user", "work/app")).toBe(true);
+  expect(b.dedupe("work/app", true).applied).toBe(0);
+  await syncMemory(a, privately); await syncMemory(b, privately); await syncMemory(a, privately);
+  expect(a.list()).toEqual(b.list());
+  for (const s of [a, b]) { s.dedupe("work/app", true); expect(s.list()).toHaveLength(1); expect(s.dedupe("work/app", true)).toMatchObject({ groups: [], applied: 0 }); const dump = s.dump(); s.rebuild(); expect(s.dump()).toBe(dump); }
+  await syncMemory(a, privately); await syncMemory(b, privately); await syncMemory(a, privately);
+  expect(a.list()).toEqual(b.list());
+  a.forget(a.list()[0]!.id, "user", "work/app"); await syncMemory(a, privately); await syncMemory(b, privately);
+  expect(b.list()).toEqual([]);
 }, 60_000);

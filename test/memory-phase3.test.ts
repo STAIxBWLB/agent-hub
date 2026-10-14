@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Briefs } from "../src/memory/brief.ts";
@@ -39,7 +39,7 @@ test("claude-mem import copies the hub's notes of this project once, never model
   const isPii = (t: string) => /\d{6}-\d{7}/.test(t);
   const nodes = (text: string) => text.includes("parser") ? ["symbol:parse@src/csv.ts"] : [];
   const r = importClaudeMem(s, { project: "github.com/o/app", chain: ["work", "app"], isPii, nodes, db: file });
-  expect(r).toMatchObject({ read: 7, added: 2, skipped: { project: 2, model: 1, pii: 1, secret: 1 } }); // only the repository's own name, not the chain above it
+  expect(r).toMatchObject({ read: 5, added: 2, skipped: { model: 1, pii: 1, secret: 1 }, more: false, cursor: 5 }); // only the repository's own name, not the chain above it
   const got = s.list();
   expect(got.map((v) => v.text).sort()).toEqual(["regex split fails on quotes", "the parser owns quoting"]);
   expect(got.every((v) => v.tier === "long" && v.source === "claude-mem" && v.project === "github.com/o/app")).toBe(true);
@@ -104,4 +104,85 @@ test("briefs report what they carried, research records keep the counts, and the
     expect(formatResearch(report).join("\n")).toContain("by memory brief");
     expect([memoryMode({ enabled: false }), memoryMode({ enabled: true }), memoryMode({ enabled: false, native: true }), memoryMode({ enabled: true, native: true })]).toEqual(["off", "claude-mem", "native", "both"]);
   });
+});
+
+
+function sourceRows(rows: { project?: string; text?: string; metadata?: string }[]) {
+  const file = join(temp("cursor-source"), "claude-mem.db");
+  const db = new Database(file);
+  db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
+  for (const r of rows) db.query("INSERT INTO observations (project, title, text, created_at_epoch, metadata) VALUES (?, '', ?, 1790000000000, ?)")
+    .run(r.project ?? "app", r.text ?? "a useful note", r.metadata ?? '{"peer":"codex"}');
+  db.close();
+  return file;
+}
+
+test("claude-mem project filtering prevents starvation and the local cursor advances bounded windows, including skipped rows", () => {
+  const file = sourceRows([
+    ...Array.from({ length: 6 }, () => ({ project: "other" })),
+    { text: "one" }, { metadata: '{"peer":42}' }, { text: "two" }, { text: "" },
+    { metadata: '{"peer":broken}' }, { text: "three" },
+  ]);
+  const s = open();
+  const opts = { project: "github.com/o/app", chain: ["app"], isPii: () => false, db: file, limit: 1 };
+  const cursors: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const r = importClaudeMem(s, opts);
+    expect(r.read).toBe(1);
+    expect(r.more).toBe(true);
+    cursors.push(r.cursor);
+  }
+  expect(cursors).toEqual([7, 8, 9, 10, 11, 12]);
+  expect(s.list().map((v) => v.text).sort()).toEqual(["one", "three", "two"]);
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 0, added: 0, more: false, cursor: 12 });
+  expect(importClaudeMem(s, { ...opts, restart: true, limit: 100 })).toMatchObject({ read: 6, added: 0, more: false, cursor: 12 });
+  const cursorFile = join(s.dir, "import-state.json");
+  expect(statSync(cursorFile).mode & 0o777).toBe(0o600);
+  expect(Object.values(JSON.parse(readFileSync(cursorFile, "utf8")))).toEqual([12]);
+  // The same claude-mem basename can belong to distinct hub namespaces; their cursors cannot starve each other.
+  expect(importClaudeMem(s, { ...opts, project: "github.com/other/app", limit: 100 })).toMatchObject({ read: 6, added: 3, cursor: 12 });
+  const before = s.dump(); s.rebuild(); expect(s.dump()).toBe(before);
+});
+
+test("claude-mem cursor survives reopen, resets for recreated sources, and fails open for malformed state", () => {
+  const file = sourceRows([{ text: "old one" }, { text: "old two" }]);
+  const s = open();
+  const opts = { project: "github.com/o/app", chain: ["app"], isPii: () => false, db: file };
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 2, added: 2, cursor: 2 });
+  const otherHandle = new MemoryStore({ home: s.dir.slice(0, -"/memory".length) });
+  cleanup.push(() => otherHandle.close());
+  expect(importClaudeMem(otherHandle, opts)).toMatchObject({ read: 0, added: 0, cursor: 2 });
+  // Recreate the database at the same real path, with a lower maximum autoincrement id.
+  unlinkSync(file);
+  const db = new Database(file);
+  db.run("CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, title TEXT, text TEXT, narrative TEXT, created_at_epoch INTEGER, metadata TEXT)");
+  db.run(`INSERT INTO observations (project, text, created_at_epoch, metadata) VALUES ('app', 'new source', 1790000000000, '{"peer":"codex"}')`);
+  db.close();
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 1, cursor: 1 });
+  writeFileSync(join(s.dir, "import-state.json"), "{broken");
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 0, cursor: 1 });
+});
+
+test("claude-mem cursor records completed rows after a callback error and restart reconsiders earlier privacy skips", () => {
+  const file = sourceRows([{ text: "public first" }, { text: "private later" }, { text: "public last" }]);
+  const s = open();
+  const base = { project: "github.com/o/app", chain: ["app"], db: file };
+  expect(() => importClaudeMem(s, { ...base, isPii: (text) => { if (text.includes("private")) throw new Error("policy unavailable"); return false; } })).toThrow("policy unavailable");
+  expect(importClaudeMem(s, { ...base, isPii: (text) => text.includes("private") })).toMatchObject({ read: 2, added: 1, skipped: { pii: 1 }, cursor: 3 });
+  // A new policy cannot implicitly revisit skipped history: that is the explicit restart operation.
+  expect(importClaudeMem(s, { ...base, isPii: () => false })).toMatchObject({ read: 0, added: 0 });
+  expect(importClaudeMem(s, { ...base, restart: true, isPii: () => false })).toMatchObject({ read: 3, added: 1, cursor: 3 });
+  expect(s.list()).toHaveLength(3);
+});
+
+
+test("claude-mem import succeeds with a warning when machine-local cursor persistence fails", () => {
+  const file = sourceRows([{ text: "recoverable import" }]), s = open(), logs: string[] = [];
+  mkdirSync(join(s.dir, "import-state.json")); // a rename onto a directory cannot succeed, even under a privileged user
+  const opts = { project: "github.com/o/app", chain: ["app"], db: file, isPii: () => false, log: (line: string) => logs.push(line) };
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 1, cursor: 1 });
+  expect(logs).toHaveLength(1);
+  expect(logs[0]).toContain("could not be saved");
+  expect(importClaudeMem(s, opts)).toMatchObject({ read: 1, added: 0 });
+  expect(s.list()).toHaveLength(1);
 });

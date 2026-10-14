@@ -12,7 +12,7 @@ const loadConfigSafe = (cwd: string) => { try { return loadConfig(cwd); } catch 
  * #258: `ahub memory`, straight on the machine's store (no hub needed). Reading is anyone's; promote, demote, forget,
  * supersede and rebuild are a person's (the identity gate refuses agent shells).
  */
-export const MEMORY_USAGE = "usage: ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> | show <id> | graph <id|node> [--hops 1|2] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] | suggestions | confirm|reject <suggestion id>  [--json]";
+export const MEMORY_USAGE = "usage: ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> | show <id> | graph <id|node> [--hops 1|2] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]";
 export const GOAL_USAGE = "usage: ahub goal [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]";
 
 const fail = (message: string): never => { throw new Error(message); };
@@ -85,17 +85,27 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
         if (!r.ok) fail(`hub memory sync: ${r.error}`);
         return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${r.warning ? `\nnote: ${r.warning}` : ""}`;
       }
+      case "dedupe": {
+        const apply = rest.includes("--apply");
+        if (rest.some(arg => arg !== "--apply")) fail("usage: ahub memory dedupe [--apply] [--json]");
+        const result = store.dedupe(project, apply);
+        if (json) return JSON.stringify(result, null, 2);
+        return [result.groups.length ? `${result.groups.length} duplicate import group(s)${apply ? `; appended ${result.applied} supersede operation(s)` : "; use --apply to reconcile"}` : "no duplicate import groups to reconcile",
+          ...result.groups.map(g => `${g.members.map(v => v.id.slice(0, 8)).join(", ")} -> ${g.target.slice(0, 8)}: ${g.members[0]!.text}`)].join("\n");
+      }
       case "import": {
         const db = flag("--db"), limit = flag("--limit");
-        if (rest[0] !== "claude-mem" || rest.length !== 1) fail("usage: ahub memory import claude-mem [--db <path>] [--limit N]");
+        const restart = rest.includes("--restart");
+        if (restart) rest.splice(rest.indexOf("--restart"), 1);
+        if (rest[0] !== "claude-mem" || rest.length !== 1) fail("usage: ahub memory import claude-mem [--db <path>] [--limit N] [--restart]");
         if (limit && !(Number(limit) > 0)) fail("--limit takes a positive number");
         const routing = currentRouting(cwd);
         const policy = privatePaths(); // a note about a private path never reaches the synced log
-        const key = memoryProjectKey(cwd), deny = loadConfigSafe(cwd)?.local.deny ?? [];
-        const nodes = (text: string) => extractNodes(text, { cwd, project: key, repo: key.startsWith("github.com/") ? key.slice("github.com/".length) : key, deny });
-        const r = importClaudeMem(store, { project: key, chain: projectChain(cwd), nodes, isPii: (text) => detectSignals({ title: text, detail: "", refs: {} }, routing, cwd).includes("pii") || mentionsPrivatePath(text, [], policy, cwd), ...(db ? { db } : {}), ...(limit ? { limit: Number(limit) } : {}) });
+        const key = memoryProjectKey(cwd);
+        const nodes = (text: string) => extractNodes(text, { cwd, project: key, repo: key.startsWith("github.com/") ? key.slice("github.com/".length) : key, checkExists: false });
+        const r = importClaudeMem(store, { project: key, chain: projectChain(cwd), nodes, restart, isPii: (text) => detectSignals({ title: text, detail: "", refs: {} }, routing, cwd).includes("pii") || mentionsPrivatePath(text, [], policy, cwd), ...(db ? { db } : {}), ...(limit ? { limit: Number(limit) } : {}) });
         if (json) return JSON.stringify(r, null, 2);
-        return `imported ${r.added} of ${r.read} hub notes from claude-mem as long-term entries (skipped: ${r.skipped.project} other projects, ${r.skipped.model} model answers, ${r.skipped.pii} PII, ${r.skipped.secret} secret-looking; the rest were already here)`;
+        return `imported ${r.added} of ${r.read} hub notes from claude-mem as long-term entries (skipped: ${r.skipped.model} model answers, ${r.skipped.pii} PII, ${r.skipped.secret} secret-looking; other candidates were empty, malformed or already imported)${r.more ? "\nmore remain: run it again" : ""}`;
       }
       case "suggestions": {
         const pending = store.suggestions(project).filter((x) => x.status === "suggested");
