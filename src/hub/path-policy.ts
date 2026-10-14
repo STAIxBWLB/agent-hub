@@ -128,8 +128,8 @@ export function matchesPolicy(cwd: string, path: string, paths: string[], includ
       if (/[?*]/.test(entry)) return globScope(root, lexical, actual, entry, includeParents, budget);
       const targets = policyTargets(root, [entry]);
       if (targets.some(target => beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual)))) return true;
-      const dir = policyRealPath(resolve(root, entry));
-      return existing(dir) && statSync(dir).isDirectory() && aliasScope(dir, lexical, actual, includeParents, budget);
+      // Discover compatible on-disk spellings too: DATA may name data on a case-sensitive filesystem.
+      return globScope(root, lexical, actual, `${entry}/**`, includeParents, budget);
     });
   } catch { return true; }
 }

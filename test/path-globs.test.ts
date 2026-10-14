@@ -130,3 +130,12 @@ for (const policy of ["data", "data/**"]) {
     expect(matchesPolicy(dir, "outside.txt", [policy, policy])).toBe(true);
   });
 }
+
+test("all policy forms discover direct aliases through case-compatible directory spellings (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data")); mkdirSync(join(dir, "private"));
+  symlinkSync("../private", join(dir, "data/link"));
+  for (const policy of ["DATA", "DATA/*", "DATA/**"]) {
+    expect(matchesPolicy(dir, "private/file", [policy])).toBe(true);
+    expect(matchesPolicy(dir, "elsewhere/file", [policy])).toBe(false);
+  }
+});
