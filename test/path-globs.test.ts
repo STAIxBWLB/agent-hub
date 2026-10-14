@@ -229,6 +229,8 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unreadabl
   const dir = root(), denied = join(dir, "denied"); mkdirSync(join(dir, "data")); mkdirSync(denied);
   for (let i = 0; i < 4097; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
   chmodSync(denied, 0);
+  // Linux CI exposed that opening a handle alone need not report EACCES before readSync.
+  // The exhausted-budget path must check readability without consuming another entry.
   try {
     for (const policies of [["data", "denied"], ["data/**", "denied/**"]]) expect(matchesPolicy(dir, "src/app.ts", policies)).toBe(true);
   } finally { chmodSync(denied, 0o700); }

@@ -1,4 +1,4 @@
-import { lstatSync, opendirSync, readlinkSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, opendirSync, readlinkSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "./project.ts";
 import { foldSegment } from "./permission-mode.ts";
@@ -50,6 +50,8 @@ function directAliasTarget(path: string): string | undefined {
 }
 /** Only a completed bounded scan contributes aliases; a truncated root contributes none. */
 function aliasScope(dir: string, lexical: string, actual: string, includeParents: boolean, budget: DiscoveryBudget): boolean {
+  // Readability must not depend on reaching readSync after an exhausted-budget return.
+  accessSync(dir, constants.R_OK);
   const handle = opendirSync(dir);
   let matched = false;
   try {
