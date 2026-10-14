@@ -2943,3 +2943,32 @@ A later issue lookup or profile-preparation failure also returns the IDs confirm
 Release cut audits return exact counts with at most 32 example IDs per category; the dashboard states how many IDs are shown when truncated. Scope grouping and indexed approval dates avoid scanning each task history for every release. Full audit pagination remains a future extension.
 
 Release cards include task states in their refresh key, so completion of an outside prerequisite updates blocked counts even when the release and audit preview are unchanged.
+
+## Standalone macOS pet window (#391)
+
+From a person's terminal, `ahub pet --window` starts one floating, transparent
+JXA panel per project; `ahub pet --window --close` closes it. Other platforms
+print unsupported and retain `ahub pet` / `ahub pet --short`. An agent-marked
+shell may read the terminal pet but cannot start or close the window.
+
+Set `pet.window: true` in `.agenthub/config.json` or `config.local.json` to start
+it with `ahub up`. This opt-in has no effect on terminal pet defaults. The
+window uses the configured built-in character, full pixel frame and blink
+choice. Its body opens `ahub ui`; the pencil opens an inline console message
+box (Enter sends through `ahub say`, Esc cancels). Drag the body to move it;
+`pet-window-pos.json` remembers the position, with an on-screen fallback if a
+saved display has disappeared. The panel joins all Spaces without a Dock icon.
+
+A detached Bun host refreshes `pet-view.json` once per second using `readPet`
+and `loadPetConfig`. The file contains only state/counts/character/blink and
+built-in pixels. It uses no dashboard session or HTTP listener. An unavailable
+hub displays Offline for two seconds, then the panel and host exit. Closing
+JXA exits the host too. `pet-window.pid` holds the host's process signature;
+an uncertain owner is retained rather than signalled. A stale owner requires
+an explicit `--close` before restarting; a malformed pidfile requires operator
+inspection. A send failure is unconfirmed: check the stream before retrying.
+
+Native transparency/floating and the bridge were verified in the macOS spike.
+Real keystrokes, dragging and persistence, Spaces, message delivery and body
+click need the manual PR checklist before merge; automated fixtures do not
+establish those native results.

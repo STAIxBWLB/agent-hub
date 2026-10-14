@@ -251,3 +251,24 @@ refused; unknown visibility proceeds with a warning for the configured remote.
 Short-term segments, machine identity and the derived index are excluded from
 sync. Suggested graph edges are off by default and are not evidence until a
 person confirms them. Operational details and limits: [hub memory](memory.md).
+
+## Standalone pet window (#391)
+
+The macOS window reads local files only. Its detached host reuses `readPet`,
+including signed-daemon liveness and recovery-lock handling, and publishes an
+atomic counts-only `pet-view.json` (state, act/watch, known character, blink,
+built-in pixel frame). It excludes item ids, task titles/text, refs, paths,
+notices and approval prose. Missing or unconfirmed status produces only
+`{offline:true}`. Process and position files are separate from this view.
+
+The local WKWebView has a deny-by-default CSP, with only its shipped inline
+script/style allowed and network connections forbidden. Text never becomes
+HTML or executable source. The retained JXA bridge accepts fixed drag/send/
+open/close operations; `NSTask` invokes the host-supplied Bun/CLI/project argv
+and appends `say`, `--` and a single message argument. It does not evaluate a
+shell string. Message text is never logged by the window/host; command stdout
+and stderr go to the null device. `ahub say` keeps its existing console-message
+authority and recording behavior, and `ahub ui` opens its existing session.
+The CLI restricts `pet --window` (including close) to console identity, while
+plain terminal pet reads remain available to agent shells. Signed pidfiles
+fence instance ownership and close; unknown owners are never signalled.

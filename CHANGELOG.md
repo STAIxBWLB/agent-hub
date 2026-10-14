@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Add an opt-in macOS floating pet window with built-in pixels, counts-only local state, a console message pencil, saved position and signed process ownership; keep terminal pet reads available to agent shells (#391 Task B).
+
 ## 0.12.26
 
 - Import claude-mem observations under a checkout-independent identity, so the same observation is one entry on every machine after sync however the checkouts differ; scan the source database project-aware with a persisted machine-local cursor (`--restart` re-scans), so unrelated projects cannot starve the requested one; reconcile legacy duplicate imports with `ahub memory dedupe` through append-only supersede operations (#380).

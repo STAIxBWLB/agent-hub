@@ -2830,3 +2830,36 @@ session instead of assuming that an older extension provides the fence.
 Prompt lineage lasts until logical `agent_settled`: native retry, compaction or
 continuation starts inside that run retain the same command id. A later personal
 run has no hub command lineage.
+
+## Amendment: standalone attention window (#391 Task B, supersedes #280 dashboard pet)
+
+The #280 phase-4 dashboard pet is replaced by an optional standalone macOS JXA
+window. Task B adds the window first; #391 Task A removes the existing in-page
+character and retains shared attention counts/navigation. Terminal characters
+and read-only `ahub pet` behavior remain.
+
+`ahub pet --window` / `--window --close` are console-identity commands;
+`pet.window:true` opts into startup from `ahub up`. Non-macOS reports unsupported.
+One detached Bun host per project holds a signed pidfile in stateDir, reads
+`readPet` and `loadPetConfig` every second and atomically writes state, act/watch,
+character, blink and the full built-in `petPixels(CHARACTERS[...])` frame. No
+item ids/text/titles or external image assets are included. Unavailable status
+writes exactly `{offline:true}`; JXA displays Offline for two seconds, exits,
+and the host follows. A closed/crashed JXA also ends the host. A stale owner
+requires explicit close; an unconfirmed owner is retained.
+
+`osascript -l JavaScript` creates an accessory, borderless nonactivating
+NSPanel subclass that can become key, uses NSFloatingWindowLevel and
+canJoinAllSpaces | stationary, and embeds a transparent local WKWebView. Its
+one-second NSTimer loads the atomic view and calls `update(json)` with an
+explicit no-op completion function (a JS null completion block crashes on the
+verified macOS). The fixed bridge moves/saves position, makes the pencil's
+inline text box key, sends a console message through NSTask argv to `ahub say`,
+opens the dashboard through `ahub ui`, or closes. Enter sends; Esc cancels.
+No shell evaluation, new dependency, compile step, HTTP listener or network
+request is added. Message contents are not logged by this surface.
+
+The repaired Mac spike verified a transparent floating key panel and both
+bridge directions. Real input/drag/Spaces and end-to-end stream delivery remain
+manual acceptance evidence on the implementation PR, not inferred from the
+spike's process metrics or automated fixtures.

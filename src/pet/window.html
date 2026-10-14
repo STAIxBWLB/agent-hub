@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>agent-hub pet</title>
+<style>
+:root { color-scheme: dark; font: 12px system-ui, sans-serif; color: #eceef3; }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body { width: 280px; height: 250px; display: flex; align-items: center; flex-direction: column; justify-content: flex-end; gap: 8px; padding-bottom: 8px; box-sizing: border-box; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: transparent; border-radius: 10px; }
+button:focus-visible, input:focus-visible { outline: 2px solid #79dfb2; outline-offset: 2px; }
+#pet { width: 154px; height: 112px; padding: 0; cursor: grab; touch-action: none; }
+#pet:active { cursor: grabbing; }
+svg { width: 100%; height: 100%; overflow: visible; image-rendering: pixelated; filter: drop-shadow(0 2px 3px #0006); }
+rect { fill: #a7e3bf; }
+[data-state="waiting"] rect { fill: #ffe49a; }
+[data-state="blocked"] rect { fill: #edaba4; }
+[data-state="review"] rect { fill: #c5b1f0; }
+[data-state="offline"] rect { fill: #aaaeb8; }
+#pill { display: flex; align-items: center; gap: 6px; border-radius: 18px; padding: 5px 9px; background: #242936ed; box-shadow: 0 2px 6px #0004; }
+#pill button { padding: 3px 5px; }
+#composer { width: 256px; background: #242936f5; padding: 8px; border-radius: 12px; box-sizing: border-box; }
+#composer[hidden] { display: none; }
+input { width: 100%; box-sizing: border-box; border: 1px solid #657081; border-radius: 6px; padding: 6px; background: #111722; color: #eceef3; font: 14px system-ui; }
+#result { margin-top: 5px; min-height: 15px; }
+</style>
+<button id="pet" aria-label="Open agent-hub dashboard"><svg id="frame" role="img" aria-label="Pet" viewBox="0 0 60 64"></svg></button>
+<div id="pill"><span id="state" aria-live="polite">Starting</span><button id="pencil" aria-label="Write a console message">✎</button><button id="close" aria-label="Close pet window">×</button></div>
+<div id="composer" hidden><input id="message" aria-label="Console message" placeholder="Message, Enter to send" maxlength="65536"><div id="result" role="status">Esc to cancel</div></div>
+<script>
+const post = body => window.webkit.messageHandlers.pet.postMessage(body);
+const pet = document.getElementById('pet'), frame = document.getElementById('frame');
+const state = document.getElementById('state'), composer = document.getElementById('composer'), input = document.getElementById('message'), result = document.getElementById('result');
+let signature = '', drag, sending = false;
+window.update = view => {
+  if (view.offline) {
+    document.body.dataset.state = 'offline'; state.textContent = 'Offline';
+    document.getElementById('pencil').disabled = true; return;
+  }
+  document.getElementById('pencil').disabled = false;
+  document.body.dataset.state = view.state;
+  state.textContent = view.state + (view.act ? ' · act ' + view.act : '') + (view.watch ? ' · watch ' + view.watch : '');
+  pet.setAttribute('aria-label', 'Open dashboard, ' + state.textContent);
+  const next = JSON.stringify(view.frame);
+  if (signature === next) return;
+  signature = next;
+  frame.setAttribute('viewBox', '0 0 ' + view.frame.width + ' ' + view.frame.height);
+  frame.replaceChildren(...view.frame.pixels.map(([x,y]) => {
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', x); rect.setAttribute('y', y); rect.setAttribute('width', '1'); rect.setAttribute('height', '1'); return rect;
+  }));
+};
+window.focusInput = () => { composer.hidden = false; input.focus(); };
+window.commandResult = ok => { sending = false; input.disabled = false; result.textContent = ok ? 'Sent' : 'Message was not confirmed; check the dashboard before retrying.'; if (ok) { input.value = ''; composer.hidden = true; } };
+document.getElementById('pencil').addEventListener('click', () => post({ kind: 'pencil' }));
+document.getElementById('close').addEventListener('click', () => post({ kind: 'close' }));
+input.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { composer.hidden = true; pet.focus(); }
+  if (event.key === 'Enter' && !event.isComposing && input.value.trim() && !sending) {
+    event.preventDefault(); sending = true; input.disabled = true; result.textContent = 'Sending'; post({ kind: 'send', text: input.value });
+  }
+});
+pet.addEventListener('pointerdown', event => { drag = { x: event.screenX, y: event.screenY, moved: false }; pet.setPointerCapture(event.pointerId); });
+pet.addEventListener('pointermove', event => {
+  if (!drag) return;
+  const dx = event.screenX - drag.x, dy = event.screenY - drag.y;
+  if (!dx && !dy) return;
+  drag.moved = true; drag.x = event.screenX; drag.y = event.screenY;
+  post({ kind: 'drag', dx, dy });
+});
+pet.addEventListener('pointerup', () => { const moved = drag?.moved; drag = null; if (!moved) post({ kind: 'open' }); });
+pet.addEventListener('pointercancel', () => { drag = null; });
+pet.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); post({ kind: 'open' }); } });
+post({ kind: 'ready' });
+</script>
+</html>
