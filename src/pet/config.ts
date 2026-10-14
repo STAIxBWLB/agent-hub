@@ -1,8 +1,37 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { characterId, type CharacterId, type PetSize, type PetGlyphs } from "./frame.ts";
 
-export interface PetConfig { enabled: boolean; blink: boolean; bell: boolean; character?: CharacterId; size?: PetSize; glyphs?: PetGlyphs; notice?: string; window?: boolean }
+export type PetPalette = "blue" | "teal" | "violet" | "ochre";
+const PALETTES: Record<string, PetPalette> = { a: "blue", b: "teal", c: "violet", d: "ochre", blue: "blue", teal: "teal", violet: "violet", ochre: "ochre" };
+export function petPalette(value: unknown): PetPalette | undefined {
+  return typeof value === "string" ? PALETTES[value.toLowerCase()] : undefined;
+}
+export interface PetConfig { enabled: boolean; blink: boolean; bell: boolean; character?: CharacterId; size?: PetSize; glyphs?: PetGlyphs; palette?: PetPalette; notice?: string; window?: boolean }
+/** Console-local presentation only; it merges pet.palette into config.local.json and grants no authority. */
+export function savePetPalette(cwd: string, value: string): string {
+  const palette = petPalette(value);
+  if (!palette) throw new Error("Unknown pet palette; use blue, teal, violet or ochre (a/b/c/d).");
+  const dir = join(cwd, ".agenthub");
+  const path = join(dir, "config.local.json");
+  let file: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("malformed");
+    file = parsed as Record<string, unknown>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Cannot update config.local.json; it is malformed.");
+  }
+  const pet = file.pet && typeof file.pet === "object" && !Array.isArray(file.pet) ? file.pet as Record<string, unknown> : {};
+  mkdirSync(dir, { recursive: true });
+  const temporary = join(dir, `config.local.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify({ ...file, pet: { ...pet, palette } }, null, 2) + "\n", { flag: "wx" });
+    renameSync(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
+  return `Pet palette set to ${palette}.`;
+}
 /** Console-local presentation only; this reader never writes config or grants authority. */
 export function loadPetConfig(cwd: string): PetConfig {
   let value: unknown;
@@ -23,14 +52,17 @@ export function loadPetConfig(cwd: string): PetConfig {
   if (value === undefined) return defaults;
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ...defaults, notice: "Unknown pet configuration; using stai line defaults." };
   const row = value as Record<string, unknown>;
-  const invalid = Object.keys(row).some(key => !["character", "size", "glyphs", "blink", "bell", "window"].includes(key)) ||
+  const invalid = Object.keys(row).some(key => !["character", "size", "glyphs", "blink", "bell", "palette", "window"].includes(key)) ||
     row.character !== undefined && !characterId(row.character) || row.size !== undefined && !["line", "mini", "full"].includes(row.size as string) ||
     row.glyphs !== undefined && (typeof row.glyphs !== "string" || !["auto", "ascii", "blocks"].includes(row.glyphs)) ||
+    row.palette !== undefined && !petPalette(row.palette) ||
     row.blink !== undefined && typeof row.blink !== "boolean" || row.bell !== undefined && typeof row.bell !== "boolean" || row.window !== undefined && typeof row.window !== "boolean";
+  const palette = petPalette(row.palette);
   return { enabled, blink: typeof row.blink === "boolean" ? row.blink : true, bell: typeof row.bell === "boolean" ? row.bell : false,
     ...(typeof row.window === "boolean" ? { window: row.window } : {}),
     ...(characterId(row.character) && row.character !== "stai" ? { character: row.character } : {}),
     ...(row.size === "mini" || row.size === "full" ? { size: row.size } : {}),
     ...(row.glyphs === "ascii" || row.glyphs === "blocks" ? { glyphs: row.glyphs } : {}),
+    ...(palette && palette !== "teal" ? { palette } : {}),
     ...(invalid ? { notice: "Unknown pet option; using stai line defaults for that option." } : {}) };
 }

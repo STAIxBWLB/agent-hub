@@ -4,12 +4,12 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "node:path";
 import { readPet, type PetView } from "../cli/pet.ts";
 import { CHARACTERS, type CharacterId } from "./characters.ts";
-import { loadPetConfig, type PetConfig } from "./config.ts";
+import { loadPetConfig, type PetConfig, type PetPalette } from "./config.ts";
 import { petPixels } from "./pixels.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 export const PET_WINDOW_UNSUPPORTED = "The floating pet window is supported only on macOS; use ahub pet in this terminal.";
-export type WindowView = { offline: true } | { state: NonNullable<PetView["summary"]>["state"]; act: number; watch: number; character: CharacterId; blink: boolean; frame: ReturnType<typeof petPixels> };
+export type WindowView = { offline: true } | { state: NonNullable<PetView["summary"]>["state"]; act: number; watch: number; character: CharacterId; blink: boolean; palette: PetPalette; frame: ReturnType<typeof petPixels> };
 
 /** No ids, task text, paths or notices leave the existing readPet projection. */
 export function windowView(view: PetView, config: PetConfig, now = Date.now()): WindowView {
@@ -17,7 +17,7 @@ export function windowView(view: PetView, config: PetConfig, now = Date.now()): 
   const { state, act, watch } = view.summary;
   const character = config.character ?? "stai";
   const pose = state === "waiting" && config.blink && Math.floor(now / 1000) % 2 ? "waitingBlink" : state;
-  return { state, act, watch, character, blink: config.blink, frame: petPixels(CHARACTERS[character].frames.blocks[pose].full) };
+  return { state, act, watch, character, blink: config.blink, palette: config.palette ?? "teal", frame: petPixels(CHARACTERS[character].frames.blocks[pose].full) };
 }
 
 export function writePetView(stateDir: string, view: WindowView): void {

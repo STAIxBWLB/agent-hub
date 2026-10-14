@@ -1,21 +1,29 @@
 // Local AppKit/WebKit surface. No shell evaluation or remote content.
 ObjC.import('Cocoa');
 ObjC.import('WebKit');
-var panel, web, app, viewPath, positionPath, readyPath, cliArgv, timer, bridge;
-var offlineAt = 0, commands = [], exiting = false;
+var panel, web, app, viewPath, positionPath, readyPath, cliArgv, timer, hoverTimer, bridge;
+var offlineAt = 0, commands = [], exiting = false, hotspot = null, hovering = false;
 function ignoreCompletion(result, error) {}
 function evaluate(source) { web.evaluateJavaScriptCompletionHandler(source, ignoreCompletion); }
+// An inactive accessory panel receives no mouse-moved events, so hover reveal is
+// polled from the global mouse position against the hotspot rect the page posts.
+function pollHover() {
+  if (!hotspot || exiting) return;
+  var mouse = $.NSEvent.mouseLocation, frame = panel.frame;
+  var x = mouse.x - frame.origin.x, y = frame.origin.y + frame.size.height - mouse.y;
+  var inside = x >= hotspot.x && x <= hotspot.x + hotspot.w && y >= hotspot.y && y <= hotspot.y + hotspot.h;
+  if (inside !== hovering) { hovering = inside; evaluate('hoverChanged(' + inside + ')'); }
+}
 function savePosition() {
   var origin = panel.frame.origin;
   $(JSON.stringify({ x: origin.x, y: origin.y })).writeToFileAtomicallyEncodingError(positionPath, true, $.NSUTF8StringEncoding, null);
 }
 function quit() { exiting = true; savePosition(); app.terminate(null); }
-function runCommand(command, text, argv) {
+function runCommand(command, extra, argv) {
   if (exiting || commands.length >= 8) return;
   var task = $.NSTask.alloc.init;
   task.executableURL = $.NSURL.fileURLWithPath(argv[0]);
-  var args = argv.slice(1).concat([command]);
-  if (command === 'say') args = args.concat(['--', text]);
+  var args = argv.slice(1).concat([command]).concat(extra);
   task.arguments = $(args); // argv array only; message text is a single argument.
   task.standardInput = $.NSFileHandle.fileHandleWithNullDevice;
   task.standardOutput = $.NSFileHandle.fileHandleWithNullDevice;
@@ -43,12 +51,17 @@ ObjC.registerSubclass({ name: 'AhubPetBridge', superclass: 'NSObject', methods: 
       var origin = panel.frame.origin;
       panel.setFrameOrigin($.NSMakePoint(origin.x + body.dx, origin.y - body.dy));
       savePosition();
+    } else if (body.kind === 'hotspot' && typeof body.x === 'number' && typeof body.y === 'number' && typeof body.w === 'number' && typeof body.h === 'number' && isFinite(body.x) && isFinite(body.y) && Math.abs(body.x) <= 500 && Math.abs(body.y) <= 500 && body.w > 0 && body.h > 0 && body.w <= 500 && body.h <= 500) {
+      hotspot = { x: body.x, y: body.y, w: body.w, h: body.h };
     } else if (body.kind === 'send' && typeof body.text === 'string' && body.text.trim() && body.text.length <= 65536 && body.text.indexOf('\0') === -1) {
-      runCommand('say', body.text, cliArgv);
-    } else if (body.kind === 'open') runCommand('ui', undefined, cliArgv);
+      runCommand('say', ['--', body.text], cliArgv);
+    } else if (body.kind === 'palette' && typeof body.palette === 'string' && /^(blue|teal|violet|ochre)$/.test(body.palette)) {
+      runCommand('pet', ['--palette', body.palette], cliArgv);
+    } else if (body.kind === 'open') runCommand('ui', [], cliArgv);
     else if (body.kind === 'close') quit();
   } },
-  'tick:': { types: ['void', ['id']], implementation: function(sender) { tick(); } }
+  'tick:': { types: ['void', ['id']], implementation: function(sender) { tick(); } },
+  'hover:': { types: ['void', ['id']], implementation: function(sender) { pollHover(); } }
 } });
 function tick() {
   var value;
@@ -76,7 +89,8 @@ function run(argv) {
   app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   var screen = $.NSScreen.mainScreen.visibleFrame;
-  var origin = { x: screen.origin.x + screen.size.width - 300, y: screen.origin.y + 80 };
+  var W = 150, H = 150;
+  var origin = { x: screen.origin.x + screen.size.width - (W + 20), y: screen.origin.y + 80 };
   try {
     var saved = JSON.parse(ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(positionPath, $.NSUTF8StringEncoding, null)));
     if (typeof saved.x === 'number' && typeof saved.y === 'number' && isFinite(saved.x) && isFinite(saved.y)) origin = saved;
@@ -85,22 +99,24 @@ function run(argv) {
   var visible = false;
   for (var i = 0; i < screens.count; i++) {
     var frame = screens.objectAtIndex(i).visibleFrame;
-    if (origin.x >= frame.origin.x && origin.y >= frame.origin.y && origin.x + 280 <= frame.origin.x + frame.size.width && origin.y + 250 <= frame.origin.y + frame.size.height) visible = true;
+    if (origin.x >= frame.origin.x && origin.y >= frame.origin.y && origin.x + W <= frame.origin.x + frame.size.width && origin.y + H <= frame.origin.y + frame.size.height) visible = true;
   }
-  if (!visible) origin = { x: screen.origin.x + screen.size.width - 300, y: screen.origin.y + 80 };
-  panel = $.AhubPetPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(origin.x, origin.y, 280, 250), $.NSWindowStyleMaskBorderless | $.NSWindowStyleMaskNonactivatingPanel, $.NSBackingStoreBuffered, false);
+  if (!visible) origin = { x: screen.origin.x + screen.size.width - (W + 20), y: screen.origin.y + 80 };
+  panel = $.AhubPetPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(origin.x, origin.y, W, H), $.NSWindowStyleMaskBorderless | $.NSWindowStyleMaskNonactivatingPanel, $.NSBackingStoreBuffered, false);
   panel.title = 'agent-hub pet'; panel.opaque = false; panel.backgroundColor = $.NSColor.clearColor;
   panel.level = $.NSFloatingWindowLevel;
   panel.collectionBehavior = $.NSWindowCollectionBehaviorCanJoinAllSpaces | $.NSWindowCollectionBehaviorStationary;
   panel.hidesOnDeactivate = false;
+  panel.acceptsMouseMovedEvents = true; // CSS :hover while key; pollHover() covers the inactive case
   var config = $.WKWebViewConfiguration.alloc.init;
   bridge = $.AhubPetBridge.alloc.init;
   config.userContentController.addScriptMessageHandlerName(bridge, 'pet');
-  web = $.WKWebView.alloc.initWithFrameConfiguration($.NSMakeRect(0, 0, 280, 250), config);
+  web = $.WKWebView.alloc.initWithFrameConfiguration($.NSMakeRect(0, 0, W, H), config);
   web.setValueForKey(false, 'drawsBackground');
   panel.contentView = web;
   web.loadFileURLAllowingReadAccessToURL($.NSURL.fileURLWithPath(htmlPath), $.NSURL.fileURLWithPath(htmlPath));
   panel.orderFrontRegardless; panel.makeKeyWindow;
   timer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(1, bridge, 'tick:', null, true);
+  hoverTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.1, bridge, 'hover:', null, true);
   app.run;
 }

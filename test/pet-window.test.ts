@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { claimPetWindow, closePetWindow, petWindowArgv, PET_WINDOW_UNSUPPORTED, startPetWindow, windowView, writePetView } from "../src/pet/window.ts";
-import { loadPetConfig } from "../src/pet/config.ts";
+import { loadPetConfig, savePetPalette } from "../src/pet/config.ts";
 import { readPet } from "../src/cli/pet.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
@@ -34,8 +34,9 @@ test("window file copies only counts, state and approved pixels atomically", asy
     status(f.state, { act: 1, watch: 0, state: "waiting", first: { kind: "approval", level: "act", id: "SECRET_ID", until: Date.now() + 10000, title: "SECRET_TASK_TEXT" } });
     const config = { enabled: true, blink: true, bell: false, character: "gyul" as const };
     const first = windowView(readPet(f.state), config, 0);
-    expect(Object.keys(first).sort()).toEqual(["act", "blink", "character", "frame", "state", "watch"]);
-    expect(first).toMatchObject({ act: 1, watch: 0, state: "waiting", character: "gyul", blink: true, frame: petPixels(CHARACTERS.gyul.frames.blocks.waiting.full) });
+    expect(Object.keys(first).sort()).toEqual(["act", "blink", "character", "frame", "palette", "state", "watch"]);
+    expect(first).toMatchObject({ act: 1, watch: 0, state: "waiting", character: "gyul", blink: true, palette: "teal", frame: petPixels(CHARACTERS.gyul.frames.blocks.waiting.full) });
+    expect(windowView(readPet(f.state), { ...config, palette: "ochre" as const })).toMatchObject({ palette: "ochre" });
     expect(JSON.stringify(first)).not.toContain("SECRET");
     expect(windowView(readPet(f.state), config, 1000)).toMatchObject({ frame: petPixels(CHARACTERS.gyul.frames.blocks.waitingBlink.full) });
     expect(windowView(readPet(f.state), { ...config, blink: false }, 1000)).toMatchObject({ frame: petPixels(CHARACTERS.gyul.frames.blocks.waiting.full) });
@@ -99,6 +100,21 @@ test("window config merges its local opt-in without changing terminal defaults",
     // Explicit presentation options retain the existing local override behavior.
     writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { character: "gyul", window: true } }));
     expect(loadPetConfig(f.root)).toMatchObject({ enabled: true, window: true, character: "gyul" });
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "c" } }));
+    expect(loadPetConfig(f.root).palette).toBe("violet");
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "B" } }));
+    expect(loadPetConfig(f.root).palette).toBeUndefined(); // teal is the default and stays implicit
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "red" } }));
+    expect(loadPetConfig(f.root).palette).toBeUndefined();
+    expect(loadPetConfig(f.root).notice).toBeDefined();
+    // Key-switched palettes are saved through the CLI into config.local.json, preserving other keys.
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { character: "gyul" }, other: true }));
+    expect(savePetPalette(f.root, "d")).toBe("Pet palette set to ochre.");
+    expect(JSON.parse(readFileSync(join(f.root, ".agenthub/config.local.json"), "utf8"))).toEqual({ pet: { character: "gyul", palette: "ochre" }, other: true });
+    expect(loadPetConfig(f.root).palette).toBe("ochre");
+    expect(() => savePetPalette(f.root, "red")).toThrow("Unknown pet palette");
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), "broken");
+    expect(() => savePetPalette(f.root, "blue")).toThrow("malformed");
   } finally { f.dispose(); }
 });
 
@@ -112,8 +128,10 @@ test("JXA sends literal text as NSTask argv with silent output and no null compl
   runInNewContext(jxa, context);
   const argv = ["/bun path", "/cli path", "--project", "/project path"];
   const text = '@claude --flag $(touch /should-not-exist); "quotes"\nsecond line';
-  context.runCommand("say", text, argv);
+  context.runCommand("say", ["--", text], argv);
   expect(tasks[0].arguments).toEqual(["/cli path", "--project", "/project path", "say", "--", text]);
+  context.runCommand("pet", ["--palette", "violet"], argv);
+  expect(tasks[1].arguments).toEqual(["/cli path", "--project", "/project path", "pet", "--palette", "violet"]);
   expect(tasks[0].executableURL).toBe("/bun path");
   expect(tasks[0].standardOutput).toBe("null-device"); expect(tasks[0].standardError).toBe("null-device");
   expect(jxa).not.toContain("doShellScript");
@@ -126,6 +144,13 @@ test("JXA sends literal text as NSTask argv with silent output and no null compl
   const html = readFileSync(join(rootPath, "src/pet/window.html"), "utf8");
   expect(html).toMatch(/body\[data-state="working"\] #frame\s*\{[^}]*animation:[^}]*steps\([^)]*\)[^}]*infinite;[^}]*\}[\s\S]*@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*body\[data-state="working"\] #frame\s*\{\s*animation:\s*none;\s*\}/);
   expect(html).toContain("connect-src 'none'"); expect(html).not.toMatch(/\bfetch\(|XMLHttpRequest|new WebSocket/);
+  // Compact panel, dual-background state colors, hover-revealed pill, no pill shadow.
+  expect(html).toContain("width: 150px; height: 150px");
+  expect(html).toContain("#pet:hover ~ #pill");
+  expect(html).toContain("body[data-composing] #pill");
+  expect(html).not.toMatch(/#pill\s*\{[^}]*box-shadow/);
+  expect(jxa).toContain("var W = 150, H = 150");
+  expect(jxa).toContain("$.NSMakeRect(origin.x, origin.y, W, H)");
   expect(petWindowArgv("/project path")).toEqual([process.execPath, join(rootPath, "src/cli/main.js"), "--project", "/project path"]);
 });
 
@@ -177,16 +202,41 @@ test("page recovers its pencil after transient offline and sends keyboard text w
   const html = readFileSync(join(rootPath, "src/pet/window.html"), "utf8");
   const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]!;
   const elements: Record<string, any> = {};
-  for (const id of ["pet", "frame", "state", "composer", "message", "result", "pencil", "close"]) elements[id] = {
+  for (const id of ["pet", "frame", "state", "composer", "message", "result", "pencil", "close", "pill"]) elements[id] = {
     disabled: false, hidden: true, value: "", handlers: {} as Record<string, (event: any) => void>,
     setAttribute() {}, replaceChildren() {}, focus() {}, setPointerCapture() {},
+    getBoundingClientRect() { return { x: 0, y: 0, right: 1, bottom: 1 }; },
     addEventListener(name: string, callback: any) { this.handlers[name] = callback; },
   };
   const posted: unknown[] = [];
   const page: any = { webkit: { messageHandlers: { pet: { postMessage: (body: unknown) => posted.push(body) } } } };
-  runInNewContext(script, { window: page, document: { body: { dataset: {} }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) } });
+  const doc: any = { body: { dataset: {}, handlers: {} as Record<string, () => void>, addEventListener(name: string, callback: any) { this.handlers[name] = callback; } }, handlers: {} as Record<string, (event: any) => void>, addEventListener(name: string, callback: any) { this.handlers[name] = callback; }, getElementById: (id: string) => elements[id], createElementNS: () => ({ setAttribute() {} }) };
+  runInNewContext(script, { window: page, document: doc });
+  // 1/2/3/4 switch and save the palette while the panel is key, except while typing in the composer.
+  doc.handlers.keydown({ key: "3", target: null });
+  expect(doc.body.dataset.palette).toBe("violet");
+  expect(posted.at(-1)).toEqual({ kind: "palette", palette: "violet" });
+  doc.handlers.keydown({ key: "1", target: elements.message });
+  expect(posted.at(-1)).toEqual({ kind: "palette", palette: "violet" });
+  expect(html).toContain("'1': 'blue', '2': 'teal', '3': 'violet', '4': 'ochre'");
+  // Hover reveal comes from the native host polling the posted hotspot rect (pet + pill),
+  // so it works while the accessory panel is inactive and survives crossing onto the pill.
+  page.hoverChanged(true); expect(doc.body.dataset.hover).toBe("");
+  page.hoverChanged(false); expect(doc.body.dataset.hover).toBeUndefined();
+  expect(posted).toContainEqual({ kind: "hotspot", x: 0, y: 0, w: 1, h: 1 });
+  expect(html).toContain("body[data-hover] #pill");
+  expect(html).toContain('[data-palette="blue"] rect { fill: #3979d6');
+  expect(html).toContain('[data-palette="violet"] rect { fill: #8864cc');
+  expect(html).toContain('[data-palette="ochre"] rect { fill: #be7a22');
+  expect(html).toContain('[data-palette="blue"] svg');
+  expect(jxa).toContain("acceptsMouseMovedEvents = true");
+  expect(jxa).toContain("$.NSEvent.mouseLocation");
+  // The pill never leaves the accessibility tree, and the result line never wraps taller.
+  expect(html).not.toMatch(/#pill[^{]*\{[^}]*visibility/);
+  expect(html).toMatch(/#result\s*\{[^}]*white-space:\s*nowrap[^}]*text-overflow:\s*ellipsis[^}]*\}/);
   page.update({ offline: true }); expect(elements.pencil.disabled).toBe(true);
-  page.update({ state: "idle", act: 0, watch: 0, frame: { width: 1, height: 1, pixels: [[0, 0]] } });
+  page.update({ state: "idle", act: 0, watch: 0, palette: "violet", frame: { width: 1, height: 1, pixels: [[0, 0]] } });
+  expect(doc.body.dataset.palette).toBe("violet");
   expect(elements.pencil.disabled).toBe(false);
   page.focusInput(); expect(elements.composer.hidden).toBe(false);
   elements.message.value = '<img src="https://example.invalid"> $(command)';
