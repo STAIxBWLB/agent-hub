@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesPolicy, policyPaths } from "../src/hub/path-policy.ts";
@@ -138,4 +138,25 @@ test("all policy forms discover direct aliases through case-compatible directory
     expect(matchesPolicy(dir, "private/file", [policy])).toBe(true);
     expect(matchesPolicy(dir, "elsewhere/file", [policy])).toBe(false);
   }
+});
+
+test("direct unresolvable alias cycles fail closed while deeper cycles are never traversed (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data/sub"), { recursive: true });
+  symlinkSync("b", join(dir, "data/sub/a")); symlinkSync("a", join(dir, "data/sub/b"));
+  for (const policy of ["data", "data/*", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(false);
+  symlinkSync("b", join(dir, "data/a")); symlinkSync("a", join(dir, "data/b"));
+  for (const policy of ["data", "data/*", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(true);
+});
+
+test("every policy form fails closed when immediate entries exhaust discovery (#385)", () => {
+  const dir = root(); mkdirSync(join(dir, "data"));
+  for (let i = 0; i < 4097; i++) writeFileSync(join(dir, "data", `entry-${i}`), "");
+  for (const policy of ["data", "data/*", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(true);
+});
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unreadable protected roots fail closed for every policy form (#385)", () => {
+  const dir = root(), data = join(dir, "data"); mkdirSync(data); chmodSync(data, 0);
+  try {
+    for (const policy of ["data", "data/*", "data/**"]) expect(matchesPolicy(dir, "other/file", [policy])).toBe(true);
+  } finally { chmodSync(data, 0o700); }
 });

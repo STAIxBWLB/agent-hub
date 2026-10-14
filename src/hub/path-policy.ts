@@ -1,4 +1,4 @@
-import { lstatSync, opendirSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, opendirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "./project.ts";
 import { foldSegment } from "./permission-mode.ts";
@@ -27,14 +27,15 @@ export function policyTargets(cwd: string, paths: string[]): string[] {
 }
 /** Alias only immediate symlink children of a protected subtree root, never recursively. */
 function aliasScope(dir: string, lexical: string, actual: string, includeParents: boolean, budget: { entries: number }): boolean {
-  const entries = readdirSync(dir, { withFileTypes: true });
-  budget.entries += entries.length;
-  if (budget.entries > 4096) throw new Error("policy alias discovery unavailable");
-  for (const entry of entries) {
-    if (!entry.isSymbolicLink()) continue;
-    const target = policyRealPath(join(dir, entry.name));
-    if (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))) return true;
-  }
+  const handle = opendirSync(dir);
+  try {
+    for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
+      if (++budget.entries > 4096) throw new Error("policy alias discovery unavailable");
+      if (!entry.isSymbolicLink()) continue;
+      const target = policyRealPath(join(dir, entry.name));
+      if (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))) return true;
+    }
+  } finally { handle.closeSync(); }
   return false;
 }
 /**
