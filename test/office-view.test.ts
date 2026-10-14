@@ -539,7 +539,7 @@ test("backlog rows show no assignment action before they are pulled (#264 merge)
   const {api,get}=startOfficeRuntime(()=>"off");
   api.draw({...snapshot,tasks:[{id:90,title:"staged",class:"implement",state:"backlog"}]});
   expect(get("tasks").text()).toContain("staged");
-  const openExact=()=>get("tasks").findAll(node=>node.tag==="article" && node.attrs["aria-label"]?.startsWith("#90 "))[0]!.fire("click");
+  const openExact=()=>get("tasks").findAll(node=>node.tag==="article" && (node.attrs["aria-label"]?.startsWith("#90 ") ?? false))[0]!.fire("click");
   openExact();expect(get("task-detail-dialog").open).toBe(true);expect(get("task-detail-title").textContent).toBe("Task #90");
   const detail=get("task-detail-content");expect(detail.text()).toContain("staged");
   expect(detail.findAll(node=>node.tag==="button" && node.textContent==="Assign")).toHaveLength(0);
