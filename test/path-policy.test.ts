@@ -160,4 +160,7 @@ test("glob policies match decomposed, compatibility and long-s spellings of prot
   const ctx: ToolContext = { cwd: dir, deny: [], readOnly: ["학생자료/**"], sandboxProfile: "", permit: async () => true, send: () => "sent" };
   expect(await runTool("write", JSON.stringify({ path: nfd + "/a.csv", content: "mutated" }), ctx)).toContain("data.readonly");
   expect(readFileSync(join(dir, nfd, "a.csv"), "utf8")).toBe("original");
+  // A future alias target outside the configured tree needs beneath's lowercase leg, not a glob-prefix fallback.
+  const aliasDir = root(); mkdirSync(join(aliasDir, "alias-root")); symlinkSync("../İ̸", join(aliasDir, "alias-root/link"));
+  for (const policy of ["alias-root", "alias-root/**"]) expect(matchesPolicy(aliasDir, "i̸̇/new.csv", [policy])).toBe(true);
 });
