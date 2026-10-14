@@ -93,6 +93,12 @@ test("window config merges its local opt-in without changing terminal defaults",
     writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { window: "true" } }));
     expect(loadPetConfig(f.root).window).toBeUndefined();
     expect(loadPetConfig(f.root).notice).toBeDefined();
+    writeFileSync(join(f.root, ".agenthub/config.json"), JSON.stringify({ pet: false }));
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { window: true } }));
+    expect(loadPetConfig(f.root)).toMatchObject({ enabled: false, window: true });
+    // Explicit presentation options retain the existing local override behavior.
+    writeFileSync(join(f.root, ".agenthub/config.local.json"), JSON.stringify({ pet: { character: "gyul", window: true } }));
+    expect(loadPetConfig(f.root)).toMatchObject({ enabled: true, window: true, character: "gyul" });
   } finally { f.dispose(); }
 });
 

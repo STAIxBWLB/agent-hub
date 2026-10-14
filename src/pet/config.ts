@@ -6,9 +6,13 @@ export interface PetConfig { enabled: boolean; blink: boolean; bell: boolean; ch
 /** Console-local presentation only; this reader never writes config or grants authority. */
 export function loadPetConfig(cwd: string): PetConfig {
   let value: unknown;
+  let enabled = true;
   for (const name of ["config.json", "config.local.json"]) {
     try {
       const file = JSON.parse(readFileSync(join(cwd, ".agenthub", name), "utf8"));
+      // A window-only local opt-in does not undo inherited pet:false presentation.
+      if (file.pet === false) enabled = false;
+      else if (file.pet !== undefined && !(file.pet && typeof file.pet === "object" && !Array.isArray(file.pet) && Object.keys(file.pet).length === 1 && Object.hasOwn(file.pet, "window"))) enabled = true;
       if (file.pet !== undefined) value = value && typeof value === "object" && file.pet && typeof file.pet === "object" ? { ...value, ...file.pet } : file.pet;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -23,7 +27,7 @@ export function loadPetConfig(cwd: string): PetConfig {
     row.character !== undefined && !characterId(row.character) || row.size !== undefined && !["line", "mini", "full"].includes(row.size as string) ||
     row.glyphs !== undefined && (typeof row.glyphs !== "string" || !["auto", "ascii", "blocks"].includes(row.glyphs)) ||
     row.blink !== undefined && typeof row.blink !== "boolean" || row.bell !== undefined && typeof row.bell !== "boolean" || row.window !== undefined && typeof row.window !== "boolean";
-  return { enabled: true, blink: typeof row.blink === "boolean" ? row.blink : true, bell: typeof row.bell === "boolean" ? row.bell : false,
+  return { enabled, blink: typeof row.blink === "boolean" ? row.blink : true, bell: typeof row.bell === "boolean" ? row.bell : false,
     ...(typeof row.window === "boolean" ? { window: row.window } : {}),
     ...(characterId(row.character) && row.character !== "stai" ? { character: row.character } : {}),
     ...(row.size === "mini" || row.size === "full" ? { size: row.size } : {}),

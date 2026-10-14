@@ -2952,7 +2952,9 @@ print unsupported and retain `ahub pet` / `ahub pet --short`. An agent-marked
 shell may read the terminal pet but cannot start or close the window.
 
 Set `pet.window: true` in `.agenthub/config.json` or `config.local.json` to start
-it with `ahub up`. This opt-in has no effect on terminal pet defaults. The
+it with `ahub up`. A window-only local opt-in preserves inherited `pet:false`
+for terminal/status/dashboard presentation; explicit local character options
+retain their existing presentation override behavior. The
 window uses the configured built-in character, full pixel frame and blink
 choice. Its body opens `ahub ui`; the pencil opens an inline console message
 box (Enter sends through `ahub say`, Esc cancels). Drag the body to move it;
