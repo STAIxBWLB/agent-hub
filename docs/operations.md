@@ -156,8 +156,8 @@ status read it says loading; later failures preserve the prior count with a noti
 Panels retain their existing full-board refresh and loading/error handling.
 
 The dashboard Task board shows the same shared public-board progress model,
-including state counts, waiting, stacked segments and a labeled four-stage track
-per row. Filtering rows does not filter overall progress. The existing signature guard
+including overall state counts, waiting and stacked segments; each task detail
+retains its labeled four-stage track. Filtering rows does not filter overall progress. The existing signature guard
 updates the live region only when progress changes. The stacked SVG fills the
 section width; its text legend carries every state count. Theme offers System,
 Light and Dark; it is applied before first paint and stored in a host-scoped loopback cookie
@@ -2879,20 +2879,36 @@ nor drawing a character changes authority, config files, task state or polling.
 Explicit `ahub pet` and text status use the configured line face; prompt tokens
 remain character-independent. Native glyph width and tmux are unverified.
 
-## Dashboard attention character (#280)
+## Dashboard views and attention (#391, replaces the #280 in-page character)
 
-The dashboard header draws the configured built-in character independently of
-Office. It uses the same structural needs model as status and the console. The
-accessible button names the character, state and action/watch counts; the tab
-title shows the action count. Activating the button scrolls and focuses the exact
-visible approval/task/peer row, or its related section with fixed id-only guidance
-when the row is filtered or unavailable. It performs no action and changes no
-filters. Legacy snapshots without attention keep the widget hidden.
+Top buttons select Board, Office, Stream, Agents, Message, Memory or Settings
+within the same page. The selected view and board column focus use the shared
+host-scoped cookie helper; the URL fragment remains reserved for the session
+ticket. Sections are hidden rather than fetched separately. Projects and
+Benchmarks live under Agents alongside peers, approvals and usage budgets.
+Office mode stays an explicit Off/Flat/Isometric preference inside Office.
 
-Only a live approval alternates the two waiting poses once per second through
-CSS. `pet.blink:false` and reduced motion retain a static pose. No new timer,
-request, image protocol or character-file load is added. Project reset clears
-the widget and title. Native/browser visual validation remains unverified.
+Board cards show id/title, priority, owner dot and overdue/check markers.
+Click or Enter opens a native detail dialog with the full stage/dependency,
+release/date, SDLC, detail and GitHub content plus existing Pull/Return/Assign
+controls. Snapshot changes refresh the dialog; project reset or a task leaving
+the snapshot closes it. Expand on a column shows one wide list of full details;
+Back returns to compact cards. State/agent/release filters still apply.
+
+The shared pure needs model now drives the nav attention badge and existing
+action-count tab title. Agents has a live pending-approval count even when
+attention metadata is unavailable. Activation switches to the matching view
+and focuses only the exact visible approval/task id; missing or filtered rows
+receive fixed structural guidance, with no peer or first-row fallback. No
+workflow action is issued and no filter is changed by attention navigation.
+Invalid/legacy attention hides its badge and restores the base title.
+
+The in-page pet, its SVG and character/pixel payload are removed. The standalone
+macOS window owns character presentation. Existing snapshot poll, session,
+request types and CSP hashes remain; no route, request or timer is added.
+Browser screenshots/CSP-console verification are separate manual evidence on
+the implementation PR; VM/HTTP fixtures do not establish human visual results.
+
 With mini/full characters, active console notices remain visible away from the
 character: panel body rows show the bounded wrapped notice, and stream mode
 prints each fresh notice once through the existing local stream. Footer prose

@@ -7,7 +7,7 @@ import { PEER_PALETTE } from "../src/ui/peer-palette.ts";
 
 class Node {
   children: Node[] = []; attrs: Record<string, string> = {}; dataset: Record<string, string> = {};
-  handlers = new Map<string, ((event: any) => unknown)[]>(); value = ""; checked = false; disabled = false; className = ""; id = ""; textContent = ""; draggable = false; title = ""; type = "";
+  handlers = new Map<string, ((event: any) => unknown)[]>(); value = ""; checked = false; disabled = false; className = ""; id = ""; textContent = ""; draggable = false; title = ""; type = ""; hidden = false; open = false;
   classList = { add: (_name: string) => {}, remove: (_name: string) => {} };
   constructor(readonly tag = "div") {}
   append(...nodes: Node[]) { this.children.push(...nodes); }
@@ -16,18 +16,22 @@ class Node {
   getAttribute(key: string) { return this.attrs[key] ?? null; }
   addEventListener(name: string, fn: (event: any) => unknown) { this.handlers.set(name, [...(this.handlers.get(name) ?? []), fn]); }
   emit(name: string, event: any = {}) { for (const fn of this.handlers.get(name) ?? []) fn(event); }
+  showModal() { this.open = true; }
+  close() { this.open = false; }
+  focus() {}
   set innerHTML(_value: string) { throw new Error("unsafe HTML rendering"); }
 }
-function page(options: { cached?: boolean; now?: () => number } = {}) {
+function page(options: { cached?: boolean; now?: () => number; focus?: string } = {}) {
   const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
   const source = html.slice(html.indexOf("let boardViewState ="), html.indexOf("function render(snapshot) {"));
   const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get("task-lanes").value = "columns";
-  const scope = { projectId: "project", instanceId: "instance", generation: 1 }, calls: any[] = [];
+  const scope = { projectId: "project", instanceId: "instance", generation: 1 }, calls: any[] = [], cookies: [string,string][]=[];
   const el = (tag: string, text?: unknown, cls = "") => { const node = new Node(tag); if (text !== undefined) node.textContent = String(text); node.className = cls; return node; };
   const elSource = html.match(/const el = [^\n]+/)![0];
   const updateSource = options.cached ? html.match(/^function update\(.*$/m)![0] : "";
-  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true;const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard})`, {
+  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true,currentView="board";const dashboardCookie=cookiePrefs;const switchView=()=>{},applyDashboardView=()=>{};const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard,open:openTaskDetail,refresh:refreshTaskDetail,close:closeTaskDetail,focus:setColumnFocus,stop:()=>{stopped=true}})`, {
+    cookiePrefs:{get:()=>options.focus ?? "",set:(name:string,value:string)=>cookies.push([name,value])},
     Date: class extends Date { static override now() { return options.now?.() ?? Date.now(); } },
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
     document: { createElement: (tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string) => el("span", text),
@@ -47,20 +51,27 @@ function page(options: { cached?: boolean; now?: () => number } = {}) {
     { id: 4, state: "approved", title: "done", class: "implement", owner: "codex" },
   ] };
   api.draw(snapshot, peers, Object.keys(peers));
-  return { api, scope, calls, get, all, peers, snapshot };
+  return { api, scope, calls, cookies, get, all, peers, snapshot };
 }
 
 test("board DOM renders five columns public cards and keyboard actions without flow dragging (#263)", () => {
-  const { get, all, calls } = page(), nodes = all(get("tasks"));
+  const { api, get, all, calls, snapshot, peers } = page(), nodes = all(get("tasks"));
   expect(nodes.filter(node => node.tag === "h3").map(node => node.textContent)).toEqual(["Backlog", "To Do", "In Progress", "Review / QA", "Done"]);
   expect(nodes.filter(node => node.tag === "article").map(node => node.draggable)).toEqual([true, true, false, false]);
   expect(nodes.some(node => node.textContent === "<img src=x onerror=alert(1)>")).toBe(false); // title includes its explicit task id, kept as text
   expect(nodes.some(node => node.textContent.includes("#2 <img src=x onerror=alert(1)>"))).toBe(true);
-  const pull = nodes.find(node => node.textContent === "Pull into To Do")!; pull.emit("click");
+  expect(nodes.some(node => node.textContent === "Pull into To Do")).toBe(false);
+  api.open(1);
+  const pull = all(get("task-detail-content")).find(node => node.textContent === "Pull into To Do")!; pull.emit("click");
   expect(calls).toEqual([{ action: "backlog_pull", id: 1 }]);
-  const assigned = nodes.find(node => node.tag === "select")!; assigned.value = "claude";
-  nodes.find(node => node.textContent === "Assign")!.emit("click");
+  api.open(2);
+  const detail = all(get("task-detail-content"));
+  const assigned = detail.find(node => node.tag === "select")!; assigned.value = "claude";
+  detail.find(node => node.textContent === "Assign")!.emit("click");
   expect(calls[1]).toEqual({ action: "assign", id: 2, peer: "claude" });
+  api.draw({...snapshot,tasks:snapshot.tasks.map(task=>({...task,...(task.id===2?{owner:null,started:false}:{})}))},peers,Object.keys(peers));api.open(2);
+  all(get("task-detail-content")).find(node => node.textContent === "Return to Backlog")!.emit("click");
+  expect(calls[2]).toEqual({ action: "backlog_return", id: 2 });
   expect(all(get("task-legend")).some(node => node.textContent === "WIP 1 / permission ask")).toBe(true);
 });
 
@@ -94,7 +105,8 @@ test("board drops reject stale project instance generation foreign origins and f
   const target = all(get("task-legend")).find(node => node.handlers.has("drop"))!;
   target.emit("drop", event({ ...payload, id: 3 })); expect(calls).toEqual([]);
   target.emit("drop", event(payload)); expect(calls).toEqual([{ action: "assign", peer: "codex", id: 2 }]);
-  const pull = all(get("tasks")).find(node => node.textContent === "Pull into To Do")!;
+  api.open(1);
+  const pull = all(get("task-detail-content")).find(node => node.textContent === "Pull into To Do")!;
   scope.generation++; pull.emit("click"); target.emit("drop", event({ ...payload, generation: scope.generation }));
   expect(calls).toHaveLength(1);
 });
@@ -147,16 +159,18 @@ test("project reset clears release creation draft before switching projects (#26
   const source = html.slice(html.indexOf("function resetView("), html.indexOf("function projectName("));
   const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get("release-name").value="project-a";get("release-goal").value="old goal";get("release-order").value="7";
-  runInNewContext(`let selectedProjectId='a',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot={};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${source};resetView('b','next');`, { get });
+  runInNewContext(`let selectedProjectId='a',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot={};const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${source};resetView('b','next');`, { get });
   expect(get("release-name").value).toBe("");expect(get("release-goal").value).toBe("");expect(get("release-order").value).toBe("0");
 });
 
 test("WIP pull controls require an explicit capability and carry the task revision (#263)", () => {
   const {api,get,all,calls,peers,snapshot}=page();
   api.draw({...snapshot,planningCapabilities:{enabled:true}},peers,Object.keys(peers));
-  expect(all(get("tasks")).filter(node=>node.tag==="button"&&node.textContent==="Pull within WIP")).toHaveLength(0);
+  api.open(1);
+  expect(all(get("task-detail-content")).filter(node=>node.tag==="button"&&node.textContent==="Pull within WIP")).toHaveLength(0);
   api.draw({...snapshot,planningCapabilities:{enabled:true,wipPull:true},tasks:snapshot.tasks.map(task=>({...task,planningRevision:7}))},peers,Object.keys(peers));
-  const button=all(get("tasks")).find(node=>node.tag==="button"&&node.textContent==="Pull within WIP");expect(button).toBeDefined();button!.emit("click");
+  api.open(1);
+  const button=all(get("task-detail-content")).find(node=>node.tag==="button"&&node.textContent==="Pull within WIP");expect(button).toBeDefined();button!.emit("click");
   expect(calls.at(-1)).toMatchObject({action:"planner_pull",id:1,revision:7});
 });
 
@@ -196,13 +210,14 @@ test("redacted release options retain distinguishable public ids (#263)", () => 
 test("task cards show public release membership and accessible identity (#263)",()=>{
  const {api,get,all,peers,snapshot}=page();
  api.draw({...snapshot,releases:[{id:2,name:"[withheld]"}],tasks:snapshot.tasks.map(task=>({...task,release:2}))},peers,Object.keys(peers));
- const card=all(get("tasks")).find(node=>node.tag==="article")!;expect(all(card).some(node=>node.textContent==="Release #2 [withheld]")).toBe(true);expect(card.attrs['aria-label']).toContain("Release #2 [withheld]");
+ const compact=all(get("tasks")).find(node=>node.tag==="article")!;expect(compact.attrs["aria-label"]).toContain("Release #2 [withheld]");
+ api.open(1);const card=all(get("task-detail-content")).find(node=>node.tag==="article")!;expect(all(card).some(node=>node.textContent==="Release #2 [withheld]")).toBe(true);expect(card.attrs['aria-label']).toContain("Release #2 [withheld]");
 });
 
 
 test("board task guidance remains visible on a public PII stub without granting actions (#295)",()=>{
  const {api,get,all,peers,snapshot}=page();api.draw({...snapshot,tasks:[{id:1,state:"backlog",title:"[pii]",detail:"[pii]",class:"implement",role:"backend-engineer"}]},peers,Object.keys(peers));
- expect(all(get("tasks")).some(node=>node.textContent==="Task guidance: backend-engineer (grants no authority)")).toBe(true);expect(all(get("tasks")).filter(node=>node.tag==="button"&&node.textContent==="Assign")).toHaveLength(0);
+ api.open(1);expect(all(get("task-detail-content")).some(node=>node.textContent==="Task guidance: backend-engineer (grants no authority)")).toBe(true);expect(all(get("tasks")).filter(node=>node.tag==="button"&&node.textContent==="Assign")).toHaveLength(0);
 });
 
 test("task card accessible name announces catalog guidance",()=>{
@@ -237,4 +252,51 @@ test("release blocked counts refresh when an outside prerequisite changes", () =
   api.render(snapshot); expect(text()).toContain("1 remaining of 1 / 1 blocked");
   api.render({ ...snapshot, tasks: [own, { ...outside, state: "approved" }] });
   expect(text()).toContain("1 remaining of 1 / 0 blocked");
+});
+
+
+test("compact cards open live native details with click or Enter and close when removed (#391)", () => {
+ const {api,get,all,peers,snapshot}=page();
+ const card=all(get("tasks")).find(node=>node.tag==="article")!;
+ expect(all(card).some(node=>node.className==="body")).toBe(false);
+ expect(all(card).some(node=>node.tag==="select" || node.textContent==="Pull into To Do")).toBe(false);
+ card.emit("click",{target:card});expect(get("task-detail-dialog").open).toBe(true);
+ expect(all(get("task-detail-content")).some(node=>node.textContent==="[pii]")).toBe(true);
+ api.close();expect(get("task-detail-dialog").open).toBe(false);
+ card.emit("keydown",{key:"Enter",target:card,preventDefault(){}});expect(get("task-detail-dialog").open).toBe(true);
+ api.draw({...snapshot,tasks:snapshot.tasks.map(task=>({...task,...(task.id===1?{detail:"updated public detail"}:{})}))},peers,Object.keys(peers));
+ expect(all(get("task-detail-content")).some(node=>node.textContent==="updated public detail")).toBe(true);
+ api.draw({...snapshot,tasks:snapshot.tasks.filter(task=>task.id!==1)},peers,Object.keys(peers));
+ expect(get("task-detail-dialog").open).toBe(false);
+});
+
+test("column focus shares full details while preserving filters and returning to compact cards (#391)", () => {
+ const {api,get,all,peers,snapshot}=page();
+ api.focus("backlog");
+ expect(all(get("tasks")).filter(node=>node.tag==="h3").map(node=>node.textContent)).toEqual(["Backlog"]);
+ expect(all(get("tasks")).some(node=>node.textContent==="Pull into To Do")).toBe(true);
+ api.focus("todo");expect(all(get("tasks")).filter(node=>node.tag==="h3").map(node=>node.textContent)).toEqual(["To Do"]);
+ get("task-filter").value="approved";api.draw(snapshot,peers,Object.keys(peers));
+ expect(all(get("tasks")).filter(node=>node.tag==="article")).toHaveLength(0);
+ get("task-filter").value="";api.focus(null);
+ expect(all(get("tasks")).filter(node=>node.tag==="h3")).toHaveLength(5);
+ expect(all(get("tasks")).some(node=>node.textContent==="Pull into To Do")).toBe(false);
+});
+
+
+test("column focus persists valid columns and discards unknown cookie values (#391)",()=>{
+ const restored=page({focus:"review"});
+ expect(restored.all(restored.get("tasks")).filter(node=>node.tag==="h3").map(node=>node.textContent)).toEqual(["Review / QA"]);
+ restored.api.focus("done");expect(restored.cookies.at(-1)).toEqual(["agent-hub-column-focus","done"]);
+ const reload=page({focus:restored.cookies.at(-1)![1]});expect(reload.all(reload.get("tasks")).filter(node=>node.tag==="h3").map(node=>node.textContent)).toEqual(["Done"]);
+ reload.api.focus(null);expect(reload.cookies.at(-1)).toEqual(["agent-hub-column-focus",""]);
+ const invalid=page({focus:"unknown"});expect(invalid.all(invalid.get("tasks")).filter(node=>node.tag==="h3")).toHaveLength(5);
+});
+
+
+test("compact card activation rejects stopped sessions (#391)",()=>{
+ const {api,get,all}=page();api.stop();
+ const card=all(get("tasks")).find(node=>node.tag==="article")!;
+ card.emit("click");card.emit("keydown",{key:"Enter",preventDefault(){}});
+ expect(get("task-detail-dialog").open).toBe(false);expect(get("task-detail-content").children).toHaveLength(0);
 });

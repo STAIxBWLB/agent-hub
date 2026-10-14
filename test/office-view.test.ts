@@ -24,6 +24,10 @@ class Node {
   dataset: Record<string, string> = {};
   parent: Node | null = null;
   hidden = false;
+  open = false; focused = 0;
+  showModal() { this.open = true; }
+  close() { this.open = false; }
+  focus() { this.focused++; }
   value = "";
   checked = false;
   clientWidth = 1200;
@@ -85,7 +89,7 @@ function startOfficeRuntime(view: () => string) {
   };
   const api = runInNewContext(`
     let stopped=false, managerMode=false, selectedProjectId='', selectedInstanceId='', snapshotValid=true, viewGeneration=0, lastSnapshot=null, eventCount=0, cursor=0, draftChoicesPending=false, officePrev=null;
-    const pendingButtons=new WeakSet(), pendingStarts=new Map(), signatures=new Map();
+    let currentView="office";const dashboardCookie={get(){return ""},set(){}};const applyDashboardView=()=>{get("office-section").hidden=currentView!=="office"},switchView=view=>{currentView=view};const pendingButtons=new WeakSet(), pendingStarts=new Map(), signatures=new Map();
     const peerRows=new Map(), taskRows=new Map(), officeDesks=new Map(), officeCards=new Map();
     const $=get;
     const update=(id,data,render)=>{const signature=JSON.stringify(data);if(signatures.get(id)===signature)return;signatures.set(id,signature);const target=$(id);target.replaceChildren();render(target);};
@@ -102,6 +106,7 @@ function startOfficeRuntime(view: () => string) {
     ({
       draw(snap){ lastSnapshot=snap; render(snap); },
       filter(state){ officeFilter(state); },
+      view(){ return currentView; },
       maps: { peerRows, taskRows, officeDesks, officeCards },
     })`, context);
   return { api, get };
@@ -128,7 +133,7 @@ test("the served page injects the shared office model and stays within the CSP r
   expect(csp).not.toContain("img-src");
   expect(csp).not.toContain("unsafe-inline");
   // Off is the default in the markup; Flat is the only other choice in this phase.
-  expect(served).toContain('<section id="office-section" aria-labelledby="office-title" hidden>');
+  expect(served).toContain('<section id="office-section" aria-labelledby="office-title" data-view="office" hidden>');
   const control = served.match(/<select id="office-view">([\s\S]*?)<\/select>/)![1]!;
   expect([...control.matchAll(/value="(\w+)"/g)].map((match) => match[1])).toEqual(["off", "flat", "isometric"]);
 });
@@ -155,7 +160,8 @@ test("reduced motion removes every scene transition and animation", () => {
 
 test("the office view choice persists in the agent-hub-office cookie with the theme cookie's terms", () => {
   const start = html.indexOf("const officeView = (() =>");
-  const source = html.slice(start, html.indexOf("})();", start) + 5) + ";officeView";
+  const cookie = html.match(/const dashboardCookie = [\s\S]*?\n\};/)![0];
+  const source = cookie + html.slice(start, html.indexOf("})();", start) + 5) + ";officeView";
   for (const saved of ["off", "flat", "isometric", "bogus"]) {
     let cookie = "other=1; agent-hub-office=" + saved;
     const writes: string[] = [];
@@ -200,22 +206,23 @@ test("flat renders focusable desks and cards with accessible names; an unchanged
   expect(office.replacements).toBe(1);
 });
 
-test("off renders nothing and leaves the lists alone; switching back to flat repaints", () => {
+test("off keeps its mode guidance visible and leaves the other view contents available", () => {
   const { api, get } = startOfficeRuntime(() => "off");
   api.draw(snapshot);
-  expect(get("office-section").hidden).toBe(true);
-  expect(get("office").children).toHaveLength(0);
-  expect(get("office").replacements).toBe(0);
+  expect(get("office-section").hidden).toBe(false);
+  expect(get("office").text()).toContain("Office is off. Choose Flat or Isometric above.");
+  expect(get("office").findAll(node=>node.tag==="svg")).toHaveLength(0);
   expect(get("peers").children.length).toBeGreaterThan(0); // the lists render regardless
   expect(get("tasks").children.length).toBeGreaterThan(0);
 });
 
 test("activating a desk or card scrolls to and highlights the matching list row", () => {
-  const { api } = startOfficeRuntime(() => "flat");
+  const { api, get } = startOfficeRuntime(() => "flat");
   api.draw(snapshot);
   const desk = api.maps.officeDesks.get("codex")!;
   const peerRow = api.maps.peerRows.get("codex")!;
   desk.fire("click");
+  expect(api.view()).toBe("agents");expect(peerRow.focused).toBe(1);
   expect(peerRow.scrolled).toBe(1);
   expect(peerRow.classList.contains("spotlight")).toBe(true);
   desk.fire("keydown", { key: "Enter", preventDefault() {} });
@@ -223,6 +230,7 @@ test("activating a desk or card scrolls to and highlights the matching list row"
   const card = api.maps.officeCards.get(5)!; // a review-room card, not at a desk
   const taskRow = api.maps.taskRows.get(5)!;
   card.fire("keydown", { key: " ", preventDefault() {} });
+  expect(api.view()).toBe("board");expect(get("task-detail-dialog").open).toBe(true);expect(get("task-detail-title").textContent).toBe("Task #5");
   expect(taskRow.scrolled).toBe(1);
   expect(taskRow.classList.contains("spotlight")).toBe(true);
   expect(peerRow.classList.contains("spotlight")).toBe(false); // the highlight moves
@@ -260,7 +268,7 @@ test("resetView clears the scene's previous snapshot", () => {
     let selectedProjectId='p1',selectedInstanceId='i1',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={slots:{codex:1}},officeScene={els:new Map([['desk:codex',1]])};
     const officeDesks=new Map([['codex',1]]),officeCards=new Map([[4,1]]);
     const managerMode=true,signatures=new Map(),$=get;
-    const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{};
+    const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{}; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{};
     const empty=(node,text)=>{node.textContent=text};
     ${reset}
     resetView('p2','i2');
@@ -471,21 +479,21 @@ test("the polished flat scene: avatar, outline glyphs, hand shape, shelf cabinet
 
 function mergeOfficeRuntime(reduced: { value: boolean }, clock: { value: number }) {
   const nodes = new Map<string, Node>(), get = (id: string) => { if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id)!; };
-  const taskRows = new Map<number, Node>(), peerRows = new Map<string, Node>();
+  const taskRows = new Map<number, Node>(), peerRows = new Map<string, Node>(), opened:number[]=[],views:string[]=[],focuses:(string|null)[]=[];
   const api = runInNewContext(`let officePrev=null,stopped=false,snapshotValid=true,lastSnapshot={};const signatures=new Map(),officeDesks=new Map(),officeCards=new Map();const $=get;${scene};({draw:drawOffice,prune:()=>officePrune(officeScene,Date.now()),activate:activateOfficeTask,scene:()=>officeScene})`, {
     get, taskRows, peerRows, officeModel, officeView: { get: () => "flat" },
     Date: class extends Date { static override now() { return clock.value; } },
     matchMedia: () => ({ matches: reduced.value }),
     document: { createElementNS: (_ns: string, tag: string) => { const node=new Node();node.tag=tag;return node; } },
-    render: () => { taskRows.set(4,new Node()); },
+    render: () => { taskRows.set(4,new Node()); },setColumnFocus:(column:string|null)=>{focuses.push(column);views.push("board")},switchView:(view:string)=>views.push(view),openTaskDetail:(id:number)=>opened.push(id),
   });
-  return { api, get, taskRows, peerRows };
+  return { api, get, taskRows, peerRows, opened, views, focuses };
 }
 
-test("Office selector stays visible while Off hides only the scene section (#264 merge)", () => {
-  const header = html.slice(html.indexOf("<header>"),html.indexOf("</header>"));
-  expect(header).toContain('id="office-view"');
-  expect(html.slice(html.indexOf('<section id="office-section"'),html.indexOf('// office-scene-begin'))).not.toContain('id="office-view"');
+test("Office mode control belongs to its dedicated view and remains outside the scene (#391)", () => {
+ const section=html.slice(html.indexOf('<section id="office-section"'),html.indexOf('</section>',html.indexOf('<section id="office-section"')));
+ expect(section).toContain('data-view="office"');expect(section).toContain('id="office-view"');
+ expect(section.indexOf('id="office-view"')).toBeLessThan(section.indexOf('id="office"'));
 });
 
 test("office settled paints and reduced motion do not retain departed or appearance nodes (#264 merge)", () => {
@@ -509,8 +517,10 @@ test("expired arcs are skipped and reduced motion marks expire without animation
 });
 
 test("office task activation reveals filtered rows and card/desk handlers live in sibling layers (#264 merge)", () => {
-  const {api,get,taskRows}=mergeOfficeRuntime({value:false},{value:20000});
+  const {api,get,taskRows,opened,views,focuses}=mergeOfficeRuntime({value:false},{value:20000});
   api.activate(4);expect(taskRows.has(4)).toBe(true);expect(taskRows.get(4)?.scrolled).toBe(1);
+  expect(opened).toEqual([4]);expect(views).toEqual(["board"]);expect(focuses).toEqual([null]);
+  const original=taskRows.get(4)!;api.activate(999);expect(opened).toEqual([4]);expect(original.scrolled).toBe(1);expect(taskRows.get(4)?.scrolled).toBe(0);
   const model=officeModel(snapshot,null,{cols:4,now:20000});api.draw(get("office"),model);
   const scene=api.scene();expect(scene.els.get("card:4").node.parent).toBe(scene.layers.cards);
   expect(scene.layers.cards.parent).toBe(scene.layers.desks.parent);
@@ -536,14 +546,16 @@ test("backlog rows show no assignment action before they are pulled (#264 merge)
 test("project reset removes old office SVG and prevents view changes replaying the old snapshot (#264 merge)", () => {
   const nodes=new Map<string,Node>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id)!;};
   const old=new Node();old.tag="svg";get("office").append(old);
-  const control=new Node();let rendered=0;
+  const control=new Node();let rendered=0,applied=0,activeView="board",mode="flat";
   const reset=html.slice(html.indexOf("function resetView("),html.indexOf("function projectName("));
   const start=html.indexOf("officeControl.addEventListener('change'");const change=html.slice(start,html.indexOf("\n",start));
-  const api=runInNewContext(`let selectedProjectId='old',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={},officeScene={},lastSnapshot={projectId:'old'};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${reset};${change};({reset:resetView,snapshot:()=>lastSnapshot})`,{
-    get,officeControl:control,officeView:{get:()=>"flat",set:()=>{}},document:{getElementById:get},render:()=>{rendered++;},
+  const api=runInNewContext(`let selectedProjectId='old',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev={},officeScene={},lastSnapshot={projectId:'old'};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=applyView; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${reset};${change};({reset:resetView,snapshot:()=>lastSnapshot})`,{
+    get,officeControl:control,officeView:{get:()=>mode,set:(value:string)=>{mode=value}},applyView:()=>{applied++;get("office-section").hidden=activeView!=="office"},document:{getElementById:get},render:()=>{rendered++;},
   });
   api.reset("stopped","next");expect(get("office").children).toHaveLength(0);expect(api.snapshot()).toBeNull();
-  expect(get("office-section").hidden).toBe(true);control.fire("change");expect(rendered).toBe(0);
+  expect(get("office-section").hidden).toBe(true);
+  activeView="office";control.value="off";const before=applied;control.fire("change");
+  expect(rendered).toBe(0);expect(mode).toBe("off");expect(applied).toBe(before+1);expect(get("office-section").hidden).toBe(false);
   expect(get("peers").text()).toContain("No project selected");
 });
 
