@@ -2,6 +2,15 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Issue #273 operator execution plan (2026-10-16)
+
+The [execution plan and blocker record](verification/2026-10-16-273-live-verification.md)
+maps the outstanding issue entries to their procedures and required observations.
+The installed CLI and running project daemon both reported 0.12.28. This is an
+environment readback only. No outstanding live leg passed in this session:
+the CLI refused `ahub ui` from Codex, and LCU refused Terminal access.
+The operator chose procedure preparation before execution; #273 remains open.
+
 ## Hub memory (#258)
 
 Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).
