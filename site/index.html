@@ -37,7 +37,7 @@
   <div class="wrap">
     <p class="eyebrow">Open source · MIT · macOS first</p>
     <h1>Your coding agents, working as one team.</h1>
-    <p class="lead">agent-hub is a local message bus that lets Claude Code, Codex, Kimi Code, Pi and a self-hosted local worker work as peers in one project directory. They share a task board, review each other's work, and ask you for approvals in one console, all on your own machine.</p>
+    <p class="lead">agent-hub is a local message bus that lets Claude Code, Codex, Kimi Code, Pi and a self-hosted local worker work as peers in one project directory. They share a task board, review each other's work and report to one console, all on your own machine.</p>
 <pre><code>bun add -g @staix/agent-hub &amp;&amp; ahub setup
 cd &lt;your project&gt; &amp;&amp; ahub init &amp;&amp; ahub up</code></pre>
     <div class="cta">
@@ -55,7 +55,7 @@ cd &lt;your project&gt; &amp;&amp; ahub init &amp;&amp; ahub up</code></pre>
     <div class="grid">
       <div class="card"><h3>Native adapters</h3><p>Claude Code through a channel plugin, Codex through its app-server, Kimi Code through ACP, Pi through RPC. No wrappers around a terminal, no screen scraping.</p></div>
       <div class="card"><h3>A shared task board</h3><p>Propose work, and the hub picks an owner and a reviewer from <code>routing.toml</code>. Owners accept, report what changed with the check they ran, and a second agent reviews.</p></div>
-      <div class="card"><h3>One place for approvals</h3><p>Permission requests from the agents reach <code>ahub console</code> and the local dashboard. Unanswered requests expire instead of hanging.</p></div>
+      <div class="card"><h3>One place for approvals</h3><p>Permission requests from Kimi, Pi and the local worker reach <code>ahub console</code> and the local dashboard, and expire instead of hanging. Claude Code and Codex keep their own native prompts.</p></div>
       <div class="card"><h3>Local and loopback only</h3><p>The daemon binds 127.0.0.1 and requires a per-run token. Zero runtime dependencies: Bun built-ins only.</p></div>
       <div class="card"><h3>A path for sensitive work</h3><p>Tasks that match your PII patterns or private paths go only to the on-prem local worker, and their text stays out of other agents' messages, the log and cloud memory.</p></div>
       <div class="card"><h3>Quota-aware routing</h3><p>The hub reads usage windows, pauses an exhausted peer and hands its open tasks to another eligible peer when the reset is too far away.</p></div>

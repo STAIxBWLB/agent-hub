@@ -38,7 +38,7 @@
   <div class="wrap">
     <p class="eyebrow">오픈소스 · MIT · macOS 우선</p>
     <h1>코딩 에이전트들을 한 팀으로.</h1>
-    <p class="lead">agent-hub는 Claude Code, Codex, Kimi Code, Pi, 그리고 직접 호스팅하는 로컬 워커가 한 프로젝트 디렉토리에서 동료로 일하게 하는 로컬 메시지 버스입니다. 작업 보드를 함께 쓰고, 서로의 작업을 리뷰하고, 승인 요청은 하나의 콘솔로 모읍니다. 모두 내 컴퓨터 안에서 돌아갑니다.</p>
+    <p class="lead">agent-hub는 Claude Code, Codex, Kimi Code, Pi, 그리고 직접 호스팅하는 로컬 워커가 한 프로젝트 디렉토리에서 동료로 일하게 하는 로컬 메시지 버스입니다. 작업 보드를 함께 쓰고, 서로의 작업을 리뷰하고, 하나의 콘솔로 보고합니다. 모두 내 컴퓨터 안에서 돌아갑니다.</p>
 <pre><code>bun add -g @staix/agent-hub &amp;&amp; ahub setup
 cd &lt;프로젝트&gt; &amp;&amp; ahub init &amp;&amp; ahub up</code></pre>
     <div class="cta">
@@ -56,7 +56,7 @@ cd &lt;프로젝트&gt; &amp;&amp; ahub init &amp;&amp; ahub up</code></pre>
     <div class="grid">
       <div class="card"><h3>네이티브 어댑터</h3><p>Claude Code는 채널 플러그인, Codex는 app-server, Kimi Code는 ACP, Pi는 RPC로 연결합니다. 터미널을 감싸거나 화면을 긁어오지 않습니다.</p></div>
       <div class="card"><h3>공유 작업 보드</h3><p>작업을 올리면 허브가 <code>routing.toml</code>에 따라 담당자와 리뷰어를 정합니다. 담당자는 수락하고, 바뀐 내용과 돌린 검증을 보고하고, 다른 에이전트가 리뷰합니다.</p></div>
-      <div class="card"><h3>승인은 한 곳에서</h3><p>에이전트들의 권한 요청이 <code>ahub console</code>과 로컬 대시보드로 모입니다. 응답 없는 요청은 멈춰 있지 않고 만료됩니다.</p></div>
+      <div class="card"><h3>승인은 한 곳에서</h3><p>Kimi, Pi, 로컬 워커의 권한 요청이 <code>ahub console</code>과 로컬 대시보드로 모이고, 응답이 없으면 멈춰 있지 않고 만료됩니다. Claude Code와 Codex는 각자의 기본 확인 창을 그대로 씁니다.</p></div>
       <div class="card"><h3>로컬, loopback 전용</h3><p>데몬은 127.0.0.1에만 바인딩하고 실행마다 발급되는 토큰을 요구합니다. 런타임 의존성 0개, Bun 내장 기능만 씁니다.</p></div>
       <div class="card"><h3>민감한 작업의 별도 경로</h3><p>PII 패턴이나 비공개 경로에 걸리는 작업은 온프레미스 로컬 워커에만 가고, 그 내용은 다른 에이전트의 메시지, 로그, 클라우드 메모리에 남지 않습니다.</p></div>
       <div class="card"><h3>쿼터를 아는 라우팅</h3><p>사용량 윈도우를 읽어 소진된 에이전트를 일시정지하고, 리셋까지 너무 멀면 열린 작업을 다른 에이전트에 넘깁니다.</p></div>
