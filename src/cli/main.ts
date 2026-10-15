@@ -63,7 +63,7 @@ import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, label
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
-import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
+import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
@@ -121,20 +121,22 @@ const projectConfig = () => {
 };
 const stateDir = selected.stateDir;
 const caller = detectCliIdentity(process.env);
-// Explicit user-authorized verification borrows the console path for this invocation only; keep its caller for audit.
-const delegatedPeer = liveTest && caller.role === "tools" ? caller.peer : undefined;
-const identity = delegatedPeer ? { role: "console" as const } : caller;
 const commandLabel = cliCommandLabel(cmd, args);
 const commandAccess = classifyPeerCommand(cmd, args);
+// Already permitted calls retain their peer and capability checks; never turn agent text into the user's text.
+const delegationRefused = liveTest && caller.role === "tools" && commandAccess === "console" && liveTestRefusal(cmd, args);
+const delegatedPeer = liveTest && caller.role === "tools" && commandAccess === "console" && !delegationRefused ? caller.peer : undefined;
+const identity = delegatedPeer ? { role: "console" as const } : caller;
 function audit(outcome: "run" | "refused" | "invalid"): void {
   if (caller.role === "console") return;
-  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, delegatedPeer ? "delegated" : outcome); }
+  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, delegatedPeer && outcome === "run" ? "delegated" : outcome); }
   catch {
     if (delegatedPeer) fail("live-test delegation audit unavailable; nothing was executed");
     console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)");
   }
 }
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
+if (delegationRefused) { audit("refused"); fail("live-test cannot write person-attributed content; use peer tools or a person's terminal"); }
 if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
 if (identity.role === "tools" || delegatedPeer) audit("run");
 // Forward only to ahub's own continuation commands, never to native agent argv or an environment flag.
@@ -607,12 +609,13 @@ const commands: Record<string, () => Promise<void> | void> = {
       return console.log("dashboard manager stopped; project hubs were kept running");
     }
     let url: string;
-    if (args.includes("--all")) url = await openManager();
+    if (args.includes("--all")) url = await openManager({ liveTest: !!delegatedPeer });
     else {
       const hub = await connect();
       try {
-        const res = await hub.request({ t: "ui", ...(settings ? { settings: true } : {}) }, 10_000);
+        const res = await hub.request({ t: "ui", ...(settings ? { settings: true } : {}), ...(delegatedPeer ? { liveTest: true } : {}) }, 10_000);
         if (!res.ok) fail(res.error);
+        if (delegatedPeer && res.liveTest !== true) fail("this hub cannot restrict delegated dashboard content; use a live-test-capable hub");
         // A hub older than #269 ignores the field and would hand out an ordinary session without saying so.
         if (settings && res.settings !== true) fail("this hub does not open settings sessions; upgrade the running hub to use ahub ui --settings");
         url = res.url;

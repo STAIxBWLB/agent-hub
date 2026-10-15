@@ -11,6 +11,24 @@ import { startDashboard } from "../src/hub/ui.ts";
 import { PEER_START_RETRY_MS } from "../src/hub/start-mode.ts";
 
 const cleanup: (() => void)[] = [];
+
+test("delegated dashboard restrictions are ticket-bound and cannot be cleared by action input", async () => {
+  const f = setup();
+  const ticket = new URL(f.ui.issue(true, true)).hash.slice(1);
+  const session = await f.post("/session", { ticket, liveTest: false });
+  const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  for (const action of ["send", "propose", "assign", "planning", "release_new", "backlog_pull"]) {
+    const result = await f.post("/action", { action, liveTest: false, body: "private", title: "private" }, { cookie });
+    expect(result.status).toBe(403);
+  }
+  expect(f.actions).toEqual([]);
+  const setting = await f.post("/action", { action: "setting", key: "research.enabled", value: true }, { cookie });
+  expect(setting.status).toBe(200);
+  expect(f.actions).toHaveLength(1);
+  const ordinary = await f.session();
+  expect((await f.post("/action", { action: "send", body: "operator", liveTest: true }, { cookie: ordinary.cookie })).status).toBe(200);
+  expect(f.actions).toHaveLength(2);
+});
 afterEach(() => { for (const stop of cleanup.splice(0)) stop(); });
 
 function setup() {

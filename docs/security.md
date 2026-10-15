@@ -77,20 +77,29 @@ backfill and task labels, stopping a peer (`ahub stop`), lifecycle and recovery
 operations, and `ask`.
 For live verification explicitly authorized by the user, an agent may invoke
 `ahub --live-test [--project <path|id>] <command> [args...]`. The flag delegates
-the existing console authority for that invocation, including approvals,
+the existing console authority only for console-class operational commands, including approvals,
 settings, roster and lifecycle operations. It does not restrict effects to a
 scratch project: the agent must stay within the authorized commands and targets.
 Malformed or conflicting caller markers still refuse. The original peer and
 closed command label are recorded with outcome `delegated` before execution;
 if that audit cannot be written, the command refuses. The current daemon emits
-`agent_cli` with `delegated: true` and `refused: false`. Console-side messages and
-task history use the existing operator actor; the audit identifies the agent
-exercising that authority. No argument text is copied into this audit.
+`agent_cli` with `delegated: true` and `refused: false`. Already allowed and
+conductor commands retain the peer identity and capability/role checks, including
+messages, proposals, reviews and assignments. `--as-user`, person task labels,
+person-authored planning/release/memory/goal writes, SDLC record, benchmark run
+and the pet composer are refused. No argument text is copied into this audit.
+Delegated dashboard restrictions are bound to its server-issued ticket/session:
+operational settings/start/stop controls remain, but message, proposal and
+workflow-history actions refuse even if the body tries to clear the restriction.
 The flag is not stored in settings or exported to native agent children. Ahub's
 own daemon launch, console subprocesses, recovery runner, interactive follow-up commands and upgrade coordinator
 handover carry it explicitly in argv. Each new top-level invocation needs its
 own flag. An older CLI does not support it; use a candidate with this feature
-for the continuation too. External computer-use restrictions remain unchanged.
+for the continuation too. Staging rejects a target without the pinned
+`LIVE_TEST_SUPPORTED` declaration before preparation or commit, including a
+previously cached stage. Delegated headless-native restoration is also refused
+before effects until an internal restore command can preserve peer authority;
+TUI restoration keeps its existing checks. External computer-use restrictions remain unchanged.
 The operator uses a plain terminal or `ahub console`. A Claude `!` command that
 inherits the agent markers follows the same rule. The console strips control
 sequences from agent and daemon text before it quotes forged headers, and its

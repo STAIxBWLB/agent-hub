@@ -18,8 +18,8 @@ by adding this path.
 an actual Codex-marked shell with a separate hub home and disposable Git project
 ran delegated `init`, `up --no-console`, `ui --no-open`, `permission pi ask`,
 `kill` and `reset --all --yes`, all exit 0. Unflagged `status --json` reported
-the exact scratch cwd. The dashboard's one-time ticket exchange returned HTTP
-200 and HTML; no browser visual check was performed. The daemon recorded
+the exact scratch cwd. The dashboard URL returned HTTP
+200 and HTML; no browser or ticket/session exchange was performed in that shell run. The daemon recorded
 `agent_cli` events for init/up/daemon/ui/permission with peer `codex`,
 `delegated: true` and `refused: false`. The reset archive mode was 0700 and the
 scratch daemon was stopped. This verifies the delegated CLI path, without

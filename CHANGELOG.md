@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Let an explicitly authorized agent run live verification through `ahub --live-test`, with console authority scoped to the invocation and its ahub continuations, the initiating peer retained in a mandatory delegation audit, and ordinary agent permissions unchanged (#408).
+- Let an explicitly authorized agent run live verification through `ahub --live-test`, with operational console authority scoped to the invocation and its ahub continuations, the initiating peer retained in a mandatory delegation audit, and ordinary agent permissions unchanged (#408).
 
 ## 0.12.28
 

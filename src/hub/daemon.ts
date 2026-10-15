@@ -4207,7 +4207,7 @@ export async function startDaemon(opts: DaemonOptions) {
           writeStatus();
           // #269: `ahub ui --settings` is the same person's command; its ticket marks the session it opens.
           if (msg.settings === true) notify("settings session opened from ahub ui --settings: for 15 minutes that dashboard session may change permission modes, routing and start settings");
-          return void reply({ t: "ui", ok: true, url: dashboard.issue(msg.settings === true), ...(msg.settings === true ? { settings: true } : {}) });
+          return void reply({ t: "ui", ok: true, url: dashboard.issue(msg.settings === true, msg.liveTest === true), ...(msg.settings === true ? { settings: true } : {}), ...(msg.liveTest === true ? { liveTest: true } : {}) });
         } catch {
           return void reply({ t: "ui", ok: false, error: "could not start the dashboard" });
         }

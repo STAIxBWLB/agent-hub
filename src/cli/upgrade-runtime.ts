@@ -449,6 +449,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (packageDigest(op.sourceRoot) !== op.plan.sourceDigest) throw new FinalRefusal("preserved source changed");
       const target = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version) }
         : await stageRelease(op.plan.version, op.plan.integrity!, run);
+      const identityPath = join(target.root, "src/cli/identity.ts");
+      if (liveTestPeer && (!existsSync(identityPath) || !readFileSync(identityPath, "utf8").includes("export const LIVE_TEST_SUPPORTED = true;"))) {
+        throw new FinalRefusal("target does not support live-test delegation; choose a supporting target before retrying; runtimes unchanged");
+      }
+      // ponytail: delegated recovery restores TUIs only until headless restore has an actor-preserving internal command.
+      if (liveTestPeer && op.plan.projects.some(p => p.source.peers.some(peer => ["kimi", "qwen", "jcode", "local", "pi"].includes(peer.id) && peer.state !== "offline" && peer.args?.mode !== "tui"))) {
+        throw new FinalRefusal("delegated recovery cannot restore headless native peers with peer authority; end those peers and make a new plan; runtimes unchanged");
+      }
       // #215: the protocol and waiver checks are properties of these bytes. Once they passed (the runner recorded the
       // digest), a resume does not check again, so a transient probe failure cannot refuse an operation for good;
       // changed bytes are the runner's final "staged target changed".

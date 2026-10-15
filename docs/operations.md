@@ -13,7 +13,7 @@ real dashboard listener and prints its one-time link without opening a browser.
 that selected disposable project. The global options precede the command and
 may appear in either order; a flag after the command is not delegation.
 
-This grants existing console authority, including destructive actions, for one
+This grants console authority for operational console-class commands, including destructive actions, for one
 invocation and its ahub continuations. Use only the user-authorized targets and
 commands; destructive live checks belong in disposable projects. Existing
 project discovery still applies: initialize the scratch folder as its own Git
@@ -24,11 +24,20 @@ locks still apply. Do not remove agent markers. The initiating peer and command
 label are audited before effects; an unavailable audit blocks delegation. A new
 unflagged invocation has ordinary peer authority again. Native tools launched
 by the command keep their own peer identity and receive no delegation flag.
+Already allowed/conductor commands keep peer identity and permissions even with
+the flag: `--live-test say` sends as the peer, and a peer without conductor
+authority still cannot assign or start through a conductor CLI command.
+Person verdicts and user-authored workflow writes are not delegated. Dashboard
+sessions issued through the flag retain operational controls but refuse message
+and task/planning content writes. Use native peer tools for agent-authored work.
 
 Use a CLI/coordinator containing this feature throughout the experiment. Older
 daemons do not understand the new delegated audit outcome; run the candidate
 daemon to capture its delegated event and console notice. This policy does not
-change external computer-use restrictions. Record actual observations in the
+change external computer-use restrictions. Recovery staging refuses old targets
+without live-test support before source effects. Delegated recovery with a
+headless native peer to restore is not supported yet and also refuses before
+effects; use a plan without those peers or have the person run that operation. Record actual observations in the
 smoke ledger; the presence of this option proves no outstanding #273 live leg.
 
 ## Command output

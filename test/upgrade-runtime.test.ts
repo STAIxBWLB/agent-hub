@@ -11,7 +11,36 @@ import { endPlannedPeer, inspectRecovery, makeRecoveryDriver, makeUpgradePlan, P
 /** The test operations preserve this package as their coordinator, which has every recovery command (#215). */
 const COORD = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 import { VERSION } from "../src/version.ts";
+import { packageDigest } from "../src/cli/recovery-package.ts";
 import { liveProjects, nextActions, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
+
+test("delegated staging refuses an older target before protocol probes or runtime effects, including cached targets", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-old-live-test-target-"));
+  for (const dir of ["src/cli", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(root, dir), { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: "0.0.0" }));
+  writeFileSync(join(root, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: "0.0.0" }));
+  writeFileSync(join(root, "src/cli/main.js"), "throw new Error('old target must not execute');");
+  writeFileSync(join(root, "src/cli/identity.ts"), "export const oldIdentity = true;");
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: String(PROTOCOL), stderr: "" }; };
+  const op = { sourceRoot: root, plan: { kind: "restart", version: "0.0.0", sourceDigest: packageDigest(root), projects: [] } } as unknown as RecoveryOperation;
+  try {
+    const delegated = makeRecoveryDriver(run, "codex");
+    await expect(delegated.stage(op)).rejects.toThrow("target does not support live-test delegation");
+    op.targetRoot = root; op.targetDigest = packageDigest(root);
+    await expect(delegated.stage(op)).rejects.toThrow("runtimes unchanged");
+    expect(calls).toEqual([]);
+    expect(await makeRecoveryDriver(run).stage(op)).toMatchObject({ root });
+    writeFileSync(join(root, "src/cli/identity.ts"), "export const LIVE_TEST_SUPPORTED = true;");
+    op.plan.sourceDigest = packageDigest(root); delete op.targetDigest;
+    expect(await delegated.stage(op)).toMatchObject({ root });
+    expect(calls).toHaveLength(1);
+    op.plan.projects = [{ source: { peers: [{ id: "local", state: "idle" }] } }] as PlannedProject[];
+    op.targetRoot = root; op.targetDigest = packageDigest(root);
+    await expect(delegated.stage(op)).rejects.toThrow("delegated recovery cannot restore headless native peers");
+    expect(calls).toHaveLength(1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("delegated recovery target startup retains its initiating peer and explicit CLI authority", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-delegated-target-"));
