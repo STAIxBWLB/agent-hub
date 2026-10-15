@@ -258,7 +258,9 @@ test("native shell CLI messages and board history retain the actor while plain t
     expect(ordinary.code).toBe(1);
     expect(ordinary.stderr).toContain("conductor");
     const flagged = await cli(root, ["--live-test", "pause", "kimi-fixture"], { AGENTHUB_PEER_ID: "claude" });
-    expect(flagged.code).toBe(1); expect(flagged.stderr).toContain("conductor");
+    expect(flagged.code, flagged.stderr).toBe(0);
+    expect((await console_.request({ t: "status" })).status.peers["kimi-fixture"].state).toBe("paused");
+    expect((await cli(root, ["--live-test", "resume", "kimi-fixture"], { AGENTHUB_PEER_ID: "claude" })).code).toBe(0);
     expect((await console_.request({ t: "status" })).status.peers["kimi-fixture"].state).not.toBe("paused");
   } finally { worker?.close(); console_?.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
@@ -267,7 +269,7 @@ test("live-test cannot impersonate the user or file person verdicts and workflow
   const root = project(), stateDir = join(root, ".agenthub/state");
   try {
     for (const args of [["say", "--as-user", "private-message"], ["say", "--as-user=true", "private-message"],
-      ["task", "label", "1", "ok"], ["task", "role", "1", "none"], ["backlog", "add", "test", "private-title"],
+      ["task", "label", "1", "ok"], ["task", "role", "1", "none"], ["task", "assign", "1", "pi"], ["task", "escalate", "1"], ["backlog", "add", "test", "private-title"],
       ["release", "new", "private-release", "goal", "1"], ["sdlc", "record", "1", "{}"], ["board", "import", "github"],
       ["bench", "run", "private-suite"], ["pet", "--window"]]) {
       const result = await cli(root, ["--live-test", ...args], { AGENTHUB_PEER_ID: "codex" });
@@ -275,7 +277,7 @@ test("live-test cannot impersonate the user or file person verdicts and workflow
       expect(result.stderr).toContain("live-test cannot write person-attributed content");
     }
     const rows = drainCliAudits(stateDir);
-    expect(rows).toHaveLength(10);
+    expect(rows).toHaveLength(12);
     expect(rows.every(row => row.peer === "codex" && row.outcome === "refused")).toBe(true);
     expect(JSON.stringify(rows)).not.toContain("private");
   } finally { rmSync(root, { recursive: true, force: true }); }

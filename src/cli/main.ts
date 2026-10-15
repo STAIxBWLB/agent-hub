@@ -123,9 +123,9 @@ const stateDir = selected.stateDir;
 const caller = detectCliIdentity(process.env);
 const commandLabel = cliCommandLabel(cmd, args);
 const commandAccess = classifyPeerCommand(cmd, args);
-// Already permitted calls retain their peer and capability checks; never turn agent text into the user's text.
-const delegationRefused = liveTest && caller.role === "tools" && commandAccess === "console" && liveTestRefusal(cmd, args);
-const delegatedPeer = liveTest && caller.role === "tools" && commandAccess === "console" && !delegationRefused ? caller.peer : undefined;
+// Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
+const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed" && liveTestRefusal(cmd, args);
+const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
 const identity = delegatedPeer ? { role: "console" as const } : caller;
 function audit(outcome: "run" | "refused" | "invalid"): void {
   if (caller.role === "console") return;

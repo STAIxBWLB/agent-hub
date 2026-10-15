@@ -12,6 +12,7 @@ import { endPlannedPeer, inspectRecovery, makeRecoveryDriver, makeUpgradePlan, P
 const COORD = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 import { VERSION } from "../src/version.ts";
 import { packageDigest } from "../src/cli/recovery-package.ts";
+import { drainCliAudits } from "../src/cli/identity-audit.ts";
 import { liveProjects, nextActions, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 
 test("delegated staging refuses an older target before protocol probes or runtime effects, including cached targets", async () => {
@@ -37,7 +38,7 @@ test("delegated staging refuses an older target before protocol probes or runtim
     expect(calls).toHaveLength(1);
     op.plan.projects = [{ source: { peers: [{ id: "local", state: "idle" }] } }] as PlannedProject[];
     op.targetRoot = root; op.targetDigest = packageDigest(root);
-    await expect(delegated.stage(op)).rejects.toThrow("delegated recovery cannot restore headless native peers");
+    expect(await delegated.stage(op)).toMatchObject({ root });
     expect(calls).toHaveLength(1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -213,7 +214,7 @@ test("closeTerminals treats an already-exited TUI as closed without issuing a te
 
 // issue #21: a zero-turn Claude session never persisted a transcript, so --resume can never
 // restore it and the pending-restored gate wedged. A fresh attach is accepted only then.
-function claudeRestoreFixture(attachedSession: string) {
+function claudeRestoreFixture(attachedSession: string, onStart?: (message: any, hello: any) => void) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restore-claude-")));
   const stateDir = mkdtempSync(join(tmpdir(), "ahub-restore-claude-state-"));
   const configDir = mkdtempSync(join(tmpdir(), "ahub-restore-claude-config-"));
@@ -222,7 +223,8 @@ function claudeRestoreFixture(attachedSession: string) {
     fetch(_request, srv) { return srv.upgrade(_request) ? undefined : new Response("no"); },
     websocket: { message(ws, data) {
       const msg = JSON.parse(String(data));
-      if (msg.t === "hello") ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-restore", instanceId: "i-target", cwd: root, protocol: PROTOCOL }));
+      if (msg.t === "hello") { ws.data = msg; ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-restore", instanceId: "i-target", cwd: root, protocol: PROTOCOL })); }
+      else if (msg.t === "start") { onStart?.(msg, ws.data); ws.send(JSON.stringify({ rid: msg.rid, t: "started", ok: true })); }
       else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-restore", instanceId: "i-target", cwd: root, version: VERSION, protocol: PROTOCOL } }));
       else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: { operationId: "op-restore", phase: "restored", ready: true, peers: { claude: { id: "claude", state: "idle", sessionId: attachedSession } } } }));
     } },
@@ -250,6 +252,44 @@ function claudeRestoreFixture(attachedSession: string) {
   const cleanup = () => { server.stop(true); for (const dir of [root, stateDir, configDir]) rmSync(dir, { recursive: true, force: true }); };
   return { root, configDir, cleanup, driver: makeRecoveryDriver(run), planned, progress, op };
 }
+
+test("delegated recovery restores a headless Pi through the real target CLI with its operation and session identity", async () => {
+  const starts: any[] = [], hellos: any[] = [];
+  const f = claudeRestoreFixture("unused", (message, hello) => { starts.push(message); hellos.push(hello); });
+  const oldHome = process.env.AGENTHUB_HOME;
+  const home = join(f.root, "home"); process.env.AGENTHUB_HOME = home;
+  const registry = new Registry(); registry.register(f.root, f.planned.project.stateDir); registry.close();
+  mkdirSync(join(f.root, ".agenthub"), { recursive: true });
+  writeFileSync(join(f.root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false } }));
+  f.planned.terminals = [];
+  f.planned.source.peers = [{ id: "pi", state: "idle", sessionId: "pi-saved", args: { mode: "headless", backend: "dgx", model: "saved-model" } }];
+  f.op.targetRoot = PACKAGE_ROOT; f.op.plan.projects = [f.planned];
+  const driver = makeRecoveryDriver(async (argv, options) => {
+    const wrapper = join(f.root, "actual-recovery-cli.ts");
+    writeFileSync(wrapper, `Object.assign(process.env, ${JSON.stringify(options?.env)});
+for (const name of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) delete process.env[name];
+process.env.CODEX_THREAD_ID = "delegated-codex-thread";
+process.argv = ${JSON.stringify(argv)};
+await import(${JSON.stringify(argv[1])});\n`);
+    const child = Bun.spawn([process.execPath, wrapper], { cwd: f.root, env: options?.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    try {
+      const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      expect(code, stderr).toBe(0); return { code, stdout, stderr };
+    } finally { clearTimeout(timer); }
+  }, "codex");
+  try {
+    await driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(starts).toHaveLength(1);
+    expect(hellos[0]).toMatchObject({ role: "console" });
+    expect(starts[0]).toMatchObject({ t: "start", peer: "pi", operationId: f.op.id,
+      args: { mode: "headless", backend: "dgx", model: "saved-model", sessionId: "pi-saved" } });
+    expect(drainCliAudits(f.planned.project.stateDir)).toMatchObject([{ peer: "codex", command: "pi", outcome: "delegated" }]);
+  } finally {
+    if (oldHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = oldHome;
+    f.cleanup();
+  }
+}, 20_000);
 
 test("a pending restored:claude accepts a fresh attach when the original session never persisted a transcript", async () => {
   const f = claudeRestoreFixture("session-F");
