@@ -489,6 +489,11 @@ class WsPeer extends BasePeer {
     if (deliveryId) this.delivered.add(deliveryId);
     this.sock.send(JSON.stringify({ t: "deliver", envs, generation: this.generation, ...(deliveryId ? { deliveryId } : {}) }));
   }
+  /** Advisory nudge (issue #398): important work waits in the pull queue. Not a delivery: nothing to settle or journal. */
+  notifyQueued(counts: { queued: number; important: number }): void {
+    if (!this.sock || !this.pullOnly) return;
+    this.sock.send(JSON.stringify({ t: "queued", queued: counts.queued, important: counts.important }));
+  }
   owns(sock: Sock): boolean { return this.sock === sock; }
   nativeStarted(session: string): void {
     if (!this.sock) return;
@@ -769,7 +774,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const staleOff = config.experiments?.stale_notices === "deliver";
   if (staleOff) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
-  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence });
+  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence,
+    onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (p instanceof WsPeer) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   const conductorHolds = new ConductorHolds(join(opts.stateDir, "hub.db"));
@@ -3876,6 +3882,9 @@ export async function startDaemon(opts: DaemonOptions) {
         writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
         void ensurePreface(c.peer).finally(() => {
           if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);
+          // Important work queued while no session held the id gets its nudge now (#398); a push session ignores it.
+          const important = ws.owns(sock) ? bus.queuedImportant(c.peer!) : 0;
+          if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
         });
       }
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL });
@@ -3935,7 +3944,7 @@ export async function startDaemon(opts: DaemonOptions) {
           peer.lastInboxAt = Date.now();
           writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
-          return void reply({ ok: true, envs, waiting: bus.queued(peer.id) });
+          return void reply({ ok: true, envs, waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
         } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
       }
       case "delivery_complete": {
