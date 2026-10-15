@@ -27,6 +27,14 @@ claiming a model turn, terminal look, conversation restoration or the complete
 #214/#273 live criteria. The automated console-subprocess and recovery-target
 checks remain separate fixture evidence.
 
+2026-10-16 review follow-up, source `fcbb18ec`: the same isolated Git scratch
+project was started from a Codex-marked shell. Flagged `say` produced a bus
+envelope from `codex`; person task-label writing refused. A delegated dashboard
+ticket exchanged for a session with HTTP 200, its snapshot returned HTTP 200,
+and a send action trying `liveTest: false` returned HTTP 403. The scratch daemon
+was stopped (kill exit 0). This was an actual CLI/HTTP run, without a model turn
+or browser visual inspection.
+
 ## Hub memory (#258)
 
 Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).
