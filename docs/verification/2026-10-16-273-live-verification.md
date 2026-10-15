@@ -1,9 +1,9 @@
 # Issue #273 operator execution plan
 
-## Scope and observed blockers
+## Scope and dated observations
 
 - Date: 2026-10-16, Asia/Seoul.
-- Source: main `426bab99`, release 0.12.28, protocol 16.
+- Initial observation source: main `426bab99`, release 0.12.28, protocol 16. The following CLI refusals describe that installed version, before #408.
 - Issue #273 was read live, including its 2026-10-14 additions at initial preparation; the matrix below was refreshed for the five 2026-10-16 additions before release. Every checkbox remained unchecked.
 - `ahub --version` returned `0.12.28`.
 - `ahub status --json` returned daemon version `0.12.28`, protocol `16`, `stopping: false`, Claude idle, Codex busy, Kimi offline and Pi idle. These are status observations, not model-delivery or restoration receipts.
@@ -11,30 +11,53 @@
 - LCU app selection for `com.apple.Terminal` returned `Computer Use is not allowed to use the app 'com.apple.Terminal' for safety reasons.` No Terminal inspection or input occurred.
 - The operator selected procedure and blocker preparation before live execution. No identity markers were removed, no console connection was impersonated, and no lifecycle, reset, roster, quota or provider experiment was run.
 
-The CLI restriction follows `src/cli/identity.ts` (`classifyPeerCommand`) and
-`docs/security.md`, "Agent CLI identity and conductor authority". An agent-owned shell also
-cannot run `init`, `up`, `console`, `settings`, `reset`, `upgrade`, `recovery` or
-`roster`. The Terminal denial is a separate computer-use tool restriction.
-User approval alone does not make these commands available to this session.
+## Supported execution route and remaining boundaries
+
+From 0.12.29, an explicitly authorized agent runs operational CLI steps with
+`ahub --live-test <command> [args...]`, including `init`, `up`, `console`,
+`settings`, `reset`, `upgrade`, `recovery` and roster operations. Follow
+[Agent-operated live verification](../operations.md#agent-operated-live-verification).
+Record the initiating peer and the mandatory delegation audit (`agent_cli`
+event or retained CLI audit), alongside the command and operational receipts.
+The original 0.12.28 refusal above is historical evidence, not a current CLI
+blocker. Identity markers remain intact; the supported option supplies authority.
+
+Allowed-class commands retain the agent's peer identity, including messaging
+and review verdicts. The flag refuses person-attributed writes, including
+`--as-user`, task labels, task assign/escalate and planning/memory writes.
+Delegated dashboard sessions permit operational controls but refuse sending,
+proposals and person-attributed planning/history actions; changing a request body
+cannot remove that restriction. Exercises requiring those actions or a person's
+sign-off need the ordinary authorized actor path and cannot be completed merely
+by adding the flag.
+
+LCU's Terminal denial is a separate external computer-use restriction and remains
+in force. CLI delegation does not grant Terminal app access or prove native
+visual, account or accessibility observations. Record any inaccessible native
+surface as unverified while continuing reachable authorized CLI checks.
 
 ## Execution order
 
-Use a disposable git project under the workspace scratchpad, outside this
-checkout. A person runs `ahub init`, reviews the resulting configuration and
-starts it with `ahub up`. Record its absolute path and project id. Keep destructive
-recovery/reset experiments separate from the project used for browser and model
-checks. Recovery can hold a machine-wide lock, so inspect `ahub recovery status`
-before starting an operation and wait for unrelated operations to finish.
+Use a disposable Git project under the workspace scratchpad, outside this
+checkout, and initialize its own Git boundary before `ahub init`. An authorized
+agent runs `ahub --live-test init`, reviews the resulting configuration and starts
+it with `ahub --live-test up`. Record its absolute path, project id and delegation
+audit. Keep destructive recovery/reset experiments separate from the project
+used for browser and model checks. Recovery can hold a machine-wide lock, so
+inspect `ahub --live-test recovery status` before starting an operation and wait
+for unrelated operations to finish. Upgrade isolation has the additional
+machine-wide and shared-configuration requirements below.
 
 Use installed, authenticated native tools. Record each version before its first
-turn. Do not change credentials, buy access, relax identity fencing or exhaust
-quota to produce a result. Do not run another session's stop or reset.
+turn. Do not change credentials, buy access or exhaust quota to produce a result.
+Do not run another session's stop or reset. Keep identity fencing in effect and
+use the documented delegation route rather than removing identity markers.
 
-1. Inspect terminal rendering and dashboard behavior, then capture readbacks.
-2. Run native messaging, role and planner exercises on the disposable project.
-3. Run roster and recovery experiments with disposable conversations only.
-4. Run the real repository SDLC cycle only with an explicitly selected issue and release window.
-5. Record each result in `docs/smoke.md`, retaining any unverified remainder.
+1. Run reachable operational checks through `ahub --live-test`; retain their delegation audits and readbacks. Inspect terminal/dashboard rendering only through an available permitted native surface.
+2. Run native messaging and role/planner exercises on the disposable project using the ordinary peer or person path as required by attribution; the delegation flag does not authorize person-content writes.
+3. Run roster and recovery experiments with disposable conversations only, using the delegated operational CLI route and recording native continuity separately.
+4. Run the real repository SDLC cycle only with an explicitly selected issue and release window, retaining required person verdicts.
+5. Record each result in `docs/smoke.md`, retaining any unverified remainder and external blocker.
 
 ## Required observations by issue entry
 
@@ -80,9 +103,9 @@ Section names refer to [the smoke checklist](../smoke.md).
 
 ## Upgrade with unmanaged Claude (#206)
 
-1. A person starts the disposable project on a known older release, records its version/project id and attaches an unmanaged Claude session using the documented plain-Claude tools-only setup. Record its native session id and a harmless conversation marker.
-2. Use an isolated test environment for the hub home/registry and shared Claude plugin setup. Upgrade is machine-wide, even when invoked from the scratch cwd: it plans all registered running projects and changes the shared package/plugin; `--project` does not scope it. Run the target coordinator with `ahub upgrade --to 0.12.28 --dry-run` and retain the complete plan. Verify every planned root is a disposable fixture, record the shared CLI/plugin fate, and confirm the intended unmanaged Claude is reconnect-only. Stop without applying if any non-disposable project or shared setup is in scope. A separate AGENTHUB_HOME alone does not isolate the shared plugin; use a dedicated native configuration/test environment too.
-3. Apply that same target using the interactive upgrade command. Record operation id, source and target versions, terminal fate and plugin reconnect outcome. Do not substitute a restart at the same version.
+1. An authorized operator starts the disposable project on a known older release, records its version/project id and attaches an unmanaged Claude session using the documented plain-Claude tools-only setup. Record its native session id and a harmless conversation marker.
+2. Use an isolated test environment for the hub home/registry and shared Claude plugin setup. Upgrade is machine-wide, even when invoked from the scratch cwd: it plans all registered running projects and changes the shared package/plugin; `--project` does not scope it. Run the target coordinator with `ahub --live-test upgrade --to 0.12.29 --dry-run` and retain the complete plan. Verify every planned root is a disposable fixture, record the shared CLI/plugin fate, and confirm the intended unmanaged Claude is reconnect-only. Stop without applying if any non-disposable project or shared setup is in scope. A separate AGENTHUB_HOME alone does not isolate the shared plugin; use a dedicated native configuration/test environment too.
+3. The authorized agent applies that same target with `ahub --live-test upgrade --to 0.12.29 --yes` after reviewing the plan (a person may use the ordinary interactive path). Retain the delegation audit. Record operation id, source and target versions, terminal fate and plugin reconnect outcome. Do not substitute a restart at the same version.
 4. Read back `ahub status`, the original native session id and marker, and one correlated hub message receipt. Record whether a second terminal appeared or a conversation was replaced.
 5. Capture final operation and lock status. A refusal or failed reconnect is a failed leg, with its exact wording; it is not a pass based on the dry-run plan.
 
@@ -96,15 +119,15 @@ recovery JSON to claim a native reproduction. `test/upgrade.test.ts`,
 1. Give disposable Codex its own native session store and complete a harmless turn so its transcript exists. Record project id, daemon instance, native thread id and transcript path. Keep the original transcript outside the fixture's missing-path condition; never remove a production transcript.
 2. In a controlled scratch-only harness, stop the coordinator after real source preparation and before commit, preserving its operation receipt. Record the daemon's preparation, terminal close receipts and runner identity. The harness and its pause point must be reviewed before use.
 3. Make only the disposable transcript unavailable and allow the real preparation lease to expire. Confirm expiry from the daemon log/readback rather than changing a clock or receipt timestamp.
-4. A person runs `ahub recovery status <operation-id>` and the supported next action it offers. Capture the exact missing-session refusal. Restore the disposable transcript and resume, or use the offered audited disposition with a reason. Do not force a fresh conversation and label it restoration.
+4. The authorized agent runs `ahub --live-test recovery status <operation-id>` and the supported next action it offers. Capture the exact missing-session refusal. Restore the disposable transcript and resume, or use the offered audited disposition with a reason. Do not force a fresh conversation and label it restoration.
 5. Record daemon and CLI outcomes, operation/lock state, project id before/after, archive paths and modes, and the final continuity or lostContinuity disposition. Preserve failed intermediate receipts.
 
 ## Target crash after peers-restored (#225)
 
 1. In a separate disposable project, establish native conversations with harmless markers and start a controlled recovery. Save its operation id and source conversation ids.
 2. Observe the real `peers-restored` phase before release. A controlled pause at that boundary is required: if the operation already completed, this run cannot demonstrate this failure point. Do not fabricate the phase by editing a receipt.
-3. Verify the target pid belongs to this disposable project's daemon and record its instance id. The person ends only that target daemon. Record native launcher/process state after the exit.
-4. Run `ahub recovery status <operation-id>`, then its offered `ahub recovery resume <operation-id>`. If a surviving launcher blocks it, end the identified disposable launcher as instructed and retry the supported action.
+3. Verify the target pid belongs to this disposable project's daemon and record its instance id. The authorized operator ends only that target daemon through a permitted process-control surface. Record native launcher/process state after the exit.
+4. Run `ahub --live-test recovery status <operation-id>`, then its offered `ahub --live-test recovery resume <operation-id>`. Retain the delegation audits. If a surviving launcher blocks it, end the identified disposable launcher as instructed and retry the supported action.
 5. Verify the new target instance, recorded restart count, same native conversations and markers, no duplicate terminal, final operation status and lock release. A missing snapshot or failed native resume remains a failure, with the precise refusal and the supported disposition recorded.
 
 ## Recording and closure
