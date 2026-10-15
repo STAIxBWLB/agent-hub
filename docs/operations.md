@@ -2455,6 +2455,31 @@ terminal exits, a requested stop (`ahub stop pi`), requested shutdown and
 recovery operations suppress this restart. Crash recovery's #66
 recorded-session/fresh-start choices are unchanged.
 
+### Explicit Pi history replacement
+
+If an offline Pi owner has no verified persisted resume state, inspect the old
+session and any partial work, then select a preserved file explicitly:
+
+```sh
+ahub pi --replace-session --session-file <managed-file>
+```
+
+The file must be inside this project's `.agenthub/state/pi-sessions/` and its
+session header must identify the same project. The selected session keeps its
+existing identity. This is a person-only recovery action; default restart never
+selects another session or infers that missing history was empty. A session id
+alone is insufficient. Add `--headless` to run the selected history in background.
+`--print-command` validates flags without checking the live owner or changing it.
+
+Replacement requires an existing offline owner whose native process is proven
+gone, with settled tools, receipts and approvals, outside a recovery operation.
+An unclaimed pending TUI launch uses the ordinary restart path instead. Before
+revoking the old owner, the hub durably saves private previous/selected session
+metadata in `pi-session-replacements/` beside `pi-sessions/`. Failed validation or
+record storage leaves the old owner intact. All session files, queued work and
+journal records remain. Uncertain effects are never retried by this selection;
+inspect and reconcile them before continuing.
+
 ### Pi/local unanswered approvals
 
 An expired Pi/local request says "approval expired: no person answered". The

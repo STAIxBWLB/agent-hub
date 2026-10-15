@@ -1,13 +1,13 @@
 import { buildPiLaunch } from "../pi/launch.ts";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
-import { processSignature } from "../pi/process-signature.ts";
-import { realPath } from "../hub/project.ts";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
+import { validatePiSession } from "../pi/session.ts";
 import { ApprovalWaitStop, toolResultFailed, type ApprovalProvenance } from "../local/tools.ts";
 import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
@@ -140,6 +140,12 @@ export class PiPeer extends BasePeer {
     if (this.state === "idle") return this.ownerClaimed && !!this.ownerPid && processSignature(this.ownerPid) === this.ownerSignature;
     return this.stopping && !this.ownerClaimed && (!this.ownerPid || !ownerStillAlive(this.ownerPid, this.ownerSignature));
   }
+  /** Explicit replacement may retain an unpersisted identity, but never a live/unknown owner or active effects. */
+  get replacementReady(): boolean {
+    if (this.state !== "offline" || this.starting || this.activeTools || this.pendingToolGenerations.size || this.pending.size || this.tuiCommands.size) return false;
+    if (this.opts.mode === "headless") return !this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null;
+    return this.stopping && !this.ownerClaimed && !!this.ownerPid && processLiveness(this.ownerPid, this.ownerSignature) === "gone";
+  }
   recoveryMetadata(): Record<string, unknown> {
     const exists = !!this.sessionFile && existsSync(this.sessionFile);
     if (exists) { this.persistedOnce = true; this.verifiedEmptyResume = undefined; }
@@ -153,7 +159,7 @@ export class PiPeer extends BasePeer {
     if (this.state === "offline") {
       if (this.canReuseVerifiedEmptyResume()) return this.recoveryMetadata();
       if (this.recoveryReady && this.sessionFile && existsSync(this.sessionFile)) return this.recoveryMetadata();
-      throw new Error("Pi source session is offline and has no verified persisted resume state");
+      throw new Error("Pi source session is offline and has no verified persisted resume state; inspect preserved history, then a person may run ahub pi --replace-session --session-file <managed-file>");
     }
     this.emptyResumeVerified = false;
     if (this.state !== "idle" || this.stopping || this.activeTools) throw new Error("Pi must settle before session capture");
@@ -335,11 +341,7 @@ export class PiPeer extends BasePeer {
     const sessions = join(this.opts.stateDir, "pi-sessions");
     mkdirSync(sessions, { recursive: true, mode: 0o700 });
     if (this.opts.sessionFile) {
-      const file = realPath(this.opts.sessionFile);
-      const rel = relative(realPath(sessions), file);
-      if (!rel || rel.startsWith("..") || resolve(realPath(sessions), rel) !== file) throw new Error("Pi session file is outside the managed project session directory");
-      const header = JSON.parse(readFileSync(file, "utf8").split("\n", 1)[0]!);
-      if (header.type !== "session" || typeof header.cwd !== "string" || realPath(header.cwd) !== realPath(this.opts.cwd) || (this.opts.sessionId && header.id !== this.opts.sessionId)) throw new Error("Pi session header does not match the requested project/session");
+      validatePiSession(this.opts.stateDir, this.opts.cwd, this.opts.sessionFile, this.opts.sessionId);
     }
     const token = randomUUID();
     this.tuiExit = new Promise((resolvePromise) => { this.resolveTuiExit = resolvePromise; });

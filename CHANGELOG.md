@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Recover an offline Pi owner with person-selected preserved history via `ahub pi --replace-session --session-file`, retaining prior identity metadata and queued work while refusing live owners and unsettled effects (#403).
+
 - Tell a pull-only session (a Kimi TUI, a Claude session without pushes) that important messages are waiting: the hub sends an advisory count over its control link and every hub tool result but `hub_inbox` ends with it until a read drains them; `hub_inbox` replies also carry the important count. Make `scripts/check.sh` take a heavy-job slot shared by every worktree of the repo, so a second gate waits (bounded by `AHUB_CHECK_LOCK_WAIT_S`) and names the holder instead of overlapping (#398).
 
 ## 0.12.27

@@ -2880,6 +2880,20 @@ and state/peer/release filters remain active in focus. Attention targets exact
 visible row ids with heading guidance when absent. No new route, API request,
 timer, source text/ref/history projection or external asset is introduced.
 
+
+## Explicit offline Pi history selection (#403)
+
+A person may run `ahub pi --replace-session --session-file <managed-file>` only
+for an existing offline, settled Pi owner with a proven-gone native process.
+Pending tools, receipts, approvals and recovery hold replacement. The console
+control path alone authorizes this operation; peer and conductor tools cannot
+supply that authority. Validate the selected managed path and project/session
+header before any prior owner teardown, then durably write private previous
+and selected metadata. Retain all session files, queues and journal records.
+Start the selected persisted identity through the existing permission policy
+and verified teardown. There is no automatic fallback, implicit empty-session
+proof or effect retry; ordinary restart and captureResume remain strict.
+
 ## Amendment: pull-only latency (#398)
 
 A pull-only peer learns of important work only when its model calls a hub tool,

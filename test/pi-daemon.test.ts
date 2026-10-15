@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Board } from "../src/hub/board.ts";
 import { AssignmentUndeliveredError, Tasks } from "../src/hub/tasks.ts";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync, renameSync, rmSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -1179,3 +1179,85 @@ test("the daemon's inference-failed catch stays quiet for a saved-but-undelivere
   expect(logText).not.toContain(`Pi task #${task.id} could not be escalated`); // the typed error: quiet
   expect(logText).toContain(`Pi task #${plain.id} could not be escalated`); // a plain failure: the old line
 }, 20_000);
+
+
+/** Reproduces a native owner that exits before persisting its current history (#403). */
+async function offlineUnpersistedPi() {
+  const dir = mkdtempSync(join(tmpdir(), "pi-replace-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const h = await hub(config);
+  const first = await h.console_.request({ t: "start", peer: "pi", args: { mode: "tui" } });
+  expect(first.ok).toBe(true);
+  const previous = h.daemon.bus.peers.get("pi") as PiPeer;
+  const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+  cleanup.push(async () => { if (owner.exitCode === null) owner.kill(); await owner.exited; });
+  const headers = { authorization: `Bearer ${first.launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+  const post = (body: unknown) => fetch(`${first.launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify(body) });
+  const missing = join(h.stateDir, "pi-sessions", "never-persisted.jsonl");
+  expect((await post({ type: "session_start", ownerToken: first.launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: processSignature(owner.pid), sessionId: "lost-session", sessionFile: missing })).status).toBe(200);
+  const selected = join(h.stateDir, "pi-sessions", "preserved.jsonl");
+  const history = JSON.stringify({ type: "session", id: "preserved-session", cwd: h.stateDir }) + "\n" + JSON.stringify({ type: "message", id: "retained-message", parentId: null }) + "\n";
+  writeFileSync(selected, history);
+  return { ...h, previous, owner, post, missing, selected, history, replace: (extra: Record<string, unknown> = {}) => h.console_.request({ t: "start", peer: "pi", args: { mode: "headless", sessionFile: selected, replaceSession: true, ...extra } }) };
+}
+
+test("explicit Pi replacement preserves history, queue and private prior identity; ordinary restart stays strict", async () => {
+  const h = await offlineUnpersistedPi();
+  expect((await h.replace()).error).toContain("offline, settled"); // live owner
+  await h.post({ type: "agent_start", generation: 1 });
+  expect((await h.replace()).error).toContain("offline, settled"); // busy owner
+  await h.post({ type: "session_shutdown" });
+  expect((await h.replace()).error).toContain("offline, settled"); // shutdown event alone proves no OS exit
+  h.owner.kill(); await h.owner.exited;
+  expect(h.previous.replacementReady).toBe(true);
+  await expect(h.previous.captureResume()).rejects.toThrow("no verified persisted resume state");
+  expect((await h.console_.request({ t: "start", peer: "pi", args: { mode: "tui" } })).error).toContain("no verified persisted resume state");
+  expect((await h.console_.request({ t: "start", peer: "pi", args: { mode: "headless", sessionFile: h.selected } })).error).toContain("different session");
+  expect((await h.replace({ sessionFile: undefined, sessionId: "preserved-session" })).error).toContain("requires --replace-session --session-file");
+  h.daemon.bus.pause("pi");
+  const envelope = newEnvelope("user", "retained queue", { to: ["pi"] });
+  await h.daemon.bus.publish(envelope);
+  const queue = h.daemon.bus.queueIds("pi");
+  const result = await h.replace(); expect(result.ok).toBe(true);
+  expect(h.daemon.bus.peers.get("pi")).not.toBe(h.previous);
+  expect(h.daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe("preserved-session");
+  expect(h.daemon.bus.queueIds("pi")).toEqual(queue);
+  expect(readFileSync(h.selected, "utf8")).toBe(h.history);
+  expect(existsSync(h.missing)).toBe(false);
+  const records = join(h.stateDir, "pi-session-replacements"), names = readdirSync(records);
+  expect(names).toHaveLength(1);
+  const file = join(records, names[0]!);
+  expect(statSync(file).mode & 0o777).toBe(0o600);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ previous: { sessionId: "lost-session", sessionFile: h.missing }, selected: { sessionId: "preserved-session", sessionFile: realpathSync(h.selected) } });
+});
+
+test("Pi replacement validates preserved history and durable record before revoking the old owner", async () => {
+  const h = await offlineUnpersistedPi();
+  await h.post({ type: "session_shutdown" }); h.owner.kill(); await h.owner.exited;
+  const bad = join(h.stateDir, "pi-sessions", "bad.jsonl");
+  for (const body of ["invalid", JSON.stringify({ type: "session", id: "wrong", cwd: tmpdir() }), JSON.stringify({ type: "session", cwd: h.stateDir })]) {
+    writeFileSync(bad, body);
+    expect((await h.replace({ sessionFile: bad })).ok).toBe(false);
+    expect(h.daemon.bus.peers.get("pi")).toBe(h.previous);
+  }
+  const outside = join(h.stateDir, "outside.jsonl"); writeFileSync(outside, h.history);
+  expect((await h.replace({ sessionFile: outside })).error).toContain("outside the managed");
+  expect(existsSync(join(h.stateDir, "pi-session-replacements"))).toBe(false);
+  writeFileSync(join(h.stateDir, "pi-session-replacements"), "record writes must fail");
+  expect((await h.replace()).ok).toBe(false);
+  expect(h.daemon.bus.peers.get("pi")).toBe(h.previous);
+  expect(readFileSync(h.selected, "utf8")).toBe(h.history);
+});
+
+test("Pi replacement refuses missing owner, peer authorization and unsettled tool receipts", async () => {
+  const h = await offlineUnpersistedPi();
+  const peer = await ControlClient.connect(h.stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => peer.close());
+  expect((await peer.request({ t: "start", peer: "pi", args: { replaceSession: true, sessionFile: h.selected } })).error).toContain("console command");
+  await h.post({ type: "session_shutdown" }); h.owner.kill(); await h.owner.exited;
+  const db = new Database(join(h.stateDir, "hub.db"));
+  try { db.query("INSERT INTO pi_tool_receipts(session,call_id,fingerprint,state) VALUES(?,?,?,'pending')").run("lost-session", "uncertain", "test"); } finally { db.close(); }
+  expect((await h.replace()).error).toContain("receipts");
+  expect(h.daemon.bus.peers.get("pi")).toBe(h.previous);
+  const empty = await hub({ ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true } });
+  expect((await empty.console_.request({ t: "start", peer: "pi", args: { replaceSession: true, sessionFile: h.selected } })).error).toContain("existing offline");
+});

@@ -64,6 +64,7 @@ export class PiToolReceipts {
     return work;
   }
 
+  get unsettled(): boolean { return this.pending.size > 0 || !!this.db.query("SELECT 1 FROM pi_tool_receipts WHERE state != 'done' LIMIT 1").get(); }
   get inFlight(): number { return this.pending.size; }
   async drain(): Promise<void> { await Promise.allSettled(this.pending.values()); }
 

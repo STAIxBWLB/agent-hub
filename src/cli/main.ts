@@ -211,8 +211,8 @@ function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv): nev
 }
 
 /** `mode` is absent when no flag chose one: the caller takes the configured start mode (#269). `--headless` is `--mode headless`. */
-function piFlags(): { mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; model?: string; sessionId?: string; sessionFile?: string } {
-  const usage = "usage: ahub pi [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id> | --session-file <path>]";
+function piFlags(): { mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; model?: string; sessionId?: string; sessionFile?: string; replaceSession?: boolean } {
+  const usage = "usage: ahub pi [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id> | --session-file <path>] [--replace-session --session-file <path>]";
   if (args.includes("--headless")) {
     if (args.includes("--mode")) fail(usage);
     args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
@@ -226,13 +226,16 @@ function piFlags(): { mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx
   const model = args.includes("--model") ? args[args.indexOf("--model") + 1] : undefined;
   const sessionId = args.includes("--session-id") ? args[args.indexOf("--session-id") + 1] : undefined;
   const sessionFile = args.includes("--session-file") ? args[args.indexOf("--session-file") + 1] : undefined;
+  const replaceSession = args.includes("--replace-session");
+  if (replaceSession && (!sessionFile || sessionId)) fail("--replace-session requires --session-file, without --session-id");
   const valueFlags = new Set(["--mode", "--backend", "--model", "--session-id", "--session-file"]);
   for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--replace-session") continue;
     if (!valueFlags.has(args[i]!)) fail(`unknown Pi option: ${args[i]}`);
     i++;
   }
   if ((mode !== undefined && !["headless", "tui"].includes(mode)) || (backend !== undefined && !["auto", "dgx", "mlx"].includes(backend)) || (sessionId && sessionFile)) fail(usage);
-  return { ...(mode ? { mode: mode as "headless" | "tui" } : {}), ...(backend ? { backend: backend as "auto" | "dgx" | "mlx" } : {}), ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}) };
+  return { ...(replaceSession ? { replaceSession: true } : {}), ...(mode ? { mode: mode as "headless" | "tui" } : {}), ...(backend ? { backend: backend as "auto" | "dgx" | "mlx" } : {}), ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}) };
 }
 
 async function projectRows() {

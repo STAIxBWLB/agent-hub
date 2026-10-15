@@ -133,3 +133,17 @@ test("advisory sweep preview shares actual native hook selection and reports con
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("Pi replacement preview validates selection flags without connecting or writing runtime", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-replacement-preview-")), state = join(dir, ".agenthub", "state");
+  try {
+    const before = tree(dir);
+    for (const flags of [["--replace-session"], ["--replace-session", "--session-id", "other"], ["--replace-session", "--session-file"]]) expect(() => launcherPreview("pi", flags, dir, state, false)).toThrow();
+    const preview = launcherPreview("pi", ["--replace-session", "--session-file", "/private/selected.jsonl"], dir, state, false);
+    expect(preview.unresolved.some(row => row.field === "session replacement")).toBe(true);
+    expect(JSON.stringify(preview)).not.toContain("/private/selected.jsonl");
+    expect(preview.args).not.toContain("--replace-session");
+    expect(tree(dir)).toEqual(before);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

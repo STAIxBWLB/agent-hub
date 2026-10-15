@@ -99,7 +99,13 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen
     const mode = value("--mode") ?? startModeOf(config.peers, "pi"); // #269: the same default `ahub pi` takes
     const backend = value("--backend") ?? config.pi.backend;
     if (!["headless", "tui"].includes(mode) || !["auto", "dgx", "mlx"].includes(backend) || (value("--session-id") && value("--session-file"))) throw new Error("invalid Pi options");
-    for (let i = 0; i < args.length; i += 2) if (!["--mode", "--backend", "--model", "--session-id", "--session-file"].includes(args[i]!)) throw new Error("unknown Pi option");
+    if (args.includes("--replace-session") && (!value("--session-file") || value("--session-id"))) throw new Error("--replace-session requires --session-file, without --session-id");
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--replace-session") continue;
+      if (!["--mode", "--backend", "--model", "--session-id", "--session-file"].includes(args[i]!) || !value(args[i]!)) throw new Error("unknown Pi option");
+      i++;
+    }
+    if (args.includes("--replace-session")) unresolved.push({ field: "session replacement", reason: "requires a person, a validated managed file and an offline settled owner at runtime; preview changes nothing" });
     const models = relayModelIds({ enableHubAuto: true, mlx: config.mlx.enabled === false ? undefined : config.mlx, mlxAlias: "mlx/fast", allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast } });
     const pi = buildPiLaunch({
       stateDir, cmd: nativeCommand(config.pi.cmd, ["pi"]), mode: mode as "headless" | "tui", backend: backend as "auto" | "dgx" | "mlx",
