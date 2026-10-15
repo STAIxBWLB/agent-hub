@@ -2879,3 +2879,23 @@ open detail; disappearance/project reset closes it. Back restores compact mode,
 and state/peer/release filters remain active in focus. Attention targets exact
 visible row ids with heading guidance when absent. No new route, API request,
 timer, source text/ref/history projection or external asset is introduced.
+
+## Amendment: pull-only latency (#398)
+
+A pull-only peer learns of important work only when its model calls a hub tool,
+and repo-heavy work was coordinated over chat it read too late.
+
+- When an `important` envelope is queued for a pull-only peer, the bus calls the
+  advisory `onImportantQueued` hook and the daemon sends that peer's control
+  socket `{t:"queued", queued, important}`. It is not a delivery: nothing is
+  dequeued, steered, journaled or settled, and the queue still waits for
+  `hub_inbox`. The `inbox` reply adds `waitingImportant`.
+- The plugin caches the counts and appends one line naming the important count
+  to every hub tool result except `hub_inbox` until a read reports none. An older
+  plugin ignores the unknown push; an older hub never sends it.
+- `scripts/check.sh` takes a heavy-job slot, a directory in the git common dir
+  shared by every worktree, before any step. A second gate waits up to
+  `AHUB_CHECK_LOCK_WAIT_S` (1800 s; 0 fails at once) and names the holder; a
+  holder whose pid is gone is reaped. The slot works with no hub running. It is
+  not bus-visible; moving it into the hub is the upgrade if pid reuse or reap
+  races bite.

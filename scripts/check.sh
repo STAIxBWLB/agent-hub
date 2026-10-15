@@ -3,6 +3,29 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# One heavy job per repo (#398): every worktree shares the git common dir, so a second gate waits here instead of
+# depending on a chat message being read in time. AHUB_CHECK_LOCK_WAIT_S bounds the wait (0 fails at once).
+# ponytail: liveness is `kill -0`, so a reused pid keeps a crashed holder's slot until its directory is removed by
+# hand, and two waiters reaping the same dead holder can both start; move the slot into the hub if either bites.
+heavy_lock=""
+release_heavy() { if [ -n "$heavy_lock" ]; then rm -rf "$heavy_lock"; heavy_lock=""; fi; }
+if common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+  lock="$common/ahub-heavy.lock"
+  wait_s=${AHUB_CHECK_LOCK_WAIT_S:-1800}
+  waited=0
+  until mkdir "$lock" 2>/dev/null; do
+    holder=$(cat "$lock/owner" 2>/dev/null || true)
+    pid=${holder%% *}
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$lock"; continue; fi
+    if [ "$waited" -ge "$wait_s" ]; then echo "check: heavy-job slot still held by ${holder:-an unknown run} ($lock)" >&2; exit 1; fi
+    if [ "$waited" -eq 0 ]; then echo "check: waiting for the heavy-job slot held by ${holder:-a starting run}" >&2; fi
+    sleep 5; waited=$((waited + 5))
+  done
+  heavy_lock=$lock
+  echo "$$ since $(date '+%H:%M:%S') in $PWD" > "$lock/owner"
+  trap release_heavy EXIT
+fi
+
 node scripts/check-docs.mjs
 bun install --frozen-lockfile >/dev/null
 bun x tsc --noEmit
@@ -30,6 +53,7 @@ cleanup_check() {
     wait "$test_pid" 2>/dev/null || true
   fi
   if [ "$preserve_tmp" -eq 0 ]; then rm -rf "$check_tmp"; fi
+  release_heavy
   exit "$status"
 }
 trap cleanup_check EXIT

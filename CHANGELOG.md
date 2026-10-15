@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Tell a pull-only session (a Kimi TUI, a Claude session without pushes) that important messages are waiting: the hub sends an advisory count over its control link and every hub tool result but `hub_inbox` ends with it until a read drains them; `hub_inbox` replies also carry the important count. Make `scripts/check.sh` take a heavy-job slot shared by every worktree of the repo, so a second gate waits (bounded by `AHUB_CHECK_LOCK_WAIT_S`) and names the holder instead of overlapping (#398).
+
 ## 0.12.27
 
 - Refine the dashboard Office view with an intrinsic 12 px/unit scale, 1 px non-scaling hairlines and padded room cards in flat and isometric themes, and un-nest the desk More control into a separately reconciled sibling button so screen readers can reach it (#394).
