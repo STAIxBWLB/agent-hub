@@ -66,3 +66,7 @@ test("memory dedupe listing and apply are console-only and audit-labeled without
     expect(cliCommandLabel("memory", args)).toBe("memory dedupe");
   }
 });
+
+test("explicit Pi history replacement is a person-only CLI command", () => {
+  expect(classifyPeerCommand("pi", ["--replace-session", "--session-file", "preserved.jsonl"])).toBe("console");
+});

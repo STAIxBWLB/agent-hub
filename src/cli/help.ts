@@ -43,7 +43,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"],
     ["ahub jcode [--mode headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional owned Jcode daemon/ACP; native policy unmanaged, no hub sandbox"],
     ["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", "start optional Qwen Code 0.25.0 ACP (roster.qwen, default off)"],
-    ["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"],
+    ["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"],
     ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
     ["ahub role list [--group <group>] | show <id>", "read bounded catalog guidance with layer and content hash"],
     ["ahub role assign <peer> <id> | clear <peer> [<id>]", "person only: add or clear catalog guidance, applied at the next peer start"],

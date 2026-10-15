@@ -38,6 +38,7 @@ import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts, packPiShellResult } from "../pi/tool-receipts.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { processSignature } from "../pi/process-signature.ts";
+import { recordPiReplacement, validatePiSession } from "../pi/session.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
@@ -2406,6 +2407,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let piAutoRestartAt = -Infinity;
   let piAutoRestartPending = false;
   const replacingPi = new Set<PiPeer>();
+  const piReplacementAuthority = Symbol("console Pi replacement");
   /** pi.auto_start at hub start (#269): in Pi's start mode, and said out loud when it could not be done. */
   const autoStartPi = () => void hubStart("pi", "pi.auto_start").then(
     (result) => { if (result.ok !== true) notify(`pi.auto_start did not start Pi: ${String(result.error)}`); },
@@ -2414,7 +2416,8 @@ export async function startDaemon(opts: DaemonOptions) {
     replacingPi.add(pi);
     try { await pi.stop(); } finally { replacingPi.delete(pi); }
   }
-  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
+  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, replacementAuthority?: symbol): Promise<Record<string, unknown>> {
+    if (args.replaceSession !== undefined && (args.replaceSession !== true || replacementAuthority !== piReplacementAuthority || peer !== "pi")) return Promise.resolve({ ok: false, error: "Pi session replacement requires explicit person authorization" });
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (!membershipAllowed(peer)) return Promise.resolve({ ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` });
     if (rosterChanging === peer) return Promise.resolve({ ok: false, error: `${peer} roster change is in progress` });
@@ -2544,7 +2547,7 @@ export async function startDaemon(opts: DaemonOptions) {
     };
   }
 
-  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
+  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
     let unmute: (() => void) | undefined;
     try {
       return await startPeerBody(peer, args, (p) => { unmute = muteState(p); });
@@ -2553,7 +2556,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
 
-  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
+  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
     if (peer === "jcode" && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Jcode native TUI driving is unverified; use headless" };
     if (peer === "qwen" && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
     if (peer === "kimi") {
@@ -2581,7 +2584,18 @@ export async function startDaemon(opts: DaemonOptions) {
       if (args.model !== undefined && !["dgx/coding", "dgx/fast", "mlx/fast"].includes(args.model)) return { ok: false, error: "unknown Pi model alias" };
     }
     const existing = bus.peers.get(peer);
-    if (peer === "pi" && existing instanceof PiPeer) {
+    if (args.replaceSession) {
+      if (recoveryActive()) return { ok: false, error: "recovery is holding session replacement" };
+      if (!args.sessionFile || args.sessionId || args.fresh) return { ok: false, error: "Pi replacement requires --replace-session --session-file <managed-file>, without --session-id or fresh" };
+      if (!(existing instanceof PiPeer) || !existing.replacementReady || piReceipts?.unsettled || [...permissions.values()].some(p => p.peer === "pi")) return { ok: false, error: "Pi replacement requires an existing offline, settled owner with no live/unknown process, tools, receipts or approvals" };
+      const selected = validatePiSession(opts.stateDir, opts.cwd, args.sessionFile);
+      const previous = existing.recoveryMetadata();
+      recordPiReplacement(opts.stateDir, instanceId, previous, selected);
+      args = { ...args, ...selected };
+      mute(existing);
+      await stopPiForReplacement(existing);
+    }
+    if (peer === "pi" && existing instanceof PiPeer && !args.replaceSession) {
       let saved = existing.recoveryMetadata();
       const launch = saved.launch as Record<string, unknown>;
       if ((args.sessionId && saved.sessionId && args.sessionId !== saved.sessionId) || (args.sessionFile && saved.sessionFile && args.sessionFile !== saved.sessionFile)) return { ok: false, error: "Pi already owns a different session; refusing to replace its identity" };
@@ -4255,7 +4269,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ t: "started", ok: false, error: "start is a console command; use hub_peer_start with the conductor role" });
         if (recoveryActive() && !(recoveryPhase === "restored" && msg.operationId === recoveryOperationId)) return void reply({ t: "started", ok: false, error: "recovery is holding mutations" });
         if (recoveryActive() && !recoveryPeerAllowed(String(msg.peer))) return void reply({ t: "started", ok: false, error: "peer is not part of the recovery roster" });
-        startPeer(String(msg.peer), msg.args ?? {})
+        startPeer(String(msg.peer), msg.args ?? {}, msg.args?.replaceSession === true ? piReplacementAuthority : undefined)
           .catch((e: Error) => ({ ok: false, error: e.message }))
           .then((r) => {
             if (!r.ok) log(`start ${msg.peer} failed: ${r.error}`);

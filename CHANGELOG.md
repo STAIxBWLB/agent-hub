@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Recover an offline Pi owner with person-selected preserved history via `ahub pi --replace-session --session-file`, retaining prior identity metadata and queued work while refusing live owners and unsettled effects (#403).
+
 ## 0.12.27
 
 - Refine the dashboard Office view with an intrinsic 12 px/unit scale, 1 px non-scaling hairlines and padded room cards in flat and isometric themes, and un-nest the desk More control into a separately reconciled sibling button so screen readers can reach it (#394).

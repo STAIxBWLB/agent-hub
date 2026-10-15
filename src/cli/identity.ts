@@ -28,6 +28,7 @@ export type PeerCommandAccess = "allowed" | "conductor" | "console";
 
 /** A closed list: unknown commands cannot acquire console authority through an agent shell. */
 export function classifyPeerCommand(command: string, args: readonly string[]): PeerCommandAccess {
+  if (command === "pi" && args.includes("--replace-session")) return "console";
   if (command === "pet" && args.includes("--window")) return "console";
   if (command === "permission" || command === "stop" || command === "watch") return "console";
   if (args.some((arg) => arg === "--as-user" || arg.startsWith("--as-user="))) return "console";
