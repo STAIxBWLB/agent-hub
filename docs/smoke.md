@@ -2,6 +2,18 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Issue #273 operator execution plan (2026-10-16)
+
+The [execution plan and blocker record](verification/2026-10-16-273-live-verification.md)
+maps the outstanding issue entries to their procedures and required observations.
+The installed CLI and running project daemon both reported 0.12.28. This is an
+environment readback only. No outstanding live leg passed in this session:
+the installed 0.12.28 CLI refused `ahub ui` from Codex, and LCU refused Terminal access.
+These are dated observations. From 0.12.29, authorized agents use the audited
+`--live-test` route described below and in the execution plan; the external LCU
+restriction remains separate. The operator initially chose procedure preparation;
+#273 remains open.
+
 ## Agent-operated verification (#408)
 
 For user-authorized live checks, the candidate CLI supports
