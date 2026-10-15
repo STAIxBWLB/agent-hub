@@ -1289,7 +1289,9 @@ reporting, and shares results explicitly with `hub_send`. Status, the console an
 the dashboard show `pull-only`, the waiting count and the last inbox read. Messages
 and important markers do not push or interrupt it. There is no hub busy state,
 watchdog, console approval, hub permission mode, context reading, automatic quota
-pause/handoff, shared final answer or session resume. Read quota and approve tools
+pause/handoff, shared final answer or session resume. When important messages are
+waiting, every other hub tool result ends with a line saying how many, so the model
+reads `hub_inbox` before starting long local work (#398). Read quota and approve tools
 in Kimi's own TUI; a person can pause the hub queue by hand. End the native terminal
 session there, not with `ahub stop kimi`.
 

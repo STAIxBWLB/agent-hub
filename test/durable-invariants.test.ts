@@ -64,6 +64,27 @@ test("a pull-only peer is never handed a delivery: its queue is counted, then re
   durable.close();
 });
 
+test("an important envelope queued for a pull-only peer fires the advisory nudge, and the queue is untouched (#398)", async () => {
+  const nudges: { peer: string; queued: number; important: number }[] = [];
+  const { bus, durable } = setupBus({ onImportantQueued: (peer, counts) => nudges.push({ peer, ...counts }) });
+  const pull = Object.assign(new FakePeer("claude"), { pullOnly: true }); bus.add(pull);
+  const push = new FakePeer("codex"); bus.add(push);
+
+  bus.publish(newEnvelope("user", "status note", { to: ["claude"] }));
+  expect(nudges).toEqual([]); // status waits quietly, as before
+  bus.publish(newEnvelope("user", "review task #3", { to: ["claude"], priority: "important" }));
+  expect(nudges).toEqual([{ peer: "claude", queued: 2, important: 1 }]);
+  bus.publish(newEnvelope("user", "and task #4", { to: ["claude"], priority: "important" }));
+  expect(nudges[1]).toEqual({ peer: "claude", queued: 3, important: 2 });
+  expect(pull.deliveries).toHaveLength(0); // the nudge is not a delivery: everything still waits for pull
+  expect(bus.pull("claude")).toHaveLength(3);
+
+  bus.publish(newEnvelope("user", "for codex", { to: ["codex"], priority: "important" }));
+  await waitFor(() => push.deliveries.length === 1, "push peer delivery");
+  expect(nudges.filter((n) => n.peer === "codex")).toEqual([]); // a push peer is drained, never nudged
+  durable.close();
+});
+
 test("a push being condensed when a session without pushes takes the peer is not handed over, and stays pullable (#205)", async () => {
   let release!: () => void;
   let condensing = false;
