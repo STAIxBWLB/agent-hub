@@ -46,6 +46,11 @@ export interface BusOptions {
    * the console and the log see it as published.
    */
   silence?: (env: Envelope, peer: PeerId) => string | undefined;
+  /**
+   * Optional: an `important` envelope was just queued for a pull-only peer (issue #398). Advisory only: nothing was
+   * dequeued, steered or journaled for it, and the queue still waits for `Bus.pull`; a throw is swallowed.
+   */
+  onImportantQueued?: (peer: PeerId, counts: { queued: number; important: number }) => void;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -731,6 +736,10 @@ export class Bus {
       const [lost] = queue.splice(victim === -1 ? 0 : victim, 1);
       if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer: id, state: "failed", createdAt: Date.now(), originals: [lost!], out: [], reason: "queue capacity exceeded" });
       this.emit({ t: "overflow", env: lost!, peer: id });
+    }
+    if (queuedEnv.priority === "important" && this.peers.get(id)?.pullOnly) {
+      // Advisory only (issue #398): the envelope stays queued for `pull`; the hook must never affect it.
+      try { this.opts.onImportantQueued?.(id, { queued: queue.length, important: queue.filter((e) => e.priority === "important").length }); } catch { /* a nudge never stops an enqueue */ }
     }
     this.onQueues?.();
     if (!this.suppressDrain) this.persist();

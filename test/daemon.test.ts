@@ -226,6 +226,26 @@ test("a paused tools-only claude reads nothing through hub_inbox: the budget pau
   expect(daemon.bus.queueList("claude").map((row) => row.state)).toEqual(["completed"]);
 });
 
+test("a pull-only session is nudged about queued important work: tool results carry the indicator until hub_inbox drains it (#398)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const plain = await fakeClaude(stateDir, null);
+  await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true, "plain attach");
+
+  await console_.request({ t: "send", body: "[IMPORTANT] review task #3", to: ["claude"] });
+  await until(() => daemon.bus.queuedImportant("claude") === 1, "queued important");
+  expect(plain.channel).toHaveLength(0); // pull-only: nothing is pushed as a delivery
+
+  // The `queued` push travels the same control WS before any later tool reply, so the hint is already cached.
+  const hinted: any = await plain.client.callTool({ name: "hub_send", arguments: { text: "[FYI] routine" } });
+  expect(hinted.content[0].text).toContain("1 important hub message(s) waiting: call hub_inbox");
+
+  const read: any = await plain.client.callTool({ name: "hub_inbox", arguments: {} });
+  expect(read.content[0].text).toContain("review task #3");
+
+  const clean: any = await plain.client.callTool({ name: "hub_send", arguments: { text: "[FYI] routine again" } });
+  expect(clean.content[0].text).not.toContain("important hub message(s) waiting");
+});
+
 test("a claude session without pushes never takes the peer from one with them: it stands by and attaches once that session leaves (#205)", async () => {
   const { stateDir, daemon, console_ } = await hub();
   const flagged = await fakeClaude(stateDir);
