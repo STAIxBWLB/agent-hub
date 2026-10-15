@@ -129,7 +129,7 @@ ahub ui --all  <span class="c"># every registered project on this machine</span>
           <tr><td><code>ahub review &lt;id&gt; approved|changes_requested "&lt;note&gt;"</code></td><td>Review from the console.</td></tr>
           <tr><td><code>ahub status</code> / <code>ahub budget</code></td><td>Peers, queues, pauses and quota windows.</td></tr>
           <tr><td><code>ahub ask &lt;question&gt;</code></td><td>What the board, shared memory and the log say, with the ids the answer rests on.</td></tr>
-          <tr><td><code>ahub turns</code> / <code>ahub undo &lt;turn&gt;</code></td><td>Files each agent turn changed, and restoring them.</td></tr>
+          <tr><td><code>ahub turns</code> / <code>ahub undo &lt;turn&gt;</code></td><td>Files each agent turn changed, and restoring them (Claude's turns are not recorded).</td></tr>
           <tr><td><code>ahub upgrade</code></td><td>Move running hubs to the latest release, with a plan you confirm.</td></tr>
           <tr><td><code>ahub stop &lt;peer&gt;</code> / <code>ahub kill</code></td><td>Stop one headless peer, or the daemon and everything it started.</td></tr>
         </tbody>
@@ -172,7 +172,7 @@ ahub ui --all  <span class="c"># every registered project on this machine</span>
       <div class="card case">
         <span class="tag">Record</span>
         <h3>Ask the project what happened</h3>
-        <p><code>ahub ask</code> answers from the board, shared memory and the log, citing ids. Per-turn snapshots let <code>ahub undo</code> put back exactly what a turn changed.</p>
+        <p><code>ahub ask</code> answers from the board, shared memory and the log, citing ids. Per-turn snapshots let <code>ahub undo</code> put back exactly what a Codex, Kimi, Pi or local worker turn changed.</p>
       </div>
     </div>
   </div>
@@ -207,7 +207,7 @@ ahub ui --all  <span class="c"># every registered project on this machine</span>
     <details><summary>How is this different from agent-bridge?</summary><p><a href="https://github.com/raysonmeng/agent-bridge">agent-bridge</a> pairs Claude and Codex and is two-party by construction. agent-hub starts from an N-peer bus and attaches each agent through its native control surface.</p></details>
     <details><summary>Why Bun and not Node?</summary><p>The hub has zero runtime dependencies: WebSocket, HTTP, sqlite, process spawning and the test runner are Bun built-ins. Keep <code>bun</code> on PATH even if you install with npm.</p></details>
     <details><summary>What does it change in my project?</summary><p><code>ahub init</code> writes <code>.agenthub/</code> (config, routing, runtime state), a managed block in <code>AGENTS.md</code> and gitignore entries. Run <code>ahub init --dry-run --json</code> to see the list first. The machine registry lives in <code>~/.agenthub/</code>.</p></details>
-    <details><summary>Can I undo what an agent did?</summary><p>In a Git work tree the hub snapshots files at the start and end of each turn. <code>ahub turns</code> lists them, <code>ahub undo &lt;turn&gt;</code> shows what it would restore, and <code>--yes</code> restores it. Only files whose content is still exactly what the turn left are touched.</p></details>
+    <details><summary>Can I undo what an agent did?</summary><p>In a Git work tree the hub snapshots files at the start and end of each turn of Codex, Kimi, Pi and the local worker. Claude's turns are not recorded, because its channel shows the hub no turn boundary; Claude Code's own checkpoints cover its edits, though not its shell commands. <code>ahub turns</code> lists them, <code>ahub undo &lt;turn&gt;</code> shows what it would restore, and <code>--yes</code> restores it. Only files whose content is still exactly what the turn left are touched.</p></details>
     <details><summary>How do I upgrade?</summary><p>Run <code>ahub upgrade</code> in a terminal. It shows a plan for every running project, applies it on one key and restores or restarts the agent sessions. With no hub running, reinstall and run <code>ahub setup</code>.</p></details>
     <details><summary>How do I report a security issue?</summary><p>Privately, through GitHub's "Report a vulnerability" on the <a href="https://github.com/STAIxBWLB/agent-hub/security">repository</a>, not in a public issue.</p></details>
     <details><summary>What is the license?</summary><p>MIT.</p></details>

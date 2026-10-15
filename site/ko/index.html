@@ -130,7 +130,7 @@ ahub ui --all  <span class="c"># 이 컴퓨터에 등록된 모든 프로젝트<
           <tr><td><code>ahub review &lt;id&gt; approved|changes_requested "&lt;note&gt;"</code></td><td>콘솔에서 리뷰.</td></tr>
           <tr><td><code>ahub status</code> / <code>ahub budget</code></td><td>에이전트, 큐, 일시정지, 쿼터 윈도우.</td></tr>
           <tr><td><code>ahub ask &lt;question&gt;</code></td><td>보드·공유 메모리·로그에 근거한 답, 근거 id 포함.</td></tr>
-          <tr><td><code>ahub turns</code> / <code>ahub undo &lt;turn&gt;</code></td><td>에이전트 턴마다 바뀐 파일과 그 복원.</td></tr>
+          <tr><td><code>ahub turns</code> / <code>ahub undo &lt;turn&gt;</code></td><td>에이전트 턴마다 바뀐 파일과 그 복원(Claude 턴은 기록되지 않음).</td></tr>
           <tr><td><code>ahub upgrade</code></td><td>실행 중인 허브를 최신 릴리스로, 계획을 확인한 뒤 적용.</td></tr>
           <tr><td><code>ahub stop &lt;peer&gt;</code> / <code>ahub kill</code></td><td>headless 에이전트 하나 정지, 또는 데몬과 그가 띄운 모든 것 정지.</td></tr>
         </tbody>
@@ -173,7 +173,7 @@ ahub ui --all  <span class="c"># 이 컴퓨터에 등록된 모든 프로젝트<
       <div class="card case">
         <span class="tag">기록</span>
         <h3>무슨 일이 있었는지 프로젝트에 묻기</h3>
-        <p><code>ahub ask</code>는 보드·공유 메모리·로그를 근거로 id를 인용해 답합니다. 턴마다 스냅샷이 남아 <code>ahub undo</code>로 그 턴이 바꾼 것만 되돌릴 수 있습니다.</p>
+        <p><code>ahub ask</code>는 보드·공유 메모리·로그를 근거로 id를 인용해 답합니다. Codex·Kimi·Pi·로컬 워커의 턴마다 스냅샷이 남아 <code>ahub undo</code>로 그 턴이 바꾼 것만 되돌릴 수 있습니다.</p>
       </div>
     </div>
   </div>
@@ -208,7 +208,7 @@ ahub ui --all  <span class="c"># 이 컴퓨터에 등록된 모든 프로젝트<
     <details><summary>agent-bridge와 뭐가 다른가요?</summary><p><a href="https://github.com/raysonmeng/agent-bridge">agent-bridge</a>는 Claude와 Codex 둘을 잇는 구조입니다. agent-hub는 N명이 참여하는 버스에서 출발해, 각 에이전트를 고유 제어 인터페이스로 붙입니다.</p></details>
     <details><summary>왜 Node가 아니라 Bun인가요?</summary><p>런타임 의존성이 0개이기 때문입니다. WebSocket, HTTP, sqlite, 프로세스 실행, 테스트 러너가 모두 Bun 내장입니다. npm으로 설치하더라도 <code>bun</code>은 PATH에 있어야 합니다.</p></details>
     <details><summary>내 프로젝트에 무엇이 바뀌나요?</summary><p><code>ahub init</code>은 <code>.agenthub/</code>(설정, 라우팅, 런타임 상태), <code>AGENTS.md</code>의 관리 블록, gitignore 항목을 씁니다. <code>ahub init --dry-run --json</code>으로 먼저 목록을 볼 수 있습니다. 머신 레지스트리는 <code>~/.agenthub/</code>에 있습니다.</p></details>
-    <details><summary>에이전트가 한 일을 되돌릴 수 있나요?</summary><p>Git 작업 트리에서는 턴 시작과 끝에 파일 스냅샷을 남깁니다. <code>ahub turns</code>로 목록을 보고, <code>ahub undo &lt;turn&gt;</code>로 복원 대상을 확인하고, <code>--yes</code>로 복원합니다. 그 턴이 남긴 내용과 정확히 같은 파일만 건드립니다.</p></details>
+    <details><summary>에이전트가 한 일을 되돌릴 수 있나요?</summary><p>Git 작업 트리에서는 Codex, Kimi, Pi, 로컬 워커의 턴 시작과 끝에 파일 스냅샷을 남깁니다. Claude 턴은 채널에 턴 경계가 드러나지 않아 기록되지 않고, 편집은 Claude Code 자체 체크포인트가 다룹니다(셸 명령은 제외). <code>ahub turns</code>로 목록을 보고, <code>ahub undo &lt;turn&gt;</code>로 복원 대상을 확인하고, <code>--yes</code>로 복원합니다. 그 턴이 남긴 내용과 정확히 같은 파일만 건드립니다.</p></details>
     <details><summary>업그레이드는 어떻게 하나요?</summary><p>터미널에서 <code>ahub upgrade</code>를 실행합니다. 실행 중인 모든 프로젝트의 계획을 보여주고, 키 하나로 적용하고, 에이전트 세션을 복원하거나 재시작합니다. 실행 중인 허브가 없으면 다시 설치하고 <code>ahub setup</code>만 하면 됩니다.</p></details>
     <details><summary>보안 문제는 어떻게 제보하나요?</summary><p>공개 이슈가 아니라 <a href="https://github.com/STAIxBWLB/agent-hub/security">저장소</a>의 GitHub "Report a vulnerability"로 비공개 제보해 주세요.</p></details>
     <details><summary>라이선스는요?</summary><p>MIT입니다.</p></details>
