@@ -2887,7 +2887,8 @@ and repo-heavy work was coordinated over chat it read too late.
 
 - When an `important` envelope is queued for a pull-only peer, the bus calls the
   advisory `onImportantQueued` hook and the daemon sends that peer's control
-  socket `{t:"queued", queued, important}`. It is not a delivery: nothing is
+  socket `{t:"queued", queued, important}`, as it does when a pull-only session
+  attaches with important work already queued. It is not a delivery: nothing is
   dequeued, steered, journaled or settled, and the queue still waits for
   `hub_inbox`. The `inbox` reply adds `waitingImportant`.
 - The plugin caches the counts and appends one line naming the important count

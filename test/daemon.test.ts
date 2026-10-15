@@ -246,6 +246,21 @@ test("a pull-only session is nudged about queued important work: tool results ca
   expect(clean.content[0].text).not.toContain("important hub message(s) waiting");
 });
 
+test("a pull-only session that attaches with important work already queued is nudged at attach (#398)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const first = await fakeClaude(stateDir, null);
+  await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true, "first attach");
+  await first.client.close();
+  await until(() => daemon.bus.stateOf("claude") === "offline", "first session gone");
+  await console_.request({ t: "send", body: "[IMPORTANT] review task #3", to: ["claude"] });
+  await until(() => daemon.bus.queuedImportant("claude") === 1, "queued while offline");
+
+  const plain = await fakeClaude(stateDir, null);
+  await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true, "plain attach");
+  const hinted: any = await plain.client.callTool({ name: "hub_send", arguments: { text: "[FYI] routine" } });
+  expect(hinted.content[0].text).toContain("1 important hub message(s) waiting: call hub_inbox");
+});
+
 test("a claude session without pushes never takes the peer from one with them: it stands by and attaches once that session leaves (#205)", async () => {
   const { stateDir, daemon, console_ } = await hub();
   const flagged = await fakeClaude(stateDir);

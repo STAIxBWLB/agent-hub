@@ -3881,7 +3881,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.peer === "claude") logPermissionStart(c.peer);
         writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
         void ensurePreface(c.peer).finally(() => {
-          if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);
+          if (!(sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!))) return;
+          ws.attach(sock);
+          // Important work queued while no session held the id gets its nudge now (#398); a push session ignores it.
+          const important = bus.queuedImportant(c.peer!);
+          if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
         });
       }
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL });
