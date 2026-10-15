@@ -35,6 +35,15 @@ and a send action trying `liveTest: false` returned HTTP 403. The scratch daemon
 was stopped (kill exit 0). This was an actual CLI/HTTP run, without a model turn
 or browser visual inspection.
 
+Task #65 follow-up, source `5fbe50b6`: operational peer starts, pause and resume
+may delegate console authority; allowed-class messages/proposals/reviews retain
+the peer, while flagged task assign/escalate refuse. The temporary headless
+staging ceiling is removed. The recovery driver -> real target CLI -> scripted
+control server regression verifies headless Pi mode, saved sessionId,
+operationId, console hello and initiating-peer audit (225 related tests passed).
+This is fixture/CLI proof, not an actual native Pi restoration; that live leg
+remains owed in #273.
+
 ## Hub memory (#258)
 
 Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).
