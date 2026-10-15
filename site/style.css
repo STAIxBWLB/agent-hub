@@ -15,8 +15,9 @@
   color-scheme: dark;
 }
 
+/* Light tokens: the system preference unless dark is chosen, or light chosen explicitly (theme.js). */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
     --bg: #f7f5f1;
     --bg-raised: #ffffff;
     --bg-code: #efece6;
@@ -28,6 +29,19 @@
     --warn: #8a5a12;
     color-scheme: light;
   }
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f5f1;
+  --bg-raised: #ffffff;
+  --bg-code: #efece6;
+  --line: #dcd7ce;
+  --text: #1c1b19;
+  --muted: #5f5a52;
+  --accent: #3f6b58;
+  --accent-strong: #2c4f40;
+  --warn: #8a5a12;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -84,11 +98,30 @@ header.top .wrap { display: flex; align-items: center; gap: 1.5rem; height: 3.75
 nav.sections { display: flex; gap: 1.1rem; margin-left: auto; font-size: 0.92rem; }
 nav.sections a { color: var(--muted); text-decoration: none; }
 nav.sections a:hover { color: var(--text); }
-.lang { font-size: 0.85rem; border: 1px solid var(--line); border-radius: 999px; padding: 0.15rem 0.7rem; text-decoration: none; color: var(--muted); }
+.tools { display: flex; align-items: center; gap: 0.5rem; }
+.theme { display: none; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
+.js .theme { display: flex; }
+.theme button, .icon-btn {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.theme button { width: 1.75rem; height: 1.75rem; }
+.theme button[aria-pressed="true"] { background: var(--line); color: var(--text); }
+.icon-btn { border: 1px solid var(--line); }
+.theme button:hover, .icon-btn:hover { color: var(--text); }
+.tools svg { display: block; }
 
 @media (max-width: 760px) {
   nav.sections { display: none; }
-  .lang { margin-left: auto; }
+  .tools { margin-left: auto; }
 }
 
 .hero { padding: 5.5rem 0 4rem; border-bottom: 1px solid var(--line); }
