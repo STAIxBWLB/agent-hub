@@ -191,7 +191,7 @@ tr:last-child td { border-bottom: 0; }
 td:first-child { white-space: nowrap; }
 
 .caveats { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.75rem; }
-.caveats li { background: var(--bg-raised); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: var(--radius); padding: 0.9rem 1.15rem; }
+.caveats li { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.9rem 1.15rem; }
 .caveats strong { display: block; margin-bottom: 0.15rem; }
 .caveats span { color: var(--muted); }
 
