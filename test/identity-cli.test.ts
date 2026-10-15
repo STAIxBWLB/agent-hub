@@ -113,13 +113,13 @@ test("delegated console forwards authority to its actual CLI subprocess", async 
 Object.assign(process.env, { AGENTHUB_PEER_ID: "codex", CODEX_THREAD_ID: "fixture-thread", AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))} });
 const { runConsole } = await import(${JSON.stringify(join(import.meta.dir, "../src/cli/console.ts"))});
 const { ControlClient } = await import(${JSON.stringify(join(import.meta.dir, "../src/hub/control-client.ts"))});
-let input = (_text) => {}, output = "", observed = false;
+let input = (_text) => {}, stop = () => {}, output = "", observed = false;
 const client = await ControlClient.connect(${JSON.stringify(stateDir)}, {role: "console"});
 const terminal = { columns:120, rows:24, isTTY:true, raw() {},
   write(text) { output += text; if (!observed && output.includes("pi: ask")) { observed = true; queueMicrotask(() => input("q")); } },
-  onData(listener) { input = listener; queueMicrotask(() => input(":permission pi ask\\r")); return () => {}; },
-  onResize() { return () => {}; }, onSignal() { return () => {}; }, onError() { return () => {}; } };
-const deadline = setTimeout(() => input("q"), 5000);
+  onData(listener) { input = listener; queueMicrotask(() => { for (const key of ":permission pi ask\\r") input(key); }); return () => {}; },
+  onResize() { return () => {}; }, onSignal(listener) { stop = listener; return () => {}; }, onError() { return () => {}; } };
+const deadline = setTimeout(() => stop(), 5000);
 try { await runConsole({client, cwd:${JSON.stringify(root)}, stateDir:${JSON.stringify(stateDir)}, terminal, liveTest:true, color:false, noPet:true}); }
 finally { clearTimeout(deadline); }
 console.log(observed ? "delegated-console-ok" : output);
