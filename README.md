@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker, with optional Qwen Code and Jcode support, collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.12.27, control protocol 16. Durable delivery records distinguish queued
+Status: 0.12.28, control protocol 16. Durable delivery records distinguish queued
 work from uncertain execution. The [smoke checklist](docs/smoke.md) records
 verified paths and remaining prerequisites.
 
@@ -33,7 +33,7 @@ cd <your project> && ahub init && ahub up
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.27 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.12.28 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -81,7 +81,7 @@ an N-peer message bus and attaches each agent through its native control surface
 | --- | --- | --- | --- |
 | Claude Code | channel plugin push (`notifications/claude/channel`) under `ahub claude`; otherwise tools-only, read with `hub_inbox` | MCP tools | queued by Claude Code, grouped on next turn; tools-only: queued at the hub |
 | Codex | app-server `turn/start` (idle) / `turn/steer` (busy) | proxy intercepts `item/agentMessage` | steer or queue |
-| Kimi Code | ACP `session/prompt` | ACP `session/update` stream | queue (`turn.agent_busy`) |
+| Kimi Code | TUI: pull with `hub_inbox`; headless: ACP `session/prompt` | TUI: `hub_send`; headless: ACP `session/update` stream | TUI: hub queue with important-count hints; headless: queue (`turn.agent_busy`) |
 | Pi | RPC or managed native TUI extension | hub-approved tools | queued until `agent_settled` |
 | Local worker | hub-native agent loop | hub-native | hub-owned |
 
