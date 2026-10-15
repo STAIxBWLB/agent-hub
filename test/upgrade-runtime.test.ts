@@ -1450,7 +1450,7 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
 function delayedManagedFixture(peer: "claude" | "codex" | "pi") {
-  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, corruptIntegrity: false };
+  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
   mkdirSync(stateDir);
@@ -1462,7 +1462,10 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi") {
   let created = false, attached = false, creates = 0, postCreateReads = 0;
   const server = fakeHub(root, stateDir, "i-target", () => {
     const state = attached ? "idle" : "offline";
-    if (created && ++postCreateReads && control.attachAfterRead) queueMicrotask(() => { attached = true; });
+    if (created && ++postCreateReads && control.attachAfterRead) queueMicrotask(() => {
+      if (control.persistOriginalBeforeAttach) writeFileSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`), "{}\n");
+      attached = true;
+    });
     const id = control.wrongSession ? "different-session" : session;
     if (state === "idle" && !control.noId) shown.sessionId = id;
     return { operationId: control.wrongOperation && created ? "wrong-operation" : "op-414", phase: "restored", ready: attached,
@@ -1487,7 +1490,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi") {
     terminals: [binding], blockers: [] };
   const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "peers-restored", terminals: { [`closed:${peer}`]: true } };
   const op = { id: "op-414", targetRoot: PACKAGE_ROOT, plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
-  return { root, stateDir, planned, progress, op, control, setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
+  return { root, stateDir, planned, progress, op, control, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
     driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; } }), creates: () => creates,
     cleanup: () => { server.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }
@@ -1558,6 +1561,23 @@ for (const peer of ["claude", "codex"] as const) test(`#414 fresh ${peer} idless
     await f.driver.restore(f.planned, f.progress, f.op, peer === "claude" ? "claude" : "native", () => {});
     await f.driver.verify(f.planned, f.progress, f.op);
     expect(f.progress.terminals[`restored:${peer}`]).toMatchObject({ sessionId: "different-session" });
+    expect(f.creates()).toBe(1);
+  } finally { f.cleanup(); }
+});
+
+for (const persistedDuringWait of [false, true]) test(`#414 zero-turn Claude exception rechecks transcript at attachment (persisted=${persistedDuringWait})`, async () => {
+  const f = delayedManagedFixture("claude");
+  f.removeClaudeTranscript(); f.control.wrongSession = true; f.control.persistOriginalBeforeAttach = persistedDuringWait;
+  try {
+    const restoration = f.driver.restore(f.planned, f.progress, f.op, "claude", () => {});
+    if (persistedDuringWait) {
+      await expect(restoration).rejects.toThrow("different conversation");
+      expect(readRecoveryWaivers(f.stateDir, "op-414")).toEqual({});
+    } else {
+      await restoration;
+      await f.driver.verify(f.planned, f.progress, f.op);
+      expect(readRecoveryWaivers(f.stateDir, "op-414")).toEqual({ claude: "zero-turn" });
+    }
     expect(f.creates()).toBe(1);
   } finally { f.cleanup(); }
 });

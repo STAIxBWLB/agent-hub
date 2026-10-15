@@ -443,9 +443,16 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (live.state === "running" && (live.instanceId !== progress.instanceId || live.version !== op.plan.version || live.recovery?.operationId !== op.id)) throw new Error(`${binding.peer}: target identity changed while awaiting attachment`);
       const peer = live.peers.find((p) => p.id === binding.peer);
       const session = binding.peer === "codex" ? peer?.threadId : peer?.sessionId;
-      if (session && expectedSession !== null && session !== expectedSession) throw new Error(`${binding.peer}: a different conversation attached while awaiting ${binding.sessionId}`);
+      const changed = !!session && expectedSession !== null && session !== expectedSession;
+      // #64: only the original zero-turn Claude may change identity without an operator choice. Re-read persistence
+      // at attachment, not at the plan or wait start; an already accepted replacement is bound to its own id.
+      const zeroTurn = changed && binding.peer === "claude" && (planned.terminals as TerminalBinding[]).some((p) => p.peer === "claude" && p.sessionId === binding.sessionId) && !claudeTranscriptExists(binding);
+      if (changed && !zeroTurn) throw new Error(`${binding.peer}: a different conversation attached while awaiting ${binding.sessionId}`);
       if (now() > deadline) break;
-      if (live.state === "running" && peer && ["idle", "busy", "paused"].includes(peer.state) && session) return session;
+      if (live.state === "running" && peer && ["idle", "busy", "paused"].includes(peer.state) && session) {
+        if (zeroTurn) waiveRecoveryPeers(planned.project.stateDir, op.id, { claude: "zero-turn" });
+        return session;
+      }
       if (now() >= deadline) break;
       await sleep(Math.min(1000, deadline - now()));
     }
