@@ -1459,9 +1459,12 @@ export async function startDaemon(opts: DaemonOptions) {
       supervision.checkRound();
       try {
         for (const audit of drainCliAudits(opts.stateDir)) {
-          const refused = audit.outcome !== "run";
-          event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused });
-          notify(refused ? `${audit.peer} refused ahub ${audit.command}` : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
+          const delegated = audit.outcome === "delegated";
+          const refused = audit.outcome !== "run" && !delegated;
+          event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) });
+          notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
+            ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
+            : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
         }
       } catch { log("CLI audit outbox unavailable; inspect state before retrying an agent command"); }
       for (const peer of bus.knownPeers()) {

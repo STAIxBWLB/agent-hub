@@ -71,10 +71,26 @@ or the native Claude/Codex shell marker when the hub marker is absent. It connec
 as that peer in tools mode. Messages and task changes retain that actor;
 `say` defaults to status priority and important messages still require the peer's
 capability. Conflicting or malformed markers fail closed. There is no `--as-user`.
-Human-only operations are refused before connecting, including permission answers
+By default, console operations are refused before connecting, including permission answers
 and permission modes, queue resolution, budget overrides, benchmark runs, research
 backfill and task labels, stopping a peer (`ahub stop`), lifecycle and recovery
 operations, and `ask`.
+For live verification explicitly authorized by the user, an agent may invoke
+`ahub --live-test [--project <path|id>] <command> [args...]`. The flag delegates
+the existing console authority for that invocation, including approvals,
+settings, roster and lifecycle operations. It does not restrict effects to a
+scratch project: the agent must stay within the authorized commands and targets.
+Malformed or conflicting caller markers still refuse. The original peer and
+closed command label are recorded with outcome `delegated` before execution;
+if that audit cannot be written, the command refuses. The current daemon emits
+`agent_cli` with `delegated: true` and `refused: false`. Console-side messages and
+task history use the existing operator actor; the audit identifies the agent
+exercising that authority. No argument text is copied into this audit.
+The flag is not stored in settings or exported to native agent children. Ahub's
+own daemon launch, console subprocesses, recovery runner, interactive follow-up commands and upgrade coordinator
+handover carry it explicitly in argv. Each new top-level invocation needs its
+own flag. An older CLI does not support it; use a candidate with this feature
+for the continuation too. External computer-use restrictions remain unchanged.
 The operator uses a plain terminal or `ahub console`. A Claude `!` command that
 inherits the agent markers follows the same rule. The console strips control
 sequences from agent and daemon text before it quotes forged headers, and its

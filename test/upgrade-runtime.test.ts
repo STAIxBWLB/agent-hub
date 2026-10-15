@@ -12,6 +12,25 @@ import { endPlannedPeer, inspectRecovery, makeRecoveryDriver, makeUpgradePlan, P
 const COORD = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 import { VERSION } from "../src/version.ts";
 import { liveProjects, nextActions, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
+
+test("delegated recovery target startup retains its initiating peer and explicit CLI authority", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-delegated-target-"));
+  const project = { id: "p-delegated", root, stateDir: join(root, "state"), basePort: 0, instanceId: null, pid: null };
+  mkdirSync(project.stateDir);
+  const op = { id: crypto.randomUUID(), targetRoot: "/candidate", plan: { projects: [{ project }] } } as RecoveryOperation;
+  writeFileSync(join(project.stateDir, "restart.json"), JSON.stringify({ projectId: project.id, projectRoot: root, operationId: op.id }));
+  const calls: { argv: string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
+  const driver = makeRecoveryDriver(async (argv, options) => {
+    calls.push({ argv, env: options?.env }); return { code: 0, stdout: "", stderr: "" };
+  }, "codex");
+  try {
+    await driver.start(project, op);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.argv).toEqual([process.execPath, "/candidate/src/cli/main.js", "--project", root, "--live-test", "up"]);
+    expect(calls[0]!.env?.AGENTHUB_PEER_ID).toBe("codex");
+    expect(calls[0]!.env?.AGENTHUB_RECOVERY_OPERATION).toBe(op.id);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 import { Registry } from "../src/hub/registry.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { readRecoveryWaivers, waiveRecoveryPeers } from "../src/hub/restart.ts";

@@ -3,6 +3,31 @@
 This guide describes ahub 0.12.28 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
+## Agent-operated live verification
+
+When the user explicitly authorizes a live test, its agent may run console
+commands using `ahub --live-test [--project <path|id>] <command> [args...]`.
+For example, `ahub --live-test --project <scratch-path> ui --no-open` starts the
+real dashboard listener and prints its one-time link without opening a browser.
+`ahub --project <scratch-path> --live-test reset --all --yes` exercises reset on
+that selected disposable project. The global options precede the command and
+may appear in either order; a flag after the command is not delegation.
+
+This grants existing console authority, including destructive actions, for one
+invocation and its ahub continuations. Use only the user-authorized targets and
+commands; destructive live checks belong in disposable projects. Existing
+confirmations, process ownership checks, native identity fences and recovery
+locks still apply. Do not remove agent markers. The initiating peer and command
+label are audited before effects; an unavailable audit blocks delegation. A new
+unflagged invocation has ordinary peer authority again. Native tools launched
+by the command keep their own peer identity and receive no delegation flag.
+
+Use a CLI/coordinator containing this feature throughout the experiment. Older
+daemons do not understand the new delegated audit outcome; run the candidate
+daemon to capture its delegated event and console notice. This policy does not
+change external computer-use restrictions. Record actual observations in the
+smoke ledger; the presence of this option proves no outstanding #273 live leg.
+
 ## Command output
 
 `ahub status`, `board`, `budget`, `doctor`, `projects`, `queue list`, `turns` and `report` print shared console tables and labelled details.

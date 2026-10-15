@@ -2,6 +2,18 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Agent-operated verification (#408)
+
+For user-authorized live checks, the candidate CLI supports
+`ahub --live-test [--project <path|id>] <command> [args...]`, using audited console
+authority for that invocation. Follow [the operating procedure](operations.md#agent-operated-live-verification)
+and record each actual result below. References to a person in historical
+procedures describe their original authority requirement; an explicitly
+authorized agent may now execute those CLI steps through this option. Native
+account readiness, real terminal/browser observations, sign-off requirements and
+external computer-use restrictions still apply. No pending #273 item is checked
+by adding this path.
+
 ## Hub memory (#258)
 
 Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).

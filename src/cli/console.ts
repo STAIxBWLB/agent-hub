@@ -28,6 +28,8 @@ export interface ConsoleOptions {
   terminal?: ConsoleTerminal;
   color?: boolean;
   noPet?: boolean;
+  /** Explicit delegation inherited only by this console's ahub subprocesses. */
+  liveTest?: boolean;
   /** Injected command runner must use argv, closed stdin, and return a cancellation handle. */
   runCommand?: (args: string[], output: (text: string) => void, done: () => void, columns?: number) => (() => void);
   pollMs?: number;
@@ -188,7 +190,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     finally { polling = false; }
   };
   const run = options.runCommand ?? ((args, output, finished, commandColumns) => {
-    const child = Bun.spawn([process.execPath, fileURLToPath(new URL("./main.ts", import.meta.url)), "--project", options.cwd, ...args], {
+    const child = Bun.spawn([process.execPath, fileURLToPath(new URL("./main.ts", import.meta.url)), "--project", options.cwd, ...(options.liveTest ? ["--live-test"] : []), ...args], {
       cwd: options.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
       env: { ...process.env, COLUMNS: String(commandColumns), NO_COLOR: "1" },
     });

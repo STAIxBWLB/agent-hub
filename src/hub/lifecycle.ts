@@ -138,7 +138,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
   }
 }
 
-export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<any> {
+export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv; liveTest?: boolean } = {}): Promise<any> {
   assertLifecycleAvailable();
   const registry = new Registry();
   try {
@@ -160,7 +160,7 @@ export async function startProject(project: Project, options: { unattended?: boo
         // Native sessions can outlive the operation which launched them. An expired
         // operation ID must not make a later ordinary startup load a retired snapshot.
         if (launchEnv.AGENTHUB_RECOVERY_OPERATION !== recoveryLock()) delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
-        const child = spawn(process.execPath, [join(import.meta.dir, "../cli/main.ts"), "--project", project.root, "daemon",
+        const child = spawn(process.execPath, [join(import.meta.dir, "../cli/main.ts"), "--project", project.root, ...(options.liveTest ? ["--live-test"] : []), "daemon",
           ...(options.unattended ? ["--unattended"] : [])], {
           cwd: project.root, detached: true, stdio: ["ignore", log, log],
           env: { ...launchEnv, AGENTHUB_STATE_DIR: project.stateDir, AGENTHUB_PROJECT_DIR: project.root,

@@ -323,7 +323,7 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
   return dest;
 }
 
-export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver {
+export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string): RecoveryDriver {
   const now = () => Date.now();
   const sleep = (ms: number) => Bun.sleep(ms);
   const env = (op: RecoveryOperation, project?: Project): NodeJS.ProcessEnv => {
@@ -333,6 +333,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       (project && /(?:_API_KEY|_ACCESS_TOKEN|_SECRET|_TOKEN)$/.test(key))) delete value[key];
     value.AGENTHUB_HOME = hubHome(); value.AGENTHUB_RECOVERY_OPERATION = op.id;
     value.AGENTHUB_UNATTENDED = "0";
+    if (liveTestPeer) value.AGENTHUB_PEER_ID = liveTestPeer;
     if (project) {
       value.AGENTHUB_PROJECT_DIR = project.root; value.AGENTHUB_STATE_DIR = project.stateDir;
       delete value.CODEX_HOME; delete value.CLAUDE_CONFIG_DIR;
@@ -345,7 +346,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     return value;
   };
   const command = async (op: RecoveryOperation, args: string[], project?: Project) => {
-    const result = await run([process.execPath, join(op.targetRoot!, "src/cli/main.js"), ...(project ? ["--project", project.root] : []), ...args],
+    const result = await run([process.execPath, join(op.targetRoot!, "src/cli/main.js"), ...(project ? ["--project", project.root] : []), ...(liveTestPeer ? ["--live-test"] : []), ...args],
       { env: env(op, project), cwd: project?.root ?? op.plan.projects[0]!.project.root, timeoutMs: 180_000 });
     if (result.code !== 0) throw new Error(`target command ${args[0]} failed; inspect recovery state before retrying`);
     return result;

@@ -32,6 +32,17 @@ test("malformed outbox contents cannot become console text", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("delegated audit retains the peer and closed command label without private arguments", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-cli-delegated-"));
+  try {
+    recordCliAudit(dir, "codex", cliCommandLabel("recovery", ["dispose", "private-operation", "--reason", "private-reason"]), "delegated");
+    const rows = drainCliAudits(dir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ peer: "codex", command: "recovery dispose", outcome: "delegated" });
+    expect(JSON.stringify(rows)).not.toContain("private");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("native launch environments replace caller identity without forwarding vendor or recovery markers", () => {
   for (const tool of ["claude", "codex", "pi"] as const) {
     const env = nativeLaunchEnv(tool, { AGENTHUB_PEER_ID: "user", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "old", CODEX_THREAD_ID: "old", AGENTHUB_RECOVERY_OPERATION: "old", AGENTHUB_UNATTENDED: "1", AGENTHUB_CHANNEL: "1", CANARY: "kept" });

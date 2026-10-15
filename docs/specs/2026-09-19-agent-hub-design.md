@@ -1947,10 +1947,17 @@ task list polling does not. `hub_status` stays conductor-only.
   proposer as the actor with reason `manual` (on the `reassigned` or `reserved`
   entry), and writes no conduct audit event; during a PII turn it is refused
   like the conductor's.
+## Amendment: delegated agent live verification (#408)
+
+- Decision, 2026-10-16: an agent explicitly authorized by the user to perform a live test may use the global `--live-test` flag, before the command and in either order with `--project`. Duplicate global options refuse. Default command classification and malformed/conflicting identity refusals stay unchanged.
+- The invocation uses existing console authority after the original caller is validated. A mandatory ids-only audit records its peer, closed command label and `delegated` outcome before execution. The daemon emits an `agent_cli` event with `delegated: true`, `refused: false`, and a console notice naming the peer. Existing console actions retain the operator actor; the audit supplies delegation provenance.
+- This is a user-authorized operating policy, not a sandbox or authenticated grant. It includes console mutations and requires the agent to remain within the authorized targets and operations. Command-specific confirmations, process ownership, provider identity and recovery locks still apply.
+- No settings/environment opt-in persists. Native argv does not receive the flag. Ahub's own daemon launch, console subprocesses, recovery runner, interactive continuation commands and newer-version coordinator handover carry it explicitly; older CLIs cannot accept it. The recovery driver's target CLI environment preserves the initiating peer for its delegation audit. External computer-use policies remain outside this change. No #273 live success is inferred from this implementation.
+
 ## Amendment: ahub reset (issue #214)
 
 `ahub reset [--all] [--yes]` returns a project's hub to a clean state. It is
-human-only (the CLI identity gate refuses it from an agent shell) and a dry run
+console-only by default (explicit authorized delegation is described in #408) and a dry run
 unless `--yes`: the dry run reads `hub.db` read-only (with `immutable=1` when
 `hub.db-wal` or `-shm` is absent, so it creates neither) and prints delivery ids,
 peer names and counts per category, never task or message text. With `--yes`

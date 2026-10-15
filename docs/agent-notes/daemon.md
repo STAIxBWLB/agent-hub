@@ -1,5 +1,7 @@
 # Daemon, control protocol and recovery
 
+- For explicitly user-authorized live verification, use the per-invocation CLI delegation in `docs/security.md` §Agent CLI identity and conductor authority; keep caller markers and record native evidence separately from fixtures.
+
 - Console attention navigation selects a delivery only by an exact visible row id. A missing id or row prints read-only guidance; never select by peer or fall back to the first Queue row.
 
 Scope: the operator console, control WS and its protocol, state files, the dashboard listener and settings, the Claude channel's reconnect, `ahub setup`, git snapshots, upgrade and recovery. Read before editing `src/cli/console.ts`, `src/cli/console-state.ts`, `src/cli/attention.ts`, `src/ui/needs.ts`, `src/hub/daemon.ts`, `src/hub/ui.ts`, `src/hub/settings.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/hub/crash.ts`, `src/hub/start-mode.ts`, `src/hub/terminal-open.ts`, `src/hub/recovery-error.ts`, `src/hub/db-timeout.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts`, `src/cli/terminal-recovery.ts`, `src/cli/recovery-package.ts` or `src/cli/facts-hook.ts`, or before adding a native peer.

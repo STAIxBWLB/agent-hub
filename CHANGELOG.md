@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Let an explicitly authorized agent run live verification through `ahub --live-test`, with console authority scoped to the invocation and its ahub continuations, the initiating peer retained in a mandatory delegation audit, and ordinary agent permissions unchanged (#408).
+
 ## 0.12.28
 
 - Recover an offline Pi owner with person-selected preserved history via `ahub pi --replace-session --session-file`, retaining prior identity metadata and queued work while refusing live owners and unsettled effects (#403).
