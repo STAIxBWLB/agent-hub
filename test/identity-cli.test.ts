@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { drainCliAudits } from "../src/cli/identity-audit.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
+import { readEvents } from "../src/hub/events.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const MARKERS = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION"];
@@ -30,6 +31,107 @@ function project() {
   writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: false } }));
   return root;
 }
+
+test("explicit live-test delegation reaches console commands and retains the initiating peer in daemon evidence", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });
+  try {
+    const actor = { AGENTHUB_PEER_ID: "codex", CODEX_THREAD_ID: "fixture-thread" };
+    const ordinary = await cli(root, ["permission", "pi", "ask"], actor);
+    expect(ordinary.code).toBe(1);
+    expect(ordinary.stderr).toContain("codex cannot run ahub permission");
+    for (const prefix of [["--live-test", "--project", root], ["--project", root, "--live-test"]]) {
+      const delegated = await cli(root, [...prefix, "permission", "pi", "ask"], actor);
+      expect(delegated).toEqual({ code: 0, stdout: "pi: ask\n", stderr: "" });
+    }
+    // Console authority also opens the real authenticated dashboard listener, without opening a browser.
+    const ui = await cli(root, ["--live-test", "ui", "--no-open"], actor);
+    expect(ui.code, ui.stderr).toBe(0);
+    expect(ui.stdout).toContain("http://127.0.0.1:");
+    // The grant belongs to the invocation: the same actor's next unflagged command still refuses.
+    expect((await cli(root, ["permission", "pi", "ask"], actor)).code).toBe(1);
+    const events = () => readEvents(join(stateDir, "events.jsonl")).filter(row => row.type === "agent_cli").filter(row => row.delegated);
+    const deadline = Date.now() + 5000;
+    while (events().length < 3 && Date.now() < deadline) await Bun.sleep(25);
+    expect(events()).toHaveLength(3);
+    expect(events().every(row => row.peer === "codex" && row.refused === false && row.delegated === true)).toBe(true);
+    expect(events().map(row => row.command).sort()).toEqual(["permission", "permission", "ui"]);
+    expect(JSON.stringify(events())).not.toContain("fixture-thread");
+  } finally { await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+test("live-test rejects invalid identity, duplicate options and unavailable audits before control effects", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  mkdirSync(stateDir);
+  let connections = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { connections++; if (server.upgrade(req)) return; return new Response("unexpected"); }, websocket: { message() {} } });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(stateDir, "control-token"), "fixture-token");
+  try {
+    const invalid = await cli(root, ["--live-test", "permission"], { AGENTHUB_PEER_ID: "codex", CLAUDECODE: "1" });
+    expect(invalid.code).toBe(1); expect(invalid.stderr).toContain("conflicts");
+    expect(drainCliAudits(stateDir)).toMatchObject([{ peer: "unknown", outcome: "invalid" }]);
+    for (const args of [["--live-test", "--live-test", "ui"], ["--project", root, "--project", root, "ui"]]) {
+      const duplicate = await cli(root, args, { AGENTHUB_PEER_ID: "codex" });
+      expect(duplicate.code).toBe(1); expect(duplicate.stderr).toContain("may appear only once");
+    }
+    // A flag after the command is command/native data, never a global delegation request.
+    expect((await cli(root, ["permission", "--live-test"], { AGENTHUB_PEER_ID: "codex" })).code).toBe(1);
+    drainCliAudits(stateDir);
+    rmSync(join(stateDir, "cli-audit"), { recursive: true });
+    writeFileSync(join(stateDir, "cli-audit"), "not a directory");
+    const unaudited = await cli(root, ["--live-test", "permission", "pi", "ask"], { AGENTHUB_PEER_ID: "codex" });
+    expect(unaudited.code).toBe(1);
+    expect(unaudited.stderr).toContain("live-test delegation audit unavailable; nothing was executed");
+    expect(connections).toBe(0);
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+test("delegated up passes authority to its real daemon child, then delegated kill stays project-scoped", async () => {
+  const root = project();
+  const actor = { AGENTHUB_PEER_ID: "codex", CODEX_THREAD_ID: "fixture-thread" };
+  try {
+    const up = await cli(root, ["--live-test", "up", "--no-console"], actor);
+    expect(up.code, up.stderr).toBe(0);
+    const status = await cli(root, ["status", "--json"], actor);
+    expect(status.code, status.stderr).toBe(0);
+    expect(JSON.parse(status.stdout).cwd).toBe(root);
+    const killed = await cli(root, ["--live-test", "kill"], actor);
+    expect(killed.code, killed.stderr).toBe(0);
+    expect((await cli(root, ["status", "--json"], actor)).code).toBe(1);
+  } finally { await cli(root, ["kill"]); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+test("delegated console forwards authority to its actual CLI subprocess", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });
+  const wrapper = join(root, "console-wrapper.ts");
+  writeFileSync(wrapper, `for (const name of ${JSON.stringify(MARKERS)}) delete process.env[name];
+Object.assign(process.env, { AGENTHUB_PEER_ID: "codex", CODEX_THREAD_ID: "fixture-thread", AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))} });
+const { runConsole } = await import(${JSON.stringify(join(import.meta.dir, "../src/cli/console.ts"))});
+const { ControlClient } = await import(${JSON.stringify(join(import.meta.dir, "../src/hub/control-client.ts"))});
+let input = (_text) => {}, stop = () => {}, output = "", observed = false;
+const client = await ControlClient.connect(${JSON.stringify(stateDir)}, {role: "console"});
+const terminal = { columns:120, rows:24, isTTY:true, raw() {},
+  write(text) { output += text; if (!observed && output.includes("pi: ask")) { observed = true; queueMicrotask(() => input("q")); } },
+  onData(listener) { input = listener; queueMicrotask(() => { for (const key of ":permission pi ask\\r") input(key); }); return () => {}; },
+  onResize() { return () => {}; }, onSignal(listener) { stop = listener; return () => {}; }, onError() { return () => {}; } };
+const deadline = setTimeout(() => stop(), 5000);
+try { await runConsole({client, cwd:${JSON.stringify(root)}, stateDir:${JSON.stringify(stateDir)}, terminal, liveTest:true, color:false, noPet:true}); }
+finally { clearTimeout(deadline); }
+console.log(observed ? "delegated-console-ok" : output);
+process.exitCode = observed ? 0 : 1;
+`);
+  const child = Bun.spawn([process.execPath, wrapper], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  try {
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code, stderr + stdout).toBe(0);
+    expect(stdout).toContain("delegated-console-ok");
+  } finally { child.kill(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
 
 test("stop CLI validates its peer, prints the result and guides an older hub upgrade (#278)", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
@@ -133,6 +235,8 @@ test("native shell CLI messages and board history retain the actor while plain t
     expect(sent.find(row => row.body === "agent-message")).toMatchObject({ from: "claude", priority: "status" });
     expect((await cli(root, ["say", "native-codex-message"], { CODEX_THREAD_ID: "fixture-thread" })).code).toBe(0);
     expect(sent.find(row => row.body === "native-codex-message")).toMatchObject({ from: "codex", priority: "status" });
+    expect((await cli(root, ["--live-test", "say", "delegated-codex-message"], { CODEX_THREAD_ID: "fixture-thread" })).code).toBe(0);
+    expect(sent.find(row => row.body === "delegated-codex-message")).toMatchObject({ from: "codex", priority: "status" });
     expect((await cli(root, ["say", "human-message"])).code).toBe(0);
     expect(sent.find(row => row.body === "human-message")).toMatchObject({ from: "user", priority: "important" });
     const proposed = await cli(root, ["task", "propose", "--class", "summarize", "actor-history"], { AGENTHUB_PEER_ID: "claude" });
@@ -142,14 +246,41 @@ test("native shell CLI messages and board history retain the actor while plain t
     console_ = await ControlClient.connect(stateDir, { role: "console" });
     const shown = await console_.request({ t: "task", op: "task_show", args: { id } });
     expect(JSON.parse(shown.text).history[0]).toMatchObject({ by: "claude", event: "proposed" });
+    const flaggedProposed = await cli(root, ["--live-test", "task", "propose", "--class", "summarize", "flagged-actor-history"], { AGENTHUB_PEER_ID: "codex" });
+    expect(flaggedProposed.code, flaggedProposed.stderr).toBe(0);
+    const flaggedId = Number(/task #(\d+)/.exec(flaggedProposed.stdout)?.[1]);
+    const flaggedShown = await console_.request({ t: "task", op: "task_show", args: { id: flaggedId } });
+    expect(JSON.parse(flaggedShown.text).history[0]).toMatchObject({ by: "codex", event: "proposed" });
     // The native kimi id is reserved for ACP; a real non-native WS peer exercises holds without spawning it.
     worker = await ControlClient.connect(stateDir, { role: "peer", peer: "kimi-fixture" });
     expect((await console_.request({ t: "status" })).status.peers["kimi-fixture"].state).toBe("idle");
     const ordinary = await cli(root, ["pause", "kimi-fixture"], { AGENTHUB_PEER_ID: "claude" });
     expect(ordinary.code).toBe(1);
     expect(ordinary.stderr).toContain("conductor");
+    const flagged = await cli(root, ["--live-test", "pause", "kimi-fixture"], { AGENTHUB_PEER_ID: "claude" });
+    expect(flagged.code, flagged.stderr).toBe(0);
+    expect((await console_.request({ t: "status" })).status.peers["kimi-fixture"].state).toBe("paused");
+    expect((await cli(root, ["--live-test", "resume", "kimi-fixture"], { AGENTHUB_PEER_ID: "claude" })).code).toBe(0);
     expect((await console_.request({ t: "status" })).status.peers["kimi-fixture"].state).not.toBe("paused");
   } finally { worker?.close(); console_?.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+test("live-test cannot impersonate the user or file person verdicts and workflow history", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  try {
+    for (const args of [["say", "--as-user", "private-message"], ["say", "--as-user=true", "private-message"],
+      ["task", "label", "1", "ok"], ["task", "role", "1", "none"], ["task", "assign", "1", "pi"], ["task", "escalate", "1"], ["backlog", "add", "test", "private-title"],
+      ["release", "new", "private-release", "goal", "1"], ["sdlc", "record", "1", "{}"], ["board", "import", "github"],
+      ["bench", "run", "private-suite"], ["pet", "--window"]]) {
+      const result = await cli(root, ["--live-test", ...args], { AGENTHUB_PEER_ID: "codex" });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("live-test cannot write person-attributed content");
+    }
+    const rows = drainCliAudits(stateDir);
+    expect(rows).toHaveLength(12);
+    expect(rows.every(row => row.peer === "codex" && row.outcome === "refused")).toBe(true);
+    expect(JSON.stringify(rows)).not.toContain("private");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
 
 test("agent CLI task proposals obey peer capabilities instead of borrowing the console's", async () => {

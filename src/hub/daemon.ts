@@ -1459,9 +1459,12 @@ export async function startDaemon(opts: DaemonOptions) {
       supervision.checkRound();
       try {
         for (const audit of drainCliAudits(opts.stateDir)) {
-          const refused = audit.outcome !== "run";
-          event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused });
-          notify(refused ? `${audit.peer} refused ahub ${audit.command}` : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
+          const delegated = audit.outcome === "delegated";
+          const refused = audit.outcome !== "run" && !delegated;
+          event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) });
+          notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
+            ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
+            : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
         }
       } catch { log("CLI audit outbox unavailable; inspect state before retrying an agent command"); }
       for (const peer of bus.knownPeers()) {
@@ -4204,7 +4207,7 @@ export async function startDaemon(opts: DaemonOptions) {
           writeStatus();
           // #269: `ahub ui --settings` is the same person's command; its ticket marks the session it opens.
           if (msg.settings === true) notify("settings session opened from ahub ui --settings: for 15 minutes that dashboard session may change permission modes, routing and start settings");
-          return void reply({ t: "ui", ok: true, url: dashboard.issue(msg.settings === true), ...(msg.settings === true ? { settings: true } : {}) });
+          return void reply({ t: "ui", ok: true, url: dashboard.issue(msg.settings === true, msg.liveTest === true), ...(msg.settings === true ? { settings: true } : {}), ...(msg.liveTest === true ? { liveTest: true } : {}) });
         } catch {
           return void reply({ t: "ui", ok: false, error: "could not start the dashboard" });
         }

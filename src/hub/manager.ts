@@ -21,12 +21,12 @@ export type Lifecycle = {
   startProject(project: Project, options?: { unattended?: boolean; env?: NodeJS.ProcessEnv }): Promise<any>;
   stopProject(project: Project, expectedInstance?: string): Promise<void>;
 };
-export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number;
+export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number; liveTest?: boolean;
   /** Test clock seam: maps nominal forwarding deadlines, never comes from dashboard input. */
   forwardTimeoutMs?: (action: string, nominalMs: number) => number };
 type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
 type Manifest = { port: number; protocol: number; instanceId: string; pid: number; pidSignature?: string };
-const active = new Map<string, { handle: ManagerHandle; issue(): string }>();
+const active = new Map<string, { handle: ManagerHandle; issue(liveTest?: boolean): string }>();
 const CONTROL_TIMEOUT = 3000;
 // A current CLI may authenticate the previous protocol-9 manager while
 // refreshing it, then launch the current manager implementation.
@@ -178,7 +178,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     };
     dashboard = startDashboard({ projects: list, snapshot: (after, input = {}) => act({ ...input, action: "snapshot", after }), action: act });
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024,
-      fetch(req) {
+      async fetch(req) {
         if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
         if (req.headers.get("authorization") !== `Bearer ${token}`) return new Response("unauthorized", { status: 401 });
         if (req.method !== "POST") return new Response("POST required", { status: 405 });
@@ -186,7 +186,10 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
         if (expected && expected !== instanceId) return Response.json({ ok: false, error: "manager instance changed" }, { status: 409 });
         if (stopping) return Response.json({ ok: false, error: "manager is stopping" }, { status: 409 });
         const path = new URL(req.url).pathname;
-        if (path === "/open") return Response.json({ ok: true, instanceId, protocol: PROTOCOL, url: dashboard!.issue() });
+        if (path === "/open") {
+          const input = await req.json().catch(() => ({})) as { liveTest?: boolean };
+          return Response.json({ ok: true, instanceId, protocol: PROTOCOL, url: dashboard!.issue(false, input.liveTest === true), ...(input.liveTest === true ? { liveTest: true } : {}) });
+        }
         if (path === "/stop") { setTimeout(() => void stop(), 0); return Response.json({ ok: true, instanceId }); }
         return new Response("not found", { status: 404 });
       },
@@ -204,31 +207,32 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     }, options.orphanWatchMs ?? 10_000);
     orphanWatch.unref?.();
     const handle = { stop, stopped };
-    active.set(home, { handle, issue: () => dashboard!.issue() });
+    active.set(home, { handle, issue: (liveTest) => dashboard!.issue(false, liveTest) });
     return handle;
   } catch (error) { cleanup(); throw error; }
 }
 
-async function managerRequest(home: string, path: "/open" | "/stop"): Promise<{ status: Manifest; body: any }> {
+async function managerRequest(home: string, path: "/open" | "/stop", liveTest = false): Promise<{ status: Manifest; body: any }> {
   const status = readManifest(home);
   if (!status) throw new Error("manager manifest is unavailable");
   if (!SUPPORTED_MANAGER_PROTOCOLS.has(status.protocol)) throw new Error("manager protocol is incompatible; use its matching CLI to stop it");
   const token = readFileSync(files(home).token, "utf8").trim();
   if (!token) throw new Error("manager token is unavailable");
   const response = await fetch(`http://127.0.0.1:${status.port}${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${token}`, "x-agenthub-instance": status.instanceId }, signal: AbortSignal.timeout(CONTROL_TIMEOUT),
+    method: "POST", headers: { authorization: `Bearer ${token}`, "x-agenthub-instance": status.instanceId }, ...(liveTest ? { body: JSON.stringify({ liveTest: true }) } : {}), signal: AbortSignal.timeout(CONTROL_TIMEOUT),
   });
   if (!response.ok) throw new Error(`manager refused request (${response.status}); ownership was not verified`);
   const body = await response.json() as { ok?: boolean; instanceId?: string; url?: string };
   if (!body.ok || body.instanceId !== status.instanceId) throw new Error("manager identity changed; refresh before retrying");
+  if (liveTest && (body as { liveTest?: boolean }).liveTest !== true) throw new Error("manager cannot restrict delegated dashboard content; use a live-test-capable manager");
   return { status, body };
 }
 
 export async function openManager(options: ManagerOptions = {}): Promise<string> {
   const home = options.home ?? hubHome();
   const local = active.get(home);
-  if (local) return local.issue();
-  try { return (await managerRequest(home, "/open")).body.url; }
+  if (local) return local.issue(options.liveTest);
+  try { return (await managerRequest(home, "/open", options.liveTest)).body.url; }
   catch (error) {
     const old = readManifest(home);
     if (old && processLiveness(old.pid, old.pidSignature) !== "gone") throw error;
@@ -246,7 +250,7 @@ export async function openManager(options: ManagerOptions = {}): Promise<string>
   const deadline = Date.now() + 8000;
   let error: unknown;
   while (Date.now() < deadline) {
-    try { return (await managerRequest(home, "/open")).body.url; }
+    try { return (await managerRequest(home, "/open", options.liveTest)).body.url; }
     catch (caught) { error = caught; await Bun.sleep(100); }
   }
   throw new Error(`manager readiness not confirmed: ${safeError(error)}; see ${join(f.dir, "manager.log")}`);
