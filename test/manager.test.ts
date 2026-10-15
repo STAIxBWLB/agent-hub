@@ -36,6 +36,24 @@ test("manager starts with an authenticated one-time dashboard ticket", async () 
   expect(await openManager({ home, registry, lifecycle })).not.toBe(await openManager({ home, registry, lifecycle }));
 });
 
+test("unified delegated tickets retain content restrictions through authenticated open and local reuse", async () => {
+  const { home, registry, lifecycle } = setup();
+  await startManager({ home, registry, lifecycle });
+  const status = JSON.parse(readFileSync(join(home, "manager/status.json"), "utf8"));
+  const token = readFileSync(join(home, "manager/control-token"), "utf8").trim();
+  const opened = await fetch(`http://127.0.0.1:${status.port}/open`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ liveTest: true }) });
+  const result = await opened.json() as { liveTest: boolean; url: string };
+  expect(result.liveTest).toBe(true);
+  for (const url of [result.url, await openManager({ home, registry, lifecycle, liveTest: true })]) {
+    const target = new URL(url), origin = target.origin;
+    const headers = { origin, "content-type": "application/json" };
+    const session = await fetch(`${origin}/session`, { method: "POST", headers, body: JSON.stringify({ ticket: target.hash.slice(1) }) });
+    const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+    const denied = await fetch(`${origin}/action`, { method: "POST", headers: { ...headers, cookie }, body: JSON.stringify({ action: "send", projectId: "p1", instanceId: "i1", body: "must not be user", liveTest: false }) });
+    expect(denied.status).toBe(403);
+  }
+});
+
 test("listing isolates an unavailable project", async () => {
   const { home, registry, lifecycle } = setup();
   lifecycle.inspectProject = async () => { throw new Error("dead hub"); };

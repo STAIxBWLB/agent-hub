@@ -3,6 +3,44 @@
 This guide describes ahub 0.12.28 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
+## Agent-operated live verification
+
+When the user explicitly authorizes a live test, its agent may run console
+commands using `ahub --live-test [--project <path|id>] <command> [args...]`.
+For example, `ahub --live-test --project <scratch-path> ui --no-open` starts the
+real dashboard listener and prints its one-time link without opening a browser.
+`ahub --project <scratch-path> --live-test reset --all --yes` exercises reset on
+that selected disposable project. The global options precede the command and
+may appear in either order; a flag after the command is not delegation.
+
+This grants console authority for operational console-class and peer-lifecycle conductor-class commands, including destructive actions, for one
+invocation and its ahub continuations. Use only the user-authorized targets and
+commands; destructive live checks belong in disposable projects. Existing
+project discovery still applies: initialize the scratch folder as its own Git
+repository before `ahub init`, then confirm `status --json` reports that exact
+`cwd` before any destructive check.
+Existing confirmations, process ownership checks, native identity fences and recovery
+locks still apply. Do not remove agent markers. The initiating peer and command
+label are audited before effects; an unavailable audit blocks delegation. A new
+unflagged invocation has ordinary peer authority again. Native tools launched
+by the command keep their own peer identity and receive no delegation flag.
+Allowed-class commands keep peer identity and permissions even with the flag:
+`--live-test say` sends as the peer. Peer starts, pause and resume may use
+delegated console authority. Flagged task assign/escalate refuse; omit the flag
+to use the ordinary actor-preserving conductor path when the peer has that role.
+Person verdicts and user-authored workflow writes are not delegated. Dashboard
+sessions issued through the flag retain operational controls but refuse message
+and task/planning content writes. Use native peer tools for agent-authored work.
+
+Use a CLI/coordinator containing this feature throughout the experiment. Older
+daemons do not understand the new delegated audit outcome; run the candidate
+daemon to capture its delegated event and console notice. This policy does not
+change external computer-use restrictions. Recovery staging refuses old targets
+without live-test support before source effects. Delegated headless recovery restores through the ordinary target CLI, carrying
+its operationId on the delegated console connection; existing native ownership
+and session-identity checks remain. Record actual observations in the
+smoke ledger; the presence of this option proves no outstanding #273 live leg.
+
 ## Command output
 
 `ahub status`, `board`, `budget`, `doctor`, `projects`, `queue list`, `turns` and `report` print shared console tables and labelled details.

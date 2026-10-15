@@ -10,7 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 /** What a request's session may do (#269): `settings` while a session opened by `ahub ui --settings` is inside its window. */
-export interface DashboardSession { settings: boolean; settingsUntil?: number }
+export interface DashboardSession { settings: boolean; settingsUntil?: number; liveTest?: true }
 export interface DashboardOptions {
   snapshot: (after: number, input?: Record<string, unknown>, session?: DashboardSession) => unknown | Promise<unknown>;
   action: (input: Record<string, unknown>, session?: DashboardSession) => unknown | Promise<unknown>;
@@ -30,8 +30,8 @@ const secret = () => randomBytes(32).toString("hex");
 /** Separate browser surface. Only the authenticated control console may construct it and issue tickets. */
 export function startDashboard(options: DashboardOptions) {
   const now = options.now ?? Date.now;
-  const tickets = new Map<string, { expires: number; settings: boolean }>();
-  const sessions = new Map<string, { expires: number; settingsUntil?: number }>();
+  const tickets = new Map<string, { expires: number; settings: boolean; liveTest?: true }>();
+  const sessions = new Map<string, { expires: number; settingsUntil?: number; liveTest?: true }>();
   // Inject the same pure public-board model used by the console before computing CSP hashes.
   const html = readFileSync(new URL("../ui/index.html", import.meta.url), "utf8")
     .replace("/* BOARD_MODEL */", () => `const boardColumns = ${boardColumns.toString()}; const peerPalette = ${JSON.stringify(PEER_PALETTE)};`)
@@ -57,7 +57,7 @@ export function startDashboard(options: DashboardOptions) {
   }
   const sessionOf = (cookie: string | undefined): DashboardSession => {
     const until = cookie ? sessions.get(cookie)?.settingsUntil : undefined;
-    return until !== undefined && until > now() ? { settings: true, settingsUntil: until } : { settings: false };
+    return { ...(until !== undefined && until > now() ? { settings: true, settingsUntil: until } : { settings: false }), ...(cookie && sessions.get(cookie)?.liveTest ? { liveTest: true as const } : {}) };
   };
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -99,7 +99,7 @@ export function startDashboard(options: DashboardOptions) {
         if (!issued || !tickets.delete(ticket)) return reject(401, "ticket expired or used; run ahub ui");
         if (sessions.size >= LIMIT) return reject(429, "too many sessions; try later");
         const session = secret();
-        sessions.set(session, { expires: now() + SESSION_MS, ...(issued.settings ? { settingsUntil: now() + SETTINGS_MS } : {}) });
+        sessions.set(session, { expires: now() + SESSION_MS, ...(issued.settings ? { settingsUntil: now() + SETTINGS_MS } : {}), ...(issued.liveTest ? { liveTest: true } : {}) });
         return json({ ok: true }, 200, { "Set-Cookie": `${cookieName}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}` });
       }
       if (path === "/projects") {
@@ -131,6 +131,9 @@ export function startDashboard(options: DashboardOptions) {
         }
       }
       try {
+        if (sessionOf(cookie).liveTest && !["start", "stop", "pause", "resume", "permit", "start_peer", "setting", "setting_undo", "setting_preview", "sdlc_queue", "sdlc_release"].includes(String(input.action))) {
+          return reject(403, "live-test dashboard cannot write person-attributed content; use peer tools");
+        }
         if (input.action === "sdlc_queue" || input.action === "sdlc_release") server.timeout(req, 35);
         else if (input.action === "backlog_split") server.timeout(req, Math.ceil((BACKLOG_SPLIT_SCREEN_TIMEOUT_MS + HUB_DB_BUSY_TIMEOUT_MS + 5_000) / 1000) + 5);
         return json(await options.action(input, sessionOf(cookie)));
@@ -149,11 +152,11 @@ export function startDashboard(options: DashboardOptions) {
   return {
     origin,
     /** `settings`: the ticket of `ahub ui --settings`, whose session may raise authority for SETTINGS_MS (#269). */
-    issue(settings = false): string {
+    issue(settings = false, liveTest = false): string {
       prune(tickets);
       if (tickets.size >= LIMIT) tickets.delete(tickets.keys().next().value!);
       const ticket = secret();
-      tickets.set(ticket, { expires: now() + TICKET_MS, settings });
+      tickets.set(ticket, { expires: now() + TICKET_MS, settings, ...(liveTest ? { liveTest: true } : {}) });
       return `${origin}/#${ticket}`;
     },
     stop() {

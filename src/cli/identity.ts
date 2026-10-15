@@ -1,5 +1,19 @@
 import { isSupportedPeer } from "../hub/peer-catalog.ts";
 
+/** Recovery reads this declaration before delegating to another package's CLI. */
+export const LIVE_TEST_SUPPORTED = true;
+
+/** Person verdicts and user-authored workflow content are never delegated. */
+export function liveTestRefusal(command: string, args: readonly string[]): boolean {
+  if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
+  const sub = args.find(arg => arg !== "--json");
+  return ["task", "role", "goal"].includes(command)
+    || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
+    || (command === "memory" && sub !== "graph")
+    || (command === "board" && args[0] === "import") || (command === "sdlc" && args[0] === "record")
+    || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet";
+}
+
 export type CliIdentity =
   | { role: "console" }
   | { role: "tools"; peer: string }

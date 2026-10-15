@@ -11,6 +11,48 @@ environment readback only. No outstanding live leg passed in this session:
 the CLI refused `ahub ui` from Codex, and LCU refused Terminal access.
 The operator chose procedure preparation before execution; #273 remains open.
 
+## Agent-operated verification (#408)
+
+For user-authorized live checks, the candidate CLI supports
+`ahub --live-test [--project <path|id>] <command> [args...]`, using audited console
+authority for that invocation. Follow [the operating procedure](operations.md#agent-operated-live-verification)
+and record each actual result below. References to a person in historical
+procedures describe their original authority requirement; an explicitly
+authorized agent may now execute those CLI steps through this option. Native
+account readiness, real terminal/browser observations, sign-off requirements and
+external computer-use restrictions still apply. No pending #273 item is checked
+by adding this path.
+
+2026-10-16, macOS, candidate CLI/source `40d13bc4`, daemon 0.12.28/protocol 16:
+an actual Codex-marked shell with a separate hub home and disposable Git project
+ran delegated `init`, `up --no-console`, `ui --no-open`, `permission pi ask`,
+`kill` and `reset --all --yes`, all exit 0. Unflagged `status --json` reported
+the exact scratch cwd. The dashboard URL returned HTTP
+200 and HTML; no browser or ticket/session exchange was performed in that shell run. The daemon recorded
+`agent_cli` events for init/up/daemon/ui/permission with peer `codex`,
+`delegated: true` and `refused: false`. The reset archive mode was 0700 and the
+scratch daemon was stopped. This verifies the delegated CLI path, without
+claiming a model turn, terminal look, conversation restoration or the complete
+#214/#273 live criteria. The automated console-subprocess and recovery-target
+checks remain separate fixture evidence.
+
+2026-10-16 review follow-up, source `fcbb18ec`: the same isolated Git scratch
+project was started from a Codex-marked shell. Flagged `say` produced a bus
+envelope from `codex`; person task-label writing refused. A delegated dashboard
+ticket exchanged for a session with HTTP 200, its snapshot returned HTTP 200,
+and a send action trying `liveTest: false` returned HTTP 403. The scratch daemon
+was stopped (kill exit 0). This was an actual CLI/HTTP run, without a model turn
+or browser visual inspection.
+
+Task #65 follow-up, source `5fbe50b6`: operational peer starts, pause and resume
+may delegate console authority; allowed-class messages/proposals/reviews retain
+the peer, while flagged task assign/escalate refuse. The temporary headless
+staging ceiling is removed. The recovery driver -> real target CLI -> scripted
+control server regression verifies headless Pi mode, saved sessionId,
+operationId, console hello and initiating-peer audit (225 related tests passed).
+This is fixture/CLI proof, not an actual native Pi restoration; that live leg
+remains owed in #273.
+
 ## Hub memory (#258)
 
 Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).

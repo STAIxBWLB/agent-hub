@@ -71,10 +71,35 @@ or the native Claude/Codex shell marker when the hub marker is absent. It connec
 as that peer in tools mode. Messages and task changes retain that actor;
 `say` defaults to status priority and important messages still require the peer's
 capability. Conflicting or malformed markers fail closed. There is no `--as-user`.
-Human-only operations are refused before connecting, including permission answers
+By default, console operations are refused before connecting, including permission answers
 and permission modes, queue resolution, budget overrides, benchmark runs, research
 backfill and task labels, stopping a peer (`ahub stop`), lifecycle and recovery
 operations, and `ask`.
+For live verification explicitly authorized by the user, an agent may invoke
+`ahub --live-test [--project <path|id>] <command> [args...]`. The flag delegates
+the existing console authority for console-class operations and conductor-class peer starts/holds, including approvals,
+settings, roster and lifecycle operations. It does not restrict effects to a
+scratch project: the agent must stay within the authorized commands and targets.
+Malformed or conflicting caller markers still refuse. The original peer and
+closed command label are recorded with outcome `delegated` before execution;
+if that audit cannot be written, the command refuses. The current daemon emits
+`agent_cli` with `delegated: true` and `refused: false`. Allowed-class commands retain the peer identity and capability checks, including
+messages, proposals and reviews. Peer starts, pause and resume may delegate
+operational console authority; task assign/escalate under the flag refuse. `--as-user`, person task labels,
+person-authored planning/release/memory/goal writes, SDLC record, benchmark run
+and the pet composer are refused. No argument text is copied into this audit.
+Delegated dashboard restrictions are bound to its server-issued ticket/session:
+operational settings/start/stop controls remain, but message, proposal and
+workflow-history actions refuse even if the body tries to clear the restriction.
+The flag is not stored in settings or exported to native agent children. Ahub's
+own daemon launch, console subprocesses, recovery runner, interactive follow-up commands and upgrade coordinator
+handover carry it explicitly in argv. Each new top-level invocation needs its
+own flag. An older CLI does not support it; use a candidate with this feature
+for the continuation too. Staging rejects a target without the pinned
+`LIVE_TEST_SUPPORTED` declaration before preparation or commit, including a
+previously cached stage. Delegated headless-native restoration uses the ordinary target CLI with its
+operationId through that operational console authority. Native and TUI
+restoration keep their existing identity and ownership checks. External computer-use restrictions remain unchanged.
 The operator uses a plain terminal or `ahub console`. A Claude `!` command that
 inherits the agent markers follows the same rule. The console strips control
 sequences from agent and daemon text before it quotes forged headers, and its

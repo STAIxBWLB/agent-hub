@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { cliCommandLabel } from "./identity.ts";
 
 export interface CliAudit {
-  v: 1; id: string; at: number; peer: string; command: string; outcome: "run" | "refused" | "invalid";
+  v: 1; id: string; at: number; peer: string; command: string; outcome: "run" | "refused" | "invalid" | "delegated";
 }
 const MAX_FILES = 256;
 const MAX_BYTES = 64 * 1024;
@@ -14,7 +14,7 @@ const valid = (row: any): row is CliAudit => row?.v === 1 && typeof row.id === "
   && typeof row.at === "number" && Number.isFinite(row.at) && row.at > 0
   && typeof row.peer === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(row.peer) && !/\s/.test(row.peer)
   && typeof row.command === "string" && row.command.length <= 64 && row.command === cliCommandLabel(...splitLabel(row.command))
-  && ["run", "refused", "invalid"].includes(row.outcome);
+  && ["run", "refused", "invalid", "delegated"].includes(row.outcome);
 const splitLabel = (label: string): [string, string[]] => { const [command = "unknown", ...args] = label.split(" "); return [command, args]; };
 
 /**

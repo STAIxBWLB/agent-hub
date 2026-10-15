@@ -63,7 +63,7 @@ import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, label
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
-import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
+import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
@@ -83,10 +83,16 @@ const since = (): number => {
 
 const argv = process.argv.slice(2);
 let selector: string | undefined;
-if (argv[0] === "--project") {
-  argv.shift();
-  selector = argv.shift();
-  if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
+let liveTest = false;
+while (argv[0] === "--project" || argv[0] === "--live-test") {
+  if (argv.shift() === "--live-test") {
+    if (liveTest) fail("--live-test may appear only once");
+    liveTest = true;
+  } else {
+    if (selector !== undefined) fail("--project may appear only once");
+    selector = argv.shift();
+    if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
+  }
 }
 const [given = "help", ...rest] = argv;
 // `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
@@ -114,17 +120,27 @@ const projectConfig = () => {
   return config;
 };
 const stateDir = selected.stateDir;
-const identity = detectCliIdentity(process.env);
+const caller = detectCliIdentity(process.env);
 const commandLabel = cliCommandLabel(cmd, args);
 const commandAccess = classifyPeerCommand(cmd, args);
+// Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
+const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed" && liveTestRefusal(cmd, args);
+const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
+const identity = delegatedPeer ? { role: "console" as const } : caller;
 function audit(outcome: "run" | "refused" | "invalid"): void {
-  if (identity.role === "console") return;
-  try { recordCliAudit(stateDir, identity.role === "tools" ? identity.peer : "unknown", commandLabel, outcome); }
-  catch { console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)"); }
+  if (caller.role === "console") return;
+  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, delegatedPeer && outcome === "run" ? "delegated" : outcome); }
+  catch {
+    if (delegatedPeer) fail("live-test delegation audit unavailable; nothing was executed");
+    console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)");
+  }
 }
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
+if (delegationRefused) { audit("refused"); fail("live-test cannot write person-attributed content; use peer tools or a person's terminal"); }
 if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
-if (identity.role === "tools") audit("run");
+if (identity.role === "tools" || delegatedPeer) audit("run");
+// Forward only to ahub's own continuation commands, never to native agent argv or an environment flag.
+const liveTestArgs = liveTest ? ["--live-test"] : [];
 const invokedFrom = process.cwd(); // relative paths a person types (a bench suite) are theirs, not the project's
 try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cwd}`); }
 /** One-shot output flags do not alter the fetched JSON document. */
@@ -381,7 +397,7 @@ async function hold(t: "pause" | "resume"): Promise<void> {
 }
 
 function spawnRecovery(operation: RecoveryOperation, quiet = false): void {
-  const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), "recovery-run", operation.id], {
+  const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), ...liveTestArgs, "recovery-run", operation.id], {
     cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id },
   });
   child.on("error", () => console.error(`runner launch failed; use ${recoveryCommand(operation, "resume")}`));
@@ -415,7 +431,7 @@ async function onTerminal(screens: (io: ScreenIO) => Promise<void>): Promise<voi
         // The command owns the terminal while it runs; a reader whose input already ended has nothing to pause.
         if (!ended) rl.pause();
         const done = (code: number) => { if (!ended) rl.resume(); resolve(code); };
-        const child = spawn(process.execPath, argv, { cwd, stdio: "inherit" });
+        const child = spawn(process.execPath, [argv[0]!, ...liveTestArgs, ...argv.slice(1)], { cwd, stdio: "inherit" });
         child.on("error", () => done(1));
         child.on("close", (code) => done(code ?? 1));
       }),
@@ -444,7 +460,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     lock: recoveryLock,
     read: (id) => readOperation<RecoveryOperation>(id),
     runner: recoveryRunner,
-    live: (op) => liveProjects(op, makeRecoveryDriver().inspect),
+    live: (op) => liveProjects(op, makeRecoveryDriver(undefined, delegatedPeer).inspect),
     endPeer: (planned, peer) => endPlannedPeer(planned, peer),
     runnerStoppable: (id) => signedRunner(id) !== undefined,
     stopRunner: (id) => stopSignedRunner(id),
@@ -470,7 +486,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (to !== undefined) { try { exactVersion(to); } catch (error) { fail((error as Error).message); } }
   // An older CLI must not coordinate a newer target (docs/operations.md): the target's own coordinator takes over.
   if (kind === "upgrade" && newerVersion(to!, VERSION) && process.env.AGENTHUB_UPGRADE_HANDOVER !== "1") {
-    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", "upgrade", "--to", to!, ...rest];
+    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", ...liveTestArgs, "upgrade", "--to", to!, ...rest];
     console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(" ")}`);
     if (interactive) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -532,31 +548,31 @@ const commands: Record<string, () => Promise<void> | void> = {
     const runner = recoveryRunner(id);
     if (action === "status") {
       // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.
-      const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver().inspect);
+      const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect);
       console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
     }
-    else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver()); console.log("preflight cancelled; no committed transition was rolled back"); }
+    else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver(undefined, delegatedPeer)); console.log("preflight cancelled; no committed transition was rolled back"); }
     else if (action === "dispose") {
-      // #215: human-only (the identity gate refuses agent shells); the reason is kept in the operation's audit.
+      // Console authority (including explicit --live-test delegation); the reason is kept in the operation's audit.
       const { one, rest: flags } = takeFlags(rest, ["--fresh-session", "--reason"], []);
       const stop = flags.length === 1 && flags[0] === "--stop-and-archive";
       const reason = one["--reason"]?.trim() ?? "";
       if (!reason || reason.length > 500 || (flags.length && !stop) || stop === !!one["--fresh-session"]) fail(usage);
-      const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver());
+      const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver(undefined, delegatedPeer));
       if (!stop) { console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`); return spawnRecovery(result); }
       console.log(JSON.stringify(publicOperation(result), null, 2));
       console.log(`${result.plan.kind} abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.`);
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
-    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver().inspect))}`);
+    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect))}`);
     else if (runner === "unknown") console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
     else if (runner) console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     else spawnRecovery(operation);
   },
   "recovery-run": async () => {
     if (args.length !== 1 || process.env.AGENTHUB_RECOVERY_OPERATION !== args[0]) fail("recovery-run is an internal command");
-    const result = await runRecovery(args[0]!, makeRecoveryDriver());
+    const result = await runRecovery(args[0]!, makeRecoveryDriver(undefined, delegatedPeer));
     if (result.phase !== "completed") process.exitCode = 1;
   },
   help: () => {
@@ -593,12 +609,13 @@ const commands: Record<string, () => Promise<void> | void> = {
       return console.log("dashboard manager stopped; project hubs were kept running");
     }
     let url: string;
-    if (args.includes("--all")) url = await openManager();
+    if (args.includes("--all")) url = await openManager({ liveTest: !!delegatedPeer });
     else {
       const hub = await connect();
       try {
-        const res = await hub.request({ t: "ui", ...(settings ? { settings: true } : {}) }, 10_000);
+        const res = await hub.request({ t: "ui", ...(settings ? { settings: true } : {}), ...(delegatedPeer ? { liveTest: true } : {}) }, 10_000);
         if (!res.ok) fail(res.error);
+        if (delegatedPeer && res.liveTest !== true) fail("this hub cannot restrict delegated dashboard content; use a live-test-capable hub");
         // A hub older than #269 ignores the field and would hand out an ordinary session without saying so.
         if (settings && res.settings !== true) fail("this hub does not open settings sessions; upgrade the running hub to use ahub ui --settings");
         url = res.url;
@@ -673,17 +690,17 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args.some(arg => arg !== "--panels" && arg !== "--no-pet" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
     if (color instanceof Error) return fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
-    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color });
+    await runConsole({ client: await connect(), cwd, stateDir, liveTest, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color });
   },
 
   up: async () => {
     const unattended = unattendedEnv || args.includes("--unattended");
     if (unattended) console.error(UNATTENDED_WARNING);
-    const status = await startProject(registeredProject(), { unattended });
+    const status = await startProject(registeredProject(), { unattended, liveTest });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
     try { if (loadPetConfig(cwd).window) console.log(await startPetWindow(stateDir, cwd)); }
     catch { console.error("Pet window was not started; run ahub pet --window to inspect it."); }
-    if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir });
+    if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest });
   },
 
   claude: async () => {

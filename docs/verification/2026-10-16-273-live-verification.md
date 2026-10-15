@@ -4,7 +4,7 @@
 
 - Date: 2026-10-16, Asia/Seoul.
 - Source: main `426bab99`, release 0.12.28, protocol 16.
-- Issue #273 was read live, including its 2026-10-14 additions. Every checkbox remained unchecked.
+- Issue #273 was read live, including its 2026-10-14 additions at initial preparation; the matrix below was refreshed for the five 2026-10-16 additions before release. Every checkbox remained unchecked.
 - `ahub --version` returned `0.12.28`.
 - `ahub status --json` returned daemon version `0.12.28`, protocol `16`, `stopping: false`, Claude idle, Codex busy, Kimi offline and Pi idle. These are status observations, not model-delivery or restoration receipts.
 - `ahub ui` exited 1 with `ahub: codex cannot run ahub ui; the person runs it in ahub console or a terminal`.
@@ -72,11 +72,16 @@ Section names refer to [the smoke checklist](../smoke.md).
 | #263 AC11 | Planning and release controls | Native planner creates two releases; planned/actual dates read back |
 | #263 board/intake | Project board | Desktop/phone browser against real hub, permission/state readback and actual GitHub issue intake |
 | #306 | Observe an organic Kimi weekly/monthly refusal only | CLI version and exact sanitized prefix; do not deliberately consume quota |
+| #403 | Offline Pi preserved-history recovery | Actual selected native session restored with identity/queue retained; a live owner refused |
+| #398 | Pull-only important-message advisory | Real Kimi TUI and plain Claude see the tool-result advisory; hub_inbox drains it |
+| #391 pet lifecycle | Standalone pet window | Actual stop changes it to Offline and host exits; native screenshots of states |
+| #391 dashboard CSP | Split dashboard views | Browser-console capture of CSP behavior, separate from the earlier owner browser look |
+| #394 VoiceOver | Office desk More control | Native VoiceOver traversal; DOM/click/Enter/Space regressions remain separate |
 
 ## Upgrade with unmanaged Claude (#206)
 
 1. A person starts the disposable project on a known older release, records its version/project id and attaches an unmanaged Claude session using the documented plain-Claude tools-only setup. Record its native session id and a harmless conversation marker.
-2. From a person-owned terminal, run the target release's coordinator with `ahub upgrade --to 0.12.28 --dry-run`. Retain the plan. Confirm that this Claude session is reconnect-only before applying it. If the plan disagrees, stop and record the discrepancy.
+2. Use an isolated test environment for the hub home/registry and shared Claude plugin setup. Upgrade is machine-wide, even when invoked from the scratch cwd: it plans all registered running projects and changes the shared package/plugin; `--project` does not scope it. Run the target coordinator with `ahub upgrade --to 0.12.28 --dry-run` and retain the complete plan. Verify every planned root is a disposable fixture, record the shared CLI/plugin fate, and confirm the intended unmanaged Claude is reconnect-only. Stop without applying if any non-disposable project or shared setup is in scope. A separate AGENTHUB_HOME alone does not isolate the shared plugin; use a dedicated native configuration/test environment too.
 3. Apply that same target using the interactive upgrade command. Record operation id, source and target versions, terminal fate and plugin reconnect outcome. Do not substitute a restart at the same version.
 4. Read back `ahub status`, the original native session id and marker, and one correlated hub message receipt. Record whether a second terminal appeared or a conversation was replaced.
 5. Capture final operation and lock status. A refusal or failed reconnect is a failed leg, with its exact wording; it is not a pass based on the dry-run plan.
@@ -116,5 +121,7 @@ record covers the entire item, or a failed run is recorded with a linked defect.
 Environment/tool restrictions remain unverified prerequisites. They do not meet
 the issue's failed-product-run alternative. #273 cannot close from this plan.
 
-No full check or native model turn was run to prepare this document. Documentation
-checks and any later CI results must be reported separately from the live legs.
+The initial preparation ran no full check or native model turn. Its original
+commit c637a088 subsequently passed Ubuntu/macOS full gates and seeded guards
+in CI run 38791043404. The release candidate must earn its own exact-head checks;
+none of those automated results completes a live leg.
