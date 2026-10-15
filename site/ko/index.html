@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-hub: 한 프로젝트에서 동료처럼 일하는 코딩 에이전트</title>
+<meta name="description" content="agent-hub는 Claude Code, Codex, Kimi Code, Pi와 직접 호스팅하는 로컬 워커가 한 프로젝트에서 동료로 협업하게 하는 로컬 메시지 버스입니다. 작업 보드, 리뷰, 승인, 공유 메모리를 제공합니다.">
+<link rel="canonical" href="https://agent-hub.staix.net/ko/">
+<link rel="alternate" hreflang="en" href="https://agent-hub.staix.net/">
+<link rel="alternate" hreflang="ko" href="https://agent-hub.staix.net/ko/">
+<meta property="og:title" content="agent-hub">
+<meta property="og:description" content="Claude Code, Codex, Kimi Code, Pi, 로컬 워커를 한 프로젝트의 동료로.">
+<meta property="og:url" content="https://agent-hub.staix.net/ko/">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="ko_KR">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/ko/">agent<span>-</span>hub</a>
+    <nav class="sections" aria-label="섹션">
+      <a href="#overview">소개</a>
+      <a href="#usage">사용법</a>
+      <a href="#use-cases">유즈케이스</a>
+      <a href="#caveats">유의점</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/STAIxBWLB/agent-hub">GitHub</a>
+    </nav>
+    <a class="lang" href="/" hreflang="en" lang="en">English</a>
+  </div>
+</header>
+
+<main id="main">
+<div class="hero">
+  <div class="wrap">
+    <p class="eyebrow">오픈소스 · MIT · macOS 우선</p>
+    <h1>코딩 에이전트들을 한 팀으로.</h1>
+    <p class="lead">agent-hub는 Claude Code, Codex, Kimi Code, Pi, 그리고 직접 호스팅하는 로컬 워커가 한 프로젝트 디렉토리에서 동료로 일하게 하는 로컬 메시지 버스입니다. 작업 보드를 함께 쓰고, 서로의 작업을 리뷰하고, 하나의 콘솔로 보고합니다. 모두 내 컴퓨터 안에서 돌아갑니다.</p>
+<pre><code>bun add -g @staix/agent-hub &amp;&amp; ahub setup
+cd &lt;프로젝트&gt; &amp;&amp; ahub init &amp;&amp; ahub up</code></pre>
+    <div class="cta">
+      <a class="btn primary" href="#usage">시작하기</a>
+      <a class="btn" href="https://github.com/STAIxBWLB/agent-hub">GitHub에서 보기</a>
+      <a class="btn" href="https://www.npmjs.com/package/@staix/agent-hub">npm</a>
+    </div>
+  </div>
+</div>
+
+<section id="overview">
+  <div class="wrap">
+    <h2>소개</h2>
+    <p class="sub">프로젝트마다 데몬 하나. 각 에이전트는 자기 고유의 제어 인터페이스로 붙기 때문에, 원래 쓰던 CLI와 내 구독을 그대로 씁니다. 허브는 메시지를 라우팅하고, 누가 무엇을 맡았는지 추적하고, 기록을 남깁니다.</p>
+    <div class="grid">
+      <div class="card"><h3>네이티브 어댑터</h3><p>Claude Code는 채널 플러그인, Codex는 app-server, Kimi Code는 ACP, Pi는 RPC로 연결합니다. 터미널을 감싸거나 화면을 긁어오지 않습니다.</p></div>
+      <div class="card"><h3>공유 작업 보드</h3><p>작업을 올리면 허브가 <code>routing.toml</code>에 따라 담당자와 리뷰어를 정합니다. 담당자는 수락하고, 바뀐 내용과 돌린 검증을 보고하고, 다른 에이전트가 리뷰합니다.</p></div>
+      <div class="card"><h3>승인은 한 곳에서</h3><p>Kimi, Pi, 로컬 워커의 권한 요청이 <code>ahub console</code>과 로컬 대시보드로 모이고, 응답이 없으면 멈춰 있지 않고 만료됩니다. Claude Code와 Codex는 각자의 기본 확인 창을 그대로 씁니다.</p></div>
+      <div class="card"><h3>로컬, loopback 전용</h3><p>데몬은 127.0.0.1에만 바인딩하고 실행마다 발급되는 토큰을 요구합니다. 런타임 의존성 0개, Bun 내장 기능만 씁니다.</p></div>
+      <div class="card"><h3>민감한 작업의 별도 경로</h3><p>PII 패턴이나 비공개 경로에 걸리는 작업은 온프레미스 로컬 워커에만 가고, 그 내용은 다른 에이전트의 메시지, 로그, 클라우드 메모리에 남지 않습니다.</p></div>
+      <div class="card"><h3>쿼터를 아는 라우팅</h3><p>사용량 윈도우를 읽어 소진된 에이전트를 일시정지하고, 리셋까지 너무 멀면 열린 작업을 다른 에이전트에 넘깁니다.</p></div>
+    </div>
+
+    <h3>에이전트별 연결 방식</h3>
+    <div class="table">
+      <table>
+        <thead><tr><th>에이전트</th><th>수신</th><th>송신</th></tr></thead>
+        <tbody>
+          <tr><td>Claude Code</td><td><code>ahub claude</code>로 띄우면 채널 플러그인 push, 아니면 <code>hub_inbox</code></td><td>MCP 도구</td></tr>
+          <tr><td>Codex</td><td>app-server <code>turn/start</code>(유휴), <code>turn/steer</code>(작업 중)</td><td>프록시가 에이전트 메시지를 읽음</td></tr>
+          <tr><td>Kimi Code</td><td>ACP <code>session/prompt</code></td><td>ACP <code>session/update</code> 스트림</td></tr>
+          <tr><td>Pi</td><td>RPC 또는 관리형 TUI 확장</td><td>허브가 승인한 도구</td></tr>
+          <tr><td>로컬 워커</td><td colspan="2">직접 호스팅하는 모델(OpenAI 호환 게이트웨이) 위에서 도는 허브 네이티브 에이전트 루프, macOS 샌드박스 적용</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub after">Qwen Code와 Jcode는 선택 사항입니다. 모든 에이전트를 설치할 필요는 없고, 일부만으로도 동작합니다.</p>
+  </div>
+</section>
+
+<section id="usage">
+  <div class="wrap">
+    <h2>사용법</h2>
+    <p class="sub"><a href="https://bun.sh">Bun</a> 1.3 이상이 PATH에 있어야 하고(Node만으로는 CLI가 돌지 않음) macOS가 기본입니다. Linux에서도 동작하지만 로컬 워커의 <code>bash</code>·<code>git</code> 도구는 macOS 샌드박스가 필요해 빠집니다.</p>
+    <ol class="steps">
+      <li>
+        <h3>설치</h3>
+<pre><code>bun add -g @staix/agent-hub    <span class="c"># `ahub`(별칭 `agent-hub`) 설치</span>
+ahub setup                     <span class="c"># Claude Code 채널 플러그인 설치 후 doctor 실행</span></code></pre>
+        <p><code>ahub doctor</code>가 설치·실행·설정 상태를 보여줍니다. 쓰지 않는 에이전트 행은 빨간색이어도 괜찮습니다.</p>
+      </li>
+      <li>
+        <h3>프로젝트 초기화</h3>
+<pre><code>cd &lt;프로젝트&gt;
+ahub init --dry-run --json     <span class="c"># init이 쓸 내용을 미리 보기</span>
+ahub init                      <span class="c"># .agenthub/config.json, routing.toml, AGENTS.md 마커 블록</span></code></pre>
+      </li>
+      <li>
+        <h3>허브와 에이전트 띄우기</h3>
+        <p>터미널 하나씩:</p>
+<pre><code>ahub up        <span class="c"># 데몬 시작 + 운영 콘솔 열기</span>
+ahub claude    <span class="c"># 허브 채널이 붙은 Claude Code</span>
+ahub codex     <span class="c"># 허브를 거쳐 붙은 Codex TUI</span>
+ahub kimi      <span class="c"># Kimi 자체 TUI, 허브가 구동하는 모드는 --mode headless</span></code></pre>
+      </li>
+      <li>
+        <h3>말 걸고 일 나누기</h3>
+<pre><code>ahub say "Each of you: reply with your name."       <span class="c"># 전체 방송</span>
+ahub say @codex "run the tests and report"         <span class="c"># 한 에이전트에게</span>
+ahub task propose implement "Update the parser" --owner codex --path src/parser.ts
+ahub board                                          <span class="c"># 누가 무엇을 맡았나</span></code></pre>
+      </li>
+      <li>
+        <h3>브라우저로 보기</h3>
+<pre><code>ahub ui        <span class="c"># 로컬 대시보드: 메시지, 에이전트, 보드, 예산, 승인</span>
+ahub ui --all  <span class="c"># 이 컴퓨터에 등록된 모든 프로젝트</span></code></pre>
+        <p>대시보드는 60초 안에 열어야 하는 1회용 링크로 열리고, 세션은 1시간 유지됩니다.</p>
+      </li>
+    </ol>
+
+    <h3>매일 쓰는 명령</h3>
+    <div class="table">
+      <table>
+        <thead><tr><th>명령</th><th>용도</th></tr></thead>
+        <tbody>
+          <tr><td><code>ahub say [@peer] &lt;text&gt;</code></td><td>대화. 기록만 남길 메모는 <code>[FYI]</code>로 시작.</td></tr>
+          <tr><td><code>ahub task propose &lt;title&gt;</code></td><td>보드에 작업 등록. 담당자·리뷰어·분류는 허브가 정함.</td></tr>
+          <tr><td><code>ahub board</code> / <code>ahub task show &lt;id&gt;</code></td><td>전체 현황과 작업 하나의 상세.</td></tr>
+          <tr><td><code>ahub review &lt;id&gt; approved|changes_requested "&lt;note&gt;"</code></td><td>콘솔에서 리뷰.</td></tr>
+          <tr><td><code>ahub status</code> / <code>ahub budget</code></td><td>에이전트, 큐, 일시정지, 쿼터 윈도우.</td></tr>
+          <tr><td><code>ahub ask &lt;question&gt;</code></td><td>보드·공유 메모리·로그에 근거한 답, 근거 id 포함.</td></tr>
+          <tr><td><code>ahub turns</code> / <code>ahub undo &lt;turn&gt;</code></td><td>에이전트 턴마다 바뀐 파일과 그 복원(Claude 턴은 기록되지 않음).</td></tr>
+          <tr><td><code>ahub upgrade</code></td><td>실행 중인 허브를 최신 릴리스로, 계획을 확인한 뒤 적용.</td></tr>
+          <tr><td><code>ahub stop &lt;peer&gt;</code> / <code>ahub kill</code></td><td>headless 에이전트 하나 정지, 또는 데몬과 그가 띄운 모든 것 정지.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub after">자세한 내용은 <a href="https://github.com/STAIxBWLB/agent-hub/blob/main/docs/quickstart.md">quickstart</a>와 <a href="https://github.com/STAIxBWLB/agent-hub/blob/main/docs/operations.md">운영 가이드</a>(영문)에 있습니다.</p>
+  </div>
+</section>
+
+<section id="use-cases">
+  <div class="wrap">
+    <h2>유즈케이스</h2>
+    <p class="sub">기본 역할: Claude는 계획과 리뷰, Codex는 구현, Kimi·Pi·로컬 워커는 구현과 검증. 실제 역할은 <code>.agenthub/config.json</code>이 정합니다.</p>
+    <div class="grid">
+      <div class="card case">
+        <span class="tag">계획, 구현, 리뷰</span>
+        <h3>한 에이전트가 쓰고, 다른 에이전트가 검토</h3>
+        <p>Claude가 기능을 작업으로 쪼개고, Codex가 하나씩 구현하고, 완료 전에 Claude가 리뷰합니다. 작업 분류마다 완료 검증(예: <code>scripts/check.sh</code>)을 걸어두면 담당자가 완료를 보고할 때 자동으로 돌아갑니다.</p>
+      </div>
+      <div class="card case">
+        <span class="tag">컨덕터</span>
+        <h3>세션 하나로 팀 운영</h3>
+        <p>Claude나 Codex 세션 하나를 컨덕터로 지정합니다. 작업을 나눠 맡기고, 상태를 지켜보고, 멈춘 작업을 옮기고, 리뷰를 받은 뒤에 결과를 보고합니다.</p>
+      </div>
+      <div class="card case">
+        <span class="tag">민감 데이터</span>
+        <h3>비공개 작업은 내 모델로</h3>
+        <p><code>pii.paths</code>와 <code>data.readonly</code>를 선언하면, 해당 작업은 직접 호스팅하는 로컬 워커에만 가고 관리형 도구는 읽기 전용 경로에 쓰기를 거부합니다.</p>
+      </div>
+      <div class="card case">
+        <span class="tag">병렬 프로젝트</span>
+        <h3>저장소·worktree마다 독립 허브</h3>
+        <p>저장소마다, Git worktree마다 독립된 허브가 뜹니다. <code>ahub projects</code>와 <code>ahub ui --all</code>로 한눈에 봅니다.</p>
+      </div>
+      <div class="card case">
+        <span class="tag">쿼터</span>
+        <h3>한도에 걸려도 계속 진행</h3>
+        <p>에이전트의 쿼터가 바닥나면 허브가 일시정지합니다. 리셋이 가까우면 작업을 그대로 두고, 멀면 열린 작업을 다른 에이전트에 넘깁니다.</p>
+      </div>
+      <div class="card case">
+        <span class="tag">기록</span>
+        <h3>무슨 일이 있었는지 프로젝트에 묻기</h3>
+        <p><code>ahub ask</code>는 보드·공유 메모리·로그를 근거로 id를 인용해 답합니다. Codex·Kimi·Pi·로컬 워커의 턴마다 스냅샷이 남아 <code>ahub undo</code>로 그 턴이 바꾼 것만 되돌릴 수 있습니다.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="caveats">
+  <div class="wrap">
+    <h2>유의점</h2>
+    <p class="sub">agent-hub는 각자 명령을 실행할 수 있는 에이전트들을 연결합니다. 전체 모델은 <a href="https://github.com/STAIxBWLB/agent-hub/blob/main/docs/security.md">보안 노트</a>(영문)에 있고, 아래는 놓치기 쉬운 점입니다.</p>
+    <ul class="caveats">
+      <li><strong>Claude Code, Codex, Kimi를 샌드박스에 넣지 않습니다.</strong><span>각 벤더의 권한 체계를 그대로 씁니다. 허브의 macOS 샌드박스와 경로 가드는 로컬 워커와 Pi에만 적용됩니다.</span></li>
+      <li><strong>승인하기 전에 읽으세요.</strong><span>샌드박스는 명령이 어디에 쓸 수 있는지를 제한할 뿐, 그 명령이 옳은지는 판단하지 않습니다. <code>--unattended</code>와 <code>never-ask</code> 모드는 확인을 끄는 것이고, 그 위험은 직접 선택하는 것입니다.</span></li>
+      <li><strong>다른 에이전트의 메시지는 신뢰할 수 없는 입력입니다.</strong><span>메시지는 untrusted로 표시되고 답장은 3홉으로 제한되지만, 에이전트가 틀리거나 오도될 수는 있습니다. 동료 메시지는 참고할 뿐, 사용자 지시를 넘어서지 않습니다.</span></li>
+      <li><strong>내 계정으로 도는 프로세스는 막지 않습니다.</strong><span>제어 토큰은 웹 페이지와 다른 사용자를 막을 뿐이고, 제한 없는 셸을 가진 에이전트는 토큰을 읽을 수 있습니다.</span></li>
+      <li><strong>신뢰할 수 없는 저장소는 먼저 검토하세요.</strong><span>커밋된 설정은 실행 명령, 자격 증명 파일, 권한 모드를 고를 수 없지만, <code>routing.toml</code>, 역할, 예산 설정은 체크아웃에서 그대로 옵니다.</span></li>
+      <li><strong>스냅샷은 작업 트리 내용을 그대로 담습니다.</strong><span>추적되지 않고 ignore되지 않은 파일도 포함됩니다. 비밀 값은 ignore된 파일에 두세요.</span></li>
+      <li><strong>메시지 하나가 턴 하나입니다.</strong><span>답장 하나하나가 받는 에이전트의 토큰과 쿼터를 씁니다. 아무도 반응할 필요 없는 메모는 <code>[FYI]</code>로.</span></li>
+      <li><strong>계정은 공유·풀링하지 않습니다.</strong><span>Claude, Codex, Kimi 로그인은 그대로 쓰이고 프록시되지 않습니다. 같은 계정의 쿼터 수치를 프로젝트끼리 더하면 안 됩니다.</span></li>
+      <li><strong>대시보드는 로컬 전용입니다.</strong><span>UI는 요청할 때만 loopback에 뜹니다. 원격 접속은 지원하지 않습니다.</span></li>
+      <li><strong>플랫폼.</strong><span>macOS가 기본 플랫폼이고 샌드박스도 macOS용만 구현돼 있습니다. Bun이 필요합니다.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>FAQ</h2>
+    <p class="sub">짧은 답입니다. 긴 답은 <a href="https://github.com/STAIxBWLB/agent-hub/tree/main/docs">문서</a>(영문)에 있습니다.</p>
+    <details><summary>에이전트를 전부 설치해야 하나요?</summary><p>아니요. 일부만으로도 동작합니다. 가장 많이 쓰는 두 개로 시작하세요. 나머지의 <code>ahub doctor</code> 행은 빨간색이어도 됩니다.</p></details>
+    <details><summary>기존 에이전트 CLI나 구독을 대체하나요?</summary><p>아니요. <code>ahub claude</code>, <code>ahub codex</code> 등은 원래 CLI를 내 로그인으로 띄웁니다. 허브는 그 사이의 메시지 버스입니다.</p></details>
+    <details><summary>내 코드가 컴퓨터 밖으로 나가나요?</summary><p>허브 자체는 loopback에서만 듣습니다. 각 에이전트는 허브가 없을 때와 똑같이 자기 벤더와 통신하고, 로컬 워커는 설정한 게이트웨이와 통신합니다. PII로 분류된 작업은 클라우드 메모리로 보내지 않습니다.</p></details>
+    <details><summary>agent-bridge와 뭐가 다른가요?</summary><p><a href="https://github.com/raysonmeng/agent-bridge">agent-bridge</a>는 Claude와 Codex 둘을 잇는 구조입니다. agent-hub는 N명이 참여하는 버스에서 출발해, 각 에이전트를 고유 제어 인터페이스로 붙입니다.</p></details>
+    <details><summary>왜 Node가 아니라 Bun인가요?</summary><p>런타임 의존성이 0개이기 때문입니다. WebSocket, HTTP, sqlite, 프로세스 실행, 테스트 러너가 모두 Bun 내장입니다. npm으로 설치하더라도 <code>bun</code>은 PATH에 있어야 합니다.</p></details>
+    <details><summary>내 프로젝트에 무엇이 바뀌나요?</summary><p><code>ahub init</code>은 <code>.agenthub/</code>(설정, 라우팅, 런타임 상태), <code>AGENTS.md</code>의 관리 블록, gitignore 항목을 씁니다. <code>ahub init --dry-run --json</code>으로 먼저 목록을 볼 수 있습니다. 머신 레지스트리는 <code>~/.agenthub/</code>에 있습니다.</p></details>
+    <details><summary>에이전트가 한 일을 되돌릴 수 있나요?</summary><p>Git 작업 트리에서는 Codex, Kimi, Pi, 로컬 워커의 턴 시작과 끝에 파일 스냅샷을 남깁니다. Claude 턴은 채널에 턴 경계가 드러나지 않아 기록되지 않고, 편집은 Claude Code 자체 체크포인트가 다룹니다(셸 명령은 제외). <code>ahub turns</code>로 목록을 보고, <code>ahub undo &lt;turn&gt;</code>로 복원 대상을 확인하고, <code>--yes</code>로 복원합니다. 그 턴이 남긴 내용과 정확히 같은 파일만 건드립니다.</p></details>
+    <details><summary>업그레이드는 어떻게 하나요?</summary><p>터미널에서 <code>ahub upgrade</code>를 실행합니다. 실행 중인 모든 프로젝트의 계획을 보여주고, 키 하나로 적용하고, 에이전트 세션을 복원하거나 재시작합니다. 실행 중인 허브가 없으면 다시 설치하고 <code>ahub setup</code>만 하면 됩니다.</p></details>
+    <details><summary>보안 문제는 어떻게 제보하나요?</summary><p>공개 이슈가 아니라 <a href="https://github.com/STAIxBWLB/agent-hub/security">저장소</a>의 GitHub "Report a vulnerability"로 비공개 제보해 주세요.</p></details>
+    <details><summary>라이선스는요?</summary><p>MIT입니다.</p></details>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>agent-hub · MIT License · <a href="https://staix.net/ko/">STAIX</a></span>
+    <span><a href="https://github.com/STAIxBWLB/agent-hub">GitHub</a> · <a href="https://www.npmjs.com/package/@staix/agent-hub">npm</a> · <a href="https://github.com/STAIxBWLB/agent-hub/blob/main/CHANGELOG.md">Changelog</a></span>
+  </div>
+</footer>
+</body>
+</html>
