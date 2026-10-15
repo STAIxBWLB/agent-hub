@@ -434,17 +434,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     if (result.manualRequired) throw new Error(`${peer}: closing terminal ${retired.handle} of the stopped target's session was not verified; manual-required`);
     progress.terminals[key] = true; save();
   };
-  const attachedId = async (planned: PlannedProject, peer: string, op: RecoveryOperation): Promise<string> => {
-    for (const deadline = now() + RECONNECT_WAIT_MS; ;) {
-      const current = (await inspectRecovery(planned.project)).peers.find((p) => p.id === peer && p.state !== "offline");
-      const id = peer === "codex" ? current?.threadId : current?.sessionId;
-      if (id) return id;
-      if (now() >= deadline) throw new Error(`${peer}: the new session reported no id within ${RECONNECT_WAIT_MS / 1000} s; wait until it attaches first`);
-      await sleep(1000);
-    }
-  };
   /** #414: an idle terminal is not an authenticated peer. Keep its receipt while waiting, including on resume. */
-  const awaitAttachment = async (planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, binding: TerminalBinding, save: () => void): Promise<void> => {
+  const awaitAttachment = async (planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, binding: TerminalBinding, save: () => void, expectedSession: string | null = binding.sessionId): Promise<string> => {
     const deadline = now() + RECONNECT_WAIT_MS;
     let live: Inspection;
     for (;;) {
@@ -452,8 +443,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (live.state === "running" && (live.instanceId !== progress.instanceId || live.version !== op.plan.version || live.recovery?.operationId !== op.id)) throw new Error(`${binding.peer}: target identity changed while awaiting attachment`);
       const peer = live.peers.find((p) => p.id === binding.peer);
       const session = binding.peer === "codex" ? peer?.threadId : peer?.sessionId;
-      if (session && session !== binding.sessionId) throw new Error(`${binding.peer}: a different conversation attached while awaiting ${binding.sessionId}`);
-      if (live.state === "running" && peer && ["idle", "busy", "paused"].includes(peer.state) && session === binding.sessionId) return;
+      if (session && expectedSession !== null && session !== expectedSession) throw new Error(`${binding.peer}: a different conversation attached while awaiting ${binding.sessionId}`);
+      if (now() > deadline) break;
+      if (live.state === "running" && peer && ["idle", "busy", "paused"].includes(peer.state) && session) return session;
       if (now() >= deadline) break;
       await sleep(Math.min(1000, deadline - now()));
     }
@@ -629,8 +621,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
             : `${original.peer}: its launcher in terminal ${evidence.handle} is running but no ${original.peer} session ${evidence.attached ? "with an id " : ""}attached yet; no terminal was created; wait until it attaches, or end it and close terminal ${evidence.handle} first`);
         const receipt = progress.terminals[key];
         if (receipt && receipt !== "pending" && receipt !== "failed") {
-          await awaitAttachment(planned, progress, op, receipt as TerminalBinding, save);
-          progress.terminals[key] = await revalidateTerminal(planned, progress, receipt as TerminalBinding, true); save();
+          const binding = receipt as TerminalBinding;
+          const sessionId = await awaitAttachment(planned, progress, op, binding, save, fresh() && binding.sessionId === original.sessionId ? null : binding.sessionId);
+          progress.terminals[key] = { ...binding, sessionId }; save();
+          progress.terminals[key] = await revalidateTerminal(planned, progress, progress.terminals[key] as TerminalBinding, true); save();
           continue;
         }
         // #215: the pending row of the receipt table, used wherever a pending launch meets an attached session.
@@ -707,8 +701,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           throw new Error(`${original.peer}: original session restoration needs manual verification${restored.blockers[0] ? ` (${restored.blockers[0].message})` : ""}; wait until it attaches, or end that launch and close its terminal${handle ? ` ${handle}` : ""} first`);
         }
         // The daemon's id is authoritative: a fresh session is recorded under the id it reports once attached.
-        progress.terminals[key] = fresh() ? { ...restored.newBinding, sessionId: await attachedId(planned, original.peer, op) } : restored.newBinding; save();
-        await awaitAttachment(planned, progress, op, progress.terminals[key] as TerminalBinding, save);
+        progress.terminals[key] = restored.newBinding; save();
+        const sessionId = await awaitAttachment(planned, progress, op, restored.newBinding, save, fresh() ? null : restored.newBinding.sessionId);
+        progress.terminals[key] = { ...restored.newBinding, sessionId }; save();
       }
       if (group === "claude") for (const id of planned.reconnectOnly ?? []) {
         // #206: nothing is launched for an unmanaged session; its plugin reconnects by itself, within a bound.

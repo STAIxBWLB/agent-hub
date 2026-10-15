@@ -1464,6 +1464,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi") {
     const state = attached ? "idle" : "offline";
     if (created && ++postCreateReads && control.attachAfterRead) queueMicrotask(() => { attached = true; });
     const id = control.wrongSession ? "different-session" : session;
+    if (state === "idle" && !control.noId) shown.sessionId = id;
     return { operationId: control.wrongOperation && created ? "wrong-operation" : "op-414", phase: "restored", ready: attached,
       peers: { [peer]: { id: peer, state, ...(state === "idle" && !control.noId ? peer === "codex" ? { threadId: id } : { sessionId: id } : {}) } },
       integrity: { expected: {}, current: control.corruptIntegrity ? { changed: true } : {} } };
@@ -1539,6 +1540,24 @@ for (const failed of ["integrity", "detach"] as const) test(`#414 verification s
     if (failed === "integrity") f.control.corruptIntegrity = true;
     else { f.control.attachAfterRead = false; f.setAttached(false); }
     await expect(f.driver.verify(f.planned, f.progress, f.op)).rejects.toThrow(failed === "integrity" ? "preservation was not verified" : "peer reattachment not verified");
+    expect(f.creates()).toBe(1);
+  } finally { f.cleanup(); }
+});
+
+for (const peer of ["claude", "codex"] as const) test(`#414 fresh ${peer} idless deadline saves binding and diagnostic before resume accepts chosen session`, async () => {
+  const f = delayedManagedFixture(peer);
+  f.progress.fresh = { [peer]: { lost: "session-414", reason: "fixture operator choice", at: 1 } };
+  f.control.noId = true; f.control.wrongSession = true;
+  let saved: ProjectProgress | undefined;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, peer === "claude" ? "claude" : "native", () => { saved = JSON.parse(JSON.stringify(f.progress)); }))
+      .rejects.toThrow("attachment not verified within 90 s");
+    expect(saved?.terminals[`restored:${peer}`]).toMatchObject({ handle: "term-new" });
+    expect(saved?.attachmentTimeouts?.[peer]).toMatchObject({ terminal: { handle: "term-new" }, hub: { peerState: "idle" }, lastHubConnectAttempt: "unknown" });
+    f.control.noId = false; f.setAttached(false);
+    await f.driver.restore(f.planned, f.progress, f.op, peer === "claude" ? "claude" : "native", () => {});
+    await f.driver.verify(f.planned, f.progress, f.op);
+    expect(f.progress.terminals[`restored:${peer}`]).toMatchObject({ sessionId: "different-session" });
     expect(f.creates()).toBe(1);
   } finally { f.cleanup(); }
 });
