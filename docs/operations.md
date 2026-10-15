@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.26 and control protocol 16. Live verification
+This guide describes ahub 0.12.27 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Command output
@@ -170,8 +170,8 @@ is tracked in `docs/smoke.md` and remains unverified until performed.
 The dashboard Office section (#264, phase 1 of 4) draws the same snapshot as a
 static flat office: one desk per peer in a stable slot (claude, codex, kimi, pi,
 local, then others by id; a peer going offline dims its desk and never moves
-another), rooms for the board columns in a fixed order (To Do, Work floor,
-Review, Done shelf as a count only), at most 8 cards per room with "+N more"
+another), rooms for the board columns in a fixed order (To do, Work floor,
+Review, Done as a count only), at most 8 cards per room with "+N more"
 filtering the task list to that state, and at most 12 desks with "+N peers".
 Work-floor cards sit at the owner's desk, marked for rework; a busy peer's task
 bubble names its task only when it has exactly one in progress. Every peer
@@ -1619,21 +1619,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.26), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.27), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.26 ahub upgrade --to 0.12.26 --dry-run
-bunx --package @staix/agent-hub@0.12.26 ahub upgrade --to 0.12.26 --yes
+bunx --package @staix/agent-hub@0.12.27 ahub upgrade --to 0.12.27 --dry-run
+bunx --package @staix/agent-hub@0.12.27 ahub upgrade --to 0.12.27 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.26 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.27 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1665,14 +1665,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.26 --dry-run
+ahub upgrade --to 0.12.27 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.26 --yes
+ahub upgrade --to 0.12.27 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2982,6 +2982,8 @@ pixel silhouette readable on light backgrounds. `pet.palette` selects the base
 color: teal (default, b), blue (a), violet (c) or ochre (d), each with its own
 rim line; the waiting/blocked/review/offline colors stay fixed. While the
 window is key, 1/2/3/4 switch blue/teal/violet/ochre and save the choice.
+From a terminal, `ahub pet --palette <blue|teal|violet|ochre>` writes the
+choice to `pet.palette` in `.agenthub/config.local.json`.
 While working, the pixel art bobs in a 0.7-second stepped CSS loop; reduced-motion preferences keep it still.
 
 A detached Bun host refreshes `pet-view.json` once per second using `readPet`
