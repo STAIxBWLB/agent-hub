@@ -1228,7 +1228,7 @@ test("explicit Pi replacement preserves history, queue and private prior identit
   expect(names).toHaveLength(1);
   const file = join(records, names[0]!);
   expect(statSync(file).mode & 0o777).toBe(0o600);
-  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ previous: { sessionId: "lost-session", sessionFile: h.missing }, selected: { sessionId: "preserved-session", sessionFile: h.selected } });
+  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ previous: { sessionId: "lost-session", sessionFile: h.missing }, selected: { sessionId: "preserved-session", sessionFile: realpathSync(h.selected) } });
 });
 
 test("Pi replacement validates preserved history and durable record before revoking the old owner", async () => {
