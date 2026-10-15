@@ -14,6 +14,19 @@ account readiness, real terminal/browser observations, sign-off requirements and
 external computer-use restrictions still apply. No pending #273 item is checked
 by adding this path.
 
+2026-10-16, macOS, candidate CLI/source `40d13bc4`, daemon 0.12.28/protocol 16:
+an actual Codex-marked shell with a separate hub home and disposable Git project
+ran delegated `init`, `up --no-console`, `ui --no-open`, `permission pi ask`,
+`kill` and `reset --all --yes`, all exit 0. Unflagged `status --json` reported
+the exact scratch cwd. The dashboard's one-time ticket exchange returned HTTP
+200 and HTML; no browser visual check was performed. The daemon recorded
+`agent_cli` events for init/up/daemon/ui/permission with peer `codex`,
+`delegated: true` and `refused: false`. The reset archive mode was 0700 and the
+scratch daemon was stopped. This verifies the delegated CLI path, without
+claiming a model turn, terminal look, conversation restoration or the complete
+#214/#273 live criteria. The automated console-subprocess and recovery-target
+checks remain separate fixture evidence.
+
 ## Hub memory (#258)
 
 Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).

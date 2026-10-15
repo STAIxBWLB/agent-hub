@@ -16,7 +16,10 @@ may appear in either order; a flag after the command is not delegation.
 This grants existing console authority, including destructive actions, for one
 invocation and its ahub continuations. Use only the user-authorized targets and
 commands; destructive live checks belong in disposable projects. Existing
-confirmations, process ownership checks, native identity fences and recovery
+project discovery still applies: initialize the scratch folder as its own Git
+repository before `ahub init`, then confirm `status --json` reports that exact
+`cwd` before any destructive check.
+Existing confirmations, process ownership checks, native identity fences and recovery
 locks still apply. Do not remove agent markers. The initiating peer and command
 label are audited before effects; an unavailable audit blocks delegation. A new
 unflagged invocation has ordinary peer authority again. Native tools launched
