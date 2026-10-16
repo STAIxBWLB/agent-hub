@@ -2,9 +2,23 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.30
 
-- Wait for every restored managed peer to attach before verifying a preserved session; retain terminal receipts and bounded metadata diagnostics on timeout so resume never creates a second terminal (#414).
+Memory now uses the exact-pinned first-party `@staix/agent-mem` 0.3.0. Do not migrate a memory home until every hub using it runs 0.12.30; run `ahub memory profile-check`, then quiesce and close all consumers before changing profiles. Shared v1 stays the default, with no automatic data migration.
+
+- Consume the extracted agent-mem library, retain hub privacy policy, and preserve the exact dependency beside recovery sources so upgrades remain self-contained (#412, PR #423).
+- Bind the selected shared-v1 or generation memory profile, stop memory features on invalid or changed selection without stopping the bus, and add person-only profile-check readiness receipts (#412, PR #430).
+- Drop automatic approval noise from recall, keep complete words and memory headers, and deduplicate restored presence blocks and note references per delivery (#412, PR #419).
+- Let sandboxed peers search, show and graph screened project memory through bounded, privacy-aware hub tools (#412, PR #420).
+- Add advisory fail-first plan briefs, structured fail notes, person-only decay review and file-level staleness hints without changing stored evidence (#412, PR #425).
+- Record screened review failures and agent corrections as machine-local candidates, plus rendered/delivered/cited counters kept outside recall, briefs and graph evidence (#412, PR #426).
+- Add revision-checked task assignment/unassignment and queue completion, retry and discard controls in the console, preserving person-unassigned work across automatic routing (#424, PR #427).
+- Notify a former owner to stop after supersession, while requiring that peer's own acceptance since its latest assignment before treating an unread task as received (#424, PR #429).
+- Wait for restored managed peers to attach before preserved-session verification; retain terminal receipts and bounded timeout diagnostics so resume creates no second terminal (#414, PR #415).
+- Separate portable memory storage from hub privacy policy and platform integration as the seam for the agent-mem package (#412, PR #421).
+- Freeze the read-only memory baseline, 60-case failure registry and outstanding live-leg ownership before the memory changes (#412, PR #417).
+- Rewrite the README around current capabilities, direction, installation and the documentation map, with operational detail in the operations guide (#412, #418, PR #422).
+- Move website source and deployment to the separate agent-hub-site repository while keeping the public site address (#411, PR #413).
 
 ## 0.12.29
 

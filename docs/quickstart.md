@@ -4,7 +4,7 @@ agent-hub lets the coding agents on one machine work as peers in one project dir
 
 ## Install
 
-Needs [Bun](https://bun.sh) 1.3 or newer and macOS (Linux works without the `local` worker's `bash` and `git` tools, which need the macOS sandbox).
+Needs [Bun](https://bun.sh) 1.4.2 or newer and macOS (Linux works without the `local` worker's `bash` and `git` tools, which need the macOS sandbox).
 
 Node alone is not supported. Keep `bun` on PATH even if you install with npm.
 The registry package uses the `staix` organization scope. Install from npm:
@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.29
+bun add -g github:STAIxBWLB/agent-hub#v0.12.30
 ahub setup
 ```
 
@@ -69,11 +69,18 @@ or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local]
 | `ahub task propose [--class <c>] <title>` | put work on the board; the hub picks an owner and a reviewer, and the class if you name none |
 | `ahub board` | who has what; `ahub task show <id>` for one task |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
+| `ahub memory profile-check` | a person's read-only check of running memory bindings in the current registry |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
 | `ahub stop <peer>` | stop one headless peer (Kimi, headless Pi, `local`); the hub and the other peers keep running |
 | `ahub kill` | stop the daemon and everything it started |
 
 More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-design.md`](specs/2026-09-19-agent-hub-design.md). What it protects and what it does not: [`docs/security.md`](security.md).
+
+## Shared memory
+
+The hub exact-pins the first-party `@staix/agent-mem` 0.3.0 core. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Generation candidate acceptance is still refused.
+
+Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
 ## Browser dashboard
 
