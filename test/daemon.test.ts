@@ -831,7 +831,7 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   expect(sessionNew.mcpServers[0].env).toContainEqual({ name: "AGENTHUB_PEER_ID", value: "kimi" });
 
   const names = (await client.listTools()).tools.map((t) => t.name);
-  expect(names).toEqual(expect.arrayContaining(["hub_send", "hub_inbox", "hub_task_propose", "hub_task_done", "hub_review", "hub_remember"]));
+  expect(names).toEqual(expect.arrayContaining(["hub_send", "hub_inbox", "hub_task_propose", "hub_task_done", "hub_review", "hub_remember", "hub_memory_search", "hub_memory_show", "hub_memory_graph"]));
   expect(client.getInstructions()).toContain("planner: break work into tasks");
 
   const proposed: any = await client.callTool({ name: "hub_task_propose", arguments: { title: "write the smoke doc", class: "test" } });
@@ -889,6 +889,12 @@ test("a note from one peer rides on the others' next delivery, never its own; a 
   const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
 
   expect(await call("hub_remember", { title: "WAL mode", text: "locks the test db", kind: "fail" })).toBe("saved to shared memory; the other agents get it with their next message");
+  const memorySearch = JSON.parse(await call("hub_memory_search", { query: "WAL mode" }));
+  expect(memorySearch.lines).toHaveLength(1);
+  const memoryId = memorySearch.lines[0].match(/^mem:([a-f0-9]+)/)![1];
+  expect(await call("hub_memory_show", { ids: [memoryId] })).toContain("locks the test db");
+  const memoryGraph = JSON.parse(await call("hub_memory_graph", { starts: [`mem:${memoryId}`] }));
+  expect(memoryGraph.nodes.some((node: { id: string }) => node.id === `mem:${memoryId}`)).toBe(true);
   await Bun.sleep(60);
   expect(channel).toHaveLength(0); // no delivery of its own
   await console_.request({ t: "send", body: "hello", to: ["claude"] });
@@ -912,7 +918,7 @@ test("a PII task shows nowhere but the local console's task view: not on ahub ta
     key: "k",
     script: (body) => {
       const tools = body.messages.filter((m) => m.role === "tool");
-      if (tools.length === 0) return { tool_calls: [toolCall("hub_remember", { text: "follow-up for 900101-1234567 decided" }), toolCall("hub_task_propose", { title: "call the patient back", class: "implement" })] };
+      if (tools.length === 0) return { tool_calls: [toolCall("hub_remember", { text: "follow-up for 900101-1234567 decided" }), toolCall("hub_task_propose", { title: "call the patient back", class: "implement" }), toolCall("hub_memory_search", { query: "record" }), toolCall("hub_memory_show", { ids: ["abcdef"] }), toolCall("hub_memory_graph", { starts: ["path:src/a.ts"] })] };
       return { content: `updated the record of 900101-1234567; tools said: ${tools.map((t) => t.content).join(" | ")}` };
     },
   });
@@ -942,6 +948,7 @@ test("a PII task shows nowhere but the local console's task view: not on ahub ta
   const shown = (await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text;
   expect(shown).toContain("hub_remember is not available while working on a PII task");
   expect(shown).toContain("hub_task_propose is not available while working on a PII task");
+  for (const tool of ["hub_memory_search", "hub_memory_show", "hub_memory_graph"]) expect(shown).toContain(`${tool} is not available while working on a PII task`);
   expect(JSON.stringify(mem.calls.map((c) => c.body ?? c.query))).not.toContain("900101"); // nothing of it reached claude-mem
   expect((await console_.request({ t: "status" })).status.tasks).toEqual({ proposed: 1 }); // and no second task was created
   expect(JSON.stringify(model.requests[0]!.body)).toContain("900101-1234567"); // the on-prem model got the real text
@@ -1674,6 +1681,12 @@ test("capabilities: a peer without one is refused that tool and told why; unlist
   const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
   expect(await call("hub_task_propose", { title: "mine", class: "implement", owner: "claude" })).toContain("task #1");
   expect(await call("hub_task_propose", { title: "theirs", class: "implement", owner: "kimi" })).toContain('claude may not hand tasks to other peers (no "assign" in capabilities.claude');
+  expect(await call("hub_memory_search", { query: "memory" })).toContain('no "memory_read"');
+  expect(await call("hub_memory_show", { ids: ["abcdef"] })).toContain('no "memory_read"');
+  expect(await call("hub_memory_graph", { starts: ["path:src/a.ts"] })).toContain('no "memory_read"');
+  const beforeOversized = readFileSync(join(stateDir, "hub.log"), "utf8");
+  expect(await call("hub_memory_search", { query: "가".repeat(67) })).toContain("memory read unavailable");
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toBe(beforeOversized);
   expect(await call("hub_remember", { text: "a finding" })).toContain('claude may not save notes to shared memory (no "remember"');
   expect(await call("hub_send", { text: "[IMPORTANT] now" })).toContain('claude may not send important messages (no "important" in capabilities.claude): send it without [IMPORTANT]');
   expect(await call("hub_send", { text: "[FYI] later" })).toContain("recorded only");

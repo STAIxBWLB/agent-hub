@@ -1,3 +1,4 @@
+import { MEMORY_READ_TOOLS } from "./read-tools.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -47,7 +48,7 @@ export class Capture {
   }
 
   observe(call: { tool: string; args: string; output: string; id: string; paths: string[] }): void {
-    if (!this.sessionId || this.opts.skip?.includes(call.tool)) return;
+    if (!this.sessionId || MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || this.opts.skip?.includes(call.tool)) return;
     // Anything that names a denylisted path is kept out of memory entirely, input and output alike.
     if (call.paths.some((p) => p.split(/\s+/).some((word) => isDenied(word, this.opts.deny)))) return;
     void this.client.request("POST", "/api/sessions/observations", {
