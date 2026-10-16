@@ -95,6 +95,7 @@ import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
 import { DEFAULT_LEASE_MS, extractNodes, MemoryStore, SUGGESTED, taskKey, type GoalView, type Suggested, type View as MemoryView } from "../memory/store.ts";
 import { syncMemory } from "../memory/sync.ts";
+import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "../memory/read-tools.ts";
 import { memoryProjectKey, nativeRecall, promotionScreen, withoutPii } from "../memory/recall.ts";
 
 export interface HubConfig {
@@ -707,12 +708,12 @@ export async function startDaemon(opts: DaemonOptions) {
   if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
   // Capabilities (issue #39): enforced here and in taskOp, never by role text alone. Unlisted peers keep everything.
   // A listed peer whose value is not a list gets nothing: whoever listed it meant to narrow it.
-  const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "important"): boolean => {
+  const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "memory_read" | "important"): boolean => {
     if (peer === USER || peer === HUB || !Object.hasOwn(config.capabilities, peer)) return true;
     const list = config.capabilities[peer];
     return Array.isArray(list) && list.includes(cap);
   };
-  const CAPABILITIES = ["propose", "assign", "remember", "important"];
+  const CAPABILITIES = ["propose", "assign", "remember", "memory_read", "important"];
   for (const [peer, list] of Object.entries(config.capabilities)) {
     if (!PEER_ID.test(peer)) log(`capabilities.${peer} is not a peer id; ignored (capabilities is an object of lists, one per peer)`);
     else if (!Array.isArray(list)) log(`capabilities.${peer} is not a list: ${peer} gets no capabilities`);
@@ -1560,13 +1561,14 @@ export async function startDaemon(opts: DaemonOptions) {
     return id;
   };
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
       if (piiTurn && ["hub_task_assign", "hub_task_escalate", "hub_peer_start"].includes(op)) throw new PreEffectToolRefusal("conductor mutations are unavailable during a PII turn");
       return JSON.stringify(await conductor.execute(by, op, a));
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -1578,7 +1580,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // console reads a PII task's text deliberately, with `ahub task show <id>`.
     const onPrem = inProcess && by === "local" && piiTurn;
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => { const task = board.get(t.id); return task && by === USER ? tasks.resultLine(task) : `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`; };
-    const need = (cap: "propose" | "assign" | "remember", what: string) => {
+    const need = (cap: "propose" | "assign" | "remember" | "memory_read", what: string) => {
       if (may(by, cap)) return;
       log(`capabilities: ${by} may not ${what} (${op})`);
       throw new PreEffectToolRefusal(`${by} may not ${what} (no "${cap}" in capabilities.${by} in .agenthub/config.json)`);
@@ -1588,6 +1590,10 @@ export async function startDaemon(opts: DaemonOptions) {
       a = { ...a, owner: peerArg(a.owner, "owner") };
       need("propose", "propose tasks");
       if (a.owner && a.owner !== by) need("assign", "hand tasks to other peers");
+    }
+    if (MEMORY_READ_TOOLS.has(op)) {
+      need("memory_read", "read shared memory");
+      return memoryRead(memoryStore, memoryProject, screenMemory, op, a);
     }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
     switch (op) {
@@ -2866,6 +2872,7 @@ export async function startDaemon(opts: DaemonOptions) {
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
         tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile, lifecycleConfig.stages), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
+          if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
           const humanBash = context?.userBash === true && name === "bash";

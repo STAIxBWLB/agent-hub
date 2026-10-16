@@ -1255,7 +1255,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   ignored with a note in `hub.log` and `ahub doctor`, and is no longer
   machine-local because nothing reads it.
 - Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
-  `remember`, `important`. A peer not listed in `capabilities` has all of them,
+  `remember`, `memory_read` (the `hub_memory_search`, `hub_memory_show` and
+  `hub_memory_graph` read tools, #412 P2), `important`. A peer not listed in `capabilities` has all of them,
   which keeps today's behaviour, and a listed peer whose value is not a list has
   none; the console user and the hub are never limited. `remember` gates the
   `hub_remember` tool only, not the notes the hub keeps of done summaries and
