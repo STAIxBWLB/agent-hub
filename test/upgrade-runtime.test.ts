@@ -510,7 +510,8 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
   const previousHome = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
-    const driver = makeRecoveryDriver(run);
+    let elapsed = 0;
+    const driver = makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; } });
     // A pending create with no live launcher and no attached session left nothing to reconcile: failed.
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
     expect(progress.terminals["restored:codex"]).toBe("failed");
@@ -529,7 +530,8 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
 
     // A failed receipt is settled by what is live: a launcher still running is waited for, never doubled.
     record(true, "term-elsewhere");
-    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow(`its launcher in terminal term-elsewhere is running but no codex session attached yet; no terminal was created; wait until it attaches, or end it and close terminal term-elsewhere first`);
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("attachment not verified within 600 s");
+    expect(elapsed).toBe(600_000);
     expect(progress.terminals["restored:codex"]).toBe("failed");
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
     // ...and once the planned thread attached there, the failed receipt is the restoration.
@@ -1449,8 +1451,8 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 });
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
-function delayedManagedFixture(peer: "claude" | "codex" | "pi") {
-  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false };
+function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed") {
+  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0 };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
   mkdirSync(stateDir);
@@ -1459,16 +1461,16 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi") {
   writeFileSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`), "{}\n");
   mkdirSync(join(codeHome, "sessions"), { recursive: true });
   writeFileSync(join(codeHome, "sessions", `${session}.jsonl`), "{}\n");
-  let created = false, attached = false, creates = 0, postCreateReads = 0;
+  let created = !!pending, attached = false, creates = 0, postCreateReads = 0;
   const server = fakeHub(root, stateDir, "i-target", () => {
     const state = attached ? "idle" : "offline";
-    if (created && ++postCreateReads && control.attachAfterRead) queueMicrotask(() => {
+    if (created && ++postCreateReads && control.attachAfterRead && elapsed >= control.attachAfterMs) queueMicrotask(() => {
       if (control.persistOriginalBeforeAttach) writeFileSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`), "{}\n");
       attached = true;
     });
     const id = control.wrongSession ? "different-session" : session;
     if (state === "idle" && !control.noId) shown.sessionId = id;
-    return { operationId: control.wrongOperation && created ? "wrong-operation" : "op-414", phase: "restored", ready: attached,
+    return { operationId: control.wrongOperation && created && (!pending || elapsed > 0) ? "wrong-operation" : "op-414", phase: "restored", ready: attached,
       peers: { [peer]: { id: peer, state, ...(state === "idle" && !control.noId ? peer === "codex" ? { threadId: id } : { sessionId: id } : {}) } },
       integrity: { expected: {}, current: control.corruptIntegrity ? { changed: true } : {} } };
   });
@@ -1490,6 +1492,11 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi") {
     terminals: [binding], blockers: [] };
   const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "peers-restored", terminals: { [`closed:${peer}`]: true } };
   const op = { id: "op-414", targetRoot: PACKAGE_ROOT, plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
+  if (pending) {
+    progress.terminals[`restored:${peer}`] = pending;
+    writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer, projectRoot: root, stateDir, instanceId: "i-target",
+      launcherPid: process.pid, launcherSignature: processSignature(process.pid), launchId: "launch-433", handle: shown.handle, incarnationId: shown.incarnationId, worktreeId: "wt", env: {} }]));
+  }
   return { root, stateDir, planned, progress, op, control, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
     driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; } }), creates: () => creates,
     cleanup: () => { server.stop(true); rmSync(root, { recursive: true, force: true }); } };
@@ -1510,10 +1517,10 @@ for (const noId of [false, true]) test(`#414 timeout retains receipt and diagnos
   let saved: ProjectProgress | undefined;
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => { saved = JSON.parse(JSON.stringify(f.progress)); }))
-      .rejects.toThrow("attachment not verified within 90 s");
-    expect(f.elapsed()).toBe(90_000);
+      .rejects.toThrow("attachment not verified within 600 s");
+    expect(f.elapsed()).toBe(600_000);
     expect(saved?.terminals["restored:claude"]).toMatchObject({ handle: "term-new", sessionId: "session-414" });
-    expect(saved?.attachmentTimeouts?.claude).toMatchObject({ at: 90_000, terminal: { handle: "term-new", state: "idle", connected: true },
+    expect(saved?.attachmentTimeouts?.claude).toMatchObject({ at: 600_000, terminal: { handle: "term-new", state: "idle", connected: true },
       hub: { instanceId: "i-target", peerState: noId ? "idle" : "offline" }, lastHubConnectAttempt: "unknown" });
     expect(JSON.stringify(saved)).not.toContain("PRIVATE-TERMINAL-TEXT");
     Object.assign(f.progress, saved);
@@ -1554,7 +1561,7 @@ for (const peer of ["claude", "codex"] as const) test(`#414 fresh ${peer} idless
   let saved: ProjectProgress | undefined;
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, peer === "claude" ? "claude" : "native", () => { saved = JSON.parse(JSON.stringify(f.progress)); }))
-      .rejects.toThrow("attachment not verified within 90 s");
+      .rejects.toThrow("attachment not verified within 600 s");
     expect(saved?.terminals[`restored:${peer}`]).toMatchObject({ handle: "term-new" });
     expect(saved?.attachmentTimeouts?.[peer]).toMatchObject({ terminal: { handle: "term-new" }, hub: { peerState: "idle" }, lastHubConnectAttempt: "unknown" });
     f.control.noId = false; f.setAttached(false);
@@ -1579,5 +1586,45 @@ for (const persistedDuringWait of [false, true]) test(`#414 zero-turn Claude exc
       expect(readRecoveryWaivers(f.stateDir, "op-414")).toEqual({ claude: "zero-turn" });
     }
     expect(f.creates()).toBe(1);
+  } finally { f.cleanup(); }
+});
+
+
+for (const receipt of ["pending", "failed"] as const) test(`#433 ${receipt} live launcher waits beyond 90 s without another terminal`, async () => {
+  const f = delayedManagedFixture("codex", receipt);
+  f.control.attachAfterMs = 210_000;
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    await f.driver.verify(f.planned, f.progress, f.op);
+    expect(f.elapsed()).toBeGreaterThanOrEqual(210_000);
+    expect(f.elapsed()).toBeLessThan(600_000);
+    expect(f.creates()).toBe(0);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "session-414" });
+  } finally { f.cleanup(); }
+});
+
+for (const wrong of [false, true]) test(`#433 pending launcher ${wrong ? "rejects a different conversation" : "times out only at the managed bound"}`, async () => {
+  const f = delayedManagedFixture("codex", "pending");
+  f.control.attachAfterRead = wrong; f.control.attachAfterMs = 210_000; f.control.wrongSession = wrong;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {}))
+      .rejects.toThrow(wrong ? "different conversation" : "attachment not verified within 600 s");
+    expect(f.elapsed()).toBe(wrong ? 211_000 : 600_000);
+    expect(f.creates()).toBe(0);
+    expect(f.progress.terminals["restored:codex"]).toBe("pending");
+  } finally { f.cleanup(); }
+});
+
+
+for (const identity of ["instance", "operation"] as const) test(`#433 pending launcher refuses changed target ${identity}`, async () => {
+  const f = delayedManagedFixture("codex", "pending");
+  if (identity === "operation") { f.control.wrongOperation = true; f.control.attachAfterMs = 210_000; }
+  else f.progress.instanceId = "other-instance";
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {}))
+      .rejects.toThrow(identity === "operation" ? "target identity changed" : "target daemon changed before peer restore");
+    expect(f.creates()).toBe(0);
+    expect(f.elapsed()).toBe(identity === "operation" ? 1000 : 0);
+    expect(f.progress.terminals["restored:codex"]).toBe("pending");
   } finally { f.cleanup(); }
 });

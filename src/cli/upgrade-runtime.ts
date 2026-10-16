@@ -17,7 +17,9 @@ import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from 
 import { recoveryLock } from "../hub/recovery-store.ts";
 
 /** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
-const RECONNECT_WAIT_MS = 90_000;
+const UNMANAGED_RECONNECT_WAIT_MS = 90_000;
+/** Managed TUI startup can include resume and MCP handshakes; match createTerminal's ten-minute readiness ceiling. */
+const RECONNECT_WAIT_MS = 600_000;
 
 export const PACKAGE_ROOT = resolve(import.meta.dir, "../..");
 const orcaExecutable = () => process.env.ORCA_CLI_COMMAND || (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : process.platform === "linux" && !process.env.ORCA_TERMINAL_HANDLE ? "orca-ide" : "orca");
@@ -387,7 +389,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
    * expected instance can report "gone"; an unreadable target or launcher is unknown and blocks, never gone.
    */
   const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
-      Promise<{ state: "live"; session?: string; handle?: string; attached?: true } | { state: "gone" } | { state: "unknown"; why: string; step?: string }> => {
+      Promise<{ state: "live"; session?: string; handle?: string; attached?: true; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "gone" } | { state: "unknown"; why: string; step?: string }> => {
     const target = await inspectRecovery(planned.project);
     if (target.state !== "running" || target.instanceId !== progress.instanceId) {
       // Only a hub that may still answer is waited for; a stopped, missing or other one is settled by the runner's list.
@@ -402,7 +404,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     for (const instanceId of [progress.instanceId, ...(progress.restarts ?? []).map((r) => r.instanceId)]) {
       if (!instanceId) continue;
       const launch = await launcherOf(peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId });
-      if (launch?.state === "live") return { state: "live", handle: launch.record!.handle, ...(attached ? { attached: true as const } : {}) };
+      if (launch?.state === "live") {
+        const record = launch.record!;
+        return { state: "live", handle: record.handle, ...(attached ? { attached: true as const } : {}),
+          ...(instanceId === progress.instanceId ? { terminal: { handle: record.handle, incarnationId: record.incarnationId, worktreeId: record.worktreeId } } : {}) };
+      }
       if (launch?.state === "unknown") {
         return launch.record ? { state: "unknown", why: `its launcher in terminal ${launch.record.handle} cannot be read`, step: `wait until it attaches, or end it and close terminal ${launch.record.handle}` }
           : launch.invalidRow ? { state: "unknown", why: "a launch record that may be its launcher's cannot be evaluated", step: `inspect ${recordPath(planned.project.stateDir)} and fix that row, or end that launcher and remove its row` }
@@ -659,6 +665,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         if (receipt === "pending" || receipt === "failed") {
           const evidence = await peerEvidence(planned, progress, original.peer);
           if (evidence.state === "live" && evidence.session) { await settle(evidence.session); continue; }
+          // #433: a signed launcher of this target is an outstanding launch, not a failed restoration.
+          // Keep pending/failed until authenticated attachment and terminal revalidation both succeed.
+          if (evidence.state === "live" && evidence.terminal) {
+            const binding = { ...original, ...evidence.terminal };
+            const session = await awaitAttachment(planned, progress, op, binding, save, fresh() ? null : original.sessionId);
+            await settle(session); continue;
+          }
           if (evidence.state !== "gone") throw blocked(evidence);
           if (receipt === "pending") {
             progress.terminals[key] = "failed"; save();
@@ -715,9 +728,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       }
       if (group === "claude") for (const id of planned.reconnectOnly ?? []) {
         // #206: nothing is launched for an unmanaged session; its plugin reconnects by itself, within a bound.
-        const deadline = now() + RECONNECT_WAIT_MS;
+        const deadline = now() + UNMANAGED_RECONNECT_WAIT_MS;
         while (!(await inspectRecovery(planned.project)).peers.some((p) => p.id === id && p.state !== "offline")) {
-          if (now() >= deadline) throw new Error(`${id}: the unmanaged session did not reconnect within ${RECONNECT_WAIT_MS / 1000} s; if that Claude session was closed, start Claude in the project again (its plugin reconnects) first`);
+          if (now() >= deadline) throw new Error(`${id}: the unmanaged session did not reconnect within ${UNMANAGED_RECONNECT_WAIT_MS / 1000} s; if that Claude session was closed, start Claude in the project again (its plugin reconnects) first`);
           await sleep(1000);
         }
       }
