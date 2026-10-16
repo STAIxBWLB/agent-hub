@@ -184,9 +184,12 @@ test("installed-layout release reader finds the explicitly published checker and
   const target = mkdtempSync(join(tmpdir(), "ahub-installed-doc-reader-"));
   try {
     mkdirSync(join(target, "src/hub"), { recursive: true });
+    // This file list mirrors the import closure of sdlc-release.ts.
     for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts"]) {
       copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
     }
+    mkdirSync(join(target, "src/memory"));
+    copyFileSync(resolve(import.meta.dir, "../src/memory/platform.ts"), join(target, "src/memory/platform.ts"));
     mkdirSync(join(target, "scripts"));
     copyFileSync(checker, join(target, "scripts/check-docs.mjs"));
     writeFileSync(join(target, "probe.ts"), `import {readDocEvidence} from "./src/hub/sdlc-release.ts"; console.log(JSON.stringify(await readDocEvidence(${JSON.stringify(root)})));`);
