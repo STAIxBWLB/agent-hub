@@ -55,6 +55,8 @@ export interface TasksDeps {
   /** Authenticated live turn context, not a model-supplied flag. */
   privateTurn?: (peer: PeerId) => boolean;
   memory?: MemoryClient;
+  /** Captured native profile fence at our memory operation boundaries; no board mutation. */
+  memoryCheck?: () => void;
   /** #258: the hub's own store, the project name it files entries under (the git chain) and the repo `#N` issues belong to. */
   store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void };
   /** a line for the human: console tail and hub.log */
@@ -788,7 +790,7 @@ export class Tasks {
       const childIds = new Set(entry.planning.split.children.map(child => child.id)), budgets = this.d.executionBudget?.status();
       if (Array.isArray(budgets) && budgets.some(budget => budget.kind === "task" && budget.taskId !== undefined && childIds.has(budget.taskId))) throw new PreEffectToolRefusal("split children are referenced by execution budgets");
       if (this.d.store) {
-        try { this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
+        try { this.d.memoryCheck?.(); this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
         const children = new Set(entry.planning.split.children.map(child => this.d.board.get(child.id)).filter((child): child is Task => !!child).map(child => this.memoryKey(child)));
         if ([...children].some(key => this.d.store!.store.hasTask(key)) || this.d.store.store.goals().some(goal => goal.links.some(link => children.has(link.task)))) throw new PreEffectToolRefusal("split children are referenced by long-term tasks");
       }
@@ -2173,7 +2175,7 @@ export class Tasks {
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note, flag);
     if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
-      try { this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
+      try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }
     this.cohorts.withdraw(rejected.id); // open again: its done intent no longer counts (issue #107)
     if (rejected.owner) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
@@ -2415,6 +2417,7 @@ export class Tasks {
     if (!st || !this.d.candidates) throw new PreEffectToolRefusal("memory correction unavailable");
     const screen: MemoryScreen = rows => this.d.candidateScreen?.(rows) ?? withoutPii(rows, this.d.routing(), this.d.cwd, this.d.piiPaths ?? []);
     const valid = () => {
+      this.d.memoryCheck?.();
       if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("memory correction unavailable during a private turn");
       if (!this.candidateTextAllowed(JSON.stringify(args))) throw new PreEffectToolRefusal("memory correction withheld by privacy policy");
       return resolveVisibleMemory(st.store, st.project, screen, args.id);
@@ -2463,6 +2466,8 @@ export class Tasks {
    */
   private goalFor(by: PeerId, ref: unknown): GoalView {
     if (!this.d.store) throw new PreEffectToolRefusal("goal: hub memory is off for this project");
+    try { this.d.memoryCheck?.(); }
+    catch { throw new PreEffectToolRefusal("goal: memory profile unavailable; inspect the selector and generation state before linking a long-term task"); }
     const g = typeof ref === "string" && ref.trim() ? this.d.store.store.goalOf(ref.trim().replace(/^goal:/, "")) : undefined;
     if (!g) throw new PreEffectToolRefusal(`goal: no long-term task ${JSON.stringify(ref).slice(0, 40)} (ahub goal list shows them)`);
     if (by !== USER && g.project !== this.d.store.project) throw new PreEffectToolRefusal("goal: that long-term task belongs to another project; linking across projects is a person's");
@@ -2476,7 +2481,7 @@ export class Tasks {
   /** Record a long-term link, never for PII; failures remain notices. */
   private linkNative(task: Task, goal: GoalView, by: PeerId): string {
     if (this.isPii(task)) { this.releaseNotice(`task #${task.id} is not linked to a long-term task: nothing about a PII task enters hub memory`); return "not linked (PII task)"; }
-    try { this.markMemoryReference(task, by); this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
+    try { this.d.memoryCheck?.(); this.markMemoryReference(task, by); this.d.store!.store.goalLink(goal.id, this.memoryKey(task), by); return `part of long-term task ${goal.id.slice(0, 8)}`; }
     catch (e) { this.releaseNotice(`task #${task.id}: the link to long-term task ${goal.id.slice(0, 8)} was not saved (${(e as Error).message})`); return "not linked"; }
   }
   /** A person links a board task of this project to a long-term task (`ahub goal link`). */
@@ -2496,6 +2501,7 @@ export class Tasks {
     const st = this.d.store;
     if (!st || (task && this.isPii(task))) return undefined;
     try { // never throws: callers run after a board write
+      this.d.memoryCheck?.();
       // Approved, or settled in the store already: the snapshot the caller holds can predate an approval made while it awaited.
       const approved = !!task && (task.state === "approved" || st.store.settled(this.memoryKey(task)));
       const tier: Tier = horizon ?? (approved && PROMOTED_KINDS.includes(kind) ? "long" : "short");
@@ -2523,7 +2529,7 @@ export class Tasks {
     let n = 0;
     for (const t of this.d.board.list("approved")) {
       if (this.isPii(t)) continue;
-      try { const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key)) { this.settleMemory(t); n++; } }
+      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key)) { this.settleMemory(t); n++; } }
       catch { /* fail-open: tried again at the next start */ }
     }
     return n;
@@ -2532,7 +2538,7 @@ export class Tasks {
   private settleMemory(task: Task): void {
     if (!this.d.store || this.isPii(task)) return;
     // The store screens each note as it moves to the synced log (the promotion screen the daemon gives it).
-    try { this.d.store.store.settle(this.memoryKey(task), task.reviewer ?? task.owner ?? HUB); }
+    try { this.d.memoryCheck?.(); this.d.store.store.settle(this.memoryKey(task), task.reviewer ?? task.owner ?? HUB); }
     catch (e) { this.releaseNotice(`task #${task.id}: hub memory could not settle its notes (${(e as Error).message})`); }
   }
 

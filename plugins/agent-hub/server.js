@@ -6947,7 +6947,16 @@ function canonicalPath(path) {
 var SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
 var CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
 var memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
-var memoryGitEnv = (env = process.env) => ({ ...env, GIT_TERMINAL_PROMPT: "0" });
+function memoryGitEnv(env = process.env, options = {}) {
+  const result = { ...env, GIT_TERMINAL_PROMPT: "0" };
+  if (options.repositoryIsolation) {
+    for (const key of Object.keys(result))
+      if (["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"].includes(key) || /^GIT_CONFIG_(KEY|VALUE)_/.test(key))
+        delete result[key];
+    result.GIT_NO_REPLACE_OBJECTS = "1";
+  }
+  return result;
+}
 function memoryGitSync(args, options) {
   const argv = memoryGitArgv(args);
   return spawnSync(argv[0], argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
@@ -16178,7 +16187,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.2.0"
+    "@staix/agent-mem": "0.3.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
