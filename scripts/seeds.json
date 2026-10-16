@@ -410,6 +410,22 @@
       "testName": "a named reviewer change withdraws its unread request without a replacement notice (#316, #424)"
     },
     {
+      "id": "withdrawal-owner-state-evidence",
+      "file": "src/hub/tasks.ts",
+      "search": "const boardEvidence = role === \"owner\" && acceptance;",
+      "replacement": "const boardEvidence = role === \"owner\" && (previous.state === \"in_progress\" || previous.state === \"changes_requested\" || acceptance);",
+      "testFile": "test/tasks.test.ts",
+      "testName": "unread reassigned owner does not inherit another peer's in-progress acceptance evidence (#424)"
+    },
+    {
+      "id": "withdrawal-owner-acceptance-span",
+      "file": "src/hub/tasks.ts",
+      "search": "const acceptance = previous.history.slice(assignment + 1).some(entry => entry.event === \"accepted\" && entry.by === peer);",
+      "replacement": "const acceptance = previous.history.some(entry => entry.event === \"accepted\" && entry.by === peer);",
+      "testFile": "test/tasks.test.ts",
+      "testName": "unread reassigned owner does not reuse its acceptance before the latest assignment (#424)"
+    },
+    {
       "id": "kimi-tui-argv",
       "file": "src/cli/launch.ts",
       "search": "command.at(-1) !== \"acp\"",
