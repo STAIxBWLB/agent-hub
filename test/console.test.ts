@@ -820,6 +820,7 @@ describe("console layout (#213)", () => {
     const unassign = reduceConsole(s, "u", NOW).state;
     expect(unassign.input).toBe("task unassign 4 --role reviewer --revision 8");
     expect(command(reduceConsole(unassign, "\r", NOW).state).prompt).toContain("unassign reviewer claude");
+    expect(command(reduceConsole(unassign, "\r", NOW).state).prompt).toContain("-> in_review; use ahub review 4");
 
     s = state(true); s.panel = 4;
     s.queue = [{ id: "q1", peer: "codex", state: "queued", revision: 2 }];
@@ -833,6 +834,31 @@ describe("console layout (#213)", () => {
 
     s = state(true); s.panel = 3; s.tasks = [{ id: 1, state: "proposed", owner: "codex" }];
     expect(reduceConsole(s, "a", NOW).state.notice).toContain("upgrade the hub");
+  });
+  test("unassign role fallback, detail readiness and action state guards (#424)", () => {
+    const command = (value: any) => { const c = value.confirm; if (c?.type !== "command") throw new Error("missing command confirmation"); return c; };
+    let s = state(true); s.panel = 3;
+    s.tasks = [{ id: 5, state: "proposed", class: "implement", owner: null, reserved: null, reviewer: "claude", flowRevision: 2 }];
+    let next = reduceConsole(s, "u", NOW).state;
+    expect(next.input).toBe("task unassign 5 --role reviewer --revision 2");
+    expect(command(reduceConsole(next, "\r", NOW).state).prompt).toContain("-> proposed; later completion without a reviewer may approve directly");
+
+    for (const taskState of ["approved", "backlog"]) {
+      s = state(true); s.panel = 3;
+      s.tasks = [{ id: 6, state: taskState, owner: "codex", reviewer: "claude", flowRevision: 3 }];
+      expect(reduceConsole(s, "a", NOW).state.editing).toBe(false);
+      expect(reduceConsole(s, "u", NOW).state.editing).toBe(false);
+    }
+
+    s = state(true); s.panel = 3;
+    s.tasks = [{ id: 3, state: "proposed", class: "implement", owner: "codex", reviewer: "claude", deps: [1], ready: true, flowRevision: 4 }];
+    s.detail = { id: 3, state: "proposed", deps: [1], flowRevision: 4 };
+    next = reduceConsole(s, "a", NOW).state;
+    expect(next.actionLock?.waiting).toBe(false);
+
+    s = state(true); s.panel = 4;
+    s.queue = [{ id: "q-active", peer: "codex", state: "accepted", revision: 2 }];
+    expect(reduceConsole(s, "r", NOW).state.editing).toBe(false);
   });
   test("Tasks selection follows its id across refreshes and never jumps to a replacement", () => {
     const s = state(true); s.panel = 3;
@@ -1304,6 +1330,43 @@ describe("whole-board task progress (#246)", () => {
       expect(f.output[at + 1]).toContain("tasks 1/1 approved"); expect(f.output[at + 1]).not.toContain("status unavailable");
       f.signal(); await running;
     } finally { globalThis.setInterval = originalInterval; setSystemTime(); }
+  });
+  test("a completed command queues a fresh refresh and reconciles detail by id (#424)", async () => {
+    const callbacks: (() => void)[] = []; const originalInterval = globalThis.setInterval;
+    globalThis.setInterval = ((fn: () => void, ms?: number) => { callbacks.push(fn); return originalInterval(fn, ms); }) as typeof setInterval;
+    try {
+      const f = fixture();
+      const task = { id: 3, title: "task 3", state: "proposed", class: "implement", flowRevision: 1 };
+      let taskCalls = 0, release: (() => void) | undefined;
+      f.client.request = async (msg: any) => {
+        f.requests.push(msg);
+        const base = { ok: true, status: { peers: {} }, budget: {}, text: "[]", deliveries: [] };
+        if (msg.t === "status" || msg.t === "budget") return base;
+        if (msg.t === "task" && msg.op === "task_show") return { ...base, text: JSON.stringify(task) };
+        if (msg.t === "task" && msg.op === "hub_task_list") {
+          taskCalls++;
+          if (taskCalls === 4) await new Promise<void>(resolve => { release = resolve; });
+          return { ...base, text: JSON.stringify([task]) };
+        }
+        if (msg.t === "queue" && msg.op === "list") return base;
+        return base;
+      };
+      const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false,
+        runCommand: (_args, _output, done) => { task.flowRevision = 2; done(); return () => {}; } });
+      f.input("3");
+      await Bun.sleep(100);
+      expect(frameOf(f)).toContain("task 3");
+      f.input("\r");
+      await consoleFrameContains(f, "flowRevision");
+      callbacks[1]!();
+      for (let n = 0; n < 100 && !release; n++) await Promise.resolve();
+      expect(release).toBeDefined();
+      f.input(":"); f.input("status"); f.input("\r");
+      release?.();
+      await consoleFrameContains(f, "detail 3 changed");
+      expect(taskCalls).toBeGreaterThanOrEqual(3);
+      f.signal(); await running;
+    } finally { globalThis.setInterval = originalInterval; }
   });
   test("stream retains top-origin scrollback and gets footer totals from status without board requests", async () => {
     const f = fixture(); const original = f.client.request;

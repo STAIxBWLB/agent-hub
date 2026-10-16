@@ -637,6 +637,11 @@ export class Bus {
     return this.seen.get(id);
   }
 
+  /** The envelopes most recently handed to a peer, used to distinguish a received request from an unread queue. */
+  lastDeliveredTo(peer: PeerId): Envelope[] {
+    return this.lastDelivery.get(peer)?.out ?? [];
+  }
+
   /**
    * Take back an envelope that has not been delivered yet (a request that has expired). True when it was removed from a
    * queue now; an envelope whose steer is still in flight is not in any queue, so its id is remembered and it is

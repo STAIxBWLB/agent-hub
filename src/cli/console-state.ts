@@ -415,7 +415,9 @@ function lockedCommandPrompt(lock: NonNullable<ConsoleState["actionLock"]>, args
   const role = commandFlag(args, "--role") ?? "owner";
   if (lock.prefix[1] === "assign") return `assign ${role} on task #${lock.id} at revision ${lock.revision}${lock.waiting && role === "owner" ? " as a reservation until dependencies approve" : ""}`;
   const affected = role === "owner" ? [lock.owner, lock.reserved].filter(Boolean).join(" and ") : lock.reviewer ?? "none";
-  return `unassign ${role} ${affected} on task #${lock.id} at revision ${lock.revision}; native work and uncertain deliveries are not stopped or resolved`;
+  const resulting = role === "owner" ? "proposed" : lock.state;
+  const guidance = role === "reviewer" && lock.state !== "in_review" ? "; later completion without a reviewer may approve directly" : lock.state === "in_review" ? `; use ahub review ${lock.id}` : "";
+  return `unassign ${role} ${affected} on task #${lock.id} at revision ${lock.revision} -> ${resulting}${guidance}; native work and uncertain deliveries are not stopped or resolved`;
 }
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
   const attentionKeyBlocked = !!(state.confirm || state.optionChoice || state.modeChoice || state.help || state.editing || state.input);
@@ -597,15 +599,18 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       s.panel === 3 && key === "r" && selected.state === "in_review" ? `review ${item} ` : undefined;
     if (prefill) { s.input = prefill; s.editing = true; return done(); }
     if (s.panel === 3 && (key === "a" || key === "u")) {
-      const revision = selected.flowRevision, role = selected.state === "in_review" ? "reviewer" : "owner";
+      if (!["proposed", "in_progress", "in_review", "changes_requested"].includes(selected.state)) return done();
+      const revision = selected.flowRevision, role = selected.state === "in_review" || key === "u" && !selected.owner && !selected.reserved && selected.reviewer ? "reviewer" : "owner";
       if (!Number.isSafeInteger(revision) || revision < 0) { notify(s, "task row actions need flowRevision; upgrade the hub", now); return done(); }
-      if (key === "u" && role === "owner" && !selected.owner && !selected.reserved || key === "u" && role === "reviewer" && !selected.reviewer) { notify(s, `task #${item}: no ${role} to unassign`, now); return done(); }
-      const waiting = selected.state === "proposed" && !selected.ready && Array.isArray(selected.deps) && selected.deps.length > 0;
+      if (key === "u" && (role === "owner" && !selected.owner && !selected.reserved || role === "reviewer" && !selected.reviewer)) { notify(s, `task #${item}: no ${role} to unassign`, now); return done(); }
+      const listed = s.tasks.find(task => task.id === item), ready = listed?.ready ?? selected.ready;
+      const waiting = selected.state === "proposed" && ready !== true && Array.isArray(selected.deps) && selected.deps.length > 0;
       s.actionLock = { prefix: ["task", key === "a" ? "assign" : "unassign"], id: String(item), revision, state: String(selected.state), ...(selected.owner ? { owner: String(selected.owner) } : {}), ...(selected.reserved ? { reserved: String(selected.reserved) } : {}), ...(selected.reviewer ? { reviewer: String(selected.reviewer) } : {}), waiting };
       s.input = key === "a" ? `task assign ${item} ${role === "reviewer" ? "--role reviewer " : ""}--revision ${revision} ` : `task unassign ${item} --role ${role} --revision ${revision}`;
       s.editing = true; return done();
     }
     if (s.panel === 4 && key === "r") {
+      if (!["queued", "needs_review"].includes(selected.state)) return done();
       const revision = selected.revision;
       if (!Number.isSafeInteger(revision) || revision < 0) { notify(s, "queue row actions need a delivery revision; upgrade the hub", now); return done(); }
       const action = selected.state === "queued" ? "discard" : "retry";
@@ -700,6 +705,7 @@ export function table(head: string[], rows: Span[][], columns: number, explicitW
   }));
 }
 function taskHints(row: any): string[] {
+  if (!["proposed", "in_progress", "in_review", "changes_requested"].includes(row.state)) return [];
   const review = row.state === "in_review";
   const hints = [review ? "a reviewer" : "a assign"];
   if (review ? row.reviewer : row.owner || row.reserved) hints.push("u unassign");

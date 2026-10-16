@@ -1058,6 +1058,7 @@ export class Tasks {
     this.recordScreen(task.id, "task", v);
     if (v?.label === "unknown") return;
     if (v?.label !== "clear") return void this.d.board.update(task.id, HUB, "screened", {}, v ? `pii: screen, ${v.category}` : "pii: regex");
+    if (this.personUnassigned(now)) return;
     const lifted = this.d.board.update(task.id, HUB, "screened", { signals: now.signals.filter((s) => s !== "pii") }, "clear, screened again");
     this.d.notify(`task ${this.publicTitle(lifted)}: the PII screen cleared it on a second look; it is routed as usual`);
     const still = this.waitsFor(lifted);
@@ -1350,7 +1351,7 @@ export class Tasks {
   private personUnassigned(task: Task): boolean {
     const removed = task.history.findLastIndex((h) => h.event === "unassigned" && h.by === USER);
     if (removed < 0) return false;
-    return !task.history.slice(removed + 1).some((h) => ["assigned", "reassigned", "escalated", "reserved", "backlog pulled"].includes(h.event));
+    return !task.history.slice(removed + 1).some((h) => h.by === USER && ["assigned", "reassigned", "escalated", "reserved", "backlog pulled"].includes(h.event));
   }
 
   /**
@@ -1444,7 +1445,10 @@ export class Tasks {
       // result landing during the brief) leave the assignment exactly as undelivered as before: the notice and
       // the typed error stand (#297 Decisions).
       const moves = (entries: Task["history"]) => entries.filter((h) => !QUIET_EVENTS.has(h.event) && !h.event.startsWith("check "));
-      if (moves(saved.history).length !== moves(next.history).length) throw e;
+      if (moves(saved.history).length !== moves(next.history).length) {
+        if (e instanceof AssignmentSupersededError) return saved;
+        throw e;
+      }
       this.releaseNotice(this.undeliveredNotice(saved, e));
       throw new AssignmentUndeliveredError(saved, e);
     }
@@ -2213,10 +2217,10 @@ export class Tasks {
     if (!peer || peer === next[role]) return;
     const kind = role === "owner" ? "task" : "review";
     this.releaseNotice(`task ${this.publicTitle(next)}: could not notify previous ${role} ${peer} that its request is withdrawn`, () => {
-      for (const env of this.d.bus.snapshot(false).queues[peer] ?? []) {
-        const assignmentRequest = role === "reviewer" || env.body.startsWith(`Task #${previous.id} [`);
-        if (assignmentRequest && env.from === HUB && env.kind === kind && env.refs?.task === String(previous.id)) this.d.bus.withdraw(env.id);
-      }
+      const matches = (env: Envelope) => (role === "reviewer" || env.body.startsWith(`Task #${previous.id} [`)) && env.from === HUB && env.kind === kind && env.refs?.task === String(previous.id);
+      const mayHaveReceived = this.d.bus.lastDeliveredTo(peer).some(matches) || this.d.bus.queueList(peer).some(row => ["dispatching", "accepted", "needs_review", "completed"].includes(row.state) && row.originals.some(matches));
+      for (const env of this.d.bus.snapshot(false).queues[peer] ?? []) if (matches(env)) this.d.bus.withdraw(env.id);
+      if (!mayHaveReceived) return;
       const body = role === "owner"
         ? `Task ${this.publicTitle(next)} is no longer assigned to you${next.owner ? `; its owner is now ${next.owner}` : "; it is unassigned"}. Do not accept or complete it; late calls under your former assignment are refused.`
         : `Review request for task #${previous.id} ${this.publicTitle(next)} is withdrawn: ${next.reviewer ? `its reviewer is now ${next.reviewer}` : "the task has no reviewer"}. Do not review this task; a late verdict from the previous reviewer is refused.`;
