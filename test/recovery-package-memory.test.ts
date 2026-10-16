@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { packageDigest, verifyPackage } from "../src/cli/recovery-package.ts";
 import { makeRecoveryDriver, preserveSource } from "../src/cli/upgrade-runtime.ts";
 import type { RecoveryOperation, UpgradePlan } from "../src/cli/upgrade.ts";
+import hubPackage from "../package.json";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -14,7 +15,7 @@ function fixture(memory = true) {
   const base = mkdtempSync(join(tmpdir(), "ahub-runtime-memory-")); roots.push(base);
   const root = join(base, "runtime"), home = join(base, "home");
   for (const dir of ["src", "plugins", "templates", ".claude-plugin"]) mkdirSync(join(root, dir), { recursive: true });
-  const manifest = { name: "@staix/agent-hub", version: "0.0.0", ...(memory ? { dependencies: { "@staix/agent-mem": "0.2.0" } } : {}) };
+  const manifest = { name: "@staix/agent-hub", version: "0.0.0", ...(memory ? { dependencies: { "@staix/agent-mem": hubPackage.dependencies["@staix/agent-mem"] } } : {}) };
   writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
   for (const name of ["README.md", "LICENSE", "CHANGELOG.md"]) writeFileSync(join(root, name), "fixture\n");
   const dependency = join(root, "node_modules/@staix/agent-mem");
@@ -53,7 +54,7 @@ test("recovery refuses mismatched, ranged, transitive and symlinked memory runti
   writeFileSync(manifest, JSON.stringify({ ...original, dependencies: { unexpected: "1.0.0" } }));
   expect(() => packageDigest(f.root)).toThrow("identity/version mismatch");
   writeFileSync(manifest, JSON.stringify(original));
-  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": "^0.2.0" } }));
+  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": `^${hubPackage.dependencies["@staix/agent-mem"]}` } }));
   expect(() => packageDigest(f.root)).toThrow("unsupported runtime dependencies");
   writeFileSync(join(f.root, "package.json"), JSON.stringify(f.manifest));
   symlinkSync("index.ts", join(f.dependency, "src/linked.ts"));

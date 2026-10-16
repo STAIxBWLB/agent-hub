@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore, migrate } from "@staix/agent-mem";
+import { MemoryStore, candidateTargetRevision, migrate } from "@staix/agent-mem";
 import { realPath } from "../src/hub/project.ts";
 import {
   AGENT_MEM_VERSION, assertAgentMemVersion, bindProfileMemory, MemoryProfileBinding, openProfileCandidates, openProfileMemory, selectedMemoryProfile,
@@ -50,9 +50,13 @@ test("selector invalidation latches explicit entry fences and raw store close re
 
 test("candidate storage remains at root M when the selected profile is a generation", async () => {
   const home = temporary(), first = openProfileMemory({ home, now: () => NOW });
-  const id = first.store.note(note); first.store.close();
+  const id = first.store.note(note);
+  const target = first.store.get(id, "agent-hub");
+  expect(target).toBeDefined();
+  const revision = candidateTargetRevision(target!);
+  first.store.close();
   const before = openProfileCandidates(first.binding, { now: () => NOW });
-  const candidateId = before.put({ project: "agent-hub", kind: "decay", target: { id, revision: id }, reason: "synthetic review" }, "public"); before.close();
+  const candidateId = before.put({ project: "agent-hub", kind: "decay", target: { id, revision }, reason: "synthetic review" }, "public"); before.close();
   await migrate({ memoryDir: join(home, "memory"), mode: "apply", generation: G, authorizedPerson: true, tty: true, now: () => NOW });
   expect(() => first.binding.assertCurrent()).toThrow("restart the hub");
   const selected = openProfileMemory({ home, now: () => NOW, profile: "shared-v1" });

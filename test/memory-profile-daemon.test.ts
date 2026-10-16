@@ -45,13 +45,16 @@ async function hub(f: ReturnType<typeof fixture>) {
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(f.stateDir, { role: "console" }); cleanup.push(() => person.close());
   const peer = await ControlClient.connect(f.stateDir, { role: "peer", peer: "worker" }); cleanup.push(() => peer.close());
-  for (let attempt = 0; attempt < 200 && daemon.bus.peers.get("worker")?.state !== "idle"; attempt++) await Bun.sleep(10);
-  expect(daemon.bus.peers.get("worker")?.state).toBe("idle");
+  const recipient = await ControlClient.connect(f.stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => recipient.close());
+  for (const name of ["worker", "claude"]) {
+    for (let attempt = 0; attempt < 200 && daemon.bus.peers.get(name)?.state !== "idle"; attempt++) await Bun.sleep(10);
+    expect(daemon.bus.peers.get(name)?.state).toBe("idle");
+  }
   const tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "worker" }); cleanup.push(() => tools.close());
   const task = (op: string, args: Record<string, unknown>) => tools.request({ t: "task", op, args });
   const status = async () => {
     const reply = await person.request({ t: "status" });
-    expect(reply.ok).toBe(true);
+    expect(reply).toMatchObject({ t: "status", status: { memoryProfile: expect.any(Object) } });
     return reply.status.memoryProfile;
   };
   return { daemon, person, peer, tools, task, status };
@@ -118,7 +121,7 @@ for (const invalid of ["invalid selector", "missing generation"] as const) {
     const result = await h.task("hub_remember", { text: "must never fall back to legacy", kind: "finding" });
     expect(`${result.text ?? ""} ${result.error ?? ""}`).not.toContain("saved to shared memory");
     const board = await h.task("hub_task_list", {}); expect(board.ok).toBe(true);
-    expect((await h.person.request({ t: "status" })).ok).toBe(true);
+    expect(await h.person.request({ t: "status" })).toMatchObject({ t: "status", status: { memoryProfile: { state: "unavailable" } } });
     expect(legacyRows(f.memoryDir)).toEqual(original);
     expect(existsSync(join(f.memoryDir, "candidates.db"))).toBe(false);
   });
@@ -139,8 +142,8 @@ test("selector change fences retained daemon notes, corrections and citation cou
   const beforeCandidates = sidecar.list({ project: f.project, status: "all" });
   expect(beforeCandidates).toHaveLength(1);
   // Ordinary native peer messaging reaches the daemon's retained citation observer.
-  const citation = await h.tools.request({ t: "send", body: `mem:${target!.id} synthetic citation before switch`, to: ["user"] });
-  expect(citation.ok).toBe(true);
+  const citation = await h.tools.request({ t: "send", body: `mem:${target!.id} synthetic citation before switch`, to: ["claude"] });
+  expect(citation).toMatchObject({ t: "sent", ok: true, targets: ["claude"] });
   const beforeCounters = sidecar.counters(f.project);
   expect(beforeCounters.some(counter => counter.cited === 1)).toBe(true);
   const ownedBefore = legacyRows(join(f.memoryDir, "generations", G));
@@ -150,8 +153,8 @@ test("selector change fences retained daemon notes, corrections and citation cou
   await h.task("hub_remember", { text: "forbidden stale generation note", kind: "finding" });
   const refused = await h.task("hub_memory_correct", { id: target!.id, text: "forbidden stale candidate", reason: "selector has changed" });
   expect(refused.ok).toBe(false);
-  const postCitation = await h.tools.request({ t: "send", body: `mem:${target!.id} synthetic citation after switch`, to: ["user"] });
-  expect(postCitation.ok).toBe(true);
+  const postCitation = await h.tools.request({ t: "send", body: `mem:${target!.id} synthetic citation after switch`, to: ["claude"] });
+  expect(postCitation).toMatchObject({ t: "sent", ok: true, targets: ["claude"] });
   expect((await h.task("hub_task_list", {})).ok).toBe(true);
   expect(sidecar.list({ project: f.project, status: "all" })).toEqual(beforeCandidates);
   expect(sidecar.counters(f.project)).toEqual(beforeCounters);
