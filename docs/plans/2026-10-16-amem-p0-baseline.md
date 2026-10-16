@@ -93,5 +93,18 @@ To verify the stdout digest, extract the JSON block exactly with its final LF an
 - Explicit-project collector and bare-default collector both exited 0. The bare-default worktree-state limitation is documented above.
 - `bun x tsc --noEmit`: passed in the remote container after frozen-lockfile install.
 - Registry validator passed for all 60 rows; a separate ad hoc negative fixture confirmed rejection of duplicate/missing case ids, an unlisted gap, a missing ponytail marker, a missing literal test declaration, and invalid owner/phase fields.
-- Initial `scripts/check.sh` invocation: 2,791 pass / 4 fail, exit 1. The invocation PATH omitted `/usr/sbin`, making `lsof` unavailable to benchmark cwd/restoration checks. No source or assertions were changed. Corrected-PATH focused verification passed: 63 pass / 0 fail across the three affected benchmark files. A valid full-gate result remains pending because resource admission deferred before execution. Admission deferrals occurred before execution while other work was detected; they were not counted as test runs.
+- Initial local `scripts/check.sh` invocation (before the receipt-second correction): 2,791 pass / 4 fail, exit 1. The invocation PATH omitted `/usr/sbin`, making `lsof` unavailable to benchmark cwd/restoration checks. No source or assertions were changed to resolve those failures. Corrected-PATH focused verification passed: 63 pass / 0 fail across the three affected benchmark files. Subsequent full-gate attempts were deferred by admission before execution and are not test runs.
+- Final P0 gate, reviewer decision 2026-10-16: the PR CI runs `scripts/check.sh` at the exact PR head on both `ubuntu-latest` and `macos-latest`, as verified in `.github/workflows/check.yml`. Both platform gates must finish with `check: OK`, and required CI (including seeded guards) must be green before reviewer approval. CI has not run at this handoff; no green CI or successful local full gate is claimed.
+- No further local full-gate retries: the person's live remote desktop session holds admission while connected. The reviewer owns pushing the branch, opening the PR and approving only after green CI. This handoff submits the implementation for review, not a completed P0 acceptance claim.
+
+Focused check receipts:
+
+```text
+baseline fixture: OK (24 assertions; missing-store and invalid-argument checks; source bytes and file set unchanged)
+check-registry: OK (60 cases, 8 modes; gaps: R05, R08, R09, R10, R11, R12, C08)
+63 pass
+0 fail
+281 expect() calls
+Ran 63 tests across 3 files. [13.59s]
+```
 - Live accounts, two physical Macs, browser inspection, model suggestions and research arms were not run. The annex keeps all ten live legs unrun.
