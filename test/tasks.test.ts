@@ -2535,13 +2535,15 @@ test("a move made while the assignment's brief is being read is supersession and
   await base.tasks.review("claude", 1, "changes_requested", "too long");
   await base.tasks.done("kimi", 1, "v2");
   // The escalation writes owner codex; while sendTask reads the brief, a console assign moves the task to local
-  // and that delivery succeeds; the stale envelope to codex then throws.
+  // and that delivery succeeds. The post-brief guard prevents a stale codex publish;
+  // the former owner's independent stop message must remain deliverable.
   const briefs = { forTask: async () => { base.board.update(1, "user", "reassigned", { owner: "local" }, "console assign during the brief"); return undefined; } };
   const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never, memory: new MemoryClient(base.mem.url) });
   const publish = base.bus.publish.bind(base.bus), attempted: string[] = [];
-  base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") { attempted.push(env.body); throw new Error("delivery journal unavailable"); } return publish(env); };
+  base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1" && env.to.includes("codex")) { attempted.push(env.body); throw new Error("delivery journal unavailable"); } return publish(env); };
   try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1 }); }
   finally { base.bus.publish = publish; }
+  expect(attempted).toEqual([]);
   // The superseding move stands; no stale success notice or decision note survives,
   // but the former owner must still stop and learn the current owner.
   expect(base.board.get(1)!.owner).toBe("local");
