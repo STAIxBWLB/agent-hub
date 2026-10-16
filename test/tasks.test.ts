@@ -2540,7 +2540,7 @@ test("a move made while the assignment's brief is being read is supersession and
   const briefs = { forTask: async () => { base.board.update(1, "user", "reassigned", { owner: "local" }, "console assign during the brief"); return undefined; } };
   const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never, memory: new MemoryClient(base.mem.url) });
   const publish = base.bus.publish.bind(base.bus), attempted: string[] = [];
-  base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1" && env.to.includes("codex")) { attempted.push(env.body); throw new Error("delivery journal unavailable"); } return publish(env); };
+  base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1" && (env.to ?? []).includes("codex")) { attempted.push(env.body); throw new Error("delivery journal unavailable"); } return publish(env); };
   try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1 }); }
   finally { base.bus.publish = publish; }
   expect(attempted).toEqual([]);
