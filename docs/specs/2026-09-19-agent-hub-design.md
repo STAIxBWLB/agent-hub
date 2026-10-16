@@ -1255,7 +1255,7 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   ignored with a note in `hub.log` and `ahub doctor`, and is no longer
   machine-local because nothing reads it.
 - Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
-  `remember`, `memory_read` (the `hub_memory_search`, `hub_memory_show` and
+  `remember`, `memory_correct` (screened correction candidates only, never acceptance), `memory_read` (the `hub_memory_search`, `hub_memory_show` and
   `hub_memory_graph` read tools, #412 P2), `important`. A peer not listed in `capabilities` has all of them,
   which keeps today's behaviour, and a listed peer whose value is not a list has
   none; the console user and the hub are never limited. `remember` gates the
@@ -2944,3 +2944,14 @@ Recovery source preservation retains the exact first-party memory package under 
 The exact first-party pin is `@staix/agent-mem` 0.2.0. Agent-hub adds advisory plan-matching live fails to owner briefs and reviewer checklists, optional labeled fail text validated before the 4000-byte cap, person-only decay review, and privacy-filtered bounded read-time staleness markers. The task/PII boundaries remain in Tasks and the daemon. Details and ceilings are in `docs/memory.md`; no new v1 op, stored marker, candidate writer or live-leg claim is introduced.
 
 The P7-1 hint C3 probe gate assumes the tree is not modified during a call: no probe reaches a declared private/denied path in that scope. Concurrent ancestor swaps by a process running as the person are outside the security threat model and may expose one existence bit; this ceiling has a deterministic witness test.
+
+
+## P7 candidate producers and local observations (#412)
+
+Tasks produces a fail candidate from a public changes-requested review with unmet items, after the current Tasks privacy screen clears the complete candidate text. The review evidence identifies the task, review event and reviewed head (explicitly unknown when absent). Missing cause or retry conditions remain explicitly unknown. Candidate failure never changes the saved review outcome.
+
+`hub_memory_correct {id, text, reason}` requires its own `memory_correct` capability and refuses a PII turn. Input caps are checked before logging or storage; exact or unique visible-prefix resolution uses the current project and full-record screening. Tasks checks the proposed text like `hub_remember`, then rechecks context and target after asynchronous screening. A successful call records the full target id and revision in CandidateStore and returns only its candidate id and person-review guidance. MCP/Pi/local share the tool definition; capture excludes both arguments and results.
+
+Journal handoff observes rendered native memory lines in the final preface/brief payload. First positive journal acknowledgement observes delivered for that delivery and its original render context, not a later turn; pull's completed read is the existing journal acknowledgement contract. Peer messages and cleared task completion summaries observe visible `mem:<id8+>` citations. Counter keys use full entry id, project and known task/turn/session plus journal delivery id for rendered/delivered. Unattributed citations use message:<envelope-id> or summary:<task>:<history-index> observation keys with rendered/delivered unknown; these are citation counts, not proof of a causal per-delivery ratio. Absent observations and identities remain unknown. A bounded in-memory render-context map does not reconstruct acknowledgements after restart, so those delivered values remain unknown. Private envelopes, PII tasks and PII turns produce no rows. There is no usage sync or note mutation.
+
+The machine-local candidate/counter sidecar remains outside native import, recall, briefs, ask and graph evidence. A person accepts or rejects through `amem review` with its existing TTY/policy authority. Dashboard acceptance is deferred. No new v1 operation, note kind or scope is introduced.
