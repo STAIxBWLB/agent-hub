@@ -472,8 +472,9 @@ does not list), needs its directory in `local.read_allow`, for example
 hub's tools: list a peer and it keeps only the capabilities named, from
 `propose` (`hub_task_propose`), `assign` (proposing with another peer as owner),
 `remember` (the `hub_remember` tool; the notes the hub itself keeps of done
-summaries and review verdicts are not gated) and `important` (`[IMPORTANT]`
-messages). For example `"capabilities": { "local": ["propose", "remember"] }`.
+summaries and review verdicts are not gated), `memory_read`
+(`hub_memory_search`, `hub_memory_show`, `hub_memory_graph`) and `important`
+(`[IMPORTANT]` messages). For example `"capabilities": { "local": ["propose", "remember"] }`.
 A peer that is not listed keeps all of them, a listed peer whose value is not a
 list gets none, and an unknown capability name grants nothing; `hub.log` says
 so for each, and logs every refusal (`capabilities:`). A refused tool call says
