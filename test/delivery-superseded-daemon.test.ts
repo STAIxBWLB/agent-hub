@@ -73,3 +73,27 @@ test("AC2: a superseded hold settles on receipt and drains queued work (#434)", 
     expect(daemon.bus.queued("claude")).toBe(0);
   } finally { await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
+
+test("AC3: releasing recovery classifies restored obsolete holds without an attached peer (#434)", async () => {
+  const f = await fixture();
+  const { Bus } = await import("../src/hub/bus.ts");
+  const { supersededDeliveryReason } = await import("../src/hub/delivery-superseded.ts");
+  f.held("offline-presence", [newEnvelope("hub", "private memory", { kind: "presence" })]);
+  const bus = new Bus({ journal: f.journal, batchMs: 0 });
+  bus.setRecoveryHold(true);
+  bus.onQueues = () => {
+    if (bus.isRecoveryHeld) return;
+    for (const row of bus.queueList()) {
+      if (row.state !== "needs_review") continue;
+      const reason = supersededDeliveryReason(row.originals, f.board, row.peer);
+      if (reason) bus.resolveDelivery(row.id, row.revision, "completed", reason, "hub");
+    }
+  };
+  try {
+    expect(bus.peers.size).toBe(0);
+    expect(bus.queueShow("offline-presence")?.state).toBe("needs_review");
+    bus.setRecoveryHold(false);
+    expect(bus.queueShow("offline-presence")?.state).toBe("completed");
+    expect(f.journal.resolution("offline-presence")?.actor).toBe("hub");
+  } finally { bus.closeJournal(); f.board.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
