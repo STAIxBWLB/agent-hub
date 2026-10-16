@@ -5,13 +5,15 @@ import { readMergeQueue } from "./sdlc-queue.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
-import { mentionsPrivatePath } from "./memory-policy.ts";
+import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
+import type { MemoryScreen } from "./read-tools.ts";
+import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
+import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
 import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasStarted, planningUndoEntry, type HistoryEntry, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
@@ -48,6 +50,10 @@ export interface TasksDeps {
   briefs?: Briefs;
   /** Screened live fail notes directly intersecting the task plan or refs; read-only advice. */
   planFails?: (task: Task) => NativeItem[];
+  candidates?: CandidateStore;
+  candidateScreen?: MemoryScreen;
+  /** Authenticated live turn context, not a model-supplied flag. */
+  privateTurn?: (peer: PeerId) => boolean;
   memory?: MemoryClient;
   /** #258: the hub's own store, the project name it files entries under (the git chain) and the repo `#N` issues belong to. */
   store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void };
@@ -2091,6 +2097,17 @@ export class Tasks {
       reviewedHead = checked.reviewedHead;
     }
     if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead); task = valid(); }
+    let candidate: CandidateInput | undefined;
+    if (verdict === "changes_requested" && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
+      const input: CandidateInput = { project: this.d.store?.project ?? this.d.project, kind: "fail", approach: this.publicTitle(task), symptom: items.join("\n"),
+        cause: "unknown: review unmet items do not establish a cause", retryWhen: "unknown: a person must review the unmet items before accepting",
+        evidenceRefs: [`task:${task.id}`, `reviewed-head:${reviewedHead ?? task.refs.commit ?? "unknown"}`] };
+      const context = JSON.stringify({ title: task.title, detail: task.detail, refs: task.refs, plan: task.plan, signals: task.signals });
+      const payload = JSON.stringify({ input, note, context });
+      const cleared = this.candidateTextAllowed(payload, task) && !await this.withholds("review note", payload, task);
+      task = valid();
+      if (cleared && context === JSON.stringify({ title: task.title, detail: task.detail, refs: task.refs, plan: task.plan, signals: task.signals })) candidate = input; // Async screening cannot authorize a verdict under an obsolete role/state.
+    }
     const pii = this.isPii(task);
     const flag = { withheld: withheld || undefined };
     if (verdict === "approved") {
@@ -2111,6 +2128,9 @@ export class Tasks {
       return next;
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note, flag);
+    if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
+      try { this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
+    }
     this.cohorts.withdraw(rejected.id); // open again: its done intent no longer counts (issue #107)
     if (rejected.owner) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
     this.contradict(rejected);
@@ -2295,6 +2315,30 @@ export class Tasks {
     const policy = this.d.routing().classes[found[0]!.class];
     const about = found.find((t) => this.isPii(t)) ?? found[0]!; // the answer is filed under the PII task when there is one
     return { ...(policy?.route ? { route: policy.route } : {}), ...(policy?.fixed_model ? { fixedModel: policy.fixed_model } : {}), pii, task: String(about.id) };
+  }
+
+  private candidateTextAllowed(text: string, task?: Task): boolean {
+    return (!task || !this.isPii(task)) && this.nameable(text) && !looksSecret(text) && !this.aboutPrivatePath("", text, task);
+  }
+
+  /** Candidate only: the person remains the sole acceptance authority. */
+  async correct(by: PeerId, input: unknown): Promise<string> {
+    const args = correctionInput(input);
+    const st = this.d.store;
+    if (!st || !this.d.candidates) throw new PreEffectToolRefusal("memory correction unavailable");
+    const screen: MemoryScreen = rows => this.d.candidateScreen?.(rows) ?? withoutPii(rows, this.d.routing(), this.d.cwd, this.d.piiPaths ?? []);
+    const valid = () => {
+      if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("memory correction unavailable during a private turn");
+      if (!this.candidateTextAllowed(JSON.stringify(args))) throw new PreEffectToolRefusal("memory correction withheld by privacy policy");
+      return resolveVisibleMemory(st.store, st.project, screen, args.id);
+    };
+    const target = valid(), revision = candidateTargetRevision(target);
+    if (await this.withholds("note", `${args.text}\n${args.reason}`)) throw new PreEffectToolRefusal("memory correction withheld by privacy policy");
+    const current = valid();
+    if (current.id !== target.id || candidateTargetRevision(current) !== revision) throw new PreEffectToolRefusal("memory correction target changed; read it again");
+    const id = this.d.candidates.put({ project: st.project, kind: "correction", target: { id: current.id, revision }, proposedText: args.text, reason: args.reason,
+      ...(current.kind === "decision" || current.kind === "contract" || current.kind === "fail" ? { noteKind: current.kind } : {}) }, "public");
+    return `candidate:${id}; a person reviews it with amem review; memory was not edited`;
   }
 
   async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }): Promise<string> {

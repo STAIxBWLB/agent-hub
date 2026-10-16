@@ -135,6 +135,8 @@ export class Bus {
   onDelivered?: (peer: PeerId, originals: Envelope[]) => void;
   /** Before deliver's synchronous busy transition, with originals rather than a condensed digest. */
   onDeliver?: (peer: PeerId, originals: Envelope[]) => void;
+  /** Final rendered journal payload, and its first positive acknowledgement. Observation cannot alter settlement. */
+  onMemoryDelivery?: (peer: PeerId, deliveryId: string, out: Envelope[], field: "rendered" | "delivered") => void;
   /** Synchronous native failure observation, before queue callbacks can finish turn metrics. */
   onDeliveryFailed?: (peer: PeerId) => void;
   private recoveryHeld = false;
@@ -250,6 +252,7 @@ export class Bus {
     if (!this.journal) return;
     const delivery = { id: deliveryId, peer, state: "dispatching" as const, createdAt: Date.now(), originals, out };
     this.journal.checkpointDelivery(this.snapshotWithoutJournal(), delivery);
+    this.memoryDelivery(peer, deliveryId, out, "rendered", originals);
   }
 
   private snapshotWithoutJournal(): BusSnapshot {
@@ -434,7 +437,10 @@ export class Bus {
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
     if (state === "failed" || state === "needs_review") this.deliveryFailed(peer);
     this.journal.transition(id, state, receipt.reason);
-    if (before?.state === "dispatching" && (state === "accepted" || state === "completed")) this.delivered(peer, before.originals);
+    if (before?.state === "dispatching" && (state === "accepted" || state === "completed")) {
+      this.memoryDelivery(peer, id, before.out, "delivered", before.originals);
+      this.delivered(peer, before.originals);
+    }
     if (state === "failed") {
       if (before) this.failed(peer, before.originals, before.originals.some((e) => e.private) ? "private delivery failed" : receipt.reason, receipt.quota === true && before.state === "dispatching");
     }
@@ -459,6 +465,7 @@ export class Bus {
       const row = this.journal.get(id);
       if (row?.out.some((e) => e.id === envelopeId)) {
         this.journal.transition(id, "completed", "correlated reply");
+        if (row.state === "dispatching") this.memoryDelivery(peer, id, row.out, "delivered", row.originals);
         this.activeDeliveries.delete(id);
         this.refreshRecoveryHold(peer);
         this.onQueues?.();
@@ -684,6 +691,11 @@ export class Bus {
     this.emit({ t: "stale", env, peer, reason });
   }
 
+  private memoryDelivery(peer: PeerId, id: string, out: Envelope[], field: "rendered" | "delivered", originals: Envelope[] = out): void {
+    if ([...out, ...originals].some(env => env.private)) return;
+    try { this.onMemoryDelivery?.(peer, id, out, field); } catch { /* optional telemetry never alters delivery */ }
+  }
+
   private delivered(peer: PeerId, originals: Envelope[]): void {
     try { this.onDelivered?.(peer, originals); } catch { /* observation must never affect delivery settlement */ }
   }
@@ -815,8 +827,8 @@ export class Bus {
     this.prefaces.delete(id);
     // Before the checkpoint, as in a drain, so the persisted snapshot carries it; on a failure the bus stops anyway.
     this.remember(batch);
+    const deliveryId = crypto.randomUUID();
     try {
-      const deliveryId = crypto.randomUUID();
       this.journal?.transaction(() => {
         this.durableHandoff(id, deliveryId, batch, batch); // its bus snapshot is the queue after this pull
         this.journal!.transition(deliveryId, "completed", "read through hub_inbox");
@@ -827,6 +839,7 @@ export class Bus {
       this.storageError = "delivery journal unavailable";
       throw error;
     }
+    if (this.journal) this.memoryDelivery(id, deliveryId, batch, "delivered");
     this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
     this.onQueues?.();
     return batch;

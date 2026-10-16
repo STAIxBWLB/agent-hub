@@ -1,3 +1,4 @@
+import { CandidateStore, memoryProjectKey } from "@staix/agent-mem";
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -877,8 +878,8 @@ test("native memory read tools search, show and graph through MCP (#412)", async
   const priorHome = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = memoryHome;
   cleanup.push(() => { if (priorHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = priorHome; rmSync(memoryHome, { recursive: true, force: true }); });
-  const { stateDir, daemon } = await hub({ nativeMemory: true });
-  const { client } = await fakeClaude(stateDir);
+  const { stateDir, daemon, console_ } = await hub({ nativeMemory: true });
+  const { client, channel } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
   const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
   expect(await call("hub_remember", { title: "WAL mode", text: "locks the test db", kind: "fail" })).toContain("saved to shared memory (hub memory");
@@ -888,6 +889,19 @@ test("native memory read tools search, show and graph through MCP (#412)", async
   expect(await call("hub_memory_show", { ids: [memoryId] })).toContain("locks the test db");
   const memoryGraph = JSON.parse(await call("hub_memory_graph", { starts: [`mem:${memoryId}`] }));
   expect(memoryGraph.nodes.some((node: { id: string }) => node.id === `mem:${memoryId}`)).toBe(true);
+  const sidecar = new CandidateStore({ home: memoryHome }); cleanup.push(() => sidecar.close());
+  expect(await call("hub_memory_correct", { id: memoryId.slice(0, 8), text: "candidate-only database correction", reason: "review before replacing authority" })).toContain("a person reviews it");
+  const project = memoryProjectKey(JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).cwd);
+  expect(sidecar.list({ project })).toHaveLength(1);
+  expect(await call("hub_memory_search", { query: "candidate-only database correction" })).not.toContain("candidate-only database correction");
+  await call("hub_send", { text: `[FYI] cited mem:${memoryId}` });
+  daemon.bus.preface("claude", `Hub memory:\nmem:${memoryId.slice(0, 8)} fail short: locks the test db`);
+  await console_.request({ t: "send", body: "read the supplied memory", to: ["claude"] });
+  await until(() => channel.length > 0, "memory-prefaced delivery");
+  await until(() => sidecar.counters(project).some(row => row.delivered === 1), "journal-acknowledged memory delivery");
+  expect(sidecar.counters(project).some(row => row.cited === 1)).toBe(true);
+  expect(sidecar.counters(project).find(row => row.delivered === 1)).toMatchObject({ rendered: 1, delivered: 1, cited: null });
+
 });
 
 test("a note from one peer rides on the others' next delivery, never its own; a claim's result names the open task it overlaps", async () => {
@@ -930,7 +944,7 @@ test("a PII task shows nowhere but the local console's task view: not on ahub ta
     key: "k",
     script: (body) => {
       const tools = body.messages.filter((m) => m.role === "tool");
-      if (tools.length === 0) return { tool_calls: [toolCall("hub_remember", { text: "follow-up for 900101-1234567 decided" }), toolCall("hub_task_propose", { title: "call the patient back", class: "implement" }), toolCall("hub_memory_search", { query: "record" }), toolCall("hub_memory_show", { ids: ["abcdef"] }), toolCall("hub_memory_graph", { starts: ["path:src/a.ts"] })] };
+      if (tools.length === 0) return { tool_calls: [toolCall("hub_remember", { text: "follow-up for 900101-1234567 decided" }), toolCall("hub_task_propose", { title: "call the patient back", class: "implement" }), toolCall("hub_memory_search", { query: "record" }), toolCall("hub_memory_show", { ids: ["abcdef"] }), toolCall("hub_memory_graph", { starts: ["path:src/a.ts"] }), toolCall("hub_memory_correct", { id: "abcdef12", text: "private correction", reason: "fixture" })] };
       return { content: `updated the record of 900101-1234567; tools said: ${tools.map((t) => t.content).join(" | ")}` };
     },
   });
@@ -960,7 +974,7 @@ test("a PII task shows nowhere but the local console's task view: not on ahub ta
   const shown = (await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text;
   expect(shown).toContain("hub_remember is not available while working on a PII task");
   expect(shown).toContain("hub_task_propose is not available while working on a PII task");
-  for (const tool of ["hub_memory_search", "hub_memory_show", "hub_memory_graph"]) expect(shown).toContain(`${tool} is not available while working on a PII task`);
+  for (const tool of ["hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_memory_correct"]) expect(shown).toContain(`${tool} is not available while working on a PII task`);
   expect(JSON.stringify(mem.calls.map((c) => c.body ?? c.query))).not.toContain("900101"); // nothing of it reached claude-mem
   expect((await console_.request({ t: "status" })).status.tasks).toEqual({ proposed: 1 }); // and no second task was created
   expect(JSON.stringify(model.requests[0]!.body)).toContain("900101-1234567"); // the on-prem model got the real text
@@ -1696,8 +1710,11 @@ test("capabilities: a peer without one is refused that tool and told why; unlist
   expect(await call("hub_memory_search", { query: "memory" })).toContain('no "memory_read"');
   expect(await call("hub_memory_show", { ids: ["abcdef"] })).toContain('no "memory_read"');
   expect(await call("hub_memory_graph", { starts: ["path:src/a.ts"] })).toContain('no "memory_read"');
+  expect(await call("hub_memory_correct", { id: "abcdef12", text: "corrected", reason: "fixture" })).toContain('no "memory_correct"');
   const beforeOversized = readFileSync(join(stateDir, "hub.log"), "utf8");
   expect(await call("hub_memory_search", { query: "가".repeat(67) })).toContain("memory read unavailable");
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toBe(beforeOversized);
+  expect(await call("hub_memory_correct", { id: "abcdef12", text: "가".repeat(1334), reason: "fixture" })).toContain("memory read unavailable");
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toBe(beforeOversized);
   expect(await call("hub_remember", { text: "a finding" })).toContain('claude may not save notes to shared memory (no "remember"');
   expect(await call("hub_send", { text: "[IMPORTANT] now" })).toContain('claude may not send important messages (no "important" in capabilities.claude): send it without [IMPORTANT]');

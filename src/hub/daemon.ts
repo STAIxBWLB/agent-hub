@@ -1,3 +1,5 @@
+import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
+import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
 import { matchingPlanFails, planGuardNodes } from "./memory-plan-guard.ts";
 import { planningWipLimits } from "./planning.ts";
@@ -96,7 +98,7 @@ import { grantablePath, instructionProtection, isPermissionMode, permissionBound
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
-import { DEFAULT_LEASE_MS, extractNodes, MemoryStore, SUGGESTED, taskKey, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
+import { CandidateStore, looksSecret, DEFAULT_LEASE_MS, extractNodes, MemoryStore, SUGGESTED, taskKey, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
 import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
 import { memoryProjectKey } from "@staix/agent-mem";
@@ -713,12 +715,12 @@ export async function startDaemon(opts: DaemonOptions) {
   if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
   // Capabilities (issue #39): enforced here and in taskOp, never by role text alone. Unlisted peers keep everything.
   // A listed peer whose value is not a list gets nothing: whoever listed it meant to narrow it.
-  const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "memory_read" | "important"): boolean => {
+  const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "memory_correct" | "memory_read" | "important"): boolean => {
     if (peer === USER || peer === HUB || !Object.hasOwn(config.capabilities, peer)) return true;
     const list = config.capabilities[peer];
     return Array.isArray(list) && list.includes(cap);
   };
-  const CAPABILITIES = ["propose", "assign", "remember", "memory_read", "important"];
+  const CAPABILITIES = ["propose", "assign", "remember", "memory_correct", "memory_read", "important"];
   for (const [peer, list] of Object.entries(config.capabilities)) {
     if (!PEER_ID.test(peer)) log(`capabilities.${peer} is not a peer id; ignored (capabilities is an object of lists, one per peer)`);
     else if (!Array.isArray(list)) log(`capabilities.${peer} is not a list: ${peer} gets no capabilities`);
@@ -841,6 +843,12 @@ export async function startDaemon(opts: DaemonOptions) {
    * policy: a shared note was accepted under another project's patterns, and patterns change. A match is withheld.
    */
   const screenMemory = <T extends { title: string | null; text: string }>(vs: T[]): T[] => withoutPii(vs, currentRouting(opts.cwd, log), opts.cwd, config.pii?.paths ?? []);
+  let candidates: CandidateStore | undefined;
+  if (memoryStore) {
+    try { candidates = new CandidateStore(); const opened = candidates; startupCleanup.push(() => opened.close()); }
+    catch { log("memory candidate sidecar unavailable"); }
+  }
+  const memoryTelemetry = candidates && memoryStore ? new MemoryTelemetry(candidates, memoryStore, memoryProject, screenMemory) : undefined;
   const staleness = () => createStalenessProbe({ cwd: opts.cwd, privatePaths: config.pii?.paths ?? [], deny: config.local.deny });
   const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
   /** A task's own nodes: what its title names (an issue, a path), its refs and plan paths, plan symbols, and the task itself. */
@@ -1012,6 +1020,7 @@ export async function startDaemon(opts: DaemonOptions) {
     cwd: opts.cwd,
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory } : {}),
+    candidates, candidateScreen: screenMemory, privateTurn: peer => !!turns.get(peer)?.private || contextPii(peer),
     ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, config.memory.brief_items,
       memoryStore ? (t) => screenMemory(memoryStore!.related(memoryProject, taskNodes(t), Number.MAX_SAFE_INTEGER)).slice(0, config.memory.brief_items).map((v) => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about })) : undefined,
       (peer, task, counts) => event({ type: "memory_brief", peer, task, ...counts }),
@@ -1407,6 +1416,22 @@ export async function startDaemon(opts: DaemonOptions) {
   if (turnLog) startupCleanup.push(() => turnLog.close());
   /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
   const holdsPii = (peer: PeerId) => board.list().some((t) => t.owner === peer && t.state !== "approved" && t.state !== "in_review" && tasks.isPii(t));
+  const memoryObservations = memoryTelemetry ? new MemoryObservations(memoryTelemetry, (peer, envs) => {
+    if (turns.get(peer)?.private || contextPii(peer) || envs.some(env => env.private)) return;
+    for (const env of envs) {
+      const task = env.refs?.task ? board.get(Number(env.refs.task)) : undefined;
+      if (task && tasks.isPii(task)) return;
+    }
+    const task = deliveryTask([...envs]) ?? turns.get(peer)?.attribution.task;
+    const row = task === undefined ? undefined : board.get(task);
+    if (row && tasks.isPii(row)) return;
+    return { ...(row ? { task: taskKey(memoryProject, row) } : {}), turn: turns.get(peer)?.id ?? null, session: contextSession(peer) ?? null };
+  }) : undefined;
+  bus.onMemoryDelivery = (peer, id, out, field) => memoryObservations?.delivery(peer, id, out, field);
+  const citeMemory = (peer: PeerId, text: string, id: string, envs: readonly Envelope[] = []) => {
+    if (!tasks.nameable(text) || looksSecret(text) || !screenMemory([{ title: null, text }]).length) return;
+    memoryObservations?.cite(peer, text, id, envs);
+  };
   /**
    * A snapshot that fails costs the undo record of that turn and nothing else. The peer's prompt waits for it (it
    * runs inside the state change): three git calls at a turn's start and four at its end, each with the 10 s timeout
@@ -1577,13 +1602,14 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
+    if (op === "hub_memory_correct") correctionInput(a);
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
       if (piiTurn && ["hub_task_assign", "hub_task_escalate", "hub_peer_start"].includes(op)) throw new PreEffectToolRefusal("conductor mutations are unavailable during a PII turn");
       return JSON.stringify(await conductor.execute(by, op, a));
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -1595,7 +1621,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // console reads a PII task's text deliberately, with `ahub task show <id>`.
     const onPrem = inProcess && by === "local" && piiTurn;
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => { const task = board.get(t.id); return task && by === USER ? tasks.resultLine(task) : `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`; };
-    const need = (cap: "propose" | "assign" | "remember" | "memory_read", what: string) => {
+    const need = (cap: "propose" | "assign" | "remember" | "memory_read" | "memory_correct", what: string) => {
       if (may(by, cap)) return;
       log(`capabilities: ${by} may not ${what} (${op})`);
       throw new PreEffectToolRefusal(`${by} may not ${what} (no "${cap}" in capabilities.${by} in .agenthub/config.json)`);
@@ -1610,6 +1636,7 @@ export async function startDaemon(opts: DaemonOptions) {
       need("memory_read", "read shared memory");
       return memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness());
     }
+    if (op === "hub_memory_correct") { need("memory_correct", "propose memory corrections"); return tasks.correct(by, a); }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
     switch (op) {
       case "hub_backlog_list":
@@ -1647,6 +1674,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return line(await tasks.decline(by, a.id, a.reason));
       case "hub_task_done": {
         const t = await tasks.done(by, a.id, a.summary, a.refs);
+        const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
+        if (!piiTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
+          citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
+        }
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
         const last = t.history.at(-1);
         if (last?.event === "integration requested" && last.by === HUB) return last.note ?? "";
@@ -2233,6 +2264,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const detecting = new Set<Promise<void>>();
   let attachments = 0;
   bus.tap((e) => {
+    if (e.t === "envelope" && e.env.from !== HUB && e.env.from !== USER && bus.peers.has(e.env.from) && !e.env.private) citeMemory(e.env.from, e.env.body, `message:${e.env.id}`, [e.env]);
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
     if (uiEvents.length > 200) uiEvents.shift();
@@ -4448,6 +4480,7 @@ export async function startDaemon(opts: DaemonOptions) {
       executionBudget.close();
       syncStop.abort(); // a sync in flight kills its git step and ends before the store closes
       await syncRun?.catch(() => undefined);
+      candidates?.close();
       memoryStore?.close();
       board.close();
       turnLog?.close();

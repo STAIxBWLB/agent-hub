@@ -23,3 +23,5 @@ Scope: the task flow, assignment, the state machine and the hub's MCP tools. Rea
 - Memory read tools (`hub_memory_search`, `hub_memory_show`, `hub_memory_graph`, #412) take their project only from the daemon. Validate UTF-8 input caps before logs or storage, require `memory_read`, refuse PII turns and exclude arguments/results from capture. Screen complete rows and graph metadata before counting or truncating; keep whole-result byte caps, complete id/provenance/kind headers and one neutral unavailable-id refusal.
 
 - Compose structured `hub_remember` fail fields through `composeRememberText` before screening or writes; reject over 4000 UTF-8 bytes without truncation. Treat plan-fail matches as screened advisory priority only, never a state-transition guard; skip all plan-memory work for PII tasks.
+
+- Keep candidate production in Tasks: screen review/correction payloads and current task/turn privacy before CandidateStore writes; recheck after asynchronous screening. Never make candidate failures roll back a saved review, or let a peer accept a candidate. Keep candidate tool arguments/results out of capture.
