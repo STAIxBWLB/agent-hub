@@ -176,6 +176,44 @@ decisions and a never-ask permission mode require confirmation; delivery resolut
 status state counts and never fetches the board. Leaving restores
 the terminal and returning from panels replays the bounded stream buffer.
 
+Tasks and Queue selections follow the selected id across refreshes. If that row
+disappears, no replacement row inherits the action. Task actions also bind the
+row's `flowRevision` (its history length); queue actions bind the delivery
+revision. The id and revision in a row-started command cannot be edited. Peer,
+reason and the final role/action remain editable, and the confirmation names the
+validated result. An older hub without `flowRevision` refuses revision-bound task
+row actions instead of silently running them unchecked.
+
+In Tasks, `a` assigns the owner in ordinary open states and the reviewer in
+`in_review`; a waiting task says when assignment is a reservation. `u` unassigns
+the corresponding role, and `r` reviews only in `in_review`. In Queue, `r`
+prefills `discard` for a queued row and `retry` for a needs_review row, with the
+action still editable before confirmation. `completed` is never the default.
+Every resolution needs a reason. Queue `discard` removes queued originals or
+settles a needs_review receipt; it never cancels a task or native turn.
+
+`ahub task unassign <id> [--role owner|reviewer] [--revision N]` is the terminal
+equivalent. Owner removal is allowed in `proposed`, `in_progress` and
+`changes_requested`, returns active work to `proposed`, and clears any owner
+reservation. It is refused in `in_review`, `approved` and `backlog`. Reviewer
+removal retains the state, including `in_review`, and refuses to remove the human
+reviewer of PII work. No replacement is routed and no native process or external
+effect is rolled back. A person-unassigned task stays out of automatic owner
+offers across dependency release, planner-pull processing, release timers and
+restarts until an explicit assignment or reservation. The later unassign also
+fences planner undo, so undo and re-pull cannot restore the removed reservation.
+Former queued assignment or review requests are withdrawn without resolving
+uncertain deliveries, and the former agent loses current authority. A withdrawal
+notice uses delivery evidence or accepted/claimed board evidence; withdrawing an
+unread queue alone sends none.
+
+`ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]` uses a
+checked console operation when a revision is present. Without it, existing CLI
+behavior is unchanged. `ahub queue resolve ... [--revision N]` uses the supplied
+revision instead of a fresh show. Revision mismatches and superseded post-await
+publications fail without a board or delivery side effect; a reviewer-only change
+keeps a valid owner assignment but refreshes its reviewer content.
+
 The Tasks panel summarizes the whole public board with an approved/all fraction,
 a 20-cell ASCII bar and state counts. Proposed tasks with unapproved or missing
 `after` dependencies count as waiting; PII stubs count normally. Each task has a
@@ -651,8 +689,7 @@ resolves an uncertain delivery automatically. The same rule holds on every path 
 assigns a task (#297): once the move is saved on the board, a failed delivery prints
 exactly one console notice ("the move is saved... delivery is not confirmed"), printed
 where the error is thrown, and the caller (a peer in its turn, or the CLI) still gets
-its error. Two exceptions, by construction: a move superseded while the assignment was being prepared, meaning a later history entry that moves or settles the task (another assignment, an unassign, the owner's accept, done, approval, close; the hub's quiet bookkeeping such as a late check result or a reviewer change does not supersede), is
-the caller's error as before, with no notice naming either owner; and a claim is its own hand-over, so its
+its error. Two exceptions, by construction: a move superseded while the assignment was being prepared, meaning a later history entry that moves or settles the task (another assignment, an unassign, the owner's accept, done, approval, close; the hub's quiet bookkeeping such as a late check result or a reviewer change does not supersede), returns the current task without a failed tool call and with no notice naming either owner; and a claim is its own hand-over, so its
 accepted write and line stay outside the delivery rule (its overlap and routing announcements to earlier
 owners are deliveries and share it). The repair is always
 to look for a queued or needs_review delivery with

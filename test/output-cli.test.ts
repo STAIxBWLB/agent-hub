@@ -12,7 +12,7 @@ import { classifyPeerCommand } from "../src/cli/identity.ts";
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
-function fixture(options: { failFullBoard?: boolean } = {}) {
+function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
@@ -44,7 +44,8 @@ function fixture(options: { failFullBoard?: boolean } = {}) {
         : req.t === "status" ? { status }
         : req.t === "budget" ? { budget, gate: 0.95 }
         : req.t === "execution_budget" ? req.op === "disable" ? { disabled: true } : { budgets }
-        : req.t === "queue" ? req.op === "show" ? { delivery } : { deliveries }
+        : req.t === "queue" ? ["show", "resolve"].includes(req.op) ? { delivery } : { deliveries }
+        : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
         : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
@@ -218,4 +219,39 @@ test("execution disable after an output flag performs the exact requested operat
   expect(result.stdout).not.toContain("no quota readings");
   const json = await f.run(["budget", "--json", "execution", "disable", id]);
   expect(json.code, json.stderr).toBe(0); expect(json.stdout).toBe(JSON.stringify({ disabled: true }, null, 2) + "\n");
+});
+
+test("revision-bound task and queue mutations use checked operations without a fresh queue show", async () => {
+  const f = fixture(), deliveryId = f.deliveries[0]!.id;
+  expect((await f.run(["task", "assign", "1", "codex", "--revision", "7"])).code).toBe(0);
+  expect((await f.run(["task", "unassign", "1", "--revision", "7"])).code).toBe(0);
+  expect((await f.run(["queue", "resolve", deliveryId, "--action", "discard", "--reason", "cleanup", "--revision", "2"])).code).toBe(0);
+  expect(f.requests.filter(request => request.t === "task")).toEqual([
+    expect.objectContaining({ op: "task_assign_checked", args: { id: "1", peer: "codex", revision: 7 } }),
+    expect.objectContaining({ op: "task_unassign", args: { id: "1", role: "owner", revision: 7 } }),
+  ]);
+  expect(f.requests.filter(request => request.t === "queue")).toEqual([
+    expect.objectContaining({ op: "resolve", id: deliveryId, revision: 2, action: "discard", reason: "cleanup" }),
+  ]);
+});
+
+test("an older daemon rejects checked assignment without an unchecked fallback", async () => {
+  const f = fixture({ rejectChecked: true });
+  const result = await f.run(["task", "assign", "1", "codex", "--revision", "7"]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("unknown operation");
+  expect(f.requests.filter(request => request.t === "task")).toEqual([
+    expect.objectContaining({ op: "task_assign_checked", args: { id: "1", peer: "codex", revision: 7 } }),
+  ]);
+  expect(f.requests.some(request => request.op === "task_assign")).toBe(false);
+});
+
+test("an older daemon rejects task unassign without an unchecked fallback (#424)", async () => {
+  const f = fixture({ rejectChecked: true });
+  const result = await f.run(["task", "unassign", "1", "--revision", "7"]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("unknown operation");
+  expect(f.requests.filter(request => request.t === "task")).toEqual([
+    expect.objectContaining({ op: "task_unassign", args: { id: "1", role: "owner", revision: 7 } }),
+  ]);
 });

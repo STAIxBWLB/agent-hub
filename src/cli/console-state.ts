@@ -29,7 +29,9 @@ export interface ConsoleState {
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
   tasks: any[]; tasksKnown?: boolean; taskCounts?: Record<string, number>; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
-  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] } | { type: "permission_default"; peer: string; source: string };
+  taskSelection?: number; queueSelection?: string;
+  actionLock?: { prefix: string[]; id: string; revision: number; state: string; owner?: string; reserved?: string; reviewer?: string; waiting?: boolean };
+  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[]; prompt?: string } | { type: "permission_default"; peer: string; source: string };
   optionChoice?: string;
   modeChoice?: string;
   permissionDefaults: PermissionDefault[];
@@ -319,8 +321,8 @@ const KEYS: [string, string[]][] = [
   ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode"]],
-  ["Tasks", ["a assign (then y)", "r review"]],
-  ["Queue", ["r resolve (reason, then y)"]],
+  ["Tasks", ["a assign/reviewer (then y)", "u unassign (then y)", "r review (in review)"]],
+  ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry"]],
   ["Events", ["f peer filter", "g kind filter"]],
 ];
 /** The `?` key table: one group per panel, its keys kept whole and packed into the width after the group column. */
@@ -372,7 +374,7 @@ export function parseConsoleCommand(input: string): string[] {
 }
 export function commandNeedsConfirmation(args: string[]): boolean {
   const positional = args.filter(arg => arg !== "--yes");
-  return (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && args[1] === "assign") || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
+  return (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && ["assign", "unassign"].includes(args[1] ?? "")) || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
 }
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
@@ -385,8 +387,38 @@ export function panelRows(s: ConsoleState): any[] {
   return s.events.filter(e => (!s.peerFilter || e.peer === s.peerFilter) && (!s.kindFilter || e.kind === s.kindFilter));
 }
 export const selectedApproval = (s: ConsoleState) => s.approvals.find(a => a.id === s.approvalId);
-/** The selected row: the Approvals panel's is the selected request (-1 when none is). */
-const selection = (s: ConsoleState) => s.panel === 2 ? s.approvals.findIndex(a => a.id === s.approvalId) : s.selection;
+/** The selected row: approvals and refreshed Tasks/Queue rows are bound by id, never by a replacement row. */
+const selection = (s: ConsoleState) => {
+  if (s.panel === 2) return s.approvals.findIndex(a => a.id === s.approvalId);
+  if (s.panel === 3 && s.taskSelection !== undefined) return panelRows(s).findIndex(row => row.id === s.taskSelection);
+  if (s.panel === 4 && s.queueSelection !== undefined) return panelRows(s).findIndex(row => row.id === s.queueSelection);
+  return s.selection;
+};
+export const selectedPanelRow = (s: ConsoleState): any | undefined => panelRows(s)[selection(s)];
+export function captureConsoleSelection(s: ConsoleState, byIndex = false): void {
+  const row = byIndex ? panelRows(s)[s.selection] : selectedPanelRow(s);
+  if (s.panel === 3 && row) s.taskSelection = Number(row.id);
+  if (s.panel === 4 && row) s.queueSelection = String(row.id);
+}
+const commandFlag = (args: string[], name: string) => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
+function validateLockedCommand(lock: NonNullable<ConsoleState["actionLock"]>, args: string[]): void {
+  const revisions = args.flatMap((arg, index) => arg === "--revision" ? [args[index + 1]] : []);
+  if (args[0] !== lock.prefix[0] || args[1] !== lock.prefix[1] || args[2] !== lock.id || revisions.length !== 1 || revisions[0] !== String(lock.revision)) {
+    throw new Error("the selected id and revision cannot be edited; start again from the row");
+  }
+}
+function lockedCommandPrompt(lock: NonNullable<ConsoleState["actionLock"]>, args: string[]): string {
+  if (lock.prefix[0] === "queue") {
+    const action = commandFlag(args, "--action") ?? "resolve";
+    return `${action} delivery ${lock.id} at revision ${lock.revision}${action === "completed" ? "; this asserts external effects" : action === "discard" ? "; no task or native turn is cancelled" : ""}`;
+  }
+  const role = commandFlag(args, "--role") ?? "owner";
+  if (lock.prefix[1] === "assign") return `assign ${role} on task #${lock.id} at revision ${lock.revision}${lock.waiting && role === "owner" ? " as a reservation until dependencies approve" : ""}`;
+  const affected = role === "owner" ? [lock.owner, lock.reserved].filter(Boolean).join(" and ") : lock.reviewer ?? "none";
+  const resulting = role === "owner" ? "proposed" : lock.state;
+  const guidance = role === "reviewer" && lock.state !== "in_review" ? "; later completion without a reviewer may approve directly" : lock.state === "in_review" ? `; use ahub review ${lock.id}` : "";
+  return `unassign ${role} ${affected} on task #${lock.id} at revision ${lock.revision} -> ${resulting}${guidance}; native work and uncertain deliveries are not stopped or resolved`;
+}
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
   const attentionKeyBlocked = !!(state.confirm || state.optionChoice || state.modeChoice || state.help || state.editing || state.input);
   // A notice answers the key before this one; one that pruning raises now stays.
@@ -427,24 +459,29 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   }
   if (s.help && s.mode === "panels" && !["?", "\x1b", "q"].includes(key)) return done(); // the key table is modal
   if (s.editing || s.input) {
-    if (key === "\x1b") { s.input = ""; s.editing = false; }
+    if (key === "\x1b") { s.input = ""; s.editing = false; s.actionLock = undefined; }
     else if (key === "\x7f" || key === "\b") s.input = Array.from(s.input).slice(0, -1).join("");
     else if (key === "\x15") s.input = "";
     else if (key === "\x1b[A" || key === "\x1b[B") {
       s.historyIndex = Math.max(0, Math.min(s.history.length, s.historyIndex + (key === "\x1b[A" ? -1 : 1)));
       s.input = s.history[s.historyIndex] ?? "";
     } else if (key === "\r" || key === "\n") {
-      const input = s.input; s.input = ""; s.editing = false;
+      const input = s.input, lock = s.actionLock; s.input = ""; s.editing = false; s.actionLock = undefined;
       if (!input.trim()) return done();
       try {
         const parsed = parseConsoleCommand(input);
         const args = parsed[0] === "permission" ? [...parsed.filter(arg => arg !== "--yes"), ...(parsed.includes("--yes") ? ["--yes"] : [])] : parsed;
         if (args[0] === "queue" && args[1] === "resolve") {
-          const reason = args.indexOf("--reason");
+          const reason = args.indexOf("--reason"), action = commandFlag(args, "--action");
           if (reason < 0 || !args[reason + 1]?.trim()) throw new Error("queue resolve requires --reason");
+          if (!["completed", "retry", "discard"].includes(action ?? "")) throw new Error("queue resolve requires --action completed|retry|discard");
+        }
+        if (lock) {
+          validateLockedCommand(lock, args);
+          if (lock.prefix[0] === "task" && !["owner", "reviewer"].includes(commandFlag(args, "--role") ?? "owner")) throw new Error("role must be owner or reviewer");
         }
         s.history = [...s.history, input].slice(-100); s.historyIndex = s.history.length;
-        if (commandNeedsConfirmation(args)) s.confirm = { type: "command", args };
+        if (commandNeedsConfirmation(args)) s.confirm = { type: "command", args, ...(lock ? { prompt: lockedCommandPrompt(lock, args) } : {}) };
         else effects.push({ type: "command", args });
       } catch (error) { notify(s, String((error as Error).message), now); }
     } else if (!key.startsWith("\x1b")) s.input += terminalText(key).replace(/\n/g, "");
@@ -482,7 +519,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const selected = rows.findIndex(row => row.id === item.id);
       if (selected >= 0) { s.panel = 3; s.selection = selected; navigated = true; }
     }
-    if (navigated) { s.detail = undefined; s.requestDetail = undefined; }
+    if (navigated) { captureConsoleSelection(s, true); s.detail = undefined; s.requestDetail = undefined; }
     else {
       const command = attentionCommand(item);
       const text = `${item.kind}${item.peer ? ` ${item.peer}` : ""}${item.id ? ` ${item.id}` : ""}: ${command}`;
@@ -493,7 +530,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   }
   if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
-  const switchPanel = (panel: number) => { s.panel = panel; s.selection = 0; s.detail = undefined; s.requestDetail = undefined; return done(); };
+  const switchPanel = (panel: number) => { s.panel = panel; s.selection = 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
   if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
   // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
@@ -508,6 +545,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (s.detail !== undefined || s.requestDetail) { s.detailOffset = Math.max(0, s.detailOffset + (["j", "\x1b[B"].includes(key) ? 1 : -1)); return done(); }
     s.selection = Math.max(0, Math.min(panelRows(s).length - 1, selection(s) + (["j", "\x1b[B"].includes(key) ? 1 : -1)));
     if (s.panel === 2) s.approvalId = s.approvals[s.selection]?.id;
+    captureConsoleSelection(s, true);
     return done();
   }
   if (key === "[" || key === "]") {
@@ -537,10 +575,11 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (key === "v" && s.mode === "stream") { effects.push({ type: "print", text: permissionText(approval), kind: "permission", tone: "attention" }); return done(); }
     if (key === "v") { s.requestDetail = approval.id; s.detailOffset = 0; return done(); }
   }
-  const row = panelRows(s)[selection(s)];
+  const row = selectedPanelRow(s);
   // With a detail open the keys act on the item it shows (its id), never on what a refresh moved under the selection;
   // a detail that is only a message names no item.
-  const item = s.detail === undefined ? row?.id : typeof s.detail === "object" ? s.detail.id : undefined;
+  const selected = s.detail === undefined ? row : typeof s.detail === "object" ? s.detail : undefined;
+  const item = selected?.id;
   if (s.mode === "panels" && row && s.detail === undefined && (key === "\r" || key === "\n")) {
     if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
     else if (s.panel === 2) { s.requestDetail = row.id; s.detailOffset = 0; } // the row is the selected request
@@ -557,9 +596,28 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       return done();
     }
     const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` :
-      s.panel === 3 && key === "a" ? `task assign ${item} ` : s.panel === 3 && key === "r" ? `review ${item} ` :
-      s.panel === 4 && key === "r" ? `queue resolve ${item} --action retry --reason ` : undefined;
+      s.panel === 3 && key === "r" && selected.state === "in_review" ? `review ${item} ` : undefined;
     if (prefill) { s.input = prefill; s.editing = true; return done(); }
+    if (s.panel === 3 && (key === "a" || key === "u")) {
+      if (!["proposed", "in_progress", "in_review", "changes_requested"].includes(selected.state)) return done();
+      const revision = selected.flowRevision, role = selected.state === "in_review" || key === "u" && !selected.owner && !selected.reserved && selected.reviewer ? "reviewer" : "owner";
+      if (!Number.isSafeInteger(revision) || revision < 0) { notify(s, "task row actions need flowRevision; upgrade the hub", now); return done(); }
+      if (key === "u" && (role === "owner" && !selected.owner && !selected.reserved || role === "reviewer" && !selected.reviewer)) { notify(s, `task #${item}: no ${role} to unassign`, now); return done(); }
+      const listed = s.tasks.find(task => task.id === item), ready = listed?.ready ?? selected.ready;
+      const waiting = selected.state === "proposed" && ready !== true && Array.isArray(selected.deps) && selected.deps.length > 0;
+      s.actionLock = { prefix: ["task", key === "a" ? "assign" : "unassign"], id: String(item), revision, state: String(selected.state), ...(selected.owner ? { owner: String(selected.owner) } : {}), ...(selected.reserved ? { reserved: String(selected.reserved) } : {}), ...(selected.reviewer ? { reviewer: String(selected.reviewer) } : {}), waiting };
+      s.input = key === "a" ? `task assign ${item} ${role === "reviewer" ? "--role reviewer " : ""}--revision ${revision} ` : `task unassign ${item} --role ${role} --revision ${revision}`;
+      s.editing = true; return done();
+    }
+    if (s.panel === 4 && key === "r") {
+      if (!["queued", "needs_review"].includes(selected.state)) return done();
+      const revision = selected.revision;
+      if (!Number.isSafeInteger(revision) || revision < 0) { notify(s, "queue row actions need a delivery revision; upgrade the hub", now); return done(); }
+      const action = selected.state === "queued" ? "discard" : "retry";
+      s.actionLock = { prefix: ["queue", "resolve"], id: String(item), revision, state: String(selected.state) };
+      s.input = `queue resolve ${item} --action ${action} --revision ${revision} --reason `;
+      s.editing = true; return done();
+    }
   }
   if (s.mode === "panels" && s.panel === 5 && (key === "f" || key === "g")) {
     const field = key === "f" ? "peer" : "kind"; const current = key === "f" ? s.peerFilter : s.kindFilter;
@@ -646,6 +704,21 @@ export function table(head: string[], rows: Span[][], columns: number, explicitW
     return { ...cell, text: text + " ".repeat(Math.max(0, widths[i]! - Bun.stringWidth(text)) + (i === head.length - 1 ? 0 : 2)) };
   }));
 }
+function taskHints(row: any): string[] {
+  if (!["proposed", "in_progress", "in_review", "changes_requested"].includes(row.state)) return [];
+  const review = row.state === "in_review";
+  const hints = [review ? "a reviewer" : "a assign"];
+  if (review ? row.reviewer : row.owner || row.reserved) hints.push("u unassign");
+  if (review) hints.push("r review");
+  return hints;
+}
+function panelContext(s: ConsoleState, row: any): string[] {
+  if (!row) return [];
+  if (s.panel === 1) return ["p pause", "r resume", "m permission mode"];
+  if (s.panel === 3) return taskHints(row);
+  if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];
+  return [];
+}
 /** The footer's key hint: only keys that act in this mode, panel and state. */
 function hint(s: ConsoleState, columns: number): string {
   const pending = selectedApproval(s) ? ["a allow", "d deny"] : [];
@@ -653,9 +726,8 @@ function hint(s: ConsoleState, columns: number): string {
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
   if (s.detail !== undefined || s.requestDetail) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
-  const rows = panelRows(s); const row = rows[selection(s)];
-  const context = !row ? [] : s.panel === 1 ? ["p pause", "r resume", "m permission mode"] : s.panel === 3 ? ["a assign", "r review"] : s.panel === 4 ? ["r resolve"] : [];
-  const text = [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
+  const rows = panelRows(s); const row = selectedPanelRow(s);
+  const text = [...approvals, ...panelContext(s, row), ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
   return s.panel === 1 && Bun.stringWidth(text) > columns ? text.replace("m permission mode", "m mode").replace("j/k move", "j/k").replace(": command", ": cmd") : text;
 }
 /** The project, then the tabs: the active one in brackets, pending approvals and held deliveries counted. */
@@ -705,7 +777,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const permission = selectedApproval(s);
   let prompt = s.editing ? `: ${s.input}` : hint(s, columns);
   if (s.confirm?.type === "permission") prompt = `allow ${quoted(s.confirm.option)} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
-  if (s.confirm?.type === "command") prompt = `${s.confirm.args.join(" ")}? y/N`;
+  if (s.confirm?.type === "command") prompt = `${s.confirm.prompt ?? s.confirm.args.join(" ")}? y/N`;
   if (s.modeChoice) prompt = `permission ${s.modeChoice}: 1 ask  2 ask-when-needed  3 never-ask  Esc cancel`;
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;

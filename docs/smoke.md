@@ -56,6 +56,17 @@ operationId, console hello and initiating-peer audit (225 related tests passed).
 This is fixture/CLI proof, not an actual native Pi restoration; that live leg
 remains owed in #273.
 
+## Console task and queue operations (#424)
+
+2026-10-16, macOS, source `691f00ac`: a disposable Git project and fake ACP
+peer ran the real console in `tmux` at 100x30. Through actual
+`ahub console --panels` key input, `a` plus a peer, Enter and `y` assigned with
+the displayed `flowRevision`; `u`, Enter and `y` removed the owner/reservation;
+and `r` plus a reason and `y` discarded a queued delivery. Readback showed
+`state=proposed`, `owner=null`, `reserved=null`, `flowRevision=3`, and queue
+states `completed`, `discarded`, `queued`. This was real terminal input and
+daemon readback, not a fake-terminal assertion or a model turn.
+
 ## Hub memory (#258)
 
 Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sync between two simulated homes and a bare remote, leases, import and suggestions (`test/memory-*.test.ts`).

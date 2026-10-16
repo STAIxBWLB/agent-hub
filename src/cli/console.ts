@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
+import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 import { consoleNeeds, attentionFacts } from "./attention.ts";
@@ -82,7 +82,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let lastAct = 0; let lastBell = -Infinity;
   let columns = options.columns ?? terminal.columns; let rows = options.rows ?? terminal.rows;
   let active = true; let inAlternate = false; let plain = !terminal.isTTY || columns < 80 || rows < 24;
-  let polling = false; let childRunning = false; let cancelChild: (() => void) | undefined;
+  let polling = false; let refreshPending = false; let childRunning = false; let cancelChild: (() => void) | undefined;
   const priorPush = client.onPush; const priorClose = client.onClose; const priorRaw = !!terminal.isRaw;
   const removers: (() => void)[] = []; const timers: ReturnType<typeof setInterval>[] = [];
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
@@ -159,8 +159,20 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     safeWrite(`${reason ? reason + "\n" : ""}Left console; the hub keeps running (ahub kill stops it).\n`);
     resolveDone();
   };
+  const reconcileDetail = () => {
+    if (state.detail === undefined || typeof state.detail !== "object" || (state.panel !== 3 && state.panel !== 4)) return;
+    const id = state.detail.id;
+    if (id === undefined || id === null) return;
+    const key = state.panel === 3 ? "flowRevision" : "revision", rows = state.panel === 3 ? state.tasks : state.queue;
+    const fresh = rows.find(row => String(row.id) === String(id));
+    if (!fresh || state.detail[key] !== fresh[key]) {
+      state.detail = undefined; state.detailOffset = 0;
+      notice(`detail ${id} changed or is no longer available`);
+    }
+  };
   const refresh = async () => {
-    if (polling || !active) return; polling = true;
+    if (polling || !active) { if (active) refreshPending = true; return; }
+    polling = true;
     try {
       const panels = state.mode === "panels" && !plain;
       const replies = await Promise.all([
@@ -169,6 +181,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       ]);
       if (!active) return;
       const [status, budget, tasks, queue, ready] = replies;
+      captureConsoleSelection(state);
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (status.status && status.ok !== false) {
@@ -184,10 +197,14 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           state.tasksKnown = true;
         } }
       if (queue?.ok && state.mode === "panels" && Array.isArray(queue.deliveries)) state.queue = queue.deliveries;
+      reconcileDetail();
       const error = replies.find(reply => reply.ok === false)?.error; if (error) notice(String(error));
       draw();
     } catch (error) { if (active) { notice(String((error as Error).message)); draw(); } }
-    finally { polling = false; }
+    finally {
+      polling = false;
+      if (refreshPending) { refreshPending = false; void refresh(); }
+    }
   };
   const run = options.runCommand ?? ((args, output, finished, commandColumns) => {
     const child = Bun.spawn([process.execPath, fileURLToPath(new URL("./main.ts", import.meta.url)), "--project", options.cwd, ...(options.liveTest ? ["--live-test"] : []), ...args], {
@@ -223,7 +240,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
       // A late reply is for the panel and row it was asked for: once the person has moved on, it would show one item
       // while the keys act on another, so it is dropped.
-      if (!active || state.mode !== "panels" || state.panel !== action.panel || state.help || state.detail !== undefined || String(panelRows(state)[state.selection]?.id) !== action.id) return;
+      if (!active || state.mode !== "panels" || state.panel !== action.panel || state.help || state.detail !== undefined || String(selectedPanelRow(state)?.id) !== action.id) return;
       state.detailOffset = 0;
       state.detail = result.ok === false ? String(result.error) : action.panel === 3 ? labeled(String(result.text)) : result.delivery ?? "delivery not found";
       draw(); return;

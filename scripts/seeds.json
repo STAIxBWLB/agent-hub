@@ -407,7 +407,7 @@
       "search": "if (next.state === \"in_review\" && task.reviewer && task.reviewer !== peer) {",
       "replacement": "if (false && next.state === \"in_review\" && task.reviewer && task.reviewer !== peer) {",
       "testFile": "test/tasks.test.ts",
-      "testName": "a named reviewer change withdraws its unread request and notifies the former reviewer (#316)"
+      "testName": "a named reviewer change withdraws its unread request without a replacement notice (#316, #424)"
     },
     {
       "id": "kimi-tui-argv",

@@ -147,6 +147,14 @@ export class AssignmentUndeliveredError extends Error {
   }
 }
 
+/** A later task-flow event won before the assignment could be published, so the stale envelope is suppressed. */
+export class AssignmentSupersededError extends Error {
+  constructor(task: Task) {
+    super(`task #${task.id}: assignment was superseded before publication`);
+    this.name = "AssignmentSupersededError";
+  }
+}
+
 /** A project path as one spelling (#67): no leading `./`, no repeated or trailing `/`; the root is `.`. */
 export const normPath = (p: string) => p.replace(/^(\.\/)+/, "").replace(/\/{2,}/g, "/").replace(/\/+$/, "") || ".";
 
@@ -1057,6 +1065,7 @@ export class Tasks {
     if (v?.label === "unknown") return;
     if (v?.label !== "clear") return void this.d.board.update(task.id, HUB, "screened", {}, v ? `pii: screen, ${v.category}` : "pii: regex");
     const lifted = this.d.board.update(task.id, HUB, "screened", { signals: now.signals.filter((s) => s !== "pii") }, "clear, screened again");
+    if (this.personUnassigned(lifted)) return;
     this.d.notify(`task ${this.publicTitle(lifted)}: the PII screen cleared it on a second look; it is routed as usual`);
     const still = this.waitsFor(lifted);
     if (still.length) return void this.d.board.update(lifted.id, HUB, "blocked", {}, `waits for ${still.map((id) => `#${id}`).join(", ")}`);
@@ -1291,6 +1300,7 @@ export class Tasks {
         try {
           const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
           const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", reason: "offline", note: why });
+          if (!this.ownOwnerMove(back, next, HUB, "reassigned")) continue;
           moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner });
           // The gone owner hears it on its next delivery, if it comes back mid-work.
           if (next.owner && next.owner !== peer) this.d.tell?.(peer, noteLine(HUB, "decision", `task #${task.id} moved to ${next.owner} while you were offline; stop working on it`));
@@ -1338,6 +1348,19 @@ export class Tasks {
    */
   private excluded = (task: Task) => task.history.flatMap((h) => (h.event === "declined" ? [h.from ?? h.by] : h.event === "escalated" && h.from ? [h.from] : []));
 
+  private checkFlowRevision(task: Task, expected: number | undefined, preEffect = false): void {
+    if (expected !== undefined && (!Number.isSafeInteger(expected) || expected < 0 || task.history.length !== expected)) {
+      throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: flow revision changed; reload and retry`);
+    }
+  }
+
+  /** A person's owner removal sticks until a later explicit assignment or reservation, across hub runs. */
+  private personUnassigned(task: Task): boolean {
+    const removed = task.history.findLastIndex((h) => h.event === "unassigned" && h.by === USER);
+    if (removed < 0) return false;
+    return !task.history.slice(removed + 1).some((h) => h.by === USER && ["assigned", "reassigned", "escalated", "reserved", "backlog pulled"].includes(h.event));
+  }
+
   /**
    * Says on the console and hub.log that routing passed over the reserved owner (#207); returns the history note's suffix.
    * Only news is said: not when the reserved owner is the one the task moves away from, nor once it refused the task for
@@ -1365,8 +1388,17 @@ export class Tasks {
     if (hold) this.d.notify(`task ${this.publicTitle(task)}: ${a.owner}'s queue is held (${hold}); the task arrives once the hold is resolved`);
   }
 
+  /** A later move to another owner means the caller's assignment was superseded, so its success tail is not authoritative. */
+  private ownOwnerMove(before: Task, after: Task, by: PeerId, event: string): boolean {
+    const moves = (task: Task) => task.history.filter(entry => ["assigned", "reassigned", "escalated", "unassigned"].includes(entry.event));
+    const prior = moves(before).length, entries = moves(after).slice(prior), own = entries[0];
+    if (!own || own.by !== by || own.event !== event) return false;
+    if (own.event === "unassigned") return entries.length === 1;
+    return entries.every(entry => entry.owner === own.owner);
+  }
+
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number } = {}): Promise<Task> {
     if (task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
@@ -1393,7 +1425,7 @@ export class Tasks {
     // A person's explicit assign replaces an agent's reservation (#207). Only a refusal keeps the owner it moves away from
     // out for good: a reviewer's rejections or an escalation by hand, never the hub's own move after a failed delivery.
     const lasting = opts.event === "escalated" && task.owner && (opts.reason === "rejections" || opts.reason === "manual");
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) });
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) }, opts.expectedFlowRevision);
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -1407,6 +1439,7 @@ export class Tasks {
     // The cohort record formed just below reads it, and so does `route explain` while that turn lasts.
     if (opts.claim && a.owner === by && this.d.bus.peers.get(by)?.state === "busy") this.sent.set(handOver(next, by), by);
     try {
+      if (by === USER && opts.event === "reassigned") this.withdrawRoleRequest(task, next, "owner");
       const hits = this.overlapHits(next);
       this.formCohort(next, hits);
       if (hits.length) {
@@ -1428,7 +1461,10 @@ export class Tasks {
       // result landing during the brief) leave the assignment exactly as undelivered as before: the notice and
       // the typed error stand (#297 Decisions).
       const moves = (entries: Task["history"]) => entries.filter((h) => !QUIET_EVENTS.has(h.event) && !h.event.startsWith("check "));
-      if (moves(saved.history).length !== moves(next.history).length) throw e;
+      if (moves(saved.history).length !== moves(next.history).length) {
+        if (e instanceof AssignmentSupersededError) return saved;
+        throw e;
+      }
       this.releaseNotice(this.undeliveredNotice(saved, e));
       throw new AssignmentUndeliveredError(saved, e);
     }
@@ -1474,13 +1510,22 @@ export class Tasks {
     return `Task role ${task.role}: definition unavailable or exceeds the task guidance limit; grants no authority.`;
   }
 
+  private ownerAssignmentCurrent(assigned: Task, current: Task): boolean {
+    if (current.owner !== assigned.owner) return false;
+    const moves = (entries: Task["history"]) => entries.filter((h) => !QUIET_EVENTS.has(h.event) && !h.event.startsWith("check "));
+    return moves(current.history).length === moves(assigned.history).length;
+  }
+
   /** `contextWithheld`: the PII screen did not clear a budget hand-off (#198); an escalation's reason is the hub's own words. */
   private async sendTask(task: Task, a: Assignment, context?: string, overlap = "", contextWithheld = false): Promise<void> {
-    const pii = this.isPii(task);
-    const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task, this.planGuardItems(task)).catch(() => undefined);
-    const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", a.owner, h.withheld)}`);
-    const handoff = context && !pii ? this.screen(task, context, "handoff", a.owner, contextWithheld).slice(0, 3000) : "";
-    const facts = [`class ${profileTaskLabel(task)}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(a)].filter(Boolean).join("; ");
+    const brief = this.isPii(task) ? undefined : await this.d.briefs?.forTask(task.owner!, task, this.planGuardItems(task)).catch(() => undefined);
+    const current = this.d.board.get(task.id);
+    if (!current || !this.ownerAssignmentCurrent(task, current)) throw new AssignmentSupersededError(current ?? task);
+    task = current;
+    const pii = this.isPii(task), delivery = { ...a, reviewer: task.reviewer ?? undefined };
+    const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", delivery.owner, h.withheld)}`);
+    const handoff = context && !pii ? this.screen(task, context, "handoff", delivery.owner, contextWithheld).slice(0, 3000) : "";
+    const facts = [`class ${profileTaskLabel(task)}`, delivery.owner === PI ? `backend pi/${delivery.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", delivery.reviewer ? `reviewer ${delivery.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(delivery)].filter(Boolean).join("; ");
     const plan = planText(task.plan);
     const body = [
       `Task #${task.id} [${profileTaskLabel(task)}] ${task.title}`,
@@ -1563,7 +1608,7 @@ export class Tasks {
   async releaseReady(): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
       const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
-      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || t.owner || this.offered.has(t.id) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
+      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || t.owner || this.personUnassigned(t) || this.offered.has(t.id) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
       if (planned && !this.plannerAssignment(t, true).owner) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
       // an offline one; hold reserved tasks for a grace period if restarts show that up.
@@ -1577,7 +1622,7 @@ export class Tasks {
     let offering = false, undelivered: AssignmentUndeliveredError | undefined;
     try {
       const t = this.d.board.get(stale.id);
-      if (!t || t.state !== "proposed" || t.owner || this.offered.has(t.id)) return;
+      if (!t || t.state !== "proposed" || t.owner || this.personUnassigned(t) || this.offered.has(t.id)) return;
       const planned = this.plannerPullRecord(t)?.pull === true;
       const selected = planned ? this.plannerAssignment(t, true).owner : undefined;
       if (planned && !selected) return;
@@ -2186,49 +2231,84 @@ export class Tasks {
       // A saved move whose delivery failed arrives as AssignmentUndeliveredError carrying the saved task (#297);
       // the tail still runs on it (its parts are guarded), and the caller still gets the throw. Anything before
       // the write gets neither.
-      if (e instanceof AssignmentUndeliveredError) tail(e.task);
+      if (e instanceof AssignmentUndeliveredError && this.ownOwnerMove(task, e.task, by, "escalated")) tail(e.task);
       throw e;
     }
     if (next.owner && next.owner !== from) {
       // The move is on the board (#243): review() reaches here after its changes_requested write.
-      tail(next);
+      if (this.ownOwnerMove(task, next, by, "escalated")) tail(next);
     } else this.releaseNotice(`task ${this.publicTitle(task)}: escalation found nobody in [${list.join(", ")}]; it stays with ${from ?? "nobody"}`);
     return this.d.board.get(next.id)!;
   }
 
+  /** Withdraw only a former role's queued request, then tell it that its authority changed. */
+  private withdrawRoleRequest(previous: Task, next: Task, role: TaskAssignmentRole): void {
+    const peer = previous[role];
+    if (!peer || peer === next[role]) return;
+    const kind = role === "owner" ? "task" : "review";
+    this.releaseNotice(`task ${this.publicTitle(next)}: could not notify previous ${role} ${peer} that its request is withdrawn`, () => {
+      const matches = (env: Envelope) => (role === "reviewer" || env.body.startsWith(`Task #${previous.id} [`)) && env.from === HUB && env.kind === kind && env.refs?.task === String(previous.id);
+      const boardEvidence = role === "owner" && (previous.state === "in_progress" || previous.state === "changes_requested" || previous.history.some(entry => entry.event === "accepted" && entry.by === peer));
+      const mayHaveReceived = boardEvidence || this.d.bus.lastDeliveredTo(peer).some(matches) || this.d.bus.queueList(peer).some(row => ["dispatching", "accepted", "needs_review", "completed"].includes(row.state) && row.originals.some(matches));
+      for (const env of this.d.bus.snapshot(false).queues[peer] ?? []) if (matches(env)) this.d.bus.withdraw(env.id);
+      if (!mayHaveReceived) return;
+      const body = role === "owner"
+        ? `Task ${this.publicTitle(next)} is no longer assigned to you${next.owner ? `; its owner is now ${next.owner}` : "; it is unassigned"}. Do not accept or complete it; late calls under your former assignment are refused.`
+        : `Review request for task #${previous.id} ${this.publicTitle(next)} is withdrawn: ${next.reviewer ? `its reviewer is now ${next.reviewer}` : "the task has no reviewer"}. Do not review this task; a late verdict from the previous reviewer is refused.`;
+      if (peer === USER) this.d.notify(body);
+      else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "status", priority: "important", refs: { task: String(previous.id) }, ...(this.isPii(next) ? { private: true } : {}) }));
+    });
+  }
+
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
-  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner"): Promise<Task> {
+  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner", expectedFlowRevision?: number): Promise<Task> {
     if (role !== "owner" && role !== "reviewer") throw new (preEffect ? PreEffectToolRefusal : Error)("role must be owner or reviewer");
     if (role === "reviewer" && by !== USER) {
       const conductors = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
       if (conductors.length !== 1 || conductors[0] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user or the configured conductor may name a reviewer");
     }
     const task = this.need(id, role === "owner", preEffect);
+    this.checkFlowRevision(task, expectedFlowRevision, preEffect);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
     if (role === "reviewer") {
       if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer can no longer change`);
       this.ready(task, preEffect);
       const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
-      const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, `named reviewer ${peer}`, { reason: "manual" });
+      const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, `named reviewer ${peer}`, { reason: "manual" }, expectedFlowRevision);
       if (next.state === "in_review" && task.reviewer && task.reviewer !== peer) {
-        const previous = task.reviewer;
-        this.releaseNotice(`task ${this.publicTitle(next)}: could not notify previous reviewer ${previous} that its review request is withdrawn`, () => {
-          for (const env of this.d.bus.snapshot(false).queues[previous] ?? []) {
-            if (env.from === HUB && env.kind === "review" && env.refs?.task === String(task.id)) this.d.bus.withdraw(env.id);
-          }
-          const body = `Review request for task #${task.id} ${this.publicTitle(next)} is withdrawn: its reviewer is now ${peer}. Do not review this task; a late verdict from the previous reviewer is refused.`;
-          if (previous === USER) this.d.notify(body);
-          else this.d.bus.publish(newEnvelope(HUB, body, { to: [previous], kind: "status", priority: "important", refs: { task: String(task.id) }, ...(this.isPii(next) ? { private: true } : {}) }));
-        });
+        this.withdrawRoleRequest(task, next, "reviewer");
       }
       if (next.state === "in_review" && peer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${peer}`, () => this.sendReview(next, peer));
       return next;
     }
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
-    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER });
-    const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" });
+    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER, expectedFlowRevision });
+    const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" }, expectedFlowRevision);
     this.releaseNotice(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
+    return next;
+  }
+
+  /** Person-only removal without routing a replacement. The history marker suppresses later automatic owner offers. */
+  async unassign(id: unknown, by: PeerId = USER, preEffect = false, role: TaskAssignmentRole = "owner", expectedFlowRevision?: number): Promise<Task> {
+    if (by !== USER) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user may unassign a task role");
+    if (role !== "owner" && role !== "reviewer") throw new (preEffect ? PreEffectToolRefusal : Error)("role must be owner or reviewer");
+    const task = this.need(id, false, preEffect);
+    this.checkFlowRevision(task, expectedFlowRevision, preEffect);
+    if (task.state === "approved") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is approved: its ${role} is historical`);
+    if (role === "owner") {
+      if (!OPEN.includes(task.state)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its owner cannot be unassigned`);
+      if (!task.owner && !task.reserved) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: no owner or owner reservation to unassign`);
+      const next = this.d.board.update(task.id, by, "unassigned", { owner: null, reserved: null, ...(task.state === "proposed" ? {} : { state: "proposed" as const }) }, `person unassigned ${[task.owner, task.reserved].filter(Boolean).join(" and ")}`, { reason: "manual" }, expectedFlowRevision);
+      this.cohorts.leave(task.id);
+      this.withdrawRoleRequest(task, next, "owner");
+      return next;
+    }
+    if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer cannot be unassigned`);
+    if (!task.reviewer) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: no reviewer to unassign`);
+    if (task.reviewer === USER && this.isPii(task)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: the human reviewer is required for PII work`);
+    const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: null }, `person unassigned reviewer ${task.reviewer}`, { reason: "manual" }, expectedFlowRevision);
+    this.withdrawRoleRequest(task, next, "reviewer");
     return next;
   }
 
@@ -2282,6 +2362,7 @@ export class Tasks {
           if (!(e instanceof AssignmentUndeliveredError)) throw e;
           next = e.task;
         }
+        if (!this.ownOwnerMove(back, next, HUB, "reassigned") && !this.ownOwnerMove(back, next, HUB, "unassigned")) continue;
         if (roster) {
           if (!next.owner || next.owner === peer) continue;
           this.releaseNotice(`task ${this.publicTitle(next)} moved from ${peer} to ${next.owner} (off roster)`);

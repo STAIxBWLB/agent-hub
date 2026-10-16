@@ -43,6 +43,42 @@ test("global attention summary persists while full items stay console-role only 
   expect(ordinary.attentionItems).toBeUndefined();
 });
 
+test("checked console assignment and unassignment bind the current task revision (#424)", async () => {
+  const { daemon, console_ } = await hub();
+  await console_.request({ t: "start", peer: "kimi" });
+  await until(() => daemon.bus.peers.get("kimi")?.state === "idle", "kimi attach");
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "console revision", class: "test", owner: "kimi" } })).ok).toBe(true);
+  const rows = JSON.parse((await console_.request({ t: "task", op: "hub_task_list", args: {} })).text);
+  const row = rows[0];
+  expect(row.flowRevision).toBeGreaterThan(0);
+  expect((await console_.request({ t: "task", op: "task_assign_checked", args: { id: row.id, peer: "kimi", revision: row.flowRevision + 1 } })).ok).toBe(false);
+  expect(JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: row.id } })).text).history).toHaveLength(row.flowRevision);
+  expect((await console_.request({ t: "task", op: "task_assign_checked", args: { id: row.id, peer: "kimi", revision: row.flowRevision } })).ok).toBe(true);
+  const assigned = JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: row.id } })).text);
+  expect((await console_.request({ t: "task", op: "task_unassign", args: { id: row.id, revision: assigned.flowRevision } })).ok).toBe(true);
+  expect(JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: row.id } })).text)).toMatchObject({ owner: null, reserved: null, state: "proposed" });
+});
+
+test("a PII owner withdrawal notice uses the public title and a private delivery (#424)", async () => {
+  const { daemon, console_ } = await hub();
+  class Local extends BasePeer {
+    got: any[] = [];
+    async deliver(envs: any[]) { this.got.push(...envs); }
+    async start() { this.setState("idle"); }
+    async stop() { this.setState("offline"); }
+  }
+  const local = new Local("local"); daemon.bus.add(local); await local.start();
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "patient 900101-1234567 needs a follow-up", class: "implement" } })).ok).toBe(true);
+  const shown = JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  expect(shown.owner).toBe("local");
+  expect((await console_.request({ t: "task", op: "task_unassign", args: { id: 1, revision: shown.flowRevision } })).ok).toBe(true);
+  await until(() => local.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")), "PII withdrawal notice");
+  const notice = local.got.find(env => env.kind === "status" && env.body.includes("no longer assigned"));
+  expect(notice).toMatchObject({ private: true });
+  expect(notice.body).toContain("[pii]");
+  expect(notice.body).not.toContain("900101");
+});
+
 async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles } = {}) {
   const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
@@ -855,12 +891,15 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   expect(verdict.content[0].text).toContain("approved");
   const shown = JSON.parse((await first.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
   expect(shown.history.map((h: { event: string }) => h.event)).toContain("approved");
+  expect(shown.flowRevision).toBe(shown.history.length);
   expect(shown.reviews).toEqual([expect.objectContaining({ implementer: "kimi", reviewer: "claude", class: "test", kind: "approved", task: 1 })]); // #35
   expect((await first.console_.request({ t: "status" })).status.tasks).toEqual({ approved: 1 });
   const peerOnly: any = await client.callTool({ name: "hub_task_list", arguments: {} });
-  expect(JSON.parse(peerOnly.content[0].text)).toHaveLength(1);
+  expect(JSON.parse(peerOnly.content[0].text)).toEqual([expect.objectContaining({ id: 1, flowRevision: shown.history.length })]);
   const denied = await ControlClient.connect(first.stateDir, { role: "tools", peer: "kimi" });
   expect(await denied.request({ t: "task", op: "task_assign", args: { id: 1, peer: "kimi" } })).toMatchObject({ ok: false, error: "task_assign is a console command" });
+  expect(await denied.request({ t: "task", op: "task_assign_checked", args: { id: 1, peer: "kimi", revision: shown.flowRevision } })).toMatchObject({ ok: false, error: "task_assign_checked is a console command" });
+  expect(await denied.request({ t: "task", op: "task_unassign", args: { id: 1 } })).toMatchObject({ ok: false, error: "task_unassign is a console command" });
   denied.close();
 
   // a second hub on the same state dir sees the board

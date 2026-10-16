@@ -3,10 +3,13 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal, type JournalDelivery } from "../src/hub/delivery-journal.ts";
-import { newEnvelope, noteLine, type Envelope } from "../src/hub/envelope.ts";
+import { HUB, USER, newEnvelope, noteLine, type Envelope } from "../src/hub/envelope.ts";
 import type { DeliveryReceipt, PeerAdapter } from "../src/hub/peers.ts";
+import { loadRouting } from "../src/hub/routing.ts";
+import { Tasks } from "../src/hub/tasks.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -424,3 +427,23 @@ for (const action of ["discard", "retry"] as const) {
     durable.close();
   });
 }
+
+test("owner withdrawal never settles dispatching, accepted or needs_review deliveries (#424)", async () => {
+  const { bus, durable } = setupBus();
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-withdrawal-durable-")); dirs.push(dir);
+  const board = new Board(join(dir, "board.db")), peer = new FakePeer("codex");
+  bus.add(peer); await peer.start();
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "project", notify: () => {} });
+  try {
+    const task = board.propose(USER, { title: "durable withdrawal", class: "implement" });
+    board.update(task.id, USER, "assigned", { owner: "codex" });
+    const original = newEnvelope(HUB, `Task #${task.id} [implement] durable withdrawal`, { to: ["codex"], kind: "task", refs: { task: String(task.id) } });
+    const rows = (["dispatching", "accepted", "needs_review"] as const).map(state => durable.createDelivery({
+      id: state, peer: "codex", state, createdAt: original.ts, originals: [original], out: [original],
+    }));
+    await tasks.unassign(task.id);
+    for (const row of rows) expect(durable.list("codex").find(item => item.id === row.id)).toMatchObject({ state: row.state, revision: row.revision, originals: row.originals });
+  } finally {
+    durable.close(); board.close();
+  }
+});

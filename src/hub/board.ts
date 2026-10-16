@@ -213,9 +213,10 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}, expectedFlowRevision?: number): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
+    if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }

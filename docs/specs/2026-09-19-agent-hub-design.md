@@ -1948,6 +1948,63 @@ task list polling does not. `hub_status` stays conductor-only.
   proposer as the actor with reason `manual` (on the `reassigned` or `reserved`
   entry), and writes no conduct audit event; during a PII turn it is refused
   like the conductor's.
+
+## Amendment: revision-safe console task and queue operations (issue #424)
+
+- Task list/show responses add `flowRevision`, the monotonic history length,
+  separate from `planningRevision` and the delivery journal revision. This is
+  additive public metadata and does not bump the control protocol. `Board.update`
+  can check an expected value in its synchronous read-check-write section.
+- A revision-bound `ahub task assign` uses the new console-only
+  `task_assign_checked`; unchecked `task_assign` remains compatible. The new
+  console-only `task_unassign` and checked operation are unknown to an older hub,
+  which therefore refuses rather than ignoring the revision. A console whose
+  rows lack `flowRevision` refuses task row actions and asks for an upgrade.
+  `ahub queue resolve` accepts an optional displayed revision and otherwise keeps
+  its existing fresh-show behavior. New operations and optional fields preserve
+  the protocol version.
+- Tasks and Queue selections follow ids across refreshes, never indices into
+  replacement rows. A row-started action fixes its id and revision while peer,
+  reason and final role/action remain editable; confirmation uses the validated
+  final command and its consequence. Refresh follows every completed console
+  command, including failure and saved-but-unconfirmed assignment, without an
+  automatic resend. Existing `AssignmentUndeliveredError` semantics remain.
+- Tasks `a` assigns owner in `proposed`, `in_progress` and `changes_requested`,
+  and reviewer in `in_review`; waiting owner assignment is a reservation. `u`
+  unassigns, and `r` reviews only in `in_review`. Direct owner reassignment or
+  unassignment in `in_review`, physical task deletion/cancellation and roster
+  removal stay outside this feature.
+- `Tasks.unassign` is person-only. It refuses `approved` and `backlog`, an
+  already absent role and owner removal in `in_review`. Owner removal clears the
+  owner and reservation and returns active work to `proposed`; reviewer removal
+  keeps the current state. The human reviewer of PII work cannot be removed.
+  Owner removal writes `unassigned` and leaves turn-free cohorts; reviewer
+  removal writes `reviewer changed`. Neither operation routes a replacement,
+  adds a decline exclusion, stops a native process or rolls back effects.
+- A person `unassigned` event suppresses later automatic owner offers across
+  dependency release, planner pulls, release timers and restart recovery until
+  an explicit assignment or reservation. The marker is derived from history, so
+  no schema migration is needed, and it also fences planner undo and re-pull.
+  Former queued task/review requests are withdrawn, but accepted, dispatching
+  and needs_review deliveries are never implicitly resolved. Withdrawal notices
+  use delivery evidence or accepted/claimed board evidence, never an unread
+  queue alone. Former agents fail current-authority checks while the person's
+  explicit review override remains.
+- Assignment/review publication has a role-specific fence after every await and
+  immediately before publication. Existing supersession events, role generation
+  and task state suppress obsolete envelopes; accept, done and approval count as
+  supersession even when the owner id is unchanged. Supersession returns the
+  current task rather than aborting the remaining operation. Current metadata is
+  re-read before constructing a still-valid envelope, so reviewer-only changes
+  refresh reviewer content and quiet bookkeeping does not suppress valid owner
+  delivery.
+- Queue `r` prefills `discard` for `queued` and `retry` for `needs_review`, never
+  `completed` by default. Every resolve needs reason and confirmation. Queued
+  discard removes queued originals; needs-review discard settles its receipt and
+  hold. Retry creates one linked attempt. None cancels a task or claims native
+  or external rollback. Task and queue projections retain their distinct PII and
+  envelope-privacy redaction.
+
 ## Amendment: delegated agent live verification (#408)
 
 - Decision, 2026-10-16: an agent explicitly authorized by the user to perform a live test may use the global `--live-test` flag, before the command and in either order with `--project`. Duplicate global options refuse. Default command classification and malformed/conflicting identity refusals stay unchanged.
