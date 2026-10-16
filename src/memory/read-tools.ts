@@ -12,7 +12,7 @@ const excerpt = (text: string, max = 200): string => {
   for (const point of points) { if (length + bytes(point) + bytes(marker) > max) break; out += point; length += bytes(point); }
   return out + marker;
 };
-const reject = (): never => { throw new PreEffectToolRefusal(REFUSAL); };
+function reject(): never { throw new PreEffectToolRefusal(REFUSAL); }
 export type MemoryScreen = <T extends { title: string | null; text: string }>(rows: T[]) => T[];
 
 /** Validate before capability logging, storage, or privacy work. Schemas alone do not enforce tool input. */
