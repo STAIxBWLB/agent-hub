@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const CM_CUTOFF = Date.parse("2026-10-16T00:00:00Z");
 const NATIVE_CUTOFF = Date.parse("2026-10-15T21:53:00Z");
-const EVENT_CUTOFF = Date.parse("2026-10-15T22:35:35Z");
+const EVENT_CUTOFF = Date.parse("2026-10-15T22:35:36.000Z"); // Exclusive: include the entire receipt second.
 const DAY_START = Date.parse("2026-10-02T00:00:00Z");
 const DAY_MS = 86_400_000;
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -108,7 +108,7 @@ function events(project: string): Counts {
       try { e = JSON.parse(line); if (!e || typeof e !== "object") throw new Error(); } catch { malformed++; continue; }
       const at = Date.parse(e.at);
       if (!Number.isFinite(at)) { malformed++; continue; }
-      if (at > EVENT_CUTOFF || e.type !== "memory_brief") continue;
+      if (at >= EVENT_CUTOFF || e.type !== "memory_brief") continue;
       if (![e.native, e.claudeMem, e.fails].every(n => Number.isSafeInteger(n) && n >= 0)) { malformed++; continue; }
       briefs++; native_items += e.native; claude_mem_items += e.claudeMem; fails += e.fails; if (e.fails > 0) with_fails++;
     }
@@ -121,7 +121,7 @@ function recall(project: string): Counts {
     const m = /^(\S+) recall .+: (\d+) chars$/.exec(line);
     if (!m) continue;
     const at = Date.parse(m[1]!);
-    if (!Number.isFinite(at) || at > EVENT_CUTOFF) continue;
+    if (!Number.isFinite(at) || at >= EVENT_CUTOFF) continue;
     recalls++; chars += Number(m[2]);
   }
   return { recalls, chars_total: chars, mean_chars: recalls ? chars / recalls : null };
