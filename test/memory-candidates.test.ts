@@ -93,3 +93,35 @@ test("pending correction, fail and decay candidates never become list, search or
   expect(memoryRead(store, project, screen, "hub_memory_graph", { starts: [`mem:${id}`] })).not.toContain(marker);
   expect(logs(store)).toEqual(before);
 });
+
+test("one telemetry observation projects and fully screens visible rows once for all cited ids", () => {
+  const { store, sidecar, project, note } = fixture();
+  const ids = [note("first visible note"), note("second visible note"), note("third visible note")];
+  let lists = 0, projections = 0;
+  const fullScreens = new Map<string, number>();
+  const countedScreen: MemoryScreen = rows => {
+    if (rows.some(row => "id" in row)) projections++;
+    for (const row of rows) {
+      if (!row.text.startsWith("{")) continue;
+      const value = JSON.parse(row.text) as { id?: string; about?: string[] };
+      if (value.id && Array.isArray(value.about)) fullScreens.set(value.id, (fullScreens.get(value.id) ?? 0) + 1);
+    }
+    return screen(rows);
+  };
+  const countedStore = {
+    list: (...args: Parameters<MemoryStore["list"]>) => { lists++; return store.list(...args); },
+    get: (...args: Parameters<MemoryStore["get"]>) => store.get(...args),
+    withDeferredPromotions: <T>(work: () => T): T => store.withDeferredPromotions(work),
+  } as unknown as MemoryStore;
+  const telemetry = new MemoryTelemetry(sidecar, countedStore, project, countedScreen);
+  const text = ids.flatMap(id => [`mem:${id}`, `mem:${id.slice(0, 8)}`]).join(" ");
+  telemetry.record(text, { deliveryId: "one-projection" }, "rendered");
+  expect(lists).toBe(1); expect(projections).toBe(1);
+  for (const id of ids) expect(fullScreens.get(id)).toBe(1);
+  expect(sidecar.counters(project)).toHaveLength(3);
+  // A later observation must obtain a fresh projection, including the changed policy.
+  telemetry.record(text, { deliveryId: "one-projection" }, "delivered");
+  expect(lists).toBe(2); expect(projections).toBe(2);
+  for (const id of ids) expect(fullScreens.get(id)).toBe(2);
+  expect(sidecar.counters(project).every(row => row.rendered === 1 && row.delivered === 1)).toBe(true);
+});
