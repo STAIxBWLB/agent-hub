@@ -147,6 +147,14 @@ function globScope(root: string, lexical: string, actual: string, path: string, 
   };
   return visit(root, start, 0, new Set());
 }
+/** Policy preflight without filesystem access. Callers must reject symlink traversal separately. */
+export function matchesPolicyLexically(cwd: string, path: string, paths: string[]): boolean {
+  const root = resolve(cwd), lexical = resolve(root, path);
+  return paths.some(entry => /[?*]/.test(entry)
+    ? patternScope(entry.split("/").filter(p => p && p !== "."), new Set([0]), relative(root, lexical), false)
+    : beneath(lexical, resolve(root, entry)));
+}
+
 /** Compare declared spelling, real targets and bounded aliases; legacy discovery errors fail closed. */
 export function matchesPolicy(cwd: string, path: string, paths: string[], includeParents = false): boolean {
   if (!paths.length) return false;

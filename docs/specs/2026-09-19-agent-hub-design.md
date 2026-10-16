@@ -2937,3 +2937,10 @@ The portable core is the first-party `@staix/agent-mem` library, initially exact
 The consumed package requires Bun >=1.4.2; the hub manifest, plain-JavaScript startup guard and installation guide share that minimum. Node still receives the actionable refusal before any TypeScript or Bun-only import.
 
 Recovery source preservation retains the exact first-party memory package under the preserved runtime, without copying any other node_modules content or linking to the mutable global install. Package identity/version and all retained dependency bytes participate in the recovery digest; cached or preserved dependency drift is refused. Preserved-source verification requires the package inside its own node_modules, refusing a missing or symlinked copy rather than falling back to a mutable ancestor installation. Staged release verification similarly binds dependency lookup to its retained install directory, including cached releases and a fresh coordinator. Releases without runtime dependencies keep their historical digest.
+
+
+## Amendment: P7 Stage A read-only memory presentation (#412 P7-1)
+
+The exact first-party pin is `@staix/agent-mem` 0.2.0. Agent-hub adds advisory plan-matching live fails to owner briefs and reviewer checklists, optional labeled fail text validated before the 4000-byte cap, person-only decay review, and privacy-filtered bounded read-time staleness markers. The task/PII boundaries remain in Tasks and the daemon. Details and ceilings are in `docs/memory.md`; no new v1 op, stored marker, candidate writer or live-leg claim is introduced.
+
+The P7-1 hint C3 probe gate assumes the tree is not modified during a call: no probe reaches a declared private/denied path in that scope. Concurrent ancestor swaps by a process running as the person are outside the security threat model and may expose one existence bit; this ceiling has a deterministic witness test.

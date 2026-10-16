@@ -29,7 +29,7 @@ export function validateMemoryRead(op: string, a: Record<string, unknown>): void
 }
 
 /** Read-only model projection. Counts and caps are computed only after screening whole records and metadata. */
-export function memoryRead(store: MemoryStore | undefined, project: string, screen: MemoryScreen, op: string, a: Record<string, unknown>): string {
+export function memoryRead(store: MemoryStore | undefined, project: string, screen: MemoryScreen, op: string, a: Record<string, unknown>, stale: (about: readonly string[]) => boolean = () => false): string {
   validateMemoryRead(op, a);
   const safe = (v: unknown): boolean => {
     try {
@@ -70,7 +70,7 @@ export function memoryRead(store: MemoryStore | undefined, project: string, scre
       for (const v of rows) {
         if (lines.length >= (show ? 8 : Number(a.limit ?? 8))) break;
         const header = `mem:${v.id} ${v.kind} ${v.tier} source:${v.source} peer:${v.peer} project:${v.project} at:${v.at}: `.replace(/\s+/g, " ");
-        const body = `${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").trim();
+        const body = `${show && stale(v.about) ? "(stale?) " : ""}${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").trim();
         lines.push(header + body);
         if (bytes(JSON.stringify(render())) > cap) {
           const points = Array.from(body);

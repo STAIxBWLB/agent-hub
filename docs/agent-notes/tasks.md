@@ -21,3 +21,5 @@ Scope: the task flow, assignment, the state machine and the hub's MCP tools. Rea
 - A changed `reviewedHead`, or one supplied with a changed repo or PR, needs the reviewer or a person; a head dropped because the owner relinked the PR does not (#382: the owner could not relink, and could carry a head to a new PR).
 
 - Memory read tools (`hub_memory_search`, `hub_memory_show`, `hub_memory_graph`, #412) take their project only from the daemon. Validate UTF-8 input caps before logs or storage, require `memory_read`, refuse PII turns and exclude arguments/results from capture. Screen complete rows and graph metadata before counting or truncating; keep whole-result byte caps, complete id/provenance/kind headers and one neutral unavailable-id refusal.
+
+- Compose structured `hub_remember` fail fields through `composeRememberText` before screening or writes; reject over 4000 UTF-8 bytes without truncation. Treat plan-fail matches as screened advisory priority only, never a state-transition guard; skip all plan-memory work for PII tasks.

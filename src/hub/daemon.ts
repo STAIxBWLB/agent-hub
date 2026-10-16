@@ -1,3 +1,5 @@
+import { createStalenessProbe } from "./memory-staleness.ts";
+import { matchingPlanFails, planGuardNodes } from "./memory-plan-guard.ts";
 import { planningWipLimits } from "./planning.ts";
 import { projectedDiff } from "./projected-diff.ts";
 import { listenWithoutPortCollision } from "./listen.ts";
@@ -839,6 +841,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * policy: a shared note was accepted under another project's patterns, and patterns change. A match is withheld.
    */
   const screenMemory = <T extends { title: string | null; text: string }>(vs: T[]): T[] => withoutPii(vs, currentRouting(opts.cwd, log), opts.cwd, config.pii?.paths ?? []);
+  const staleness = () => createStalenessProbe({ cwd: opts.cwd, privatePaths: config.pii?.paths ?? [], deny: config.local.deny });
   const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
   /** A task's own nodes: what its title names (an issue, a path), its refs and plan paths, plan symbols, and the task itself. */
   const taskNodes = (t: { id?: number; created?: number; title?: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }) =>
@@ -916,7 +919,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // This project's active long-term tasks lead, then its latest long-term decisions, contracts and fails.
       const goals = memoryStore ? screenMemory(memoryStore.goals(memoryProject).filter((g) => g.state !== "done" && g.state !== "dropped").map((g) => ({ ...g, text: "" }))).map(goalLine) : [];
       // Entries and titles are agents' words from any synced machine: one line each, and no forged message header.
-      own = memoryStore ? nativeRecall([...goals, ...recallMemoryLines(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")))], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
+      own = memoryStore ? nativeRecall([...goals, ...recallMemoryLines(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")), 30, staleness())], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
     }
     catch (e) { log(`hub memory recall failed: ${(e as Error).message}`); }
     const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens) : undefined;
@@ -1010,8 +1013,17 @@ export async function startDaemon(opts: DaemonOptions) {
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory } : {}),
     ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, config.memory.brief_items,
-      memoryStore ? (t) => screenMemory(memoryStore!.related(memoryProject, taskNodes(t), Number.MAX_SAFE_INTEGER)).slice(0, config.memory.brief_items).map((v) => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind })) : undefined,
-      (peer, task, counts) => event({ type: "memory_brief", peer, task, ...counts })) } : {}),
+      memoryStore ? (t) => screenMemory(memoryStore!.related(memoryProject, taskNodes(t), Number.MAX_SAFE_INTEGER)).slice(0, config.memory.brief_items).map((v) => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about })) : undefined,
+      (peer, task, counts) => event({ type: "memory_brief", peer, task, ...counts }),
+      items => { const stale = staleness(); return items.map(item => `${item.line}${stale(item.about ?? []) ? " (stale?)" : ""}`); }) } : {}),
+    ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
+      const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny };
+      const nodes = planGuardNodes(task, context);
+      const related = screenMemory(memoryStore.related(memoryProject, nodes, Number.MAX_SAFE_INTEGER));
+      const all = screenMemory(memoryStore.list({ project: memoryProject, kind: "fail", limit: Number.MAX_SAFE_INTEGER }));
+      const rows = [...new Map([...related, ...all].map(row => [row.id, row])).values()];
+      return matchingPlanFails(task, rows, context).slice(0, config.memory.brief_items).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about }));
+    } } : {}),
     ...(memoryStore ? { store: { store: memoryStore, project: memoryProject, repo: memoryRepo, deny: config.local.deny, onNote: (id: string) => void suggestEdges(id) } } : {}),
     notify,
     recordOverlap: (task, owner, others) => event({ type: "overlap", task, owner, others }),
@@ -1596,7 +1608,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (MEMORY_READ_TOOLS.has(op)) {
       need("memory_read", "read shared memory");
-      return memoryRead(memoryStore, memoryProject, screenMemory, op, a);
+      return memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness());
     }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
     switch (op) {
@@ -1621,7 +1633,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (t.state === "backlog") return line(t);
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // as for an accept
-        return [line(t), overlap, tasks.claimRoleGuidance(t, by)].filter(Boolean).join("\n");
+        return [line(t), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : ""].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
         const t = tasks.accept(by, a.id, a.plan);
@@ -1629,7 +1641,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const silent = tasks.silentFor(t.id);
         const overlap = a.plan == null && !silent ? "" : tasks.overlaps(t);
         if (silent && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
-        return overlap ? `${line(t)}\n${overlap}` : line(t);
+        return [line(t), overlap, tasks.planGuardText(t)].filter(Boolean).join("\n");
       }
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason));

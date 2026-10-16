@@ -1,6 +1,6 @@
 # Hub memory integration
 
-Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Optional claude-mem remains a separate capture and session-recall source.
+Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (current pin `0.2.0`, initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Optional claude-mem remains a separate capture and session-recall source.
 
 ## Portable core and data directory
 
@@ -141,3 +141,20 @@ Whether hub memory helps is measured, not assumed (#258 AC11, with #248):
 - Nothing about a PII task enters the store: the tool refuses it and the hub's own notes skip it. Text that matches a
   PII pattern, that the PII screen does not clear, or that looks like a secret is refused or skipped with a notice.
 - Hub log lines about memory carry ids and counts only.
+
+
+## Stage A plan guard and fail notes (#412 P7-1)
+
+A plan's explicit paths/symbols and refs paths are matched against live, screened fail `about` nodes (the source of v1 `rules_out` graph edges). Matching fails lead the owner's brief and the review delivery's checklist; accepting a plan or claiming work returns the same current advice. Existing related-memory fails-first ordering is retained. Unrelated fails do not gain plan priority. The guard informs, never blocks or changes the task, and PII tasks never invoke it.
+
+`hub_remember` accepts optional string fields `approach`, `symptom`, `cause`, `evidence`, and `retry_when` only with `kind: "fail"`. Provided fields appear in that order with labels `Approach`, `Symptom`, `Cause`, `Evidence`, and `Retry when`, after optional plain text. A structured-only fail is valid; plain text remains valid. The completed text is validated before policy, storage or display: at most 4000 UTF-8 bytes, with actual/limit byte counts on refusal and no truncation. Every composed field passes the existing secret/PII/private-path checks.
+
+## Decay review
+
+`ahub memory decay [--days N] [--json]` is person-only, including in delegated live-test sessions. Default age is 90 days. It lists this project's long-term, live, non-superseded notes strictly older than the cutoff, excluding links to open/active/blocked goals through the note's task or `about` nodes. Reads use current privacy screening and defer automatic promotions; authoritative JSONL bytes do not change. Index maintenance remains derived-only. A person acts separately through existing `demote` or `forget`. These are review rows, with no candidate-sidecar write.
+
+## Read-time staleness hint
+
+Recall lines, native brief items, `hub_memory_show` lines and human `ahub memory show` output mark `(stale?)` when an allowed `path:` or symbol-file path is missing. CLI `--json` keeps the v1 row unchanged. The marker is never stored or used as evidence of correctness.
+
+Each rendered batch has a shared cache and a hard bound of 32 metadata probes. On a tree not modified during the call, no hint probe reaches a `pii.paths`/`local.deny` path: declared private paths and the common deny policy are checked lexically first, including folded spellings and globs. Absolute/escaping paths, symlinks observed by a probe, denied paths, unreadable metadata and exhausted budgets are unknown and produce no marker. A concurrent ancestor swap by a process running as you can expose one existence bit; it is outside the [security threat model](security.md), and the deterministic ceiling witness is retained in the tests. Descriptor-anchored traversal is needed before supporting that scenario. Symbol nodes are checked only through their allowed file; this hint does not parse source symbols or read file contents. Current privacy screening still precedes rendering and peer-output byte caps. No new memory operation or candidate writer is introduced.
