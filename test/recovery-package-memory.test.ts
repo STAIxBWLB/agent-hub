@@ -4,7 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symli
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { packageDigest } from "../src/cli/recovery-package.ts";
+import { packageDigest, verifyPackage } from "../src/cli/recovery-package.ts";
 import { makeRecoveryDriver, preserveSource } from "../src/cli/upgrade-runtime.ts";
 import type { RecoveryOperation, UpgradePlan } from "../src/cli/upgrade.ts";
 
@@ -78,4 +78,26 @@ test("a preserved runtime never falls back to the checkout dependency when its o
   await expect(makeRecoveryDriver().stage(operation)).rejects.toThrow("memory runtime dependency is unavailable");
   symlinkSync(f.dependency, join(preserved, "node_modules/@staix/agent-mem"));
   expect(() => preserveSource(before, home)).toThrow("runtime package must not contain symlinks");
+  rmSync(join(preserved, "node_modules"), { recursive: true });
+  symlinkSync(join(f.root, "node_modules"), join(preserved, "node_modules"));
+  expect(() => preserveSource(before, home)).toThrow("runtime package must not contain symlinks");
+});
+
+test("a cached release never resolves a deleted dependency from an ancestor checkout (#412)", async () => {
+  const f = fixture(), home = join(f.root, ".agenthub"), install = join(home, "releases/0.0.0");
+  const runtime = join(install, "node_modules/@staix/agent-hub"), memory = join(install, "node_modules/@staix/agent-mem");
+  mkdirSync(join(f.root, "plugins/agent-hub/.claude-plugin"), { recursive: true });
+  mkdirSync(join(f.root, "src/cli"));
+  writeFileSync(join(f.root, "src/cli/main.js"), "// fixture\n");
+  writeFileSync(join(f.root, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: "0.0.0" }));
+  mkdirSync(runtime, { recursive: true });
+  for (const name of ["src", "plugins", "templates", ".claude-plugin", "package.json"]) cpSync(join(f.root, name), join(runtime, name), { recursive: true });
+  cpSync(f.dependency, memory, { recursive: true });
+  writeFileSync(join(install, "verified.json"), JSON.stringify({ integrity: "sha512-fixture", digest: verifyPackage(runtime, "0.0.0") }));
+  rmSync(memory, { recursive: true });
+  // A fresh coordinator must not inherit this process's module-resolution cache.
+  const code = `import { stageRelease } from ${JSON.stringify(join(import.meta.dir, "../src/cli/recovery-package.ts"))}; try { await stageRelease("0.0.0", "sha512-fixture", undefined, ${JSON.stringify(home)}); } catch (e) { console.error(e.message); process.exit(1); }`;
+  const child = Bun.spawnSync([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(1);
+  expect(child.stderr.toString()).toContain("memory runtime dependency is unavailable");
 });
