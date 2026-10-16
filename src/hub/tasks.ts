@@ -2241,7 +2241,9 @@ export class Tasks {
       const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
       const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, `named reviewer ${peer}`, { reason: "manual" }, expectedFlowRevision);
-      if (next.state === "in_review") this.withdrawRoleRequest(task, next, "reviewer");
+      if (next.state === "in_review" && task.reviewer && task.reviewer !== peer) {
+        this.withdrawRoleRequest(task, next, "reviewer");
+      }
       if (next.state === "in_review" && peer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${peer}`, () => this.sendReview(next, peer));
       return next;
     }
