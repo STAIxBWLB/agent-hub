@@ -2537,15 +2537,18 @@ test("a move made while the assignment's brief is being read is supersession and
   // The escalation writes owner codex; while sendTask reads the brief, a console assign moves the task to local
   // and that delivery succeeds; the stale envelope to codex then throws.
   const briefs = { forTask: async () => { base.board.update(1, "user", "reassigned", { owner: "local" }, "console assign during the brief"); return undefined; } };
-  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
-  const publish = base.bus.publish.bind(base.bus);
-  base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never, memory: new MemoryClient(base.mem.url) });
+  const publish = base.bus.publish.bind(base.bus), attempted: string[] = [];
+  base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") { attempted.push(env.body); throw new Error("delivery journal unavailable"); } return publish(env); };
   try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1 }); }
   finally { base.bus.publish = publish; }
   // The superseding move stands; nothing names either owner as undelivered, and no escalation tail ran.
   expect(base.board.get(1)!.owner).toBe("local");
   expect(base.notices.some((l) => l.includes("delivery is not confirmed"))).toBe(false);
-  expect(base.notices.some((l) => l.includes("escalated from kimi"))).toBe(true);
+  expect(base.notices.some((l) => l.includes("escalated from kimi"))).toBe(false);
+  expect(attempted.some((body) => body.includes("Stop working"))).toBe(false);
+  await tick();
+  expect(base.saves().filter((save) => save.text.includes("escalated from kimi"))).toEqual([]);
 });
 
 test("an AssignmentUndeliveredError serializes without the task's title or detail (#297)", async () => {
@@ -3277,17 +3280,15 @@ test("dependency approval does not re-offer person-unassigned work through relea
   expect(Object.values(peers).flatMap(peer => peer.got).filter(env => env.refs?.task === String(child.id))).toEqual([]);
 });
 
-test("planner undo and re-pull keep the person-unassigned marker (#424)", async () => {
+test("person unassignment blocks planner undo and re-pull (#424)", async () => {
   const f = await pullTaskFixture();
   const task = await f.tasks.propose("claude", { title: "undo reservation", class: "implement", backlog: true });
   const pulled = await f.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "initial pull" });
   await f.tasks.unassign(task.id);
-  const undone = await f.tasks.undoPlanning("claude", task.id, pulled.planningRevision!);
-  expect(undone.state).toBe("backlog");
-  const repulled = await f.tasks.pullPlanned("claude", { id: task.id, revision: undone.planningRevision!, reason: "re-pull" });
-  expect(repulled.reserved).toBe("codex");
+  await expect(f.tasks.undoPlanning("claude", task.id, pulled.planningRevision!)).rejects.toThrow("planning undo is stale or not owned");
+  await expect(f.tasks.pullPlanned("claude", { id: task.id, revision: pulled.planningRevision!, reason: "re-pull" })).rejects.toThrow("planner pull changed");
   await f.tasks.releaseReady();
-  expect(f.board.get(task.id)).toMatchObject({ owner: null, reserved: "codex", state: "proposed" });
+  expect(f.board.get(task.id)).toMatchObject({ owner: null, reserved: null, state: "proposed" });
 });
 
 test("stale unassign has no side effects, live and reserved owners clear together, and absent replay stays absent (#424)", async () => {
@@ -3320,7 +3321,7 @@ test("a superseded relay assignment does not abort later tasks (#424)", async ()
   } };
   const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: line => base.notices.push(line), briefs: briefs as never });
   await expect(tasks.reassignForPause("codex", undefined)).resolves.toHaveLength(2);
-  expect(second.id).toBeGreaterThan(first.id);
+  expect(base.board.get(second.id)!.owner).not.toBe("codex");
 });
 
 test("a delivered former owner is notified of unassignment (#424)", async () => {
@@ -3328,4 +3329,96 @@ test("a delivered former owner is notified of unassignment (#424)", async () => 
   const task = await tasks.propose("claude", { title: "delivered owner", class: "implement", owner: "codex" });
   await tasks.unassign(task.id);
   expect(peers.codex!.got.some(env => env.kind === "status" && env.body.includes("no longer assigned"))).toBe(true);
+});
+
+test("a self-claimed owner is notified of unassignment without an assignment envelope (#424)", async () => {
+  const { tasks, peers, bus } = await setup(["codex"]);
+  const task = await tasks.propose("codex", { title: "self claimed owner", class: "implement", owner: "codex" });
+  expect(task.state).toBe("in_progress");
+  expect(bus.lastDeliveredTo("codex").filter(env => env.refs?.task === String(task.id))).toEqual([]);
+  await tasks.unassign(task.id);
+  await until(() => peers.codex!.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")));
+});
+
+test("an accepted owner is notified of unassignment after a restart without delivery evidence (#424)", async () => {
+  const base = await setup(["codex"]);
+  const task = await base.tasks.propose(USER, { title: "accepted before restart", class: "implement", owner: "codex" });
+  base.tasks.accept("codex", task.id);
+  const bus = new Bus({ batchMs: 0 }), peer = new FakePeer("codex");
+  bus.add(peer); await peer.start();
+  cleanup.push(() => bus.closeJournal());
+  const tasks = new Tasks({ board: base.board, bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: () => {} });
+  await tasks.unassign(task.id);
+  await until(() => peer.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")));
+});
+
+test("an accepted owner is notified of unassignment after its terminal delivery row is pruned (#424)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-withdrawal-pruning-"));
+  const board = new Board(join(dir, "hub.db"));
+  const durable = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "project", instanceId: "pruning" });
+  const bus = new Bus({ journal: durable, batchMs: 0 }), peer = new FakePeer("codex");
+  bus.add(peer); await peer.start();
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
+  cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
+  const task = board.propose(USER, { title: "pruned owner", class: "implement" });
+  board.update(task.id, USER, "assigned", { owner: "codex" });
+  board.update(task.id, "codex", "accepted", { state: "in_progress" });
+  const original = newEnvelope(HUB, `Task #${task.id} [implement] pruned owner`, { to: ["codex"], kind: "task", refs: { task: String(task.id) } });
+  durable.createDelivery({ id: "original", peer: "codex", state: "completed", createdAt: 1, updatedAt: 1, originals: [original], out: [original] });
+  for (let i = 0; i < 2048; i++) durable.createDelivery({ id: `filler-${i}`, peer: "codex", state: "completed", createdAt: i + 2, updatedAt: i + 2, originals: [], out: [] });
+  expect(durable.list("codex").some(row => row.id === "original")).toBe(false);
+  await tasks.unassign(task.id);
+  await until(() => peer.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")));
+});
+
+test("a person reassignment suppresses a superseded budget relay result (#424)", async () => {
+  const base = await setup();
+  const task = await base.tasks.propose("claude", { title: "budget supersession", class: "implement", owner: "codex" });
+  const briefs = { forTask: async () => { base.board.update(task.id, USER, "reassigned", { owner: "kimi" }, "person moved during budget relay"); return undefined; } };
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: line => base.notices.push(line), briefs: briefs as never });
+  await expect(tasks.reassignForPause("codex", undefined)).resolves.toEqual([]);
+  expect(base.board.get(task.id)!.owner).toBe("kimi");
+});
+
+test("a person reassignment suppresses an offline relay result and stop notice (#424)", async () => {
+  const base = await setup();
+  const task = await base.tasks.propose("claude", { title: "offline supersession", class: "implement", owner: "codex" });
+  base.peers.codex!.set("offline");
+  const told: string[] = [];
+  const briefs = { forTask: async () => { base.board.update(task.id, USER, "reassigned", { owner: "kimi" }, "person moved during offline relay"); return undefined; } };
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: line => base.notices.push(line), briefs: briefs as never, tell: (peer, line) => told.push(`${peer}|${line}`) });
+  await expect(tasks.releaseFromGone("codex", 30)).resolves.toEqual([]);
+  expect(base.board.get(task.id)!.owner).toBe("kimi");
+  expect(told).toEqual([]);
+});
+
+test("owner unassignment leaves a turn-free cohort (#424)", async () => {
+  const ctx = await turnFreeRig();
+  const { first, second } = await pair(ctx.tasks);
+  expect(ctx.tasks.cohorts.of(first.id)).toBeDefined();
+  await ctx.tasks.unassign(first.id);
+  expect(ctx.tasks.cohorts.of(first.id)).toBeUndefined();
+  expect(ctx.tasks.cohorts.of(second.id)?.members.has(first.id)).toBe(false);
+});
+
+test("owner unassignment refuses the proposer and records USER authority (#424)", async () => {
+  const { tasks, board } = await setup();
+  const task = await tasks.propose("kimi", { title: "proposer authority", class: "implement", owner: "kimi" });
+  const before = board.get(task.id)!;
+  await expect(tasks.unassign(task.id, "kimi", true)).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(board.get(task.id)).toEqual(before);
+  const removed = await tasks.unassign(task.id);
+  expect(removed.history.at(-1)).toMatchObject({ by: USER, event: "unassigned" });
+});
+
+test("owner unassignment fences an in-flight completion check (#424)", async () => {
+  const { tasks, board, peers, release } = await checked({ code: 0, timedOut: false, tail: "pass" });
+  const task = await tasks.propose("codex", { title: "unassign during check", class: "implement", owner: "codex" });
+  await tasks.done("codex", task.id, "done");
+  expect(tasks.isChecking(task.id)).toBe(true);
+  await tasks.unassign(task.id);
+  release();
+  await until(() => board.get(task.id)!.history.some(entry => entry.event === "check finished late"));
+  expect(board.get(task.id)).toMatchObject({ owner: null, state: "proposed" });
+  expect(peers.claude!.got.some(env => env.kind === "review" && env.refs?.task === String(task.id))).toBe(false);
 });

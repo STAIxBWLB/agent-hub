@@ -245,3 +245,13 @@ test("an older daemon rejects checked assignment without an unchecked fallback",
   ]);
   expect(f.requests.some(request => request.op === "task_assign")).toBe(false);
 });
+
+test("an older daemon rejects task unassign without an unchecked fallback (#424)", async () => {
+  const f = fixture({ rejectChecked: true });
+  const result = await f.run(["task", "unassign", "1", "--revision", "7"]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("unknown operation");
+  expect(f.requests.filter(request => request.t === "task")).toEqual([
+    expect.objectContaining({ op: "task_unassign", args: { id: "1", role: "owner", revision: 7 } }),
+  ]);
+});

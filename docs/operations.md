@@ -200,10 +200,12 @@ removal retains the state, including `in_review`, and refuses to remove the huma
 reviewer of PII work. No replacement is routed and no native process or external
 effect is rolled back. A person-unassigned task stays out of automatic owner
 offers across dependency release, planner-pull processing, release timers and
-restarts until an explicit assignment or reservation. Former queued assignment
-or review requests are withdrawn without resolving uncertain deliveries, and the
-former agent loses current authority. A replacement notice goes only to a role
-that actually received the request; withdrawing an unread queue alone sends none.
+restarts until an explicit assignment or reservation. The later unassign also
+fences planner undo, so undo and re-pull cannot restore the removed reservation.
+Former queued assignment or review requests are withdrawn without resolving
+uncertain deliveries, and the former agent loses current authority. A withdrawal
+notice uses delivery evidence or accepted/claimed board evidence; withdrawing an
+unread queue alone sends none.
 
 `ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]` uses a
 checked console operation when a revision is present. Without it, existing CLI

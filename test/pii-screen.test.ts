@@ -338,10 +338,14 @@ test("a clear rescreen does not route a person-unassigned reservation (#424)", a
   const task = await r.tasks.propose("claude", { title: "reserved private task", class: "implement", owner: "codex", after: [parent.id] });
   expect(task).toMatchObject({ owner: null, reserved: "codex", signals: ["pii"] });
   await r.tasks.unassign(task.id);
+  await r.tasks.done(r.board.get(parent.id)!.owner!, parent.id, "done");
+  if (r.board.get(parent.id)!.state === "in_review") await r.tasks.review(r.board.get(parent.id)!.reviewer!, parent.id, "approved");
   verdict = { label: "clear", ms: 5 };
   await r.tasks.rescreen();
   expect(r.board.get(task.id)).toMatchObject({ owner: null, reserved: null, state: "proposed" });
+  expect(r.board.get(task.id)!.signals).not.toContain("pii");
   expect(r.peers.codex!.got.filter(env => env.refs?.task === String(task.id))).toEqual([]);
+  expect((await r.tasks.assignTo(task.id, "codex")).owner).toBe("codex");
 });
 
 test("checks run before the screen; an escalation's own reason is not screened; a budget hand-off is screened once; a pattern match is recorded without a call", async () => {

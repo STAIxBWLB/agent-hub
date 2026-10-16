@@ -1058,8 +1058,8 @@ export class Tasks {
     this.recordScreen(task.id, "task", v);
     if (v?.label === "unknown") return;
     if (v?.label !== "clear") return void this.d.board.update(task.id, HUB, "screened", {}, v ? `pii: screen, ${v.category}` : "pii: regex");
-    if (this.personUnassigned(now)) return;
     const lifted = this.d.board.update(task.id, HUB, "screened", { signals: now.signals.filter((s) => s !== "pii") }, "clear, screened again");
+    if (this.personUnassigned(lifted)) return;
     this.d.notify(`task ${this.publicTitle(lifted)}: the PII screen cleared it on a second look; it is routed as usual`);
     const still = this.waitsFor(lifted);
     if (still.length) return void this.d.board.update(lifted.id, HUB, "blocked", {}, `waits for ${still.map((id) => `#${id}`).join(", ")}`);
@@ -1294,6 +1294,7 @@ export class Tasks {
         try {
           const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
           const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", reason: "offline", note: why });
+          if (!this.ownOwnerMove(back, next, HUB, "reassigned")) continue;
           moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner });
           // The gone owner hears it on its next delivery, if it comes back mid-work.
           if (next.owner && next.owner !== peer) this.d.tell?.(peer, noteLine(HUB, "decision", `task #${task.id} moved to ${next.owner} while you were offline; stop working on it`));
@@ -1379,6 +1380,15 @@ export class Tasks {
     if (task.class !== "review" && !a.reviewer) this.d.notify(`task ${this.publicTitle(task)}: ${this.noReviewer(a)}`);
     const hold = a.owner ? peerEntry(this.d.held?.(), a.owner) : undefined;
     if (hold) this.d.notify(`task ${this.publicTitle(task)}: ${a.owner}'s queue is held (${hold}); the task arrives once the hold is resolved`);
+  }
+
+  /** A later move to another owner means the caller's assignment was superseded, so its success tail is not authoritative. */
+  private ownOwnerMove(before: Task, after: Task, by: PeerId, event: string): boolean {
+    const moves = (task: Task) => task.history.filter(entry => ["assigned", "reassigned", "escalated", "unassigned"].includes(entry.event));
+    const prior = moves(before).length, entries = moves(after).slice(prior), own = entries[0];
+    if (!own || own.by !== by || own.event !== event) return false;
+    if (own.event === "unassigned") return entries.length === 1;
+    return entries.every(entry => entry.owner === own.owner);
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
@@ -2201,12 +2211,12 @@ export class Tasks {
       // A saved move whose delivery failed arrives as AssignmentUndeliveredError carrying the saved task (#297);
       // the tail still runs on it (its parts are guarded), and the caller still gets the throw. Anything before
       // the write gets neither.
-      if (e instanceof AssignmentUndeliveredError) tail(e.task);
+      if (e instanceof AssignmentUndeliveredError && this.ownOwnerMove(task, e.task, by, "escalated")) tail(e.task);
       throw e;
     }
     if (next.owner && next.owner !== from) {
       // The move is on the board (#243): review() reaches here after its changes_requested write.
-      tail(next);
+      if (this.ownOwnerMove(task, next, by, "escalated")) tail(next);
     } else this.releaseNotice(`task ${this.publicTitle(task)}: escalation found nobody in [${list.join(", ")}]; it stays with ${from ?? "nobody"}`);
     return this.d.board.get(next.id)!;
   }
@@ -2218,7 +2228,8 @@ export class Tasks {
     const kind = role === "owner" ? "task" : "review";
     this.releaseNotice(`task ${this.publicTitle(next)}: could not notify previous ${role} ${peer} that its request is withdrawn`, () => {
       const matches = (env: Envelope) => (role === "reviewer" || env.body.startsWith(`Task #${previous.id} [`)) && env.from === HUB && env.kind === kind && env.refs?.task === String(previous.id);
-      const mayHaveReceived = this.d.bus.lastDeliveredTo(peer).some(matches) || this.d.bus.queueList(peer).some(row => ["dispatching", "accepted", "needs_review", "completed"].includes(row.state) && row.originals.some(matches));
+      const boardEvidence = role === "owner" && (previous.state === "in_progress" || previous.state === "changes_requested" || previous.history.some(entry => entry.event === "accepted" && entry.by === peer));
+      const mayHaveReceived = boardEvidence || this.d.bus.lastDeliveredTo(peer).some(matches) || this.d.bus.queueList(peer).some(row => ["dispatching", "accepted", "needs_review", "completed"].includes(row.state) && row.originals.some(matches));
       for (const env of this.d.bus.snapshot(false).queues[peer] ?? []) if (matches(env)) this.d.bus.withdraw(env.id);
       if (!mayHaveReceived) return;
       const body = role === "owner"
@@ -2331,6 +2342,7 @@ export class Tasks {
           if (!(e instanceof AssignmentUndeliveredError)) throw e;
           next = e.task;
         }
+        if (!this.ownOwnerMove(back, next, HUB, "reassigned") && !this.ownOwnerMove(back, next, HUB, "unassigned")) continue;
         if (roster) {
           if (!next.owner || next.owner === peer) continue;
           this.releaseNotice(`task ${this.publicTitle(next)} moved from ${peer} to ${next.owner} (off roster)`);

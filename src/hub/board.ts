@@ -86,7 +86,7 @@ export function taskProposalAt(task: Pick<Task, "history">): number | undefined 
 }
 /** Readiness carries out a pending pull; ownership or other later changes still fence undo. */
 export function planningUndoEntry(task: Pick<Task, "history">): HistoryEntry | undefined {
-  return task.history.findLast(item => item.event !== "memory reference started" && item.event !== "unassigned" && (item.by !== HUB || item.event !== "ready"));
+  return task.history.findLast(item => item.event !== "memory reference started" && (item.by !== HUB || item.event !== "ready"));
 }
 
 /** The moves the state machine allows. `accept` and `done` are transitions, not states: they carried no behaviour of their own. */

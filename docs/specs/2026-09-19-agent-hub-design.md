@@ -1984,10 +1984,12 @@ task list polling does not. `hub_status` stays conductor-only.
 - A person `unassigned` event suppresses later automatic owner offers across
   dependency release, planner pulls, release timers and restart recovery until
   an explicit assignment or reservation. The marker is derived from history, so
-  no schema migration is needed. Former queued task/review requests are
-  withdrawn, but accepted, dispatching and needs_review deliveries are never
-  implicitly resolved. Former agents fail current-authority checks while the
-  person's explicit review override remains.
+  no schema migration is needed, and it also fences planner undo and re-pull.
+  Former queued task/review requests are withdrawn, but accepted, dispatching
+  and needs_review deliveries are never implicitly resolved. Withdrawal notices
+  use delivery evidence or accepted/claimed board evidence, never an unread
+  queue alone. Former agents fail current-authority checks while the person's
+  explicit review override remains.
 - Assignment/review publication has a role-specific fence after every await and
   immediately before publication. Existing supersession events, role generation
   and task state suppress obsolete envelopes; accept, done and approval count as

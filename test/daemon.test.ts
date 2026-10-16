@@ -58,6 +58,26 @@ test("checked console assignment and unassignment bind the current task revision
   expect(JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: row.id } })).text)).toMatchObject({ owner: null, reserved: null, state: "proposed" });
 });
 
+test("a PII owner withdrawal notice uses the public title and a private delivery (#424)", async () => {
+  const { daemon, console_ } = await hub();
+  class Local extends BasePeer {
+    got: any[] = [];
+    async deliver(envs: any[]) { this.got.push(...envs); }
+    async start() { this.setState("idle"); }
+    async stop() { this.setState("offline"); }
+  }
+  const local = new Local("local"); daemon.bus.add(local); await local.start();
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "patient 900101-1234567 needs a follow-up", class: "implement" } })).ok).toBe(true);
+  const shown = JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  expect(shown.owner).toBe("local");
+  expect((await console_.request({ t: "task", op: "task_unassign", args: { id: 1, revision: shown.flowRevision } })).ok).toBe(true);
+  await until(() => local.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")), "PII withdrawal notice");
+  const notice = local.got.find(env => env.kind === "status" && env.body.includes("no longer assigned"));
+  expect(notice).toMatchObject({ private: true });
+  expect(notice.body).toContain("[pii]");
+  expect(notice.body).not.toContain("900101");
+});
+
 async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles } = {}) {
   const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));

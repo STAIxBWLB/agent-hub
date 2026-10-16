@@ -1956,7 +1956,7 @@
     {
       "id": "planner-readiness-preserves-undo",
       "file": "src/hub/board.ts",
-      "search": "return task.history.findLast(item => item.event !== \"memory reference started\" && item.event !== \"unassigned\" && (item.by !== HUB || item.event !== \"ready\"));",
+      "search": "return task.history.findLast(item => item.event !== \"memory reference started\" && (item.by !== HUB || item.event !== \"ready\"));",
       "replacement": "return task.history.at(-1);",
       "testFile": "test/planner-pull.test.ts",
       "testName": "unoffered planner pull can undo after a hub readiness marker (#263)"
@@ -2812,8 +2812,8 @@
     {
       "id": "split-parent-memory-undo",
       "file": "src/hub/board.ts",
-      "search": "item.event !== \"memory reference started\" && item.event !== \"unassigned\" && (item.by !== HUB || item.event !== \"ready\")",
-      "replacement": "item.event !== \"unassigned\" && (item.by !== HUB || item.event !== \"ready\")",
+      "search": "item.event !== \"memory reference started\" && (item.by !== HUB || item.event !== \"ready\")",
+      "replacement": "(item.by !== HUB || item.event !== \"ready\")",
       "testFile": "test/planner-split.test.ts",
       "testName": "split undo retains parent-only memory while removing unused children"
     },

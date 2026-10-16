@@ -1368,6 +1368,38 @@ describe("whole-board task progress (#246)", () => {
       f.signal(); await running;
     } finally { globalThis.setInterval = originalInterval; }
   });
+  test("failed and saved-but-unconfirmed commands each queue a fresh refresh (#424)", async () => {
+    const callbacks: (() => void)[] = []; const originalInterval = globalThis.setInterval;
+    globalThis.setInterval = ((fn: () => void, ms?: number) => { callbacks.push(fn); return originalInterval(fn, ms); }) as typeof setInterval;
+    try {
+      for (const text of ["command exited 1", "assignment saved; delivery is not confirmed"]) {
+        callbacks.length = 0;
+        const f = fixture(); let taskCalls = 0, commandFinished = false, release: (() => void) | undefined;
+        f.client.request = async (msg: any) => {
+          f.requests.push(msg);
+          const base = { ok: true, status: { peers: {} }, budget: {}, text: "[]", deliveries: [] };
+          if (msg.t === "task" && msg.op === "hub_task_list") {
+            taskCalls++;
+            if (taskCalls === 4) await new Promise<void>(resolve => { release = resolve; });
+          }
+          return base;
+        };
+        const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false,
+          runCommand: (_args, output, done) => { output(text); commandFinished = true; done(); return () => {}; } });
+        await Bun.sleep(100);
+        callbacks[1]!();
+        for (let n = 0; n < 100 && !release; n++) await Promise.resolve();
+        expect(release).toBeDefined();
+        f.input(":"); f.input("status"); f.input("\r");
+        for (let n = 0; n < 100 && !commandFinished; n++) await Promise.resolve();
+        expect(commandFinished).toBe(true);
+        release?.();
+        for (let n = 0; n < 100 && taskCalls < 6; n++) await Promise.resolve();
+        expect(taskCalls).toBeGreaterThanOrEqual(6);
+        f.signal(); await running;
+      }
+    } finally { globalThis.setInterval = originalInterval; }
+  });
   test("stream retains top-origin scrollback and gets footer totals from status without board requests", async () => {
     const f = fixture(); const original = f.client.request;
     f.client.request = async msg => msg.t === "status" ? { ok: true, status: { peers: {}, tasks: { approved: 2, proposed: 1, future_state: 3 } } } as any : original(msg);
