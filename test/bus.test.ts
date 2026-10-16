@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { recallMemoryLines } from "../src/memory/recall.ts";
 import { Bus, type BusEvent, type BusOptions } from "../src/hub/bus.ts";
 import { DIGEST, frame, HUB, keepNotes, newEnvelope, noteLine, sanitize, parseMarker, renderDigest, replyAudience, replyParent, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { DEFAULT_LIMITS, Limiter, type LimitsConfig } from "../src/hub/limits.ts";
@@ -315,6 +316,54 @@ test("a preface rides in front of the next delivery, once", async () => {
   expect(kimi.batches.map((b) => b.map((e) => `${e.from}:${e.body}`))).toEqual([["hub:memory block", "claude:first"], ["claude:second"]]);
 });
 
+test("restored session recall is not appended again after a hub restart (#412)", () => {
+  const before = new Bus({ batchMs: 0 });
+  const block = "Hub memory: retained session recall\nmem:1234abcd decision long: keep the contract";
+  before.preface("claude", block);
+  const after = new Bus({ batchMs: 0 });
+  after.restore(before.snapshot());
+  // Daemon recovery restores queued prefaces before a fresh run's ensurePreface regenerates recall.
+  after.preface("claude", block);
+  const delivery = after.pull("claude")!;
+  expect(delivery).toHaveLength(1);
+  expect(delivery[0]!.body).toBe(block);
+  expect(renderDigest(delivery, true).split("Hub memory: retained session recall")).toHaveLength(2);
+});
+
+test("legacy duplicate recall is normalized on restore without generating a new preface (#412)", () => {
+  const before = new Bus({ batchMs: 0 });
+  const block = "Hub memory: retained session recall\nmem:1234abcd contract long: retain this contract";
+  before.preface("claude", block);
+  const snapshot = before.snapshot();
+  snapshot.prefaces.claude!.body = `${block}\n\n${block}`;
+  const after = new Bus({ batchMs: 0 });
+  after.restore(snapshot);
+  expect(after.pull("claude")![0]!.body).toBe(block);
+});
+
+test("memory dedupe joins unique short and full ids without conflating different full ids (#412)", () => {
+  const bus = new Bus({ batchMs: 0 });
+  const first = "1234abcd" + "1".repeat(24), second = "1234abcd" + "2".repeat(24);
+  bus.preface("claude", "mem:1234abcd contract long: recall reference");
+  bus.note("claude", noteLine("codex", "contract", `mem:${first} shared reference`));
+  expect(bus.pull("claude")![0]!.body.match(/mem:/g)).toHaveLength(1);
+  bus.preface("codex", `mem:${first} contract long: first\nmem:${second} fail long: second`);
+  expect(bus.pull("codex")![0]!.body.match(/mem:/g)).toHaveLength(2);
+});
+
+test("colliding eight-character recall prefixes never drop a distinct contract or fail (#412)", () => {
+  const notes = [
+    { id: "1234abcd" + "0".repeat(24), kind: "contract" as const, tier: "long" as const, title: null, text: "retain the contract" },
+    { id: "1234abcd" + "1".repeat(24), kind: "fail" as const, tier: "long" as const, title: null, text: "retain the failure" },
+  ];
+  const bus = new Bus({ batchMs: 0 });
+  bus.preface("claude", recallMemoryLines(notes).join("\n"));
+  const body = bus.pull("claude")![0]!.body;
+  expect(body).toContain("retain the contract");
+  expect(body).toContain("retain the failure");
+  expect(new Set([...body.matchAll(/^mem:([a-f0-9]+)/gm)].map(match => match[1])).size).toBe(2);
+});
+
 test("a digest frames every item; its reply answers the highest-hop item", () => {
   const low = newEnvelope("claude", "a");
   const high = newEnvelope("codex", "b", { inReplyTo: { trace: "t", hop: 1 } }); // hop 2
@@ -439,6 +488,44 @@ test("a preface made while a delivery is in flight survives that delivery's fail
   expect(prefaces).toHaveLength(1);
   expect(prefaces[0]!.body).toBe("memory block\n\nnote from codex [fail]: arrived mid-flight");
   expect(kimi.got.map((e) => e.body)).toContain("hello");
+});
+
+test("failed recall restore keeps new notes and deduplicates memory ids across overlapping prefaces (#412)", async () => {
+  const { bus, claude, kimi } = await trio();
+  const header = "Hub memory: retained session recall";
+  const old = `${header}\nmem:1234abcd contract long: old contract`;
+  bus.preface("kimi", old);
+  const deliver = kimi.deliver.bind(kimi);
+  let first = true;
+  kimi.deliver = async (envs) => {
+    if (!first) return deliver(envs);
+    first = false;
+    bus.preface("kimi", `${old}\nmem:5678abcd fail long: new failure`);
+    bus.note("kimi", noteLine("codex", "contract", "mem:1234abcd old contract"));
+    bus.note("kimi", noteLine("codex", "finding", "a distinct mid-flight note"));
+    throw new Error("inject failed");
+  };
+  claude.onMessage!("hello");
+  for (let i = 0; i < 200 && !kimi.batches.length; i++) await Bun.sleep(2);
+  expect(kimi.batches).toHaveLength(1);
+  const body = kimi.batches[0]!.find(e => e.kind === "presence")!.body;
+  expect(body.split("mem:1234abcd")).toHaveLength(2);
+  expect(body.split("mem:5678abcd")).toHaveLength(2);
+  expect(body.split(header)).toHaveLength(2);
+  expect(body).toContain("a distinct mid-flight note");
+  expect(kimi.batches[0]!.some(e => e.body === "hello")).toBe(true);
+});
+
+test("memory dedupe is local to one recipient delivery and leaves unrelated note text intact (#412)", () => {
+  const bus = new Bus({ batchMs: 0 });
+  const memory = "mem:1234abcd fail long: do not retry";
+  bus.preface("claude", memory); bus.preface("codex", memory);
+  bus.note("claude", noteLine("kimi", "fail", "mem:1234abcd do not retry"));
+  bus.note("claude", noteLine("kimi", "finding", "ordinary note"));
+  expect(bus.pull("claude")![0]!.body.split("mem:1234abcd")).toHaveLength(2);
+  expect(bus.pull("codex")![0]!.body).toBe(memory);
+  bus.preface("claude", memory);
+  expect(bus.pull("claude")![0]!.body).toBe(memory);
 });
 
 test("a hub task envelope whose delivery fails is retried like any other; only the recall block is a preface", async () => {

@@ -50,7 +50,7 @@ import { Briefs } from "../memory/brief.ts";
 import { Board, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
-import { trimToTokens } from "../memory/recall.ts";
+import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
 import { closeSync, constants as fsConstants, openSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -912,7 +912,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // This project's active long-term tasks lead, then its latest long-term decisions, contracts and fails.
       const goals = memoryStore ? screenMemory(memoryStore.goals(memoryProject).filter((g) => g.state !== "done" && g.state !== "dropped").map((g) => ({ ...g, text: "" }))).map(goalLine) : [];
       // Entries and titles are agents' words from any synced machine: one line each, and no forged message header.
-      own = memoryStore ? nativeRecall([...goals, ...screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")).slice(0, 30).map(memoryLine)], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
+      own = memoryStore ? nativeRecall([...goals, ...recallMemoryLines(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")))], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
     }
     catch (e) { log(`hub memory recall failed: ${(e as Error).message}`); }
     const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens) : undefined;

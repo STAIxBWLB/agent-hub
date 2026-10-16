@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
+import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 import { MemoryClient } from "../src/memory/client.ts";
-import { projectChain, recallFor, trimToTokens } from "../src/memory/recall.ts";
+import { projectChain, recallFor, trimToTokens, nativeRecall, recallDisplayText, recallMemoryLine, recallMemoryLines, RECALL_LINE_CHARS } from "../src/memory/recall.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 
 const OBS = { claude: ["1 claude-line"], codex: ["2 codex-line"], kimi: ["3 kimi-line"] };
@@ -76,4 +77,65 @@ test("the token budget is split per platform so the first one cannot crowd out t
   expect(block).toContain("(trimmed)");
   expect(block).toContain("## from kimi sessions\n### Sep 19, 2026\n3 kimi-line");
   fake.stop();
+});
+
+
+test("recall outcome classification keeps reasons, contracts and fails without treating ordinary mentions as outcomes (#412)", () => {
+  const auto = { peer: "claude", task: "agent-hub#7@1792000000000", title: "agent-hub task #7: title" };
+  const display = (text: string, kind: "decision" | "contract" | "fail" = "decision", meta: { peer: string; task: string | null; title: string | null } = auto) => recallDisplayText({ text, kind, ...meta });
+  expect(display("Task #7 approved by claude: title\naccepted")).toBeUndefined();
+  // An agent's own decision that starts like an outcome header is not an automatic note (PR #419 review).
+  const own = "Task #7 approved by claude: so we keep the transport";
+  expect(display(own, "decision", { peer: "codex", task: "agent-hub#7@1792000000000", title: null })).toBe(own);
+  expect(display(own, "decision", { ...auto, task: null })).toBe(own);
+  expect(display(own, "decision", { ...auto, task: "agent-hub#8@1792000000000" })).toBe(own);
+  expect(display(own, "decision", { ...auto, title: "my decision" })).toBe(own);
+  expect(display("Task #7 changes requested by claude: title\n  \n")).toBeUndefined();
+  expect(display("Task #7 changes requested by claude: title\r\n  Fix the privacy screen.\r\nKeep the contract.  ")).toBe("Fix the privacy screen.\nKeep the contract.");
+  expect(display("Task #7 approved bystander is not an outcome")).toBe("Task #7 approved bystander is not an outcome");
+  expect(display("An explicit decision\nTask #7 approved by claude: context")).toBe("An explicit decision\nTask #7 approved by claude: context");
+  expect(display("Task #7 approved by claude: a contract", "contract")).toBe("Task #7 approved by claude: a contract");
+  expect(display("Task #7 approved by claude: a failed approach", "fail")).toBe("Task #7 approved by claude: a failed approach");
+});
+
+test("recall selection from a noisy store retains the exact fail, contract, decision and rejection ids without changing notes (#412)", () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-recall-display-"));
+  let now = Date.parse("2026-10-16T00:00:00Z");
+  const store = new MemoryStore({ home, now: () => now++ });
+  const base: NoteInput = { op: "note", project: "agent-hub", scope: "project", tier: "long", kind: "decision", peer: "codex", text: "", about: [], source: "hub" };
+  try {
+    const fail = store.note({ ...base, kind: "fail", text: "Do not retry the discarded approach." });
+    const contract = store.note({ ...base, kind: "contract", text: "Preserve the privacy boundary." });
+    const decision = store.note({ ...base, text: "Keep the existing transport." });
+    const outcome = (n: number) => ({ ...base, peer: "claude", task: `agent-hub#${n}@1792000000000`, title: `agent-hub task #${n}: automatic outcome title` });
+    for (let i = 0; i < 35; i++) store.note({ ...outcome(i + 1), text: `Task #${i + 1} approved by claude: outcome\nApproved.` });
+    store.note({ ...outcome(40), text: "Task #40 changes requested by claude: empty\n " });
+    const rejection = store.note({ ...outcome(41), text: "Task #41 changes requested by claude: task title\nAdd the missing guard." });
+    const log = join(home, "memory", "log", `${store.machine.id}.jsonl`);
+    const before = readFileSync(log, "utf8");
+    const notes = store.list({ project: "agent-hub", tier: "long", limit: Number.MAX_SAFE_INTEGER });
+    const lines = recallMemoryLines([...notes, ...notes]);
+    expect(lines.map(line => /^mem:([a-f0-9]+)/.exec(line)![1])).toEqual([rejection, decision, contract, fail].map(id => id.slice(0, 8)));
+    expect(lines[0]).toEndWith("Add the missing guard.");
+    expect(lines.join("\n")).not.toContain("approved by");
+    expect(lines.join("\n")).not.toContain("automatic outcome title");
+    expect(store.get(rejection)!.text).toBe("Task #41 changes requested by claude: task title\nAdd the missing guard.");
+    expect(readFileSync(log, "utf8")).toBe(before);
+    const block = nativeRecall(lines, 2000, line => line)!;
+    expect(block).toContain(contract.slice(0, 8)); expect(block).toContain(fail.slice(0, 8));
+  } finally { store.close(); rmSync(home, { recursive: true, force: true }); }
+});
+
+test("recall excerpts keep complete words and Unicode characters under a hard cap with intact memory headers (#412)", () => {
+  const note = { id: "1234abcd".repeat(4), kind: "contract" as const, tier: "long" as const, title: null, text: "preserve 한국어 😀 words ".repeat(30) };
+  const line = recallMemoryLine(note)!;
+  expect(line).toStartWith("mem:1234abcd contract long: ");
+  expect(Array.from(line).length).toBeLessThanOrEqual(RECALL_LINE_CHARS);
+  expect(line).toEndWith(" ...");
+  const excerpt = line.slice("mem:1234abcd contract long: ".length, -4);
+  expect(note.text.startsWith(excerpt + " ")).toBe(true);
+  expect(recallMemoryLine({ ...note, text: "x".repeat(500) })).toBe("mem:1234abcd contract long: ...");
+  expect(trimToTokens("one-indivisible-line".repeat(10), 2)).toBe("\n(trimmed)");
+  const capped = nativeRecall([line], 65, value => value)!;
+  expect(capped).not.toContain("mem:1234");
 });

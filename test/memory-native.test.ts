@@ -52,7 +52,7 @@ async function hub(home: string, extra: Partial<typeof DEFAULT_CONFIG> = {}) {
     if (reply.ok) throw new Error(`${name} was not refused: ${reply.text}`);
     return String(reply.error);
   };
-  return { root, stateDir, worker, claude, console: console_, op, refused };
+  return { root, stateDir, daemon, worker, claude, console: console_, op, refused };
 }
 
 test("notes on an open task are short-term; approval promotes decisions, contracts and fails; PII and secrets never enter the store", async () => {
@@ -206,3 +206,19 @@ test("a note about a private path is refused before either memory sees it (revie
   const h = await hub(home, { pii: { paths: ["src/csv.ts"] }, local: { ...DEFAULT_CONFIG.local, deny: ["src/csv.ts"] } });
   expect(await h.refused(h.worker, "hub_remember", { text: "the parser in src/csv.ts splits badly", kind: "fail", horizon: "long" })).toContain("private"); // denied from the graph, still private
 }, 30_000);
+
+
+test("a saved native note and its recall line share one identity per delivery without changing stored text (#412)", async () => {
+  const home = temp("shared-recall-id");
+  const h = await hub(home);
+  const text = "Retain this explicit recall contract.";
+  await h.op(h.worker, "hub_remember", { kind: "contract", horizon: "long", text });
+  const store = new MemoryStore({ home }); cleanup.push(() => store.close());
+  const saved = store.list({ q: text })[0]!;
+  h.daemon.bus.preface("claude", `Hub memory: retained session recall\nmem:${saved.id.slice(0, 8)} contract long: ${text}`);
+  const delivery = h.daemon.bus.pull("claude")!;
+  const shown = delivery.map(env => env.body).join("\n");
+  expect(shown.split(text)).toHaveLength(2);
+  expect(shown).toContain(`mem:${saved.id}`);
+  expect(store.get(saved.id)!.text).toBe(text);
+});
