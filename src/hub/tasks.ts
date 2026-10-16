@@ -1300,8 +1300,7 @@ export class Tasks {
         try {
           const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
           const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", reason: "offline", note: why });
-          if (!this.ownOwnerMove(back, next, HUB, "reassigned")) continue;
-          moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner });
+          if (this.ownOwnerMove(back, next, HUB, "reassigned")) moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner });
           // The gone owner hears it on its next delivery, if it comes back mid-work.
           if (next.owner && next.owner !== peer) this.d.tell?.(peer, noteLine(HUB, "decision", `task #${task.id} moved to ${next.owner} while you were offline; stop working on it`));
         } catch (e) {
@@ -2216,13 +2215,16 @@ export class Tasks {
     if (from && by !== HUB) this.d.board.recordOutcome(from, task.class, false);
     // Only a reviewer that asked for changes on this work saw it fail: not an escalation of unreviewed work (a Pi failure).
     if (from && task.reviewer && task.reviewer !== USER && this.requestedChanges(task).has(task.reviewer)) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
-    // The guarded tail of a landed move: the console notice, the decision note and the old owner's stop message,
-    // each behind its own releaseNotice. It runs on the success path and on a saved move whose delivery failed.
+    const stopFormerOwner = (moved: Task) => {
+      if (from && moved.owner && moved.owner !== from) this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${from} it moved to ${moved.owner}`, () =>
+        this.tell({ ...moved, owner: from }, `Task #${moved.id} moved to ${moved.owner} (${why}). Stop working on it.`, this.isPii(moved)));
+    };
+    // Only our landed move authorizes a success notice and decision note. The former owner's stop
+    // message still names the current owner when a later assignment superseded this move.
     const tail = (moved: Task) => {
       this.releaseNotice(`task ${this.publicTitle(moved)} escalated from ${from} to ${moved.owner} (${why})`);
       this.note(moved, by, "decision", `Task #${moved.id} escalated from ${from} to ${moved.owner}: ${why}`);
-      if (from) this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${from} it moved to ${moved.owner}`, () =>
-        this.tell({ ...moved, owner: from }, `Task #${moved.id} moved to ${moved.owner} (${why}). Stop working on it.`, this.isPii(moved)));
+      stopFormerOwner(moved);
     };
     let next: Task;
     try {
@@ -2237,6 +2239,7 @@ export class Tasks {
     if (next.owner && next.owner !== from) {
       // The move is on the board (#243): review() reaches here after its changes_requested write.
       if (this.ownOwnerMove(task, next, by, "escalated")) tail(next);
+      else stopFormerOwner(next);
     } else this.releaseNotice(`task ${this.publicTitle(task)}: escalation found nobody in [${list.join(", ")}]; it stays with ${from ?? "nobody"}`);
     return this.d.board.get(next.id)!;
   }
@@ -2248,7 +2251,10 @@ export class Tasks {
     const kind = role === "owner" ? "task" : "review";
     this.releaseNotice(`task ${this.publicTitle(next)}: could not notify previous ${role} ${peer} that its request is withdrawn`, () => {
       const matches = (env: Envelope) => (role === "reviewer" || env.body.startsWith(`Task #${previous.id} [`)) && env.from === HUB && env.kind === kind && env.refs?.task === String(previous.id);
-      const boardEvidence = role === "owner" && (previous.state === "in_progress" || previous.state === "changes_requested" || previous.history.some(entry => entry.event === "accepted" && entry.by === peer));
+      const assignment = previous.history.map(entry => OWNERSHIP_EVENTS.has(entry.event)).lastIndexOf(true);
+      // A self-claim also records accepted, after assigned. State can belong to an earlier owner.
+      const acceptance = previous.history.slice(assignment + 1).some(entry => entry.event === "accepted" && entry.by === peer);
+      const boardEvidence = role === "owner" && acceptance;
       const mayHaveReceived = boardEvidence || this.d.bus.lastDeliveredTo(peer).some(matches) || this.d.bus.queueList(peer).some(row => ["dispatching", "accepted", "needs_review", "completed"].includes(row.state) && row.originals.some(matches));
       for (const env of this.d.bus.snapshot(false).queues[peer] ?? []) if (matches(env)) this.d.bus.withdraw(env.id);
       if (!mayHaveReceived) return;
