@@ -805,3 +805,10 @@ test("retained off-roster status and queue rows say why their work is held (#315
     for (const line of rendered) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
   }
 });
+
+test("AC4: status renders every held row with ids, senders, kinds and age (#434)", () => {
+  const heldRows = ["first-held", "second-held"].map(id => ({ id, senders: ["pi"], kinds: ["chat"], createdAt: now - 5000 }));
+  const text = renderStatus({ peers: { codex: { state: "idle", heldBy: "first-held", heldRows } } }, undefined, now, true).map(line => line.map(span => span.text).join("")).join("\n");
+  for (const row of heldRows) expect(text).toContain(row.id);
+  expect(text).toContain("from pi"); expect(text).toContain("kind chat"); expect(text).toContain("age");
+});

@@ -360,13 +360,13 @@ export class Bus {
 
   queueShow(id: string): JournalDelivery | undefined { return this.journal?.get(id) ?? this.queueList().find((d) => d.id === id); }
 
-  resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string): void {
+  resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: "user" | "hub" = "user"): void {
     if (!this.journal || this.storageError) throw new Error("delivery journal unavailable");
     const record = this.queueShow(id);
     if (!record) throw new Error("unknown delivery");
     const previous = this.journal.resolution(id);
     if (previous) {
-      this.journal.resolve(id, revision, action, reason); // verifies identical request; no second enqueue
+      this.journal.resolve(id, revision, action, reason, revision, actor); // verifies identical request; no second enqueue
       return;
     }
     if (["dispatching", "accepted"].includes(record.state) || this.peers.get(record.peer)?.state === "busy") throw new Error("active delivery cannot be resolved");
@@ -381,7 +381,7 @@ export class Bus {
       this.journal.transaction(() => {
         if (!this.journal!.get(id)) this.journal!.createDelivery({ ...record });
         const current = this.journal!.get(id)!;
-        this.journal!.resolve(id, current.revision, action, reason, revision);
+        this.journal!.resolve(id, current.revision, action, reason, revision, actor);
         if (record.state === "queued") {
           const ids = new Set(record.originals.map((env) => env.id));
           queue.splice(0, queue.length, ...queue.filter((env) => !ids.has(env.id)));
