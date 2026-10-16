@@ -1,6 +1,6 @@
-import type { MemoryStore, View, Graph } from "./store.ts";
-import { looksSecret } from "./store.ts";
-import { PreEffectToolRefusal } from "../hub/tool-refusal.ts";
+import type { MemoryStore, View, Graph } from "../memory/store.ts";
+import { looksSecret } from "../memory/store.ts";
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 
 export const MEMORY_READ_TOOLS = new Set(["hub_memory_search", "hub_memory_show", "hub_memory_graph"]);
 const REFUSAL = "memory read unavailable";

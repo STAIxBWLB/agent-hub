@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 import { memoryCommand } from "../src/cli/memory.ts";
-import { memoryProjectKey } from "../src/memory/recall.ts";
+import { memoryProjectKey } from "../src/memory/project.ts";
 
 const dirs: string[] = [], stores: MemoryStore[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.close(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });

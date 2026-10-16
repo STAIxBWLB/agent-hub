@@ -4,7 +4,7 @@ import { readMergeQueue } from "./sdlc-queue.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
-import { mentionsPrivatePath } from "../memory/recall.ts";
+import { mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";

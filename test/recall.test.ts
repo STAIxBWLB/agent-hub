@@ -4,7 +4,8 @@ import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 import { MemoryClient } from "../src/memory/client.ts";
-import { projectChain, recallFor, trimToTokens, nativeRecall, recallDisplayText, recallMemoryLine, recallMemoryLines, RECALL_LINE_CHARS } from "../src/memory/recall.ts";
+import { projectChain } from "../src/memory/project.ts";
+import { recallFor, trimToTokens, nativeRecall, recallDisplayText, recallMemoryLine, recallMemoryLines, RECALL_LINE_CHARS } from "../src/memory/recall.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 
 const OBS = { claude: ["1 claude-line"], codex: ["2 codex-line"], kimi: ["3 kimi-line"] };

@@ -1,4 +1,4 @@
-import { MEMORY_READ_TOOLS } from "./read-tools.ts";
+import { MEMORY_READ_TOOLS } from "../hub/read-tools.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

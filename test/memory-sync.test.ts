@@ -115,7 +115,7 @@ test("through the hub: a peer links its claimed task to a long-term task, workin
   process.env.AGENTHUB_HOME = home;
   cleanup.push(() => { if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; });
   const seed = new MemoryStore({ home });
-  const project = (await import("../src/memory/recall.ts")).memoryProjectKey(root);
+  const project = (await import("../src/memory/project.ts")).memoryProjectKey(root);
   const goal = seed.goal({ project, scope: "project", title: "ship memory", milestones: [], dependsOn: [], actor: "user" });
   const foreign = seed.goal({ project: "elsewhere", scope: "project", title: "not ours", milestones: [], dependsOn: [], actor: "user" });
   seed.close();
