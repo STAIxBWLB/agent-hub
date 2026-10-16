@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { hubHome } from "../hub/project.ts";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
+import { hubHome, realPath } from "../hub/project.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
 export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }) => Promise<CommandResult>;
@@ -32,19 +33,62 @@ export function exactVersion(version: string): string {
   return version;
 }
 
+const MEMORY_ASSETS = ["src", "bin", "package.json", "README.md", "LICENSE"] as const;
+
+/** The sole runtime dependency is a bounded first-party package, never an arbitrary dependency tree. */
+function memoryRuntime(root: string): string | undefined {
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const deps = pkg.dependencies ?? {};
+  if (!Object.keys(deps).length) return undefined;
+  const version = deps["@staix/agent-mem"];
+  if (Object.keys(deps).length !== 1 || typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error("unsupported runtime dependencies in recovery package");
+  let dir = dirname(createRequire(join(root, "package.json")).resolve("@staix/agent-mem"));
+  for (;;) {
+    const manifest = join(dir, "package.json");
+    if (existsSync(manifest)) {
+      const memory = JSON.parse(readFileSync(manifest, "utf8"));
+      if (memory.name === "@staix/agent-mem") {
+        if (memory.version !== version || Object.keys(memory.dependencies ?? {}).length) throw new Error("memory runtime dependency identity/version mismatch");
+        return realPath(dir);
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error("memory runtime dependency is unavailable");
+    dir = parent;
+  }
+}
+
+export function preserveRuntimeDependencies(root: string, destination: string): void {
+  const memory = memoryRuntime(root);
+  if (!memory) return;
+  const target = join(destination, "node_modules/@staix/agent-mem");
+  mkdirSync(target, { recursive: true });
+  for (const name of MEMORY_ASSETS) {
+    if (lstatSync(join(memory, name)).isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
+    cpSync(join(memory, name), join(target, name), { recursive: true, dereference: false });
+  }
+}
+
 export function packageDigest(root: string): string {
   const hash = createHash("sha256");
+  const file = (path: string, name: string) => { hash.update(name); hash.update("\0"); hash.update(readFileSync(path)); hash.update("\0"); };
   const visit = (directory: string, prefix = "") => {
     for (const item of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (item.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
       const name = `${prefix}${item.name}`;
       if (item.isDirectory()) visit(join(directory, item.name), `${name}/`);
-      else { hash.update(name); hash.update("\0"); hash.update(readFileSync(join(directory, item.name))); hash.update("\0"); }
+      else file(join(directory, item.name), name);
     }
   };
-  // Only runtime assets; never copy or hash a checkout's private state or dependencies.
+  // Only runtime assets and the exact first-party package; never private state or unrelated dependencies.
   for (const name of ["src", "plugins", "templates", ".claude-plugin"]) visit(join(root, name), `${name}/`);
   hash.update(readFileSync(join(root, "package.json")));
+  const memory = memoryRuntime(root);
+  if (memory) for (const name of MEMORY_ASSETS) {
+    const path = join(memory, name), stat = lstatSync(path), prefix = `node_modules/@staix/agent-mem/${name}`;
+    if (stat.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
+    if (stat.isDirectory()) visit(path, `${prefix}/`); else file(path, prefix);
+  }
   return hash.digest("hex");
 }
 

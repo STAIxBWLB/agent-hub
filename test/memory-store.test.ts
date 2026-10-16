@@ -3,8 +3,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, real
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { entryId, extractNodes, looksSecret, MemoryStore, type NoteInput, type PromotionScreen } from "../src/memory/store.ts";
-import { memoryProjectKey } from "../src/memory/project.ts";
+import { entryId, extractNodes, looksSecret, MemoryStore, type NoteInput, type PromotionScreen } from "@staix/agent-mem";
+import { memoryProjectKey } from "@staix/agent-mem";
 import { promotionScreen, withoutPii } from "../src/hub/memory-policy.ts";
 import { memoryCommand } from "../src/cli/memory.ts";
 import { currentRouting } from "../src/hub/routing.ts";

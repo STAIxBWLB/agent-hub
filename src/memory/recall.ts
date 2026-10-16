@@ -1,6 +1,6 @@
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
-import type { View as MemoryView } from "./store.ts";
+import type { View as MemoryView } from "@staix/agent-mem";
 
 const PLATFORMS = ["claude", "codex", "kimi", "agent-hub"];
 /** Peers whose own hooks already inject their own platform's context at session start. */

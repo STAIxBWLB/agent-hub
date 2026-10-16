@@ -2,7 +2,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemoryStore, entryId, MEMORY_SCHEMA } from "../../src/memory/store.ts";
+import { MemoryStore, entryId, MEMORY_SCHEMA } from "@staix/agent-mem";
 const N = Number(process.argv[2] ?? 20000);
 const home = mkdtempSync(join(tmpdir(), "amem-scale-"));
 const dir = join(home, "memory"); mkdirSync(join(dir, "log"), { recursive: true }); mkdirSync(join(dir, "local"));

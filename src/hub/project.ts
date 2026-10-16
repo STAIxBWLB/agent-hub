@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { hubGitSync } from "./git.ts";
 
-import { canonicalPath as canonical } from "../memory/platform.ts";
-export { canonicalPath, realPath } from "../memory/platform.ts";
+import { canonicalPath as canonical } from "@staix/agent-mem/platform";
+export { canonicalPath, realPath } from "@staix/agent-mem/platform";
 
 function gitRoot(dir: string): string | undefined {
   const result = hubGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });

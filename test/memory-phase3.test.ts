@@ -4,8 +4,8 @@ import { mkdtempSync, realpathSync, rmSync, readFileSync, statSync, unlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Briefs } from "../src/memory/brief.ts";
-import { importClaudeMem } from "../src/memory/import.ts";
-import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
+import { importClaudeMem } from "@staix/agent-mem";
+import { MemoryStore, type NoteInput } from "@staix/agent-mem";
 import { memoryMode } from "../src/hub/bench.ts";
 import { researchReport, formatResearch, taskRecords } from "../src/hub/research.ts";
 import type { StampedEvent } from "../src/hub/events.ts";

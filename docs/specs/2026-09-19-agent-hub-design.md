@@ -159,8 +159,8 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   30 s, then goes offline with queued work retained if no report arrives. `--model` maps to `kimi --model <alias> acp`
   (verified flag). Reusable for `opencode acp`.
 - Local worker (amended in M3): a hub-native tool-calling loop over non-streaming
-  `POST /chat/completions` with plain `fetch`, no SDK (the repo keeps zero runtime
-  dependencies). Tools `read`, `write`, `edit`, `bash`, `git`, `hub_send` (`hub_task_*` with
+  `POST /chat/completions` with plain `fetch`, no SDK (the repo keeps zero third-party runtime
+  dependencies; the first-party memory core is an exact-pinned library). Tools `read`, `write`, `edit`, `bash`, `git`, `hub_send` (`hub_task_*` with
   M4). Paths are realpath-scoped to cwd with a secrets denylist; `.git` and `.agenthub` are
   not writable. `write`, `edit`, `bash` and mutating `git` go through the console permission
   relay unless the hub runs `--unattended`. Everything that executes runs under seatbelt
@@ -554,7 +554,7 @@ New repo layout:
 src/hub/            daemon, bus, peer-registry, state-machines, board, budget, router
 src/adapters/       claude-channel.ts, codex-appserver.ts, acp.ts, local-worker.ts
 src/switchyard/     config generator, sidecar lifecycle, health
-src/memory/         claude-mem worker client, capture for the local worker, recall (inject, brief), remember
+src/memory/         hub memory integration: claude-mem client, capture, briefs and recall; portable core is @staix/agent-mem
 src/cli/            up, claude, codex, kimi, local, say, tail, board, route, budget, status, logs, kill, init
 plugins/agent-hub/  .claude-plugin/plugin.json, .mcp.json, server bundle, hooks (SessionStart health, Stop announce)
 .claude-plugin/marketplace.json
@@ -2922,3 +2922,18 @@ and repo-heavy work was coordinated over chat it read too late.
   holder whose pid is gone is reaped. The slot works with no hub running. It is
   not bus-visible; moving it into the hub is the upgrade if pid reuse or reap
   races bite.
+
+
+## Amendment: consume the first-party agent-mem package (#412, P5)
+
+The portable core is the first-party `@staix/agent-mem` library, initially exact-pinned at `0.1.1`; agent-hub keeps zero third-party runtime dependencies. Its store, sync, claude-mem import, project/home helpers and raw memory/goal commands are imported from the package root, with no vendored copies. Platform helpers use the public Node-safe `@staix/agent-mem/platform` subpath: `0.1.0` exposes only a root that loads `bun:sqlite`, which cannot load in Node-hosted Pi extensions. `0.1.1` supplies the required compatibility export without changing the platform algorithms. The package is the single implementation of deny, hardened git, realPath and process identity, re-exported through the existing local/hub/Pi modules so their callers retain one contract. Package storage semantics and the compatibility schema/hash/path invariants are unchanged.
+
+`src/memory/` retains only hub integration: briefs, recall, the optional claude-mem worker client and capture. The hub owns `src/hub/memory-policy.ts` (`withoutPii`, `promotionScreen`, `mentionsPrivatePath`), `src/hub/read-tools.ts`, task lifecycle writes, lease renewal, model-suggested edges, ask and dashboard consumers. Current project policy is injected through `StoreOptions.screen` and the raw command callbacks. Tasks remains the write authority; PII-turn refusals, current-policy screening before counting/truncation, capture exclusion and the peer read-tool byte budgets remain unchanged.
+
+`ahub memory` and `ahub goal` keep the hub's argument and identity contract, screened agent-readable views, project configuration and TTL. The standalone person-only `amem` CLI is the package's interface; its `--policy-free` acknowledgement is not an ahub option or a reason to bypass host privacy policy. Memory availability and sync remain fail-open for hub turns, while privacy checks keep their existing fail-closed behavior. Data directory precedence is supplied by the package's `memoryHome()` without migration: `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`; explicit `StoreOptions.home` retains its parent-directory meaning.
+
+`docs/memory.md` documents hub integration; [agent-mem](https://github.com/STAIxBWLB/agent-mem) owns the portable data model and CLI documentation. Portable-core import boundary checks belong to the agent-mem package CI. The former hub-local core boundary checker and its check.sh step are removed with the core; the hub keeps its exact first-party dependency pin. Consuming the package does not complete the owed live legs: copied-home old/new parity, source-unchanged checks, rollback and unrun account/device/sandbox receipts are reported separately. No release, runtime replacement or live proof is implied by the source change.
+
+The consumed package requires Bun >=1.4.2; the hub manifest, plain-JavaScript startup guard and installation guide share that minimum. Node still receives the actionable refusal before any TypeScript or Bun-only import.
+
+Recovery source preservation retains the exact first-party memory package under the preserved runtime, without copying any other node_modules content or linking to the mutable global install. Package identity/version and all retained dependency bytes participate in the recovery digest; cached or preserved dependency drift is refused. Releases without runtime dependencies keep their historical digest.

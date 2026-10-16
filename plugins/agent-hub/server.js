@@ -6928,7 +6928,7 @@ import { join as join3 } from "path";
 import { existsSync, lstatSync, readFileSync } from "fs";
 import { dirname as dirname2, isAbsolute, join as join2, resolve as resolve2 } from "path";
 
-// src/memory/platform.ts
+// node_modules/@staix/agent-mem/src/memory/platform.ts
 import { realpathSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
 import { spawnSync, execFileSync } from "child_process";
@@ -16175,7 +16175,10 @@ var package_default = {
     test: "bun test"
   },
   engines: {
-    bun: ">=1.3.0"
+    bun: ">=1.4.2"
+  },
+  dependencies: {
+    "@staix/agent-mem": "0.1.1"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",

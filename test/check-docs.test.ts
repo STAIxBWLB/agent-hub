@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, copyFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const checker = resolve(import.meta.dir, "../scripts/check-docs.mjs");
 function fixture(run: (root: string, stamp: string, git: (...args: string[]) => string) => void) {
@@ -188,8 +189,9 @@ test("installed-layout release reader finds the explicitly published checker and
     for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts"]) {
       copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
     }
-    mkdirSync(join(target, "src/memory"));
-    copyFileSync(resolve(import.meta.dir, "../src/memory/platform.ts"), join(target, "src/memory/platform.ts"));
+    // Copy only the published first-party package, not the workspace dependency tree.
+    const memoryPackage = dirname(dirname(fileURLToPath(import.meta.resolve("@staix/agent-mem"))));
+    cpSync(memoryPackage, join(target, "node_modules/@staix/agent-mem"), { recursive: true });
     mkdirSync(join(target, "scripts"));
     copyFileSync(checker, join(target, "scripts/check-docs.mjs"));
     writeFileSync(join(target, "probe.ts"), `import {readDocEvidence} from "./src/hub/sdlc-release.ts"; console.log(JSON.stringify(await readDocEvidence(${JSON.stringify(root)})));`);

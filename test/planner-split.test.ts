@@ -6,7 +6,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { projectProfile, resolveProfile } from "../src/hub/profiles.ts";
-import { MemoryStore, taskKey } from "../src/memory/store.ts";
+import { MemoryStore, taskKey } from "@staix/agent-mem";
 import type { PiiVerdict, ScreenRecord } from "../src/hub/inference.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";

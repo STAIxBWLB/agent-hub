@@ -54,7 +54,7 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Install
 
-Requires [Bun](https://bun.sh) 1.3.0 or later on PATH.
+Requires [Bun](https://bun.sh) 1.4.2 or later on PATH.
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup

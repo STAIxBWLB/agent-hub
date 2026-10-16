@@ -9,7 +9,7 @@ import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS } from "./control-cl
 import { Registry, type Project } from "./registry.ts";
 import { hubHome } from "./project.ts";
 import { startDashboard } from "./ui.ts";
-import { projectChain } from "../memory/project.ts";
+import { projectChain } from "@staix/agent-mem";
 import type { ProjectInspection } from "./lifecycle.ts";
 import { MAX_COMMAND_MS } from "../cli/terminal-recovery.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";

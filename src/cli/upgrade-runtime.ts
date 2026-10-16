@@ -8,7 +8,7 @@ import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from 
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
-import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
+import { packageDigest, preserveRuntimeDependencies, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { readEvents } from "../hub/events.ts";
@@ -317,6 +317,7 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
     for (const name of ["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md"]) {
       cpSync(join(plan.sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
     }
+    preserveRuntimeDependencies(plan.sourceRoot, temporary);
     if (packageDigest(temporary) !== plan.sourceDigest) throw new Error("source changed while being preserved");
     renameSync(temporary, dest);
   } finally { rmSync(temporary, { recursive: true, force: true }); }
