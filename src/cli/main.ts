@@ -59,6 +59,8 @@ import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatRepo
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
 import { goalCommand, memoryCommand } from "./memory.ts";
+import { selectedMemoryProfile } from "../hub/memory-profile.ts";
+import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
 import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
@@ -1424,7 +1426,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
       if (status.needs) { const pet = loadPetConfig(cwd); if (pet.enabled) console.log(renderPet(petView(status), false, pet.character)); }
       // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
-      if (existsSync(join(hubHome(), "memory", "index.db"))) {
+      if (status.memoryProfile ? status.memoryProfile.state === "ready" : existsSync(join(hubHome(), "memory", "index.db"))) {
         try { const lines = await goalCommand(["list"], cwd); if (!lines.startsWith("no open")) console.log(`\nlong-term tasks\n${lines}`); } catch { /* memory unreadable: status goes on */ }
       }
     } finally { hub.close(); }
@@ -1500,6 +1502,13 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
   memory: async () => {
     // #258: the hub's own memory on this machine; reads are anyone's, changes a person's.
+    if (args.filter(arg => arg !== "--json")[0] === "profile-check") {
+      if (args.some(arg => arg !== "profile-check" && arg !== "--json")) fail("usage: ahub memory profile-check [--json]");
+      const result = await checkMemoryProfiles(selectedMemoryProfile());
+      console.log(args.includes("--json") ? JSON.stringify(result, null, 2) : formatMemoryProfileCheck(result));
+      if (!result.ready) process.exitCode = 1;
+      return;
+    }
     try { console.log(await memoryCommand(args, cwd)); } catch (e) { fail((e as Error).message); }
   },
   goal: async () => {

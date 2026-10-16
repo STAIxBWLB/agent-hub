@@ -900,7 +900,7 @@ ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, i
 
 ## Hub memory
 
-The hub keeps its own memory in `~/.agenthub/memory/` beside claude-mem ([how it works](memory.md)): notes saved
+The hub opens the selected memory profile under `memoryHome()` (default `~/.agenthub/memory/`) beside claude-mem ([how it works](memory.md)): notes saved
 against an open task are short-term; when the task is approved its decisions, contracts and fails become long-term.
 Task briefs, session-start recall and `ahub ask` read it first, and the dashboard has a Memory section.
 
@@ -912,6 +912,12 @@ ahub memory forget 1a2b3c4d              # a person's; also promote, demote, sup
 ```
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
+
+The exact-pinned `@staix/agent-mem` 0.3.0 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
+
+The daemon checks its selector at hub operation entry and before candidate/counter writes. It does not hot-switch handles or provide an atomic fence against selection changes during an in-flight core call. Quiesce consumers and close their handles before migration or selection changes; reopen through the supported session-preserving lifecycle afterward. Candidate/counter storage remains `M/candidates.db`, independent of `G`; `amem review` on a generation is still refused. Every running hub on the home needs positive matching binding proof; zero running hubs is ready/quiesced, while unreadable or unknown runtime state is not ready. Existing JSON memory/goal results remain unchanged; the additive binding receipt belongs to daemon status, profile-check and the decay object. This source integration does not authorize installing a new runtime, migrating real memory, restarting sessions or claiming real-machine sync/capture receipts. Migration/deactivation and their limits belong to [agent-mem](https://github.com/STAIxBWLB/agent-mem); see [the hub profile contract](memory.md#selected-memory-profile).
+
+Run `ahub memory profile-check [--json]` from the person's terminal for the read-only preflight. It identifies live registry owners by signed process identity and authenticated daemon replies, then reports their loaded memory package and bound home/profile. The receipt names the current `AGENTHUB_HOME` registry scope; zero results establish no live daemon in that inventory, not system-wide process absence. Inventory and check separate custom registries too when they share `AMEM_HOME`. A missing or unreadable runtime receipt never counts as a different home or permission to migrate.
 
 Between your machines, through a private git remote, with long-term tasks that span them:
 

@@ -7,6 +7,7 @@ import { formatReport, formatTaskReport, type Report, type TaskReport } from "..
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string };
   taskWip?: Record<string, { wip: number; wipLimit: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; budget?: Record<string, any>;
   tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[]; switchyard?: string;
@@ -184,6 +185,11 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
+  if (data.memoryProfile) {
+    const memory = data.memoryProfile;
+    const profile = memory.profile === "generation" ? `generation ${memory.generation?.slice(0, 8) ?? "unknown"}` : memory.profile ?? "unbound";
+    out.push(...detail("memory", `${profile}; ${memory.state ?? "unknown"}; agent-mem ${memory.agentMemVersion ?? "unknown"}${memory.skippedRows ? `; malformed legacy rows skipped: ${memory.skippedRows}` : ""}${memory.error ? `; ${memory.error}` : ""}`, columns, memory.state === "unavailable" ? "attention" : undefined));
+  }
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
   for (const pending of data.permissionDefaults ?? []) out.push(...detail("permission default", `${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`, columns, "attention"));
   for (const crash of data.crash ?? []) out.push(...detail("crash recovery", crash, columns, "attention"));

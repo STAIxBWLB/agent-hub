@@ -72,24 +72,28 @@ export type MemoryCounterField = "rendered" | "delivered" | "cited";
 
 /** Sidecar-only observations: the absent fields stay unknown; no message body is persisted. */
 export class MemoryTelemetry {
-  constructor(private readonly sidecar: CandidateStore, private readonly store: MemoryStore, private readonly project: string, private readonly screen: MemoryScreen) {}
+  constructor(private readonly sidecar: CandidateStore, private readonly store: MemoryStore, private readonly project: string, private readonly screen: MemoryScreen, private readonly memoryCheck?: () => void) {}
 
   record(text: string, context: MemoryCounterContext, field: MemoryCounterField, privateTurn = false): void {
     if (privateTurn || !["rendered", "delivered", "cited"].includes(field)) return;
     try {
+      this.memoryCheck?.();
       if (!safe(context, this.screen)) return;
       const ids = new Set<string>();
       for (const match of text.matchAll(/\bmem:([a-f0-9]{8,64})(?![a-zA-Z0-9])/g)) {
         try { ids.add(visibleId(match[1]!, this.screen)); } catch { /* unavailable input */ }
       }
       if (!ids.size) return;
+      this.memoryCheck?.();
       this.store.withDeferredPromotions(() => {
         const resolve = visibleResolver(this.store, this.project, this.screen), seen = new Set<string>();
         for (const id of ids) {
           try {
+            this.memoryCheck?.();
             const view = resolve(id);
             if (seen.has(view.id)) continue;
             seen.add(view.id);
+            this.memoryCheck?.();
             this.sidecar.recordCounter({ ...context, project: this.project, entryId: view.id }, { [field]: 1 }, "public");
           } catch { /* A hidden, ambiguous or unavailable citation reveals no counters or diagnostics. */ }
         }
