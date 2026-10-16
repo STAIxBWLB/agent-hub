@@ -1,6 +1,8 @@
+import { accessSync, constants, lstatSync } from "node:fs";
+import { join, parse, resolve, sep } from "node:path";
 import { registeredProjects } from "../cli/upgrade.ts";
 import { ControlClient, readControl, type ControlDescriptor } from "./control-client.ts";
-import { canonicalPath, hubHome } from "./project.ts";
+import { canonicalPath, hubHome, realPath } from "./project.ts";
 import { processLiveness, type Liveness } from "../pi/process-signature.ts";
 import type { Project } from "./registry.ts";
 
@@ -90,7 +92,27 @@ export function evaluateMemoryProfileCheck(expected: ExpectedMemoryProfile, evid
 }
 
 /** Reuse the recovery planner's readonly SQLite reader: never constructs/migrates a Registry. */
-export const readProfileCheckProjects = (registryHome = hubHome()): Project[] => registeredProjects(registryHome);
+export function readProfileCheckProjects(registryHome = hubHome()): Project[] {
+  const absolute = resolve(registryHome), root = parse(absolute).root;
+  let cursor = root;
+  for (const part of absolute.slice(root.length).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    let stat: ReturnType<typeof lstatSync>;
+    try { stat = lstatSync(cursor); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw new Error("profile-check registry path unavailable"); }
+    // Existing directory aliases are supported, but a dangling alias is not proof of an absent registry.
+    if (stat.isSymbolicLink()) { try { stat = lstatSync(realPath(cursor)); } catch { throw new Error("profile-check registry path unavailable"); } }
+    if (!stat.isDirectory() || !(Number(stat.mode) & 0o111)) throw new Error("profile-check registry path unavailable");
+    accessSync(cursor, constants.X_OK);
+  }
+  const file = join(absolute, "registry.db");
+  let stat: ReturnType<typeof lstatSync>;
+  try { stat = lstatSync(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw new Error("profile-check registry unavailable"); }
+  if (!stat.isFile() || stat.isSymbolicLink() || !(Number(stat.mode) & 0o444)) throw new Error("profile-check registry unavailable");
+  accessSync(file, constants.R_OK);
+  return registeredProjects(canonicalPath(absolute));
+}
 
 export async function probeMemoryProfile(project: Project): Promise<ProfileEvidence> {
   const liveness = project.pid ? processLiveness(project.pid, project.pidSignature) : project.instanceId ? "unknown" : "gone";
@@ -120,8 +142,8 @@ export async function checkMemoryProfiles(expected: ExpectedMemoryProfile, optio
   probe?: (project: Project) => Promise<ProfileEvidence>;
 } = {}): Promise<MemoryProfileCheck> {
   let projects: readonly Project[];
-  const registryHome = canonicalPath(options.registryHome ?? hubHome());
-  try { projects = options.projects ?? readProfileCheckProjects(registryHome); }
+  let registryHome = resolve(options.registryHome ?? hubHome());
+  try { projects = options.projects ?? readProfileCheckProjects(registryHome); registryHome = canonicalPath(registryHome); }
   catch { return { ready: false, expected, registryHome, daemons: [], reason: "project registry could not be read without mutation" }; }
   const evidence: ProfileEvidence[] = [];
   for (const project of projects) evidence.push(await (options.probe ?? probeMemoryProfile)(project));

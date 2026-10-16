@@ -1,3 +1,4 @@
+import { detectCliIdentity } from "./identity.ts";
 import { createStalenessProbe } from "../hub/memory-staleness.ts";
 import { looksSecret, type MemoryStore, type StoreOptions } from "@staix/agent-mem";
 import type { SyncOptions } from "@staix/agent-mem";
@@ -20,18 +21,20 @@ const loadConfigSafe = (cwd: string) => { try { return loadConfig(cwd); } catch 
 function commandStores(provided?: MemoryStore, options: StoreOptions = {}) {
   return { ...(provided ? bindProfileMemory(provided) : openProfileMemory(options)), owned: !provided };
 }
-function profileOutput(text: string, json: boolean, profile: MemoryProfileReceipt | undefined): string {
+function profileOutput(text: string, json: boolean, profile: MemoryProfileReceipt | undefined, person: boolean): string {
   if (!profile) return text;
   if (profile.state !== "ready") throw new Error("memory profile unavailable; restart the hub");
   if (json) return text;
-  return `${text}\nmemory profile: ${profile.profile}${profile.generation ? ` ${profile.generation}` : ""}${profile.skippedRows ? `; skipped malformed legacy rows: ${profile.skippedRows}` : ""}`;
+  return `${text}\nmemory profile: ${profile.profile}${profile.generation ? ` ${person ? profile.generation : profile.generation.slice(0, 8)}` : ""}${person && profile.skippedRows ? `; skipped malformed legacy rows: ${profile.skippedRows}` : ""}`;
 }
 
 /** Hub wrapper: current project policy and TTL stay here; parsing and storage commands belong to the core. */
-export async function memoryCommand(args: string[], cwd: string, opts: { store?: MemoryStore; sync?: Omit<SyncOptions, "remote">; now?: () => number } = {}): Promise<string> {
+export async function memoryCommand(args: string[], cwd: string, opts: { store?: MemoryStore; sync?: Omit<SyncOptions, "remote">; now?: () => number; person?: boolean } = {}): Promise<string> {
+  const person = opts.person ?? detectCliIdentity(process.env).role === "console";
   const privatePaths = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before reading hub memory`); } };
   const rest = args.filter(arg => arg !== "--json");
   if (rest[0] === "decay") {
+    if (!person) fail("memory decay requires person authority");
     let days = 90;
     if (rest.length !== 1) {
       if (rest.length !== 3 || rest[1] !== "--days" || !/^[1-9][0-9]*$/.test(rest[2]!)) fail("usage: ahub memory decay [--days N] [--json] (N must be a positive integer)");
@@ -56,11 +59,11 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
           && !note.about.some(node => openGoals.has(node) || (node.startsWith("task:") && linkedTasks.has(node.slice(5))))), routing, cwd, paths);
       });
       const profile = context.binding.status(store);
-      if (args.includes("--json")) return profileOutput(JSON.stringify({ days, cutoff, candidates, memoryProfile: profile }), true, profile);
+      if (args.includes("--json")) return profileOutput(JSON.stringify({ days, cutoff, candidates, memoryProfile: profile }), true, profile, person);
       const text = candidates.length
         ? [`${candidates.length} decay candidate${candidates.length === 1 ? "" : "s"} older than ${days} days (review only):`, ...candidates.map(note => `mem:${note.id} ${note.at} ${note.kind}: ${note.title ?? note.text}`)].join("\n")
         : `no decay candidates older than ${days} days`;
-      return profileOutput(text, false, profile);
+      return profileOutput(text, false, profile, person);
     } finally { if (context.owned) store.close(); }
   }
   let showStale = false;
@@ -81,11 +84,12 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
       return text => detectSignals({ title: text, detail: "", refs: {} }, routing, cwd).includes("pii") || mentionsPrivatePath(text, [], policy, cwd);
     },
     });
-    return profileOutput(showStale ? `${text}\n(stale?)` : text, args.includes("--json"), context.binding.status(context.store));
+    return profileOutput(showStale ? `${text}\n(stale?)` : text, args.includes("--json"), context.binding.status(context.store), person);
   } finally { if (context.owned) context.store.close(); }
 }
 
-export async function goalCommand(args: string[], cwd: string, opts: { store?: MemoryStore; link?: (goal: string, task: string) => Promise<string> } = {}): Promise<string> {
+export async function goalCommand(args: string[], cwd: string, opts: { store?: MemoryStore; link?: (goal: string, task: string) => Promise<string>; person?: boolean } = {}): Promise<string> {
+  const person = opts.person ?? detectCliIdentity(process.env).role === "console";
   const policy = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before using long-term tasks`); } };
   const context = commandStores(opts.store);
   try {
@@ -93,6 +97,6 @@ export async function goalCommand(args: string[], cwd: string, opts: { store?: M
     const text = await rawGoalCommand(args, cwd, { ...opts, store: context.store, open: () => context.store,
       clean: (title, milestones, project) => !looksSecret(`${title}\n${milestones.join("\n")}`) && withoutPii([{ title, text: milestones.join("\n"), project }], currentRouting(cwd), cwd, policy()).length > 0,
     });
-    return profileOutput(text, args.includes("--json"), context.binding.status(context.store));
+    return profileOutput(text, args.includes("--json"), context.binding.status(context.store), person);
   } finally { if (context.owned) context.store.close(); }
 }

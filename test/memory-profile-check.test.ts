@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateMemoryProfileCheck, readProfileCheckProjects, checkMemoryProfiles, probeMemoryProfile, formatMemoryProfileCheck, type ExpectedMemoryProfile, type ProfileEvidence } from "../src/hub/memory-profile-check.ts";
@@ -118,4 +118,34 @@ test("profile-check labels its exact registry inventory and never reports machin
   expect(text).toContain(`registry inventory: ${registryHome}`);
   expect(text).toContain("other custom registries separately before migration");
   expect(readdirSync(registryHome)).toEqual([]);
+});
+
+
+test("dangling registry files and dangling home ancestors block readiness rather than looking empty", async () => {
+  const registryHome = temp(); symlinkSync(join(registryHome, "missing-registry-target"), join(registryHome, "registry.db"));
+  expect(() => readProfileCheckProjects(registryHome)).toThrow();
+  expect(await checkMemoryProfiles(expected, { registryHome })).toMatchObject({ ready: false, reason: "project registry could not be read without mutation" });
+  const parent = temp(), alias = join(parent, "dangling-home"); symlinkSync(join(parent, "missing-home-target"), alias, "dir");
+  const danglingHome = join(alias, "child");
+  expect(() => readProfileCheckProjects(danglingHome)).toThrow();
+  expect((await checkMemoryProfiles(expected, { registryHome: danglingHome })).ready).toBe(false);
+  expect(existsSync(join(parent, "missing-home-target"))).toBe(false);
+  const notDirectory = join(parent, "regular-file"); writeFileSync(notDirectory, "not a directory");
+  expect((await checkMemoryProfiles(expected, { registryHome: join(notDirectory, "child") })).ready).toBe(false);
+});
+
+test("unreadable registry and ancestor permissions block readiness while existing directory aliases remain supported", async () => {
+  const registryHome = temp(), file = join(registryHome, "registry.db"), db = new Database(file);
+  db.run("CREATE TABLE projects (id TEXT,root TEXT,state_dir TEXT,base_port INTEGER,instance_id TEXT,pid INTEGER)"); db.close();
+  const bytes = readFileSync(file);
+  chmodSync(file, 0o000);
+  try { expect((await checkMemoryProfiles(expected, { registryHome })).ready).toBe(false); }
+  finally { chmodSync(file, 0o600); }
+  chmodSync(registryHome, 0o000);
+  try { expect((await checkMemoryProfiles(expected, { registryHome })).ready).toBe(false); }
+  finally { chmodSync(registryHome, 0o700); }
+  const parent = temp(), alias = join(parent, "existing-home-alias"); symlinkSync(registryHome, alias, "dir");
+  expect(readProfileCheckProjects(alias)).toEqual([]);
+  expect((await checkMemoryProfiles(expected, { registryHome: alias })).ready).toBe(true);
+  expect(readFileSync(file)).toEqual(bytes);
 });

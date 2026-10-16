@@ -1509,7 +1509,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (!result.ready) process.exitCode = 1;
       return;
     }
-    try { console.log(await memoryCommand(args, cwd)); } catch (e) { fail((e as Error).message); }
+    try { console.log(await memoryCommand(args, cwd, { person: caller.role === "console" })); } catch (e) { fail((e as Error).message); }
   },
   goal: async () => {
     // #258: long-term tasks; a link goes through the project's hub, so Tasks validates the board task.
@@ -1518,7 +1518,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       try { const r = await hub.request({ t: "goal_link", goal, task: Number(task) }); if (!r.ok) throw new Error(String(r.error)); return String(r.text); }
       finally { hub.close(); }
     };
-    try { console.log(await goalCommand(args, cwd, { link })); } catch (e) { fail((e as Error).message); }
+    try { console.log(await goalCommand(args, cwd, { link, person: caller.role === "console" })); } catch (e) { fail((e as Error).message); }
   },
   research: () => {
     // #247: measures from the opt-in research records; `export` writes them out, `backfill` builds them from events.jsonl.

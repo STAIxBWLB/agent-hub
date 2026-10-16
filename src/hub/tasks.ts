@@ -790,7 +790,7 @@ export class Tasks {
       const childIds = new Set(entry.planning.split.children.map(child => child.id)), budgets = this.d.executionBudget?.status();
       if (Array.isArray(budgets) && budgets.some(budget => budget.kind === "task" && budget.taskId !== undefined && childIds.has(budget.taskId))) throw new PreEffectToolRefusal("split children are referenced by execution budgets");
       if (this.d.store) {
-        try { this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
+        try { this.d.memoryCheck?.(); this.d.store.store.refresh(); } catch { throw new PreEffectToolRefusal("split undo requires current memory link evidence"); }
         const children = new Set(entry.planning.split.children.map(child => this.d.board.get(child.id)).filter((child): child is Task => !!child).map(child => this.memoryKey(child)));
         if ([...children].some(key => this.d.store!.store.hasTask(key)) || this.d.store.store.goals().some(goal => goal.links.some(link => children.has(link.task)))) throw new PreEffectToolRefusal("split children are referenced by long-term tasks");
       }
