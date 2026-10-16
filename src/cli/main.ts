@@ -975,17 +975,24 @@ const commands: Record<string, () => Promise<void> | void> = {
         return;
       }
       const [id, ...flags] = rest;
-      if (!id || !["show", "resolve"].includes(operation)) fail("usage: ahub queue show <id> | resolve <id> --action completed|retry|discard --reason <text>");
-      const shown = await hub.request({ t: "queue", op: "show", id });
-      if (!shown.ok) fail(shown.error);
+      if (!id || !["show", "resolve"].includes(operation)) fail("usage: ahub queue show <id> | resolve <id> --action completed|retry|discard --reason <text> [--revision N]");
       if (operation === "show") {
         if (flags.length) fail("usage: ahub queue show <id>");
+        const shown = await hub.request({ t: "queue", op: "show", id });
+        if (!shown.ok) fail(shown.error);
         if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
         return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now()), options.color);
       }
-      const { one, rest: extra } = takeFlags(args.slice(2), ["--action", "--reason"], []);
-      if (extra.length || !["completed", "retry", "discard"].includes(one["--action"] ?? "") || !one["--reason"]?.trim()) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text>");
-      const result = await hub.request({ t: "queue", op: "resolve", id, revision: shown.delivery.revision, action: one["--action"], reason: one["--reason"] });
+      const { one, rest: extra } = takeFlags(flags, ["--action", "--reason", "--revision"], []);
+      const rawRevision = one["--revision"], parsedRevision = rawRevision === undefined ? undefined : Number(rawRevision);
+      if (extra.length || !["completed", "retry", "discard"].includes(one["--action"] ?? "") || !one["--reason"]?.trim() || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(parsedRevision)))) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text> [--revision N]");
+      let revision = parsedRevision;
+      if (revision === undefined) {
+        const shown = await hub.request({ t: "queue", op: "show", id });
+        if (!shown.ok) fail(shown.error);
+        revision = shown.delivery.revision;
+      }
+      const result = await hub.request({ t: "queue", op: "resolve", id, revision, action: one["--action"], reason: one["--reason"] });
       if (!result.ok) fail(result.error);
       console.log(JSON.stringify(result.delivery, null, 2));
     } finally { hub.close(); }
@@ -1183,10 +1190,16 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {
-      const { one, rest: positional } = takeFlags(rest, ["--role"], []);
-      const role = one["--role"] ?? "owner";
-      if (positional.length !== 2 || !["owner", "reviewer"].includes(role)) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer]");
-      return console.log(await taskOp("task_assign", { id: positional[0], peer: positional[1], ...(role === "reviewer" ? { role } : {}) }));
+      const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);
+      const role = one["--role"] ?? "owner", rawRevision = one["--revision"], revision = rawRevision === undefined ? undefined : Number(rawRevision);
+      if (positional.length !== 2 || !["owner", "reviewer"].includes(role) || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(revision)))) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]");
+      return console.log(await taskOp(revision === undefined ? "task_assign" : "task_assign_checked", { id: positional[0], peer: positional[1], ...(role === "reviewer" ? { role } : {}), ...(revision === undefined ? {} : { revision }) }));
+    }
+    if (sub === "unassign") {
+      const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);
+      const role = one["--role"] ?? "owner", rawRevision = one["--revision"], revision = rawRevision === undefined ? undefined : Number(rawRevision);
+      if (positional.length !== 1 || !["owner", "reviewer"].includes(role) || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(revision)))) fail("usage: ahub task unassign <id> [--role owner|reviewer] [--revision N]");
+      return console.log(await taskOp("task_unassign", { id: positional[0], role, ...(revision === undefined ? {} : { revision }) }));
     }
     if (sub === "label") {
       // #247: a person's later verdict on an approved task (the identity gate keeps it human-only), for research records.
@@ -1199,7 +1212,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString() }]);
       return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);
     }
-    if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | escalate <id>");
+    if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | unassign <id> | escalate <id>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
     const urgent = rest.includes("--urgent"), backlog = rest.includes("--backlog");

@@ -1691,13 +1691,13 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!release) throw new PreEffectToolRefusal("no such release");
           releaseId = release.id;
         }
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => { const view: Record<string, unknown> = onPrem ? { ...t } : tasks.publicView(t); const { history: _h, ...rest } = view; return { ...rest, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; }));
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => { const view: Record<string, unknown> = onPrem ? { ...t } : tasks.publicView(t); const { history: _h, ...rest } = view; return { ...rest, flowRevision: t.history.length, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; }));
       }
     }
     if (op === "task_show" && by !== USER) {
       const task = board.get(Number(a.id));
       if (task?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
-      return JSON.stringify(task ? publicConductorTask(task, (t) => tasks.publicView(t, true)) : `no task #${a.id}`);
+      return JSON.stringify(task ? { ...publicConductorTask(task, (t) => tasks.publicView(t, true)), flowRevision: task.history.length } : `no task #${a.id}`);
     }
     if (op === "route_explain" && by !== USER) {
       if (a.id !== undefined && board.get(Number(a.id))?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
@@ -1724,13 +1724,22 @@ export async function startDaemon(opts: DaemonOptions) {
       case "backlog_pull":
       case "backlog_return":
         return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
-      case "task_show":
-        return JSON.stringify(board.get(Number(a.id)) ? { ...board.get(Number(a.id)), reviews: board.reviews({ task: Number(a.id) }) } : `no task #${a.id}`, null, 2);
-      case "task_assign": {
+      case "task_show": {
+        const task = board.get(Number(a.id));
+        return JSON.stringify(task ? { ...task, flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) } : `no task #${a.id}`, null, 2);
+      }
+      case "task_assign":
+      case "task_assign_checked": {
         const peer = peerArg(a.peer, "peer");
         if (!peer) throw new Error("peer is required");
         if (a.role !== undefined && a.role !== "owner" && a.role !== "reviewer") throw new Error("role must be owner or reviewer");
-        return line(await tasks.assignTo(a.id, peer, USER, true, a.role));
+        if (op === "task_assign_checked" && (typeof a.revision !== "number" || !Number.isSafeInteger(a.revision) || a.revision < 0)) throw new Error("revision must be a nonnegative integer");
+        return line(await tasks.assignTo(a.id, peer, USER, true, a.role, op === "task_assign_checked" ? a.revision : undefined));
+      }
+      case "task_unassign": {
+        if (a.role !== undefined && a.role !== "owner" && a.role !== "reviewer") throw new Error("role must be owner or reviewer");
+        if (a.revision !== undefined && (typeof a.revision !== "number" || !Number.isSafeInteger(a.revision) || a.revision < 0)) throw new Error("revision must be a nonnegative integer");
+        return line(await tasks.unassign(a.id, USER, true, a.role, a.revision));
       }
       case "task_escalate":
         return line(await tasks.escalate(USER, a.id, undefined, undefined, true));

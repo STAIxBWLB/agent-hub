@@ -65,7 +65,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
     ["ahub queue list [--peer <id>] [--json] [--color=auto|always|never]", "inspect durable deliveries"],
     ["ahub queue show <delivery-id> [--json] [--color=auto|always|never]", "inspect one delivery and revision"],
-    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>", "release a delivery held as needs_review: mark it completed, retry it or discard it"],
+    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text> [--revision N]", "resolve a queued or needs_review delivery; --revision binds the displayed row instead of a fresh show"],
   ]],
   ["Tasks and review", [
     ["ahub board import github --label <label> [--milestone <milestone>] [--repo <owner/repo>]", "person only: read bounded open issues into deduplicated Backlog; never writes GitHub"],
@@ -78,7 +78,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub backlog pull|return <id>", "person only: pull backlog into To Do or return ownerless proposed work; --backlog on task propose stages unoffered work"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
     ["ahub task role <id> <role|none>", "person only: change bounded catalog guidance on an open task; routing and authority are unchanged"],
-    ["ahub task assign <id> <peer> [--role owner|reviewer]", "name the owner (default) or reviewer; a task that still waits reserves its owner"],
+    ["ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]", "name the owner (default) or reviewer; a task that still waits reserves its owner; --revision refuses stale console actions"],
+    ["ahub task unassign <id> [--role owner|reviewer] [--revision N]", "person only: remove the owner/reservation or reviewer without routing a replacement or stopping native work"],
     ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned", "your later verdict on an approved task, kept in the research records (research must be on)"],
     ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]...", "give a review verdict on a task"],
     ["ahub route explain <id>", "why a task went where it went, its reserved owner included"],

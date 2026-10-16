@@ -26,6 +26,7 @@ test("agent command classification refuses all human authority and keeps ordinar
   for (const command of ["say", "status", "board", "report", "turns", "review", "remember", "help", "version", "facts", "check-path"]) expect(classifyPeerCommand(command, [])).toBe("allowed");
   expect(classifyPeerCommand("task", ["propose"])).toBe("allowed");
   expect(classifyPeerCommand("task", ["show"])).toBe("allowed");
+  expect(classifyPeerCommand("task", ["unassign"])).toBe("console");
   expect(classifyPeerCommand("route", ["explain"])).toBe("allowed");
   expect(classifyPeerCommand("budget", [])).toBe("allowed");
   expect(classifyPeerCommand("say", ["--as-user", "hello"])).toBe("console");
@@ -44,6 +45,7 @@ test("audit labels and human-action hints contain command names only", () => {
   for (const args of [[], ["pi"], ["pi", "--as-user"]]) expect(classifyPeerCommand("stop", args)).toBe("console");
   expect(cliCommandLabel("task", ["private-text"])).toBe("task");
   expect(cliCommandLabel("task", ["assign", "42", "private-text"])).toBe("task assign");
+  expect(cliCommandLabel("task", ["unassign", "42"])).toBe("task unassign");
   expect(cliCommandLabel("malformed\ncommand", [])).toBe("unknown");
   expect(cliCommandLabel("permit\n", [])).toBe("unknown");
   expect(peerCommandRefusal("claude", "permit")).toContain("ahub console or a terminal");

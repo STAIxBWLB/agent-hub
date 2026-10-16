@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
+import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 import { consoleNeeds, attentionFacts } from "./attention.ts";
@@ -169,6 +169,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       ]);
       if (!active) return;
       const [status, budget, tasks, queue, ready] = replies;
+      captureConsoleSelection(state);
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (status.status && status.ok !== false) {
@@ -223,7 +224,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
       // A late reply is for the panel and row it was asked for: once the person has moved on, it would show one item
       // while the keys act on another, so it is dropped.
-      if (!active || state.mode !== "panels" || state.panel !== action.panel || state.help || state.detail !== undefined || String(panelRows(state)[state.selection]?.id) !== action.id) return;
+      if (!active || state.mode !== "panels" || state.panel !== action.panel || state.help || state.detail !== undefined || String(selectedPanelRow(state)?.id) !== action.id) return;
       state.detailOffset = 0;
       state.detail = result.ok === false ? String(result.error) : action.panel === 3 ? labeled(String(result.text)) : result.delivery ?? "delivery not found";
       draw(); return;

@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderBoard, renderStatus } from "../src/cli/output.ts";
@@ -497,7 +497,7 @@ describe("console layout (#213)", () => {
     const hint = () => { const line = renderConsole(s, 80, 24, T).at(-1)!; hints.push(line); return line; };
     s.panel = 1; expect(hint()).toBe("p pause  r resume  m mode  j/k  Enter view  ? keys  : cmd  Tab stream  q quit");
     s.panel = 2; expect(hint()).toBe("a allow  d deny  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
-    s.panel = 3; expect(hint()).toStartWith("a assign  r review  j/k move");
+    s.panel = 3; expect(hint()).toStartWith("a assign  u unassign  j/k move");
     s.panel = 4; expect(hint()).toStartWith("r resolve  j/k move");
     s.panel = 5; expect(hint()).toBe("f peer  g kind  ? keys  : command  Tab stream  q quit");
     s.panel = 2; s.detail = "x"; expect(hint()).toBe("a allow  d deny  j/k scroll  Esc back  ? keys  q quit");
@@ -787,18 +787,64 @@ describe("console layout (#213)", () => {
   });
   test("with a detail open, prefill keys act on the item it shows, not on what a refresh moved under the selection", () => {
     const s = state(true); s.panel = 3;
-    s.tasks = [3, 9].map(id => ({ id, title: `task ${id}`, state: "proposed", class: "implement" }));
-    s.detail = { id: 3, title: "task 3" }; // as the show reply sets it
+    s.tasks = [3, 9].map(id => ({ id, title: `task ${id}`, state: "proposed", class: "implement", flowRevision: 7 }));
+    s.detail = { id: 3, title: "task 3", state: "proposed", flowRevision: 7 }; // as the show reply sets it
     s.tasks.reverse(); // a refresh reorders: #9 now sits at the selected index
-    expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 3 ");
+    expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 3 --revision 7 ");
+    s.detail.state = "in_review";
     expect(reduceConsole(s, "r", NOW).state.input).toBe("review 3 ");
     s.detail = "task_show failed"; // a message names no item
     expect(reduceConsole(s, "a", NOW).state.editing).toBe(false);
-    s.detail = undefined; expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 9 "); // without a detail, the row shown
+    s.detail = undefined; expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 9 --revision 7 "); // without a detail, the row shown
     const peers = state(true); peers.peers = { kimi: { state: "idle" }, pi: { state: "idle" } };
     const opened = reduceConsole(peers, "\r", NOW).state;
     opened.peers = { pi: { state: "idle" }, kimi: { state: "idle" } };
     expect(reduceConsole(opened, "p", NOW).state.input).toBe("pause kimi");
+  });
+  test("task and queue row actions are state-aware and bind the displayed revision", () => {
+    const command = (value: any) => { const c = value.confirm; if (c?.type !== "command") throw new Error("missing command confirmation"); return c; };
+    let s = state(true); s.panel = 3;
+    s.tasks = [{ id: 3, title: "waiting", state: "proposed", class: "implement", owner: "codex", reviewer: "claude", deps: [1], ready: false, flowRevision: 4 }];
+    let next = reduceConsole(s, "a", NOW).state;
+    expect(next.input).toBe("task assign 3 --revision 4 ");
+    next.input += "kimi";
+    const assigned = reduceConsole(next, "\r", NOW).state;
+    expect(command(assigned).args).toEqual(["task", "assign", "3", "--revision", "4", "kimi"]);
+    expect(command(assigned).prompt).toContain("reservation until dependencies approve");
+    const edited = reduceConsole({ ...assigned, confirm: undefined, editing: true, input: "task assign 9 --revision 4 kimi", actionLock: next.actionLock }, "\r", NOW).state;
+    expect(edited.notice).toContain("id and revision cannot be edited");
+
+    s = state(true); s.panel = 3;
+    s.tasks = [{ id: 4, title: "review", state: "in_review", class: "implement", owner: "codex", reviewer: "claude", flowRevision: 8 }];
+    expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 4 --role reviewer --revision 8 ");
+    const unassign = reduceConsole(s, "u", NOW).state;
+    expect(unassign.input).toBe("task unassign 4 --role reviewer --revision 8");
+    expect(command(reduceConsole(unassign, "\r", NOW).state).prompt).toContain("unassign reviewer claude");
+
+    s = state(true); s.panel = 4;
+    s.queue = [{ id: "q1", peer: "codex", state: "queued", revision: 2 }];
+    expect(reduceConsole(s, "r", NOW).state.input).toBe("queue resolve q1 --action discard --revision 2 --reason ");
+    s = reduceConsole(s, "r", NOW).state;
+    s.input = 'queue resolve q1 --action completed --revision 2 --reason "observed"';
+    expect(command(reduceConsole(s, "\r", NOW).state).prompt).toContain("asserts external effects");
+    s = state(true); s.panel = 4;
+    s.queue = [{ id: "q2", peer: "codex", state: "needs_review", revision: 3 }];
+    expect(reduceConsole(s, "r", NOW).state.input).toBe("queue resolve q2 --action retry --revision 3 --reason ");
+
+    s = state(true); s.panel = 3; s.tasks = [{ id: 1, state: "proposed", owner: "codex" }];
+    expect(reduceConsole(s, "a", NOW).state.notice).toContain("upgrade the hub");
+  });
+  test("Tasks selection follows its id across refreshes and never jumps to a replacement", () => {
+    const s = state(true); s.panel = 3;
+    s.tasks = [1, 2, 3].map(id => ({ id, title: `task ${id}`, state: "proposed", class: "implement", flowRevision: 1 }));
+    let moved = reduceConsole(s, "j", NOW).state;
+    moved = reduceConsole(moved, "j", NOW).state;
+    expect(selectedPanelRow(moved).id).toBe(3);
+    moved.tasks.reverse();
+    expect(selectedPanelRow(moved).id).toBe(3);
+    moved.tasks = moved.tasks.filter(task => task.id !== 3);
+    expect(selectedPanelRow(moved)).toBeUndefined();
+    expect(reduceConsole(moved, "a", NOW).state.editing).toBe(false);
   });
   test("nothing typed or pasted under the key table reaches the command line", async () => {
     const s = state(true); s.help = true; s.editing = true; s.input = "status";
