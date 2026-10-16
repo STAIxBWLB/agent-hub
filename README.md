@@ -2,8 +2,8 @@
 
 A hub on one developer's machine where coding agents work as a team: Claude Code,
 Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code and Jcode optional)
-share one message bus, one task board and one memory per project, each attached
-through its own native interface.
+share a message bus and a task board per project and one memory on the machine,
+each attached through its own native interface.
 
 Status: 0.12.29, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
@@ -20,15 +20,19 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   changed.
 - **Shared memory.** Decisions, contracts, fails and findings go to the hub's own
   store (short- and long-term tiers, a typed graph, git sync between machines),
-  next to optional claude-mem capture. Agents get it as a recall preface, as
-  briefs on a task, and through read tools.
+  next to optional claude-mem capture. Entries belong to their project unless
+  saved as shared, which makes them readable from every project on the machine.
+  Agents get memory as a recall preface, as briefs on a task, and through read
+  tools.
 - **Local and remote models.** Pi and the local worker run on DGX or local MLX
   through an authenticated relay; Switchyard routes model calls by task in front
   of a self-hosted OmniRoute gateway. Tasks flagged as PII stay on the on-prem
   worker.
-- **Guard rails.** The local worker runs in a sandbox, risky tool calls wait for
-  the person's approval, budgets pause a peer before it runs out of quota, and
-  recovery never replays an effect whose outcome is unknown.
+- **Guard rails.** The local worker and Pi run in a sandbox, and by default their
+  writes and shell commands wait for the person's approval; a permission mode
+  the person picks (`ask-when-needed`, `never-ask`) skips some or all prompts.
+  Budgets pause a peer before it runs out of quota, and recovery never replays
+  an effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per
   repository or worktree with a machine-wide view, and `ahub upgrade` that carries
   running sessions across versions.
