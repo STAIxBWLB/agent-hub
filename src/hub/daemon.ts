@@ -99,7 +99,7 @@ import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type Contex
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
 import { looksSecret, DEFAULT_LEASE_MS, extractNodes, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
-import { AGENT_MEM_VERSION, openProfileMemory, openProfileCandidates, type MemoryProfileBinding } from "./memory-profile.ts";
+import { AGENT_MEM_VERSION, openProfileMemory, openProfileCandidates, type MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
 import { memoryProjectKey } from "@staix/agent-mem";
@@ -421,6 +421,8 @@ export interface DaemonOptions {
   taskSweepNow?: () => number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
   researchGraceMs?: number;
+  /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
+  memorySync?: typeof syncMemory;
 }
 
 interface Client {
@@ -847,10 +849,10 @@ export async function startDaemon(opts: DaemonOptions) {
     catch { if (!memoryProblem) memoryUnavailable("memory profile unavailable; inspect the selector and generation, then restart the hub"); }
   }
   const memoryProfileStatus = (person = false) => {
-    const value = memoryBinding?.status(memoryStore) ?? {
+    const value = memoryBinding?.status(memoryStore) ?? ({
       state: config.memory.native ? "unavailable" : "disabled", home: memoryHome(), agentMemVersion: AGENT_MEM_VERSION,
       ...(memoryProblem ? { error: memoryProblem } : {}),
-    };
+    } satisfies UnboundMemoryProfileReceipt);
     if (person) return value;
     // Skip counts, the selector receipt and the machine's home are person-local diagnostics.
     const { home: _home, selectorRevision: _selector, skippedRows: _skipped, ...publicStatus } = value as typeof value & { selectorRevision?: string; skippedRows?: number };
@@ -936,7 +938,7 @@ export async function startDaemon(opts: DaemonOptions) {
     syncRun = (async () => {
       try {
         checkMemory();
-        const r = await syncMemory(memoryStore!, { signal: syncStop.signal });
+        const r = await (opts.memorySync ?? syncMemory)(memoryStore!, { signal: syncStop.signal });
         if (!r.ok && !/^(no sync remote|stopped)/.test(r.error ?? "")) log(`hub memory sync failed: ${r.error}`);
         else if (r.warning) log(`hub memory sync: ${r.warning}`);
       } catch { /* A stale binding disables native memory, never the bus. */ }
@@ -2113,7 +2115,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const writeStatus = () => {
     try {
       const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
-      writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify({ ...status(), memoryProfile: memoryProfileStatus(true), ...(pidSignature ? { pidSignature } : {}) }, null, 2)}\n`);
+      writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify({ ...status(), ...(pidSignature ? { pidSignature } : {}) }, null, 2)}\n`);
       renameSync(`${file}.${instanceId}.tmp`, file);
     } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
   };

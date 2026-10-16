@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CandidateStore, MemoryStore, memoryProjectKey, migrate, realPath } from "@staix/agent-mem";
+import { CandidateStore, MemoryStore, memoryProjectKey, migrate, realPath, type SyncResult } from "@staix/agent-mem";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, startDaemon, type DaemonOptions, type HubConfig } from "../src/hub/daemon.ts";
 import { MemoryTelemetry } from "../src/hub/memory-candidates.ts";
 
 // Real daemon/control transports and the installed package, with synthetic homes only.
@@ -37,11 +37,11 @@ function legacyRows(memoryDir: string): Record<string, string> {
   }));
 }
 
-async function hub(f: ReturnType<typeof fixture>) {
+async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["memory"]> = {}, options: Partial<DaemonOptions> = {}) {
   const daemon = await startDaemon({ cwd: f.cwd, stateDir: f.stateDir, projectId: "p-profile", instanceId: "i-profile",
-    controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...options,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
-      memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: true, sync_interval_min: 0 } } });
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: true, sync_interval_min: 0, ...memory } } });
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(f.stateDir, { role: "console" }); cleanup.push(() => person.close());
   const peer = await ControlClient.connect(f.stateDir, { role: "peer", peer: "worker" }); cleanup.push(() => peer.close());
@@ -183,4 +183,67 @@ test("telemetry checks profile entry before reading and rechecks before counter 
   changesDuringProjection.record(`mem:${id}`, { deliveryId: "changed-before-counter" }, "cited");
   expect(reads).toBe(1); expect(current).toBe(false);
   expect(sidecar.counters(f.project)).toEqual([]);
+});
+
+
+test("disk status keeps the reduced memory receipt while authenticated console retains full binding", async () => {
+  const f = fixture(), legacy = new MemoryStore({ profile: "shared-v1" }); legacy.close();
+  await migrate({ memoryDir: f.memoryDir, mode: "apply", generation: G, authorizedPerson: true, tty: true });
+  const h = await hub(f), full = await h.status();
+  expect(full).toMatchObject({ home: f.memoryDir, generation: G, profile: "generation", state: "ready", agentMemVersion: "0.3.0" });
+  expect(full.selectorRevision).toMatch(/^[a-f0-9]{64}$/);
+  expect(typeof full.skippedRows).toBe("number");
+  const disk = JSON.parse(readFileSync(join(f.stateDir, "status.json"), "utf8")) as { memoryProfile: Record<string, unknown> };
+  expect(disk.memoryProfile).toMatchObject({ profile: "generation", generation: G.slice(0, 8), state: "ready", agentMemVersion: "0.3.0" });
+  for (const field of ["home", "selectorRevision", "skippedRows"]) expect(disk.memoryProfile).not.toHaveProperty(field);
+  const rendered = JSON.stringify(disk.memoryProfile);
+  expect(rendered).not.toContain(f.memoryDir);
+  expect(rendered).not.toContain(G);
+  expect(rendered).not.toContain(full.selectorRevision);
+});
+
+for (const mode of ["disabled", "unavailable"] as const) {
+  test(`authenticated console reports an unbound ${mode} receipt without a profile`, async () => {
+    const f = fixture();
+    if (mode === "unavailable") {
+      mkdirSync(f.memoryDir, { recursive: true });
+      writeFileSync(join(f.memoryDir, "profile.json"), "{invalid selector");
+    }
+    const h = await hub(f, { native: mode !== "disabled" });
+    const unbound = await h.status();
+    expect(unbound).toMatchObject({ state: mode, home: f.memoryDir, agentMemVersion: "0.3.0" });
+    expect(unbound).not.toHaveProperty("profile");
+    expect(unbound).not.toHaveProperty("generation");
+    expect(unbound).not.toHaveProperty("selectorRevision");
+    expect(unbound).not.toHaveProperty("skippedRows");
+  });
+}
+
+test("scheduled memory sync checks the selected profile before invoking the sync dependency", async () => {
+  const f = fixture();
+  let scheduled: (() => void) | undefined;
+  const originalInterval = globalThis.setInterval;
+  let resolveSync!: (value: SyncResult) => void;
+  const completed = new Promise<SyncResult>(resolve => { resolveSync = resolve; });
+  let calls = 0;
+  globalThis.setInterval = ((handler: Parameters<typeof setInterval>[0], milliseconds?: number, ...args: unknown[]) => {
+    if (milliseconds === 7 * 60_000 && typeof handler === "function") scheduled = () => { Reflect.apply(handler, undefined, args); };
+    return Reflect.apply(originalInterval, globalThis, [handler, milliseconds, ...args]);
+  }) as typeof setInterval;
+  let h: Awaited<ReturnType<typeof hub>>;
+  try {
+    h = await hub(f, { sync_interval_min: 7 }, { memorySync: () => { calls++; return completed; } });
+  } finally { globalThis.setInterval = originalInterval; }
+  expect(scheduled).toBeDefined();
+  scheduled!();
+  expect(calls).toBe(1);
+  resolveSync({ ok: true, pushed: false, entries: 0 });
+  // syncNow registered its await before this await, so its finally clears syncRun
+  // before the test fires the same scheduled callback again.
+  await completed;
+  writeFileSync(join(f.memoryDir, "profile.json"), "{changed selector");
+  scheduled!();
+  expect(calls).toBe(1);
+  expect(await h.status()).toMatchObject({ state: "unavailable" });
+  expect((await h.task("hub_task_list", {})).ok).toBe(true);
 });

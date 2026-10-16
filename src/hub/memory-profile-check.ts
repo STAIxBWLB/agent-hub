@@ -5,6 +5,7 @@ import { ControlClient, readControl, type ControlDescriptor } from "./control-cl
 import { canonicalPath, hubHome, realPath } from "./project.ts";
 import { processLiveness, type Liveness } from "../pi/process-signature.ts";
 import type { Project } from "./registry.ts";
+import type { UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 
 export interface ExpectedMemoryProfile {
   home: string;
@@ -14,9 +15,11 @@ export interface ExpectedMemoryProfile {
 }
 export interface RunningMemoryProfile extends ExpectedMemoryProfile {
   agentMemVersion: string;
-  state: "ready" | "disabled" | "stale" | "unavailable";
+  state: "ready" | "stale" | "unavailable";
   skippedRows?: number;
 }
+export type UnboundMemoryProfile = UnboundMemoryProfileReceipt;
+export type ReportedMemoryProfile = RunningMemoryProfile | UnboundMemoryProfile;
 export interface ProfileEvidence {
   project: Project;
   liveness: Liveness;
@@ -32,9 +35,10 @@ export interface CheckedMemoryDaemon {
   instanceId: string | null;
   hubVersion: string | null;
   agentMemVersion: string | null;
-  memoryProfile: RunningMemoryProfile | null;
+  memoryProfile: ReportedMemoryProfile | null;
   scope: "same-home" | "different-home" | "unknown";
   ready: boolean;
+  quiesced?: true;
   reason?: string;
 }
 export interface MemoryProfileCheck {
@@ -51,9 +55,13 @@ const generationCapable = (version: string): boolean => {
   const parts = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(version);
   return !!parts && (Number(parts[1]) > 0 || Number(parts[2]) >= 3);
 };
-function receipt(value: unknown): RunningMemoryProfile | undefined {
-  if (!object(value) || typeof value.home !== "string" || !value.home || value.home.length > 4096 || !["shared-v1", "generation"].includes(String(value.profile))
-    || !["ready", "disabled", "stale", "unavailable"].includes(String(value.state)) || !revision(value.selectorRevision) || typeof value.agentMemVersion !== "string"
+function receipt(value: unknown): ReportedMemoryProfile | undefined {
+  if (!object(value) || typeof value.home !== "string" || !value.home || value.home.length > 4096 || typeof value.agentMemVersion !== "string") return undefined;
+  if (!Object.hasOwn(value, "profile") && ["disabled", "unavailable"].includes(String(value.state))) {
+    if (["generation", "selectorRevision", "skippedRows"].some(field => Object.hasOwn(value, field))) return undefined;
+    return { home: value.home, agentMemVersion: value.agentMemVersion, state: value.state as UnboundMemoryProfile["state"] };
+  }
+  if (!["shared-v1", "generation"].includes(String(value.profile)) || !["ready", "stale", "unavailable"].includes(String(value.state)) || !revision(value.selectorRevision)
     || value.profile === "generation" && (typeof value.generation !== "string" || !/^[a-f0-9]{32}$/.test(value.generation))
     || value.profile === "shared-v1" && value.generation !== undefined
     || value.skippedRows !== undefined && (!Number.isSafeInteger(value.skippedRows) || Number(value.skippedRows) < 0)) return undefined;
@@ -82,6 +90,9 @@ export function evaluateMemoryProfileCheck(expected: ExpectedMemoryProfile, evid
     if (item.canonicalHome !== expected.home) { result.scope = "different-home"; result.reason = "different canonical memory home"; daemons.push(result); continue; }
     result.scope = "same-home";
     if (!result.hubVersion || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(result.hubVersion) || !generationCapable(bound.agentMemVersion)) { reject("running memory library does not confirm generation support"); continue; }
+    if (bound.profile === undefined) {
+      result.ready = true; result.quiesced = true; result.reason = `memory handle ${bound.state}; quiesced`; daemons.push(result); continue;
+    }
     if (bound.state !== "ready") { reject("running memory binding is not ready"); continue; }
     if (bound.profile !== expected.profile || bound.generation !== expected.generation || bound.selectorRevision !== expected.selectorRevision) { reject("running memory binding differs from the selected profile"); continue; }
     result.ready = true; daemons.push(result);
@@ -154,6 +165,6 @@ export function formatMemoryProfileCheck(result: MemoryProfileCheck): string {
   const lines = [`memory profile-check: ${result.ready ? "ready" : "not ready"}`, `home: ${result.expected.home}`, `selected: ${result.expected.profile}${result.expected.generation ? ` ${result.expected.generation}` : ""}`];
   if (result.registryHome) lines.push(`registry inventory: ${result.registryHome}`, "scope: this registry only; check other custom registries separately before migration");
   if (result.reason) lines.push(result.reason);
-  for (const row of result.daemons) lines.push(`${row.projectId} pid:${row.pid ?? "unknown"} hub:${row.hubVersion ?? "unknown"} agent-mem:${row.agentMemVersion ?? "unknown"} ${row.memoryProfile?.profile ?? "unknown"}${row.memoryProfile?.generation ? ` ${row.memoryProfile.generation}` : ""}: ${row.ready ? "ready" : row.reason ?? "not ready"}`);
+  for (const row of result.daemons) lines.push(`${row.projectId} pid:${row.pid ?? "unknown"} hub:${row.hubVersion ?? "unknown"} agent-mem:${row.agentMemVersion ?? "unknown"} ${row.quiesced ? "unbound" : row.memoryProfile?.profile ?? "unknown"}${row.memoryProfile?.generation ? ` ${row.memoryProfile.generation}` : ""}: ${row.quiesced ? row.reason : row.ready ? "ready" : row.reason ?? "not ready"}`);
   return lines.join("\n");
 }

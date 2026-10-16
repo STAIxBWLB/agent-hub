@@ -37,7 +37,20 @@ export const AGENT_MEM_VERSION = loadedAgentMem.version;
 function assertLoadedAgentMem(): void {
   if (!loadedAgentMem.valid) throw new Error("cannot attest loaded agent-mem version against the exact dependency pin");
 }
-const UNAVAILABLE = "memory profile unavailable; restart the hub";
+export const MEMORY_PROFILE_UNAVAILABLE = "memory profile unavailable; inspect the selector and generation state, run ahub memory profile-check; use amem migrate --deactivate only to stop using the selected generation";
+const UNAVAILABLE = MEMORY_PROFILE_UNAVAILABLE;
+
+/** No handle was opened; distinct from an unavailable, still-bound handle. */
+export interface UnboundMemoryProfileReceipt {
+  state: "disabled" | "unavailable";
+  home: string;
+  agentMemVersion: string;
+  error?: string;
+  profile?: never;
+  generation?: never;
+  selectorRevision?: never;
+  skippedRows?: never;
+}
 
 export interface MemoryProfileReceipt {
   profile: BoundProfile["kind"];

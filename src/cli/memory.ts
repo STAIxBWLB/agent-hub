@@ -7,7 +7,7 @@ import { memoryProjectKey } from "@staix/agent-mem";
 import { mentionsPrivatePath, promotionScreen, withoutPii } from "../hub/memory-policy.ts";
 import { currentRouting, detectSignals } from "../hub/routing.ts";
 import { loadConfig } from "../hub/daemon.ts";
-import { bindProfileMemory, openProfileMemory, type MemoryProfileReceipt } from "../hub/memory-profile.ts";
+import { bindProfileMemory, openProfileMemory, MEMORY_PROFILE_UNAVAILABLE, type MemoryProfileReceipt } from "../hub/memory-profile.ts";
 
 export { GOAL_USAGE } from "@staix/agent-mem";
 export const MEMORY_USAGE = `${CORE_MEMORY_USAGE} | decay [--days N] [--json] | profile-check [--json]`;
@@ -19,11 +19,12 @@ const loadConfigSafe = (cwd: string) => { try { return loadConfig(cwd); } catch 
 
 /** Bind each command at entry; the CLI closes default opens and injected stores remain caller-owned. */
 function commandStores(provided?: MemoryStore, options: StoreOptions = {}) {
-  return { ...(provided ? bindProfileMemory(provided) : openProfileMemory(options)), owned: !provided };
+  try { return { ...(provided ? bindProfileMemory(provided) : openProfileMemory(options)), owned: !provided }; }
+  catch { throw new Error(MEMORY_PROFILE_UNAVAILABLE); }
 }
 function profileOutput(text: string, json: boolean, profile: MemoryProfileReceipt | undefined, person: boolean): string {
   if (!profile) return text;
-  if (profile.state !== "ready") throw new Error("memory profile unavailable; restart the hub");
+  if (profile.state !== "ready") throw new Error(MEMORY_PROFILE_UNAVAILABLE);
   if (json) return text;
   return `${text}\nmemory profile: ${profile.profile}${profile.generation ? ` ${person ? profile.generation : profile.generation.slice(0, 8)}` : ""}${person && profile.skippedRows ? `; skipped malformed legacy rows: ${profile.skippedRows}` : ""}`;
 }

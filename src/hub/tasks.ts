@@ -2460,7 +2460,8 @@ export class Tasks {
    */
   private goalFor(by: PeerId, ref: unknown): GoalView {
     if (!this.d.store) throw new PreEffectToolRefusal("goal: hub memory is off for this project");
-    this.d.memoryCheck?.();
+    try { this.d.memoryCheck?.(); }
+    catch { throw new PreEffectToolRefusal("goal: memory profile unavailable; inspect the selector and generation state before linking a long-term task"); }
     const g = typeof ref === "string" && ref.trim() ? this.d.store.store.goalOf(ref.trim().replace(/^goal:/, "")) : undefined;
     if (!g) throw new PreEffectToolRefusal(`goal: no long-term task ${JSON.stringify(ref).slice(0, 40)} (ahub goal list shows them)`);
     if (by !== USER && g.project !== this.d.store.project) throw new PreEffectToolRefusal("goal: that long-term task belongs to another project; linking across projects is a person's");

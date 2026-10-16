@@ -85,6 +85,7 @@ test("running readiness uses an authenticated direct status reply and refuses st
   const signature = processSignature(process.pid); expect(signature).toBeDefined();
   const project = { id: "p_live", root, stateDir: state, basePort: 4600, pid: process.pid, instanceId: "live-instance", pidSignature: signature! };
   let statusPid = process.pid;
+  let memoryProfile: unknown = { ...expected, state: "ready", agentMemVersion: "0.3.0", skippedRows: 0 };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(request, server) { if (server.upgrade(request)) return; return new Response("not websocket", { status: 400 }); },
     websocket: { message(socket, data) {
@@ -92,13 +93,16 @@ test("running readiness uses an authenticated direct status reply and refuses st
       if (message.t === "hello") {
         if (message.token !== "fixture-token") { socket.close(4401, "refused"); return; }
         socket.send(JSON.stringify({ t: "welcome", rid: message.rid, projectId: project.id, instanceId: project.instanceId, cwd: root }));
-      } else if (message.t === "status") socket.send(JSON.stringify({ t: "status", rid: message.rid, status: { pid: statusPid, projectId: project.id, instanceId: project.instanceId, cwd: root, version: "0.12.29", memoryProfile: { ...expected, state: "ready", agentMemVersion: "0.3.0", skippedRows: 0 } } }));
+      } else if (message.t === "status") socket.send(JSON.stringify({ t: "status", rid: message.rid, status: { pid: statusPid, projectId: project.id, instanceId: project.instanceId, cwd: root, version: "0.12.29", memoryProfile } }));
     } },
   });
   writeFileSync(join(state, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, pid: project.pid, pidSignature: signature, projectId: project.id, instanceId: project.instanceId, cwd: root }));
   writeFileSync(join(state, "control-token"), "fixture-token");
   try {
     expect(evaluateMemoryProfileCheck(expected, [await probeMemoryProfile(project)]).ready).toBe(true);
+    memoryProfile = { home: expected.home, state: "disabled", agentMemVersion: "0.3.0" };
+    const quiesced = evaluateMemoryProfileCheck(expected, [await probeMemoryProfile(project)]);
+    expect(quiesced.ready).toBe(true); expect(quiesced.daemons[0]?.quiesced).toBe(true);
     statusPid++;
     expect(evaluateMemoryProfileCheck(expected, [await probeMemoryProfile(project)]).ready).toBe(false);
     writeFileSync(join(state, "control-token"), "stale-token");
@@ -148,4 +152,31 @@ test("unreadable registry and ancestor permissions block readiness while existin
   expect(readProfileCheckProjects(alias)).toEqual([]);
   expect((await checkMemoryProfiles(expected, { registryHome: alias })).ready).toBe(true);
   expect(readFileSync(file)).toEqual(bytes);
+});
+
+
+for (const state of ["disabled", "unavailable"] as const) test(`authenticated same-home daemon without a memory handle is quiesced: ${state}`, () => {
+  const value = evidence();
+  (value.status as Record<string, unknown>).memoryProfile = { home: expected.home, state, agentMemVersion: "0.3.0", error: "neutral unavailable reason" };
+  const result = evaluateMemoryProfileCheck(expected, [value]);
+  expect(result.ready).toBe(true);
+  expect(result.daemons[0]).toMatchObject({ ready: true, quiesced: true, scope: "same-home", memoryProfile: { state } });
+  expect(result.daemons[0]?.memoryProfile?.profile).toBeUndefined();
+  expect(formatMemoryProfileCheck(result)).toContain(`unbound: memory handle ${state}; quiesced`);
+  expect(JSON.stringify(result)).not.toContain("neutral unavailable reason");
+});
+
+test("unbound receipts still require capable version and authenticated known home, and bound unavailable remains blocked", () => {
+  const valid = { home: expected.home, state: "unavailable", agentMemVersion: "0.3.0" };
+  for (const receipt of [{ ...valid, agentMemVersion: "0.2.0" }, { ...valid, agentMemVersion: "unknown" }, { ...valid, home: undefined }, { ...valid, state: "ready" }, { ...valid, generation: expected.generation }, { ...valid, selectorRevision: expected.selectorRevision }, { ...valid, skippedRows: 0 }]) {
+    const value = evidence(); (value.status as Record<string, unknown>).memoryProfile = receipt;
+    expect(evaluateMemoryProfileCheck(expected, [value]).ready).toBe(false);
+  }
+  const unknownHome = evidence({ canonicalHome: undefined }); (unknownHome.status as Record<string, unknown>).memoryProfile = valid;
+  expect(evaluateMemoryProfileCheck(expected, [unknownHome]).ready).toBe(false);
+  const unsigned = evidence(); unsigned.project.pidSignature = undefined; (unsigned.status as Record<string, unknown>).memoryProfile = valid;
+  expect(evaluateMemoryProfileCheck(expected, [unsigned]).ready).toBe(false);
+  const bound = evidence(); ((bound.status as Record<string, unknown>).memoryProfile as Record<string, unknown>).state = "unavailable";
+  const blocked = evaluateMemoryProfileCheck(expected, [bound]);
+  expect(blocked.ready).toBe(false); expect(blocked.daemons[0]?.quiesced).toBeUndefined();
 });

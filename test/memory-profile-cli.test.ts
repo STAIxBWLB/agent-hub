@@ -105,3 +105,17 @@ test("direct memory wrapper defaults marked agent sessions to the reduced profil
     expect(text).toContain(`generation ${G.slice(0, 8)}`); expect(text).not.toContain(G);
   } finally { if (previous === undefined) delete process.env.AGENTHUB_PEER_ID; else process.env.AGENTHUB_PEER_ID = previous; }
 });
+
+
+test("standalone memory and goal refusals explain selector inspection and explicit deactivation rather than hub restart", async () => {
+  const f = fixture(); await selectGeneration(f.home, f.memoryDir);
+  for (const command of [memoryCommand, goalCommand]) {
+    let message = "";
+    try { await command(["list"], f.cwd, { store: f.store, person: true }); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toContain("selector and generation state");
+    expect(message).toContain("ahub memory profile-check");
+    expect(message).toContain("amem migrate --deactivate");
+    expect(message).not.toContain("restart the hub");
+  }
+});

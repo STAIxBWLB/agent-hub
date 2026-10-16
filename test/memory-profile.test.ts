@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { MemoryStore, candidateTargetRevision, migrate } from "@staix/agent-mem";
 import { realPath } from "../src/hub/project.ts";
 import {
-  AGENT_MEM_VERSION, assertAgentMemVersion, bindProfileMemory, MemoryProfileBinding, openProfileCandidates, openProfileMemory, selectedMemoryProfile,
+  AGENT_MEM_VERSION, MEMORY_PROFILE_UNAVAILABLE, assertAgentMemVersion, bindProfileMemory, MemoryProfileBinding, openProfileCandidates, openProfileMemory, selectedMemoryProfile,
 } from "../src/hub/memory-profile.ts";
 
 const homes: string[] = [];
@@ -39,12 +39,12 @@ test("selector invalidation latches explicit entry fences and raw store close re
   const id = store.note(note), retainedGet = store.get;
   const selector = join(home, "memory", "profile.json");
   writeFileSync(selector, "{invalid");
-  expect(() => binding.run(() => retainedGet.call(store, id, "agent-hub"))).toThrow("restart the hub");
+  expect(() => binding.run(() => retainedGet.call(store, id, "agent-hub"))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
   rmSync(selector);
-  expect(() => binding.run(() => store.note({ ...note, text: "must not append" }))).toThrow("restart the hub");
-  expect(() => binding.assertCurrent()).toThrow("restart the hub");
-  expect(binding.status(store)).toMatchObject({ state: "unavailable", error: "memory profile unavailable; restart the hub" });
-  expect(callbacks).toEqual(["memory profile unavailable; restart the hub"]);
+  expect(() => binding.run(() => store.note({ ...note, text: "must not append" }))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
+  expect(() => binding.assertCurrent()).toThrow(MEMORY_PROFILE_UNAVAILABLE);
+  expect(binding.status(store)).toMatchObject({ state: "unavailable", error: MEMORY_PROFILE_UNAVAILABLE });
+  expect(callbacks).toEqual([MEMORY_PROFILE_UNAVAILABLE]);
   expect(() => store.close()).not.toThrow();
 });
 
@@ -58,7 +58,7 @@ test("candidate storage remains at root M when the selected profile is a generat
   const before = openProfileCandidates(first.binding, { now: () => NOW });
   const candidateId = before.put({ project: "agent-hub", kind: "decay", target: { id, revision }, reason: "synthetic review" }, "public"); before.close();
   await migrate({ memoryDir: join(home, "memory"), mode: "apply", generation: G, authorizedPerson: true, tty: true, now: () => NOW });
-  expect(() => first.binding.assertCurrent()).toThrow("restart the hub");
+  expect(() => first.binding.assertCurrent()).toThrow(MEMORY_PROFILE_UNAVAILABLE);
   const selected = openProfileMemory({ home, now: () => NOW, profile: "shared-v1" });
   expect(selected.store.profile).toMatchObject({ kind: "generation", generation: G });
   expect(selectedMemoryProfile({ home, profile: "shared-v1" })).toMatchObject({ profile: "generation", generation: G });
@@ -68,12 +68,12 @@ test("candidate storage remains at root M when the selected profile is a generat
     expect(candidates.dir).toBe(join(home, "memory"));
     expect(candidates.get(candidateId, "agent-hub")?.id).toBe(candidateId);
     expect(existsSync(join(selected.store.dir, "candidates.db"))).toBe(false);
-    expect(() => openProfileCandidates(selected.binding, { home: temporary() })).toThrow("restart the hub");
+    expect(() => openProfileCandidates(selected.binding, { home: temporary() })).toThrow(MEMORY_PROFILE_UNAVAILABLE);
     const seal = join(selected.store.dir, "generation-seal.json"), bytes = readFileSync(seal, "utf8");
     writeFileSync(seal, "{invalid");
-    expect(() => selected.binding.run(() => candidates.list({ project: "agent-hub" }))).toThrow("restart the hub");
+    expect(() => selected.binding.run(() => candidates.list({ project: "agent-hub" }))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
     writeFileSync(seal, bytes);
-    expect(() => selected.binding.run(() => selected.store.get(id, "agent-hub"))).toThrow("restart the hub");
+    expect(() => selected.binding.run(() => selected.store.get(id, "agent-hub"))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
     expect(selected.binding.status(selected.store).state).toBe("unavailable");
   } finally { candidates.close(); selected.store.close(); }
 });
@@ -92,7 +92,7 @@ test("binding an injected store uses its direct canonical home and rejects misma
   raw.close();
   await migrate({ memoryDir: join(home, "memory"), mode: "apply", generation: G, authorizedPerson: true, tty: true, now: () => NOW });
   const override = new MemoryStore({ home, profile: "shared-v1", now: () => NOW });
-  try { expect(() => bindProfileMemory(override)).toThrow("restart the hub"); }
+  try { expect(() => bindProfileMemory(override)).toThrow(MEMORY_PROFILE_UNAVAILABLE); }
   finally { override.close(); }
 });
 
