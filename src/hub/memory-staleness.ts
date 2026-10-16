@@ -30,6 +30,9 @@ export function createStalenessProbe(options: StalenessOptions): (about: readonl
     const target = resolve(root, path), rel = relative(root, target);
     if (!rel || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) return false;
     let current = root;
+    // ponytail: private/deny exclusion assumes a tree not modified during this call. A concurrent ancestor swap
+    // by a process running as you can expose one existence bit and is outside docs/security.md's threat model.
+    // Descriptor-anchored no-follow traversal is needed before supporting adversarial concurrent tree mutation.
     for (const component of rel.split("/")) {
       current = join(current, component);
       if (!remaining || !allowed(current)) return false;

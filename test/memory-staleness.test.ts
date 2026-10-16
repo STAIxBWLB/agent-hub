@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "@staix/agent-mem";
@@ -62,4 +62,18 @@ test("recall, brief, memory show tool and CLI show decorate read-time output wit
     expect((await memoryCommand(["show", id, "--json"], cwd, { store }))).not.toContain("(stale?)");
     expect(store.get(id)!.text).toBe("retained public contract");
   } finally { store.close(); }
+});
+
+
+// A ceiling witness, not the stable-tree C3 guard above: same-user concurrent mutation is out of scope.
+for (const exists of [false, true]) test(`declared same-user swap ceiling exposes the private leaf existence bit (${exists})`, () => {
+  const cwd = fixture(); mkdirSync(join(cwd, "src")); mkdirSync(join(cwd, "private")); const calls: string[] = [];
+  if (exists) writeFileSync(join(cwd, "private/leaf.ts"), "synthetic private fixture");
+  const stale = createStalenessProbe({ cwd, privatePaths: ["private"], probe: path => {
+    calls.push(path); const result = lstatSync(path);
+    if (path === join(cwd, "src")) { renameSync(path, join(cwd, "old-src")); symlinkSync(join(cwd, "private"), path); }
+    return result;
+  } });
+  expect(stale(["path:src/leaf.ts"])).toBe(!exists);
+  expect(calls).toEqual([join(cwd, "src"), join(cwd, "src/leaf.ts")]);
 });

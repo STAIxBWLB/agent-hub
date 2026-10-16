@@ -2942,3 +2942,5 @@ Recovery source preservation retains the exact first-party memory package under 
 ## Amendment: P7 Stage A read-only memory presentation (#412 P7-1)
 
 The exact first-party pin is `@staix/agent-mem` 0.2.0. Agent-hub adds advisory plan-matching live fails to owner briefs and reviewer checklists, optional labeled fail text validated before the 4000-byte cap, person-only decay review, and privacy-filtered bounded read-time staleness markers. The task/PII boundaries remain in Tasks and the daemon. Details and ceilings are in `docs/memory.md`; no new v1 op, stored marker, candidate writer or live-leg claim is introduced.
+
+The P7-1 hint C3 probe gate assumes the tree is not modified during a call: no probe reaches a declared private/denied path in that scope. Concurrent ancestor swaps by a process running as the person are outside the security threat model and may expose one existence bit; this ceiling has a deterministic witness test.
