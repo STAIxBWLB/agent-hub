@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import * as core from "../src/memory/platform.ts";
@@ -14,41 +14,26 @@ const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), "amem-parity-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 
-test("core deny policy matches every hub deny name, segment and extra-policy case", () => {
-  expect(core.DENY_NAMES).toEqual(DENY_NAMES);
-  expect(core.DENY_SEGMENTS).toEqual(DENY_SEGMENTS);
-  const paths = ["src/public.ts", "file.env.md", ".env", ".env.local", "a/.env", "keys/a.pem", "id_rsa.pub", "credentials.json", "auth.json", ".netrc", ".npmrc", ".pypirc", ".maru/secrets/key", ".agenthub/state/hub.db", ".agenthub/archive/a/hub.db", "private/ordinary.txt", "a/.agenthub/stateful/safe.txt", "secrets\\id_ed25519"];
-  for (const extra of [[], ["private/"], ["ordinary"], [""]]) for (const path of paths) expect(core.isDenied(path, extra)).toBe(isDenied(path, extra));
+test("hub deny policy re-exports the exact core function and constants (#412)", () => {
+  expect(isDenied).toBe(core.isDenied);
+  expect(DENY_NAMES).toBe(core.DENY_NAMES);
+  expect(DENY_SEGMENTS).toBe(core.DENY_SEGMENTS);
 });
 
-test("core real paths preserve hub symlink, missing-path and backslash behavior", () => {
-  const dir = temp();
-  mkdirSync(join(dir, "target")); mkdirSync(join(dir, "target", "child"));
-  writeFileSync(join(dir, "target", "child", "한글.txt"), "fixture");
-  mkdirSync(join(dir, "back\\slash")); writeFileSync(join(dir, "back\\slash", "file.txt"), "fixture");
-  symlinkSync("target/child", join(dir, "alias")); symlinkSync("missing", join(dir, "dangling"));
-  for (const path of [dir, join(dir, "alias", "한글.txt"), join(dir, "alias", ".."), join(dir, "back\\slash", "file.txt")]) expect(core.realPath(path)).toBe(realPath(path));
-  for (const path of [join(dir, "missing"), join(dir, "dangling"), join(dir, "back\\slash", "missing")]) {
-    expect(() => realPath(path)).toThrow(); expect(() => core.realPath(path)).toThrow();
-  }
-  for (const path of [dir, join(dir, "alias"), join(dir, "new", "deeper")]) expect(core.canonicalPath(path)).toBe(canonicalPath(path));
+test("hub path resolution re-exports the exact core functions (#412)", () => {
+  expect(realPath).toBe(core.realPath);
+  expect(canonicalPath).toBe(core.canonicalPath);
 });
 
-test("core git argv and environment preserve credential and execution safeguards", () => {
-  for (const credentials of [undefined, false, true]) for (const args of [["status", "--porcelain"], ["-C", "/tmp/한글 path", "rev-parse", "HEAD"], ["show", "--no-ext-diff", "--no-textconv", "HEAD:src/a.ts"]]) expect(core.memoryGitArgv(args, { credentials })).toEqual(hubGitArgv(args, { credentials }));
-  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", GIT_TERMINAL_PROMPT: "1", FIXTURE: "unchanged" };
-  expect(core.memoryGitEnv(env)).toEqual(hubGitEnv(env));
-  expect(env.GIT_TERMINAL_PROMPT).toBe("1");
-  const args = ["--version"], options = { encoding: "utf8" as const, env };
-  const original = hubGitSync(args, options), copy = core.memoryGitSync(args, options);
-  expect(copy.status).toBe(original.status); expect(copy.stdout).toBe(original.stdout); expect(copy.stderr).toBe(original.stderr);
+test("hub git helpers re-export the exact core argv, environment and execution functions (#412)", () => {
+  expect(hubGitArgv).toBe(core.memoryGitArgv);
+  expect(hubGitEnv).toBe(core.memoryGitEnv);
+  expect(hubGitSync).toBe(core.memoryGitSync);
 });
 
-test("core process identity and liveness match hub unknown, matching, reused and unreadable owners", () => {
-  expect(core.processSignature(process.pid)).toBe(processSignature(process.pid));
-  for (const pid of [null, undefined, "1", 0, -1, 0.5, Number.NaN, process.pid]) for (const signature of [undefined, null, "recorded"]) {
-    for (const identity of [() => "recorded", () => "different", () => undefined, () => { throw new Error("unreadable"); }]) expect(core.processLiveness(pid, signature, identity)).toBe(processLiveness(pid, signature, identity));
-  }
+test("Pi process identity re-exports the exact Node-safe core functions (#412)", () => {
+  expect(processSignature).toBe(core.processSignature);
+  expect(processLiveness).toBe(core.processLiveness);
 });
 
 test("core memory home honors AMEM_HOME and preserves historical parent-home canonicalization", () => {
