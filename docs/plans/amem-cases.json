@@ -1,0 +1,482 @@
+[
+  {
+    "id": "T01",
+    "mode": "Truth/lifecycle",
+    "symptom": "Readers with different configured TTLs disagree about expiry.",
+    "resolution": "Persist deadlines in entries/settle/demote ops, instead of deriving with reader configuration.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:140"
+  },
+  {
+    "id": "T02",
+    "mode": "Truth/lifecycle",
+    "symptom": "A late note on an already approved task has no correct lifetime.",
+    "resolution": "Settle old approvals and give late short notes their own clock; approved promotable notes can start long.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-native.test.ts:158; test/memory-store.test.ts:320"
+  },
+  {
+    "id": "T03",
+    "mode": "Truth/lifecycle",
+    "symptom": "An explicit short-horizon note is promoted on approval or loses its own deadline.",
+    "resolution": "Keep explicit short intent and deadline through settlement.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-native.test.ts:190; test/memory-store.test.ts:433"
+  },
+  {
+    "id": "T04",
+    "mode": "Truth/lifecycle",
+    "symptom": "A crash between board approval, settle append and promotion loses settlement effects.",
+    "resolution": "Reconcile approvals at startup and finish logged settlement on later reads.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-native.test.ts:169; test/memory-store.test.ts:140"
+  },
+  {
+    "id": "T05",
+    "mode": "Truth/lifecycle",
+    "symptom": "Demoting a promoted copy exposes a hidden long-lived original; repeated promotion chains drift.",
+    "resolution": "Derive the original/copy chain together for demote/forget operations.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:178; test/memory-store.test.ts:197"
+  },
+  {
+    "id": "T06",
+    "mode": "Truth/lifecycle",
+    "symptom": "A superseded settled source expires or fails to return/promote when its replacement disappears.",
+    "resolution": "Retain promotable source, derive replacement liveness and promote held sources on forget/expiry.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:360; test/memory-store.test.ts:379; test/memory-store.test.ts:391; CM #186471"
+  },
+  {
+    "id": "T07",
+    "mode": "Truth/lifecycle",
+    "symptom": "Promotion changes chronology or drops a replacement relation.",
+    "resolution": "Promotion keeps source date/provenance and supersession.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:415; test/memory-store.test.ts:542"
+  },
+  {
+    "id": "T08",
+    "mode": "Truth/lifecycle",
+    "symptom": "Local or separately written supersessions form a cycle.",
+    "resolution": "Refuse local cycle creation; derive a deterministic broken cycle for split writers.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:458; test/memory-store.test.ts:472; CM #186635"
+  },
+  {
+    "id": "T09",
+    "mode": "Truth/lifecycle",
+    "symptom": "An older embedded supersedes relation clobbers a later explicit operation.",
+    "resolution": "Fold both sources chronologically with deterministic time/id precedence.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:485; CM #186788"
+  },
+  {
+    "id": "T10",
+    "mode": "Truth/lifecycle",
+    "symptom": "Notes on tasks never approved remain forever in the active index.",
+    "resolution": "Persist fixed 180-day backstop; keep append-only history.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:584; docs/memory.md:17"
+  },
+  {
+    "id": "T11",
+    "mode": "Truth/lifecycle",
+    "symptom": "Model-written answers or unconfirmed inferred relations become circular evidence.",
+    "resolution": "Exclude ahub ask answers from import/evidence; keep suggestions non-evidence until a person confirms them.",
+    "status": "guard/design",
+    "source": "PR #356; src/memory/import.ts:68; test/memory-phase3.test.ts:23; test/memory-phase3.test.ts:57"
+  },
+  {
+    "id": "D01",
+    "mode": "Duplicate/identity",
+    "symptom": "One claude-mem observation hashes differently on different checkouts or deny settings.",
+    "resolution": "Text-only import associations stabilize content identity across machines.",
+    "status": "fixed-source",
+    "source": "issue #380; PR #389; test/memory-sync.test.ts:188; CHANGELOG.md:26"
+  },
+  {
+    "id": "D02",
+    "mode": "Duplicate/identity",
+    "symptom": "Legacy duplicate import groups survive sync; naive dedupe can overwrite person replacements.",
+    "resolution": "Read-only dedupe plan plus explicit append-only apply, preserve existing replacements and group forget.",
+    "status": "fixed-source",
+    "source": "issue #380; PR #389; test/memory-dedupe.test.ts:33; test/memory-dedupe.test.ts:61; test/memory-sync.test.ts:218"
+  },
+  {
+    "id": "D03",
+    "mode": "Duplicate/identity",
+    "symptom": "Two machines promoting one demoted entry can create two copies.",
+    "resolution": "Deterministic promotion identity independent of promoting process.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:497"
+  },
+  {
+    "id": "D04",
+    "mode": "Duplicate/identity",
+    "symptom": "A previously given short-term id no longer resolves after promotion or on a remote with only the synced copy.",
+    "resolution": "Resolve original ids through promotedFrom, locally and remotely.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:445; test/memory-store.test.ts:522"
+  },
+  {
+    "id": "R01",
+    "mode": "Retrieval/capture",
+    "symptom": "Native own-platform recall repeats context already injected by hooks.",
+    "resolution": "Claude/Codex get other-platform blocks; other peers get combined recall.",
+    "status": "guard/design",
+    "source": "src/memory/recall.ts:15; test/recall.test.ts:11"
+  },
+  {
+    "id": "R02",
+    "mode": "Retrieval/capture",
+    "symptom": "The first platform consumes a cross-platform recall budget.",
+    "resolution": "Split the budget across returned platform blocks and remove repeated legends.",
+    "status": "regression-covered",
+    "source": "src/memory/recall.ts:78; test/recall.test.ts:70"
+  },
+  {
+    "id": "R03",
+    "mode": "Retrieval/capture",
+    "symptom": "A stopped/changed/hung worker could block or fail a turn.",
+    "resolution": "2-second fail-open client returns undefined and logs the dropped call.",
+    "status": "guard/design",
+    "source": "src/memory/client.ts:20; test/memory.test.ts:14"
+  },
+  {
+    "id": "R04",
+    "mode": "Retrieval/capture",
+    "symptom": "Local-worker summarize was skipped as subagent context.",
+    "resolution": "Omit agentId on summarize; live 13.25.1 observation recorded.",
+    "status": "historical-fixed",
+    "source": "src/memory/capture.ts:74; docs/smoke.md:658"
+  },
+  {
+    "id": "R05",
+    "mode": "Retrieval/capture",
+    "symptom": "Unawaited session-end disappears when the process exits.",
+    "resolution": "Await bounded Capture.end at shutdown.",
+    "status": "historical-fixed",
+    "source": "src/memory/capture.ts:83; docs/smoke.md:658"
+  },
+  {
+    "id": "R06",
+    "mode": "Retrieval/capture",
+    "symptom": "A new fail note reaches only the next session, after a peer retries the rejected approach.",
+    "resolution": "Ride notes on the other peers next delivery, newest ten, without a separate turn.",
+    "status": "historical-fixed",
+    "source": "CHANGELOG.md:427 (previous repository #68); docs/smoke.md:1092"
+  },
+  {
+    "id": "R07",
+    "mode": "Retrieval/capture",
+    "symptom": "A failed delivery returns an old preface over a newer preface.",
+    "resolution": "Merge/restore the preface without overwriting newer memory.",
+    "status": "historical-fixed",
+    "source": "CHANGELOG.md:427 (previous repository #68)"
+  },
+  {
+    "id": "R08",
+    "mode": "Retrieval/capture",
+    "symptom": "Generated guidance treats workflow task/review events as reference-only memory.",
+    "resolution": "Distinguish message kinds; only presence recall is reference.",
+    "status": "historical-fixed",
+    "source": "CHANGELOG.md:526; docs/smoke.md:714 (previous repository #11)"
+  },
+  {
+    "id": "R09",
+    "mode": "Retrieval/capture",
+    "symptom": "Observer returns prose twice instead of observation XML and drops queued batches.",
+    "resolution": "Later observation reports lastSuccess and zero consecutiveFailures; exact dropped data recovery was not established.",
+    "status": "historical-partial",
+    "source": "CM #119860; CM #120247"
+  },
+  {
+    "id": "R10",
+    "mode": "Retrieval/capture",
+    "symptom": "Observer allowance/provider failure stops capture.",
+    "resolution": "Historical OpenRouter switch restored processing; ongoing cost and maintenance conflict remained.",
+    "status": "historical-partial",
+    "source": "CM S5886"
+  },
+  {
+    "id": "R11",
+    "mode": "Retrieval/capture",
+    "symptom": "Plugin registration exists but cache runtime, correct home or recall adapter is absent.",
+    "resolution": "Historical cache dependency installation and later dot memory adapter repair; not a current live-readiness claim.",
+    "status": "historical-partial",
+    "source": "CM S6037; CM #197226; MEMORY.md:177; rollout 01a13bd8, lines 35-37"
+  },
+  {
+    "id": "R12",
+    "mode": "Retrieval/capture",
+    "symptom": "SessionStart context hooks run before the claude-mem launcher compilation completes.",
+    "resolution": "Self-heal completes; identical hook rerun exits zero. Missing-PATH/version-cache hypotheses were disproved.",
+    "status": "historical-fixed",
+    "source": "CM S11000; CM #191224; CM #191227"
+  },
+  {
+    "id": "R13",
+    "mode": "Retrieval/capture",
+    "symptom": "Global LIMIT before project filtering starves target imports; repeated runs replay the same window or skip a recreated lower-id source.",
+    "resolution": "Project-aware SQL and persisted cursor advance handled rows; restart reconsiders skips; reset compares selected-project candidate ids.",
+    "status": "fixed-source",
+    "source": "issue #380; PR #389; test/memory-phase3.test.ts:120; test/memory-phase3.test.ts:147; test/memory-phase3.test.ts:171; commit d5738472"
+  },
+  {
+    "id": "X01",
+    "mode": "Project isolation",
+    "symptom": "Unrelated repositories with the same basename share claude-mem recall/import scope.",
+    "resolution": "Native memory origin key fixes its own namespace; claude-mem basename ambiguity remains. Import comment gives no local cure.",
+    "status": "open-ceiling",
+    "source": "src/memory/import.ts:57; docs/smoke.md:1101; src/memory/recall.ts:98"
+  },
+  {
+    "id": "X02",
+    "mode": "Project isolation",
+    "symptom": "Importing the whole superproject chain imports another projects notes under this projects policy.",
+    "resolution": "Import selects only chain.at(-1), the current source project.",
+    "status": "regression-covered",
+    "source": "src/memory/import.ts:45; src/memory/import.ts:54; test/memory-phase3.test.ts:23"
+  },
+  {
+    "id": "X03",
+    "mode": "Project isolation",
+    "symptom": "Native basename/path or unscoped-id lookups collide across projects/machines.",
+    "resolution": "Canonical origin key, local path hash fallback, project-scoped id access and native worktree aliases.",
+    "status": "regression-covered",
+    "source": "test/memory-store.test.ts:140; test/memory-store.test.ts:296; test/recall.test.ts:51"
+  },
+  {
+    "id": "X04",
+    "mode": "Project isolation",
+    "symptom": "A replacement narrows visibility and suppresses an entry for readers that cannot see the replacement.",
+    "resolution": "Reject narrower replacement visibility.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:284"
+  },
+  {
+    "id": "P01",
+    "mode": "Privacy",
+    "symptom": "A done/review/unmet/context summary on an ordinary task carries PII to cloud memory.",
+    "resolution": "Pattern/screen withheld text remains on board; memory and public peer messages receive no private body.",
+    "status": "fixed-source",
+    "source": "issue #69; PR #73; issue #185 / PR #192; CHANGELOG.md:363; CHANGELOG.md:232"
+  },
+  {
+    "id": "P02",
+    "mode": "Privacy",
+    "symptom": "Raw hub tool arguments/results bypass Tasks privacy refusal via local capture.",
+    "resolution": "Exclude task/conductor/hub_send capture, keeping ordinary tool capture.",
+    "status": "fixed-source",
+    "source": "issue #230; PR #237; CHANGELOG.md:188"
+  },
+  {
+    "id": "P03",
+    "mode": "Privacy",
+    "symptom": "An ordinary local turn reads full PII board rows and then captures/repeats them.",
+    "resolution": "Return stubs except during an in-process PII turn; PII turns never capture.",
+    "status": "fixed-source",
+    "source": "issue #230; PR #237"
+  },
+  {
+    "id": "P04",
+    "mode": "Privacy",
+    "symptom": "Private path references in text, refs, symbols or Unicode/space paths reach either memory.",
+    "resolution": "Check private paths before native/cloud writes and in model-facing records.",
+    "status": "regression-covered",
+    "source": "test/memory-native.test.ts:204; test/memory-store.test.ts:556; src/hub/tasks.ts:2293"
+  },
+  {
+    "id": "P05",
+    "mode": "Privacy",
+    "symptom": "A previously accepted/shared/synced note violates the current receiving policy or has sensitive metadata.",
+    "resolution": "Rescreen whole records on model-facing reads, including nodes/project/secret patterns.",
+    "status": "regression-covered",
+    "source": "src/hub/daemon.ts:838; test/memory-store.test.ts:556; src/memory/recall.ts:153"
+  },
+  {
+    "id": "P06",
+    "mode": "Privacy",
+    "symptom": "Invalid unrelated config field silently empties pii.paths for memory CLI reads.",
+    "resolution": "Strict policy load fails closed; malformed present config is distinct from absence.",
+    "status": "regression-covered",
+    "source": "CM S10834; test/memory-store.test.ts:584; src/cli/memory.ts:32"
+  },
+  {
+    "id": "P07",
+    "mode": "Privacy",
+    "symptom": "Promotion sends local short notes to synced long-term storage without a current policy verdict.",
+    "resolution": "PromotionScreen must promote/keep/skip under source-project policy; rescreen task current paths and hold unknown project.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:672; test/memory-store.test.ts:691; src/memory/store.ts:327"
+  },
+  {
+    "id": "P08",
+    "mode": "Privacy",
+    "symptom": "Sync publishes note text to a public remote, or visibility cannot be verified.",
+    "resolution": "Known-public refused; unknown visibility only warns (residual policy limit); forget does not purge Git history.",
+    "status": "guard/design",
+    "source": "PR #354; src/memory/sync.ts:94; test/memory-sync.test.ts:57; docs/memory.md:145"
+  },
+  {
+    "id": "P09",
+    "mode": "Privacy",
+    "symptom": "Tracked project configuration redirects the cloud memory endpoint to receive task text.",
+    "resolution": "Memory endpoint applies only from machine-local untracked configuration, checked by file identity.",
+    "status": "fixed-source",
+    "source": "issue #17; PR #19; CHANGELOG.md:406"
+  },
+  {
+    "id": "I01",
+    "mode": "Index integrity/freshness",
+    "symptom": "Malformed, bad-id, non-string or invalid-time synced lines poison derived state.",
+    "resolution": "Validate schema/content hash/types/time; skip invalid rows and wait for partial tails.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:73; test/memory-store.test.ts:178; test/memory-store.test.ts:542; test/memory-sync.test.ts:159"
+  },
+  {
+    "id": "I02",
+    "mode": "Index integrity/freshness",
+    "symptom": "Truncation or same-size/deep prefix rewrite evades byte-offset indexing.",
+    "resolution": "Hash indexed prefixes and rebuild on shrink/change.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:217; test/memory-store.test.ts:237; test/memory-store.test.ts:255"
+  },
+  {
+    "id": "I03",
+    "mode": "Index integrity/freshness",
+    "symptom": "A durable log append is reported failed when derived SQLite refresh is busy, encouraging duplicate retries.",
+    "resolution": "Return saved id after durable append; mark index stale and log refresh failure.",
+    "status": "regression-covered",
+    "source": "CM S10834; src/memory/store.ts:223; test/memory-store.test.ts:607"
+  },
+  {
+    "id": "I04",
+    "mode": "Index integrity/freshness",
+    "symptom": "Catching the failed refresh without retry makes saved notes permanently invisible to this process.",
+    "resolution": "Read paths ensure freshness and retry a dirty index.",
+    "status": "regression-covered",
+    "source": "CM #187423; CM #187425; test/memory-store.test.ts:607"
+  },
+  {
+    "id": "I05",
+    "mode": "Index integrity/freshness",
+    "symptom": "A long-lived reader misses another processes durable write whose indexing failed.",
+    "resolution": "Compare segment shape on reads as well as local stale state.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:618; src/memory/store.ts:585"
+  },
+  {
+    "id": "I06",
+    "mode": "Index integrity/freshness",
+    "symptom": "Goal/link/lease and suggestion/verdict reads bypass note freshness recovery.",
+    "resolution": "Share ensureFresh across those read families; no new log/index format.",
+    "status": "fixed-source",
+    "source": "issue #378; PR #379; test/memory-store.test.ts:633; docs/verification/2026-10-14-0.12.24-audit.md:24"
+  },
+  {
+    "id": "I07",
+    "mode": "Index integrity/freshness",
+    "symptom": "Idle expiry is hidden by view filtering while index rows still differ from rebuild.",
+    "resolution": "Prune on read so derived rows and rebuild agree.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:511"
+  },
+  {
+    "id": "S01",
+    "mode": "Sync/concurrency",
+    "symptom": "Concurrent first-open or corrupt winning machine.json files yield inconsistent/undefined machine identity.",
+    "resolution": "Exclusive creation then common validated reread; malformed id fails store construction.",
+    "status": "regression-covered",
+    "source": "PR #352; test/memory-store.test.ts:272; test/memory-store.test.ts:360; CM #186471; CM #186474"
+  },
+  {
+    "id": "S02",
+    "mode": "Sync/concurrency",
+    "symptom": "Killed Git leaves index.lock or interrupted merge, hiding subsequent local entries from sync.",
+    "resolution": "Signed machine sync lock serializes Git; clear stale owned Git lock and abort interrupted merge.",
+    "status": "regression-covered",
+    "source": "PR #354; src/memory/sync.ts:31; test/memory-sync.test.ts:159"
+  },
+  {
+    "id": "S03",
+    "mode": "Sync/concurrency",
+    "symptom": "Concurrent pushes or absent/unreachable remote make memory transport fail.",
+    "resolution": "Own-machine segments, pull/merge, one retry after push race; errors return fail-open result.",
+    "status": "guard/design",
+    "source": "PR #354; src/memory/sync.ts:61; test/memory-sync.test.ts:33; test/memory-sync.test.ts:57"
+  },
+  {
+    "id": "S04",
+    "mode": "Sync/concurrency",
+    "symptom": "Two machines claim one goal before synchronization.",
+    "resolution": "Advisory earlier-claim winner with conflict displayed; force resolution by person; broker needed for consensus.",
+    "status": "open-ceiling",
+    "source": "src/memory/store.ts:718; test/memory-sync.test.ts:69"
+  },
+  {
+    "id": "C01",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Promote check and append race with another processes forget/replacement.",
+    "resolution": "Open ceiling: per-machine mutation lock would make check+append atomic.",
+    "status": "open-ceiling",
+    "source": "src/memory/store.ts:335"
+  },
+  {
+    "id": "C02",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Every refresh hashes the whole indexed prefix, O(segment bytes).",
+    "resolution": "Open ceiling: block hash chain if measured scale warrants it.",
+    "status": "open-ceiling",
+    "source": "src/memory/store.ts:392"
+  },
+  {
+    "id": "C03",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Repeated concurrent writers exceed bounded refresh retries.",
+    "resolution": "Open ceiling: five retry levels then deferred work; shared read lock is proposed upgrade.",
+    "status": "open-ceiling",
+    "source": "src/memory/store.ts:430"
+  },
+  {
+    "id": "C04",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Views materialize/filter all rows in process memory.",
+    "resolution": "Open ceiling: SQL filtering when store size warrants it.",
+    "status": "open-ceiling",
+    "source": "src/memory/store.ts:490"
+  },
+  {
+    "id": "C05",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Clock rollback resurrects an expired row after rebuild.",
+    "resolution": "Open ceiling: durable prune entry, instead of wall-clock-only expiry.",
+    "status": "open-ceiling",
+    "source": "src/memory/store.ts:569"
+  },
+  {
+    "id": "C06",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Three-characters-per-token approximation is not an exact token ceiling.",
+    "resolution": "Open ceiling: tokenizer if exact bounds are required.",
+    "status": "open-ceiling",
+    "source": "src/memory/recall.ts:54"
+  },
+  {
+    "id": "C07",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Dashboard Memory recomputes the whole index per poll.",
+    "resolution": "Open ceiling: cache by index revision when measured poll cost warrants it.",
+    "status": "open-ceiling",
+    "source": "src/hub/daemon.ts:3197"
+  },
+  {
+    "id": "C08",
+    "mode": "Scale/cost/measurement",
+    "symptom": "Adoption decisions lack causal effectiveness/cost measurements; brief counts cannot prove a failed approach was retried.",
+    "resolution": "#247/#248/#258 ship counts/arms/report plumbing; controlled arms, field window and manual retry labels remain owed.",
+    "status": "open-measurement",
+    "source": "issue #248 AC2-4; issue #258 AC11; PR #351; PR #356; docs/smoke.md:68; docs/research.md:88"
+  }
+]
