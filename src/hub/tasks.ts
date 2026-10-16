@@ -1,3 +1,4 @@
+import { composeRememberText } from "./memory-fail.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
@@ -8,7 +9,7 @@ import { mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
-import type { Briefs } from "../memory/brief.ts";
+import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
 import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasStarted, planningUndoEntry, type HistoryEntry, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
@@ -45,6 +46,8 @@ export interface TasksDeps {
   projectedReview?: (task: Task) => string | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
+  /** Screened live fail notes directly intersecting the task plan or refs; read-only advice. */
+  planFails?: (task: Task) => NativeItem[];
   memory?: MemoryClient;
   /** #258: the hub's own store, the project name it files entries under (the git chain) and the repo `#N` issues belong to. */
   store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void };
@@ -1468,7 +1471,7 @@ export class Tasks {
   /** `contextWithheld`: the PII screen did not clear a budget hand-off (#198); an escalation's reason is the hub's own words. */
   private async sendTask(task: Task, a: Assignment, context?: string, overlap = "", contextWithheld = false): Promise<void> {
     const pii = this.isPii(task);
-    const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
+    const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task, this.planGuardItems(task)).catch(() => undefined);
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", a.owner, h.withheld)}`);
     const handoff = context && !pii ? this.screen(task, context, "handoff", a.owner, contextWithheld).slice(0, 3000) : "";
     const facts = [`class ${profileTaskLabel(task)}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(a)].filter(Boolean).join("; ");
@@ -2026,6 +2029,25 @@ export class Tasks {
     return lines.length ? lines.join("\n") : undefined;
   }
 
+  private planGuardItems(task: Task): NativeItem[] {
+    if (this.isPii(task)) return [];
+    try {
+      const items: NativeItem[] = [];
+      for (const item of this.d.planFails?.(task) ?? []) {
+        const line = sanitize(item.line.replace(/\s+/g, " ").trim());
+        if (item.kind === "fail" && this.nameable(line) && !items.some(existing => existing.id === item.id)) items.push({ ...item, line });
+        if (items.length === 8) break;
+      }
+      return items;
+    } catch { return []; } // Optional memory cannot refuse an assignment or review.
+  }
+
+  /** Current plan advice for an accepted plan's tool result, which has no new assignment envelope. */
+  planGuardText(task: Task): string {
+    const items = this.planGuardItems(task);
+    return items.length ? ["Live fail notes for this plan (advice, not a block):", ...items.map(item => item.line)].join("\n") : "";
+  }
+
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
   private sendReview(task: Task, reviewer: PeerId, why = ""): void {
     const r = task.refs;
@@ -2036,6 +2058,7 @@ export class Tasks {
     const check = [...task.history].reverse().find((h) => h.event === "check passed");
     const checklist = [
       "Checklist:",
+      ...this.planGuardItems(task).map(item => `- Check the plan against this live fail before the remaining checks: ${item.line}`),
       `- Map the changed signatures and call sites to ${plan ? `the plan (${plan})` : task.detail ? "the task detail above" : "the task title"}, and name each one that does not match.`,
       `- ${check ? `Check result: ${(check.note ?? "").split("\n")[0]}` : "No check ran for this class: run the affected tests yourself."}`,
       `- List what is unmet in hub_review's unmet, one item each.`,
@@ -2274,9 +2297,8 @@ export class Tasks {
     return { ...(policy?.route ? { route: policy.route } : {}), ...(policy?.fixed_model ? { fixedModel: policy.fixed_model } : {}), pii, task: String(about.id) };
   }
 
-  async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown }): Promise<string> {
-    const text = String(input.text ?? "").trim();
-    if (!text) throw new Error("text is required");
+  async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }): Promise<string> {
+    const text = composeRememberText(input);
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
     if (task && this.isPii(task)) throw new Error("notes about a PII task are not saved: claude-mem processes what it stores with a cloud model");
     // Shared with every other peer as well, so text that matches a PII pattern is refused like a note about a PII task.

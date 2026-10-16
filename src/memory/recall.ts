@@ -57,14 +57,14 @@ export function recallDisplayText(note: Pick<MemoryView, "kind" | "text"> & Part
 }
 
 export const RECALL_LINE_CHARS = 200;
-type RecallNote = Pick<MemoryView, "id" | "kind" | "tier" | "title" | "text"> & Partial<Pick<MemoryView, "peer" | "task">>;
+type RecallNote = Pick<MemoryView, "id" | "kind" | "tier" | "title" | "text"> & Partial<Pick<MemoryView, "peer" | "task" | "about">>;
 
 /** A complete-word excerpt with its memory reference intact, capped in Unicode code points. */
-export function recallMemoryLine(note: RecallNote, idChars = 8): string | undefined {
+export function recallMemoryLine(note: RecallNote, idChars = 8, stale = false): string | undefined {
   const text = recallDisplayText(note);
   if (text === undefined) return undefined;
   // A rejection's title is another outcome header; only its actionable detail belongs in this view.
-  const body = `${text === note.text && note.title ? `${note.title}: ` : ""}${text}`.replace(/\s+/g, " ").trim();
+  const body = `${stale ? "(stale?) " : ""}${text === note.text && note.title ? `${note.title}: ` : ""}${text}`.replace(/\s+/g, " ").trim();
   const header = `mem:${note.id.slice(0, idChars)} ${note.kind} ${note.tier}: `;
   const chars = Array.from(body), available = RECALL_LINE_CHARS - header.length;
   if (chars.length <= available) return header + body;
@@ -75,7 +75,7 @@ export function recallMemoryLine(note: RecallNote, idChars = 8): string | undefi
 }
 
 /** Filter before the display cap, so outcome noise cannot displace an older relevant contract or fail. */
-export function recallMemoryLines(notes: readonly RecallNote[], limit = 30): string[] {
+export function recallMemoryLines(notes: readonly RecallNote[], limit = 30, stale: (about: readonly string[]) => boolean = () => false): string[] {
   const prefixes = new Map<string, string | null>();
   for (const note of notes) {
     const prefix = note.id.slice(0, 8), previous = prefixes.get(prefix);
@@ -85,8 +85,10 @@ export function recallMemoryLines(notes: readonly RecallNote[], limit = 30): str
   for (const note of notes) {
     if (ids.has(note.id)) continue;
     // A colliding short prefix is not an identity; its full id keeps both entries visible.
-    const line = recallMemoryLine(note, prefixes.get(note.id.slice(0, 8)) === null ? note.id.length : 8);
+    const idChars = prefixes.get(note.id.slice(0, 8)) === null ? note.id.length : 8;
+    let line = recallMemoryLine(note, idChars);
     if (line === undefined) continue;
+    if (stale(note.about ?? [])) line = recallMemoryLine(note, idChars, true)!;
     ids.add(note.id); lines.push(line);
     if (lines.length >= limit) break;
   }

@@ -28,7 +28,7 @@ export async function related(client: MemoryClient, project: string, query: stri
 }
 
 /** A native memory line for a brief (#258): `mem:<id8> <kind> <tier>: <title or text>`, fails first. */
-export interface NativeItem { id: string; line: string; kind?: string }
+export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[] }
 export type NativeBrief = (task: BriefTask) => NativeItem[];
 export interface BriefTask { id?: number; created?: number; title: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }
 
@@ -37,7 +37,7 @@ export interface BriefTask { id?: number; created?: number; title: string; refs:
  * entries one or two hops from the task's paths, symbols, issue and task, a linked fail first, superseded entries
  * dropped), then claude-mem: index first (search), then the neighbourhood of the top hit (timeline); details stay in
  * the store for the receiver to fetch by id. `brief_items` caps both together. A peer is never shown the same entry
- * twice in one hub run.
+ * twice in one hub run, except a directly matching plan fail that must accompany a new task.
  */
 export class Briefs {
   private readonly seen = new Map<PeerId, Set<string>>();
@@ -49,13 +49,16 @@ export class Briefs {
     private readonly native?: NativeBrief,
     /** Counts of what a brief carried, for the research records (#258 AC11); never its text. */
     private readonly observe?: (peer: PeerId, task: number, counts: { native: number; fails: number; claudeMem: number }) => void,
+    private readonly displayNative?: (items: readonly NativeItem[]) => string[],
   ) {}
 
-  async forTask(peer: PeerId, task: BriefTask): Promise<string | undefined> {
+  async forTask(peer: PeerId, task: BriefTask, priority: readonly NativeItem[] = []): Promise<string | undefined> {
     const seen = this.seen.get(peer) ?? new Set<string>();
     this.seen.set(peer, seen);
     const own: NativeItem[] = [];
-    try { for (const item of this.native?.(task) ?? []) if (!seen.has(item.id) && own.length < this.maxItems) own.push(item); } catch { /* fail-open: the store is optional */ }
+    // A plan fail is task-specific guidance even when a previous task already carried it.
+    for (const item of priority) if (own.length < this.maxItems && !own.some(existing => existing.id === item.id)) own.push(item);
+    try { for (const item of this.native?.(task) ?? []) if (!seen.has(item.id) && !own.some(existing => existing.id === item.id) && own.length < this.maxItems) own.push(item); } catch { /* fail-open: the store is optional */ }
     const found = this.client && own.length < this.maxItems ? await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" ")) : [];
     const items: BriefItem[] = [];
     for (const item of found) {
@@ -68,6 +71,6 @@ export class Briefs {
     for (const item of items) seen.add(`#${item.id}`);
     if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: own.length, fails: own.filter((i) => i.kind === "fail").length, claudeMem: items.length }); } catch { /* telemetry never fails a brief */ }
     const header = own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; claude-mem by #id):" : "Memory brief (claude-mem; fetch details by id if you need them):";
-    return [header, ...own.map((i) => i.line), ...items.map((i) => `#${i.id} ${i.time} ${i.type} ${i.title}`)].join("\n");
+    return [header, ...(this.displayNative?.(own) ?? own.map((i) => i.line)), ...items.map((i) => `#${i.id} ${i.time} ${i.type} ${i.title}`)].join("\n");
   }
 }
