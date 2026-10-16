@@ -53,6 +53,14 @@ export interface ProjectProgress {
   phase: "pending" | "prepared" | "stopped" | "started" | "peers-restored" | "verified";
   instanceId?: string;
   terminals: Record<string, unknown>;
+  /** #414: last bounded native-attachment timeout, metadata only; never terminal output or task text. */
+  attachmentTimeouts?: Record<string, {
+    at: number;
+    terminal: { handle: string; incarnationId: string; state: "unknown" | "idle" | "busy" | "exited"; connected?: boolean; orphaned?: boolean };
+    hub: { state: string; instanceId?: string; peerState?: string; sessionId?: string };
+    /** Client-side attempts are not recorded by the hub; an offline peer is not evidence of an attempt. */
+    lastHubConnectAttempt: "unknown";
+  }>;
   releaseRequested?: boolean;
   /** #215: peers the operator moved to a fresh session, with the session or thread id whose continuity is lost. */
   fresh?: Record<string, { lost: string; reason: string; at: number }>;
