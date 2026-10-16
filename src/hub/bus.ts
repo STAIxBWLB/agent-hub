@@ -262,6 +262,7 @@ export class Bus {
   /** Stop new deliveries while a coordinator takes a stable snapshot. Existing adapter turns are left alone. */
   setRecoveryHold(held: boolean): void {
     this.recoveryHeld = held;
+    if (!held) this.onQueues?.(); // restored holds need classification even when no peer is attached
     if (!held) for (const id of this.peers.keys()) void this.drain(id);
   }
 
