@@ -42,8 +42,8 @@ test("global attention summary persists while full items stay console-role only 
   expect(ordinary.attentionItems).toBeUndefined();
 });
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles } = {}) {
+  const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -56,7 +56,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")],
       batch_ms: 30,
       ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [] } } : {}),
-      memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40, brief_items: 8 } : { ...DEFAULT_CONFIG.memory, enabled: false },
+      memory: { ...(memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40, brief_items: 8 } : { ...DEFAULT_CONFIG.memory, enabled: false }), ...(nativeMemory ? { native: true } : {}) },
       ...(approvals ? { approvals } : {}),
       ...(checks ? { checks } : {}),
       ...(ignored ? { ignored } : {}),
@@ -872,6 +872,24 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   c2.close();
 });
 
+test("native memory read tools search, show and graph through MCP (#412)", async () => {
+  const memoryHome = mkdtempSync(join(tmpdir(), "ahub-native-read-"));
+  const priorHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = memoryHome;
+  cleanup.push(() => { if (priorHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = priorHome; rmSync(memoryHome, { recursive: true, force: true }); });
+  const { stateDir, daemon } = await hub({ nativeMemory: true });
+  const { client } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+  expect(await call("hub_remember", { title: "WAL mode", text: "locks the test db", kind: "fail" })).toContain("saved to shared memory (hub memory");
+  const memorySearch = JSON.parse(await call("hub_memory_search", { query: "WAL mode" }));
+  expect(memorySearch.lines).toHaveLength(1);
+  const memoryId = memorySearch.lines[0].match(/^mem:([a-f0-9]+)/)![1];
+  expect(await call("hub_memory_show", { ids: [memoryId] })).toContain("locks the test db");
+  const memoryGraph = JSON.parse(await call("hub_memory_graph", { starts: [`mem:${memoryId}`] }));
+  expect(memoryGraph.nodes.some((node: { id: string }) => node.id === `mem:${memoryId}`)).toBe(true);
+});
+
 test("a note from one peer rides on the others' next delivery, never its own; a claim's result names the open task it overlaps", async () => {
   const mem = startFakeMemWorker();
   cleanup.push(mem.stop);
@@ -889,12 +907,6 @@ test("a note from one peer rides on the others' next delivery, never its own; a 
   const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
 
   expect(await call("hub_remember", { title: "WAL mode", text: "locks the test db", kind: "fail" })).toBe("saved to shared memory; the other agents get it with their next message");
-  const memorySearch = JSON.parse(await call("hub_memory_search", { query: "WAL mode" }));
-  expect(memorySearch.lines).toHaveLength(1);
-  const memoryId = memorySearch.lines[0].match(/^mem:([a-f0-9]+)/)![1];
-  expect(await call("hub_memory_show", { ids: [memoryId] })).toContain("locks the test db");
-  const memoryGraph = JSON.parse(await call("hub_memory_graph", { starts: [`mem:${memoryId}`] }));
-  expect(memoryGraph.nodes.some((node: { id: string }) => node.id === `mem:${memoryId}`)).toBe(true);
   await Bun.sleep(60);
   expect(channel).toHaveLength(0); // no delivery of its own
   await console_.request({ t: "send", body: "hello", to: ["claude"] });
