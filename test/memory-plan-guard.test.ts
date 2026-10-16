@@ -95,3 +95,16 @@ test("PII task delivery and review never invoke plan memory or include its advic
   expect(calls).toBe(0);
   expect(Object.values(peers).flatMap(peer => peer.got).some(env => env.body.includes("must-not-leak"))).toBe(false);
 });
+
+test("plan guard retains a late explicit symbol beyond the v1 64-node extraction cap", () => {
+  const task: BriefTask = { title: "large valid plan", refs: { paths: Array.from({ length: 50 }, (_, i) => `src/ref-${i}.ts`) }, plan: {
+    paths: Array.from({ length: 50 }, (_, i) => `src/plan-${i}.ts`),
+    symbols: [...Array.from({ length: 49 }, (_, i) => `earlier-${i}@src/symbol-${i}.ts`), "late@src/late.ts"],
+  } };
+  const late = fake("fail", ["symbol:late@src/late.ts"]);
+  expect(matchingPlanFails(task, [late], context)).toEqual([late]);
+  const nodes = planGuardNodes(task, context);
+  expect(nodes).toHaveLength(150); expect(new Set(nodes).size).toBe(150); expect(nodes).toEqual([...nodes].sort());
+  const qualified = planGuardNodes({ title: "duplicates", refs: { paths: ["./src/a.ts"] }, plan: { paths: ["src/a.ts"], symbols: ["parse", "parse"] } }, context);
+  expect(qualified).toEqual(["path:src/a.ts", "symbol:parse@src/a.ts"]);
+});

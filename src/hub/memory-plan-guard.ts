@@ -5,7 +5,17 @@ export interface PlanGuardContext { cwd: string; project: string; repo: string; 
 
 /** Explicit plan/ref names only, with no filesystem probes or free-text inference. */
 export function planGuardNodes(task: BriefTask, context: PlanGuardContext): string[] {
-  return extractNodes("", { ...context, paths: [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])], symbols: task.plan?.symbols, checkExists: false });
+  // Task refs/plan allow 150 explicit inputs; v1 note extraction caps each result at 64 nodes.
+  // Normalize each input separately, retaining the original single-file symbol qualification rule.
+  const nodes = new Set<string>();
+  for (const path of [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])]) {
+    for (const node of extractNodes("", { ...context, paths: [path], checkExists: false })) nodes.add(node);
+  }
+  const onlyPath = nodes.size === 1 ? nodePath([...nodes][0]!) : undefined;
+  for (const symbol of task.plan?.symbols ?? []) {
+    for (const node of extractNodes("", { ...context, paths: onlyPath ? [onlyPath] : [], symbols: [symbol], checkExists: false })) nodes.add(node);
+  }
+  return [...nodes].sort();
 }
 const samePath = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 
