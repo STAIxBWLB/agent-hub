@@ -1,237 +1,88 @@
 # agent-hub
 
-Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Code, Pi and a
-hub-owned local-LLM worker, with optional Qwen Code and Jcode support, collaborate as peers in independent project directories, with
-task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
+A hub on one developer's machine where coding agents work as a team: Claude Code,
+Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code and Jcode optional)
+share a message bus and a task board per project and one memory on the machine,
+each attached through its own native interface.
 
-Status: 0.12.29, control protocol 16. Durable delivery records distinguish queued
-work from uncertain execution. The [smoke checklist](docs/smoke.md) records
-verified paths and remaining prerequisites.
+Status: 0.12.29, control protocol 16. Bun + TypeScript, one loopback daemon per
+project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
-Read the [operations guide](docs/operations.md) for the daily workflow, queue
-reconciliation, and the staged upgrade command for supported source protocols.
-Controlled recovery preserves work; uncertain effects are never automatically
-replayed and may require operator review.
+## What it does today
 
-[Hub memory](docs/memory.md) keeps optional local short- and long-term notes with
-a rebuildable graph index. It runs alongside native claude-mem capture/recall,
-which remains a separate service. Machine sync requires a configured remote;
-no remote is created by startup.
+- **Peers, not a pipeline.** Every agent can message the others, and the hub
+  delivers to each through its native surface (Claude channel plugin, Codex
+  app-server, ACP, Pi RPC or TUI). Messages are batched into digests, priorities
+  decide what interrupts a turn, and delivery is durable across restarts.
+- **A shared task board.** Tasks are proposed, accepted, done and reviewed through
+  hub tools. `routing.toml` assigns owners by task class, roles split planning,
+  implementation and review, and owners of overlapping work are told what
+  changed.
+- **Shared memory.** Decisions, contracts, fails and findings go to the hub's own
+  store (short- and long-term tiers, a typed graph, git sync between machines),
+  next to optional claude-mem capture. Entries belong to their project unless
+  saved as shared, which makes them readable from every project on the machine.
+  Agents get memory as a recall preface, as briefs on a task, and through read
+  tools.
+- **Local and remote models.** Pi and the local worker run on DGX or local MLX
+  through an authenticated relay; Switchyard routes model calls by task in front
+  of a self-hosted OmniRoute gateway. Tasks flagged as PII stay on the on-prem
+  worker.
+- **Guard rails.** The local worker and Pi run in a sandbox, and by default their
+  writes and shell commands wait for the person's approval; a permission mode
+  the person picks (`ask-when-needed`, `never-ask`) skips some or all prompts.
+  Budgets pause a peer before it runs out of quota, and recovery never replays
+  an effect whose outcome is unknown.
+- **Operations.** A terminal console and a local dashboard, one hub per
+  repository or worktree with a machine-wide view, and `ahub upgrade` that carries
+  running sessions across versions.
 
-## Start here
+## Where it is going
 
-Requires [Bun](https://bun.sh) >=1.3.0 on PATH; Node alone cannot run the CLI.
-The npm package is `@staix/agent-hub`, under the `staix` organization.
+- **Memory as its own package** ([#412](https://github.com/STAIxBWLB/agent-hub/issues/412)).
+  The memory core now lives in [agent-mem](https://github.com/STAIxBWLB/agent-mem)
+  with the `amem` CLI; agent-hub will consume it as a library. After the split,
+  memory becomes curated rather than captured: compression, removal, correction
+  and failure-driven management, each shipped only after its contract and a
+  measurement.
+- **Every peer able to do its share** ([#418](https://github.com/STAIxBWLB/agent-hub/issues/418)).
+  Sandboxed peers read a task's spec and run tests in isolated containers through
+  hub-owned tools instead of declining the work.
+- **Measured, not assumed.** Add-ons and memory are kept or dropped by controlled
+  comparisons ([#248](https://github.com/STAIxBWLB/agent-hub/issues/248),
+  [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
-Install from npm:
+## Install
+
+Requires [Bun](https://bun.sh) 1.3.0 or later on PATH.
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup
 cd <your project> && ahub init && ahub up
 ```
 
-Or install the same version from GitHub:
+`ahub init --dry-run --json` shows what init would write first. While hubs run,
+`ahub upgrade` moves them to the latest release.
 
-```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.29 && ahub setup
-```
+## Documentation
 
-The installed commands remain `ahub` and `agent-hub`.
-
-To upgrade while hubs are running, run `ahub upgrade` in a terminal. It takes
-the latest release, shows the plan for every running project, applies it on
-one key and follows it: the operation starts the new hub, installs the Claude
-plugin and the global CLI, and restores or restarts the agent sessions as the
-plan says. The [operations guide](docs/operations.md#upgrade-and-crash-recovery)
-has the details, and the one-time start from an older CLI. With no hub running
-there is nothing to carry over: install the new version as above and run
-`ahub setup`. Afterwards run `ahub init` in a project to refresh its managed
-agent instructions.
-
-- [Quickstart](docs/quickstart.md): install, first session, the local worker, the commands of a working day
-- [Operations guide](docs/operations.md): managed launchers, task/review flow, receipts, shutdown and recovery
+- [Quickstart](docs/quickstart.md): install, the first session, a working day
+- [Operations guide](docs/operations.md): console, task flow, Pi and models, dashboard, projects, upgrade and recovery
+- [Hub memory](docs/memory.md) and [agent-mem](https://github.com/STAIxBWLB/agent-mem)
 - [Security notes](docs/security.md): what the hub defends and what it does not
-- [Design spec](docs/specs/2026-09-19-agent-hub-design.md): how it is built and why, with every amendment made along the way
-- [Smoke checklist](docs/smoke.md): the live checks, and what has and has not been verified against real agents
+- [Design spec](docs/specs/2026-09-19-agent-hub-design.md): how it is built and why
+- [Smoke checklist](docs/smoke.md): what has been verified against real agents
 - [Changelog](CHANGELOG.md), [Contributing](CONTRIBUTING.md)
 
-## What ahub changes on your machine
+`AGENTS.md` and [`docs/agent-notes/`](docs/agent-notes/) hold the rules coding
+agents follow when they work on this repository.
 
-`ahub init --dry-run --json` lists missing project defaults, the managed AGENTS.md
-block, legacy CLAUDE.md cleanup and gitignore updates before writing them.
-The preview does not register the project.
+## Origin
 
-`ahub claude|codex|kimi|pi --print-command` (also `--dry-run`) prints the native
-argv, Claude session settings and environment variable names without launching.
-It uses the normal command builders. Arbitrary user arguments, configured commands
-and settings are redacted; runtime-assigned endpoints and session identities are
-explicitly unresolved. It does not check executable or account readiness.
-See [Security notes](docs/security.md).
+The first idea came from [agent-bridge](https://github.com/raysonmeng/agent-bridge),
+which lets Claude Code and Codex talk to each other. agent-hub has since grown
+into a different system with its own goals and shares no code with it.
 
-## Why not agent-bridge
+## License
 
-[raysonmeng/agent-bridge](https://github.com/raysonmeng/agent-bridge) proves the
-Claude <-> Codex pairing. Its core is two-party by construction (single Claude seat,
-`source: claude | codex`), and its v3 rooms carry signals only. agent-hub starts from
-an N-peer message bus and attaches each agent through its native control surface.
-
-## Peers and their native surfaces
-
-| Peer | Inbound | Outbound | Busy handling |
-| --- | --- | --- | --- |
-| Claude Code | channel plugin push (`notifications/claude/channel`) under `ahub claude`; otherwise tools-only, read with `hub_inbox` | MCP tools | queued by Claude Code, grouped on next turn; tools-only: queued at the hub |
-| Codex | app-server `turn/start` (idle) / `turn/steer` (busy) | proxy intercepts `item/agentMessage` | steer or queue |
-| Kimi Code | TUI: pull with `hub_inbox`; headless: ACP `session/prompt` | TUI: `hub_send`; headless: ACP `session/update` stream | TUI: hub queue with important-count hints; headless: queue (`turn.agent_busy`) |
-| Pi | RPC or managed native TUI extension | hub-approved tools | queued until `agent_settled` |
-| Local worker | hub-native agent loop | hub-native | hub-owned |
-
-## Pi with DGX and MLX
-
-Pi is optional. Install Pi separately and set `pi.enabled` to `true` in
-`.agenthub/config.json`. Set `pi.auto_start` to `true` to start it with the hub.
-Pi starts in its TUI by default; `ahub pi --headless`, or the start mode
-setting (`ahub settings set peers.pi.start_mode headless`), asks for the
-background peer instead. The project uses its existing OmniRoute connection for DGX;
-`pi.dgx_coding` and `pi.dgx_fast` select the gateway's configured model IDs.
-
-```bash
-ahub models setup       # prepare bounded Qwen3.5 4B MLX in an existing Ollama service
-ahub models start       # verify loopback Ollama/model readiness (no daemon spawn)
-ahub models status
-ahub pi --headless --backend auto
-ahub say @pi "Read the project and summarize the next small implementation task"
-ahub pi                # its TUI in this terminal; an idle headless session moves into it
-```
-
-The default routing template assigns implementation, bulk edits and tests to
-DGX, and summaries/triage to MLX. Pi and the existing local worker take priority
-before cloud peers; planning and final review stay with Claude/Codex. Existing
-projects keep their routing file, so add `pi` to the relevant `peers` lists and
-set `pi_backend = "dgx"` or `"mlx"` for each class. PII tasks remain local-worker
-only. `--backend dgx` or `--backend mlx` explicitly pins a Pi session's backend.
-
-Pi connects to an authenticated relay with model aliases `dgx/coding`,
-`dgx/fast`, and `mlx/fast`; upstream gateway credentials stay in the hub.
-Its managed tools use the existing path guards, shell sandbox and terminal
-approval flow. Keep `ahub console` open to approve write/edit/shell operations:
-a request nobody answers expires, and two in a row end Pi's turn.
-Tool-call receipts survive daemon restart; an interrupted operation with an
-unknown outcome must be reconciled before repeating it. Cancelling a Pi turn
-does not automatically hand its task to a cloud peer.
-
-The `mlx/fast` alias now defaults to an externally managed Ollama MLX backend.
-Install and start Ollama separately, with `OLLAMA_NO_CLOUD=1`,
-`OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=1`, and a finite
-`OLLAMA_KEEP_ALIVE` (five minutes is the tested setting). `models setup`
-prepares `agenthub-fast-mlx:4b-8k` from `qwen3.5:4b-mlx`, with an 8K total
-context and a 2K output cap. The relay budgets input separately at 6,000
-estimated tokens and serializes local requests across project hubs.
-
-`models status` distinguishes model availability from memory residency.
-`models stop` refuses to unload an externally managed Ollama model: other
-clients may be using it. Ollama owns idle eviction; stopping a hub never
-kills Ollama. The OpenAI compatibility endpoint does not enforce a request
-`keep_alive` field, so configure the server and verify its expiry readback.
-The relay can fall back to DGX before streaming starts as before. See the
-[Ollama migration procedure](docs/operations.md#ollama-mlx-migration-issue-51)
-for existing Python runtime/configuration cleanup and rollback.
-
-A project has one managed Pi session owner. Mode changes require the agent to
-settle and preserve the session file. Before the first generation, a live source
-verified to be empty can instead retain its exact session ID without a file.
-Missing history from a nonempty session blocks handover. Protocol 9 adds Pi
-recovery metadata. Protocol 10, released in 0.7.0, adds durable delivery
-receipts and conservative queue recovery; it is verified live (see the
-[smoke checklist](docs/smoke.md)).
-Older protocol hubs still require their matching CLI and an attended bootstrap.
-
-## Runtime
-
-Bun + TypeScript. Single daemon per project directory, loopback only.
-
-## Local dashboard
-
-With a running daemon, `ahub ui` opens a local dashboard for messages, peer states
-and queues, the task board, budget windows, pending approvals and this machine's
-benchmark runs. Use `ahub ui --no-open` to print a single-use link when the
-browser cannot be opened.
-Open the link within 60 seconds; the browser session lasts one hour.
-
-The dashboard can send console messages, propose and assign tasks, pause or resume
-peers, answer approvals, start a peer in its start mode and show the settings.
-An ordinary session changes the safe switches and lowers a mode to `ask`; the
-rest needs `ahub ui --settings` or `ahub settings` in a terminal. See
-[Settings](docs/operations.md#settings-from-the-dashboard-and-the-terminal) and
-[Start modes](docs/operations.md#start-modes-tui-by-default-headless-as-opt-in).
-Budget pauses still require the terminal override.
-Private envelopes and PII tasks stay redacted. Local-worker and Pi tool details and
-allow decisions stay in `ahub tail` / `ahub permit`; the page can deny them.
-No dashboard port is opened until requested. See [the session security model](docs/security.md#local-dashboard-sessions-issue-6).
-
-
-## Multiple projects and worktrees
-
-Version 0.4.0 adds one independent hub per repository or Git worktree.
-Subdirectory commands resolve to that project; symlink aliases resolve to the same
-hub. Explicit selection works from any directory:
-
-```bash
-ahub --project /path/to/project-a init
-ahub --project /path/to/project-b init
-ahub --project /path/to/project-a up
-ahub --project /path/to/project-b up
-ahub projects
-ahub status --all
-ahub --project /path/to/project-a codex
-ahub ui --all
-```
-
-The unified dashboard lists registered roots and opens their boards, streams,
-messages, approvals and budgets. It can start hubs and stop a selected hub after
-confirmation. Its Start control opens a peer's TUI only through a terminal provider
-(`terminal.open` or Orca); without one, launch Claude/Codex TUIs from a terminal. The manager stays available
-when a project stops; `ahub ui --all --stop` stops only the manager. Existing
-`ahub ui` still opens the current project's dashboard.
-
-`ahub projects --json` returns machine-readable live status. Use a listed ID or a
-path with `--project`; the selector must precede the command. `ahub projects remove
-<id>` forgets a stopped registration without deleting project data. A moved root
-gets a new registration. Missing roots remain visible until removed.
-
-Runtime state stays in each project's `.agenthub/state/`. The machine registry is
-`~/.agenthub/registry.db`; existing `ports.json` allocations are imported once.
-`AGENTHUB_HOME` selects an isolated machine registry (also used by tests). An
-inherited state directory from a different project cannot redirect a new CLI
-invocation. Explicit custom state requires a matching project marker or the
-initialization pair `AGENTHUB_PROJECT_DIR` / `AGENTHUB_STATE_DIR`.
-
-Manager-started hubs use attended mode and project configuration, including
-credential-file references. They do not inherit the launching project's gateway
-URL/key overrides. Native memory remains shared according to claude-mem aliases;
-worktrees recall their parent and composite identity. A shared-alias notice does
-not mean that task boards or agent sessions are shared. Provider quota readings
-may describe the same account and should not be added across projects.
-
-Before upgrading an older hub, inspect the plan with the matching CLI.
-Incompatible or unverified processes are shown explicitly and are never killed by
-PID-name matching. See the [operations guide](docs/operations.md) and the
-[multi-project specification](docs/specs/2026-09-19-multi-project-design.md).
-
-## Agent instructions
-
-`AGENTS.md` holds what every agent session loads: commands, conventions,
-architecture and the rules that hold anywhere in the code. Rules that hold in one
-area (benchmarks, adapters, the bus, the local worker, models, the task board,
-budget, the daemon and recovery, tests) live in [`docs/agent-notes/`](docs/agent-notes/),
-and `AGENTS.md` names the paths that call for each note, so a session loads only
-the notes for what it edits (#158). Background behind some of those rules:
-
-- Benchmark trust entry: the review rounds of #115 kept finding paths that broke
-  the runner's settlement of the Claude trust entry.
-- Reply addressing: leaving `to` empty fanned a reply out to every peer, which is
-  what made one directed question cost every agent a turn.
-- Bun test hang: the stacks of two local hangs show a test timeout starting the next
-  test inside `Bun.spawnSync`'s own event loop (#115,
-  `docs/verification/2026-10-03-0.12.6.md`); minimal reproductions did not hang, so
-  the full trigger is not pinned down. On Bun 1.4.2 the next test still starts there
-  (#121, checked directly); the spin was not reproduced on demand on either version.
+MIT
