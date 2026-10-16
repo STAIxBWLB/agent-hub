@@ -77,7 +77,7 @@ import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
-import { projectChain } from "../memory/project.ts";
+import { projectChain } from "@staix/agent-mem";
 import { recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
 import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
@@ -94,10 +94,10 @@ import { grantablePath, instructionProtection, isPermissionMode, permissionBound
 import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
-import { DEFAULT_LEASE_MS, extractNodes, MemoryStore, SUGGESTED, taskKey, type GoalView, type Suggested, type View as MemoryView } from "../memory/store.ts";
-import { syncMemory } from "../memory/sync.ts";
+import { DEFAULT_LEASE_MS, extractNodes, MemoryStore, SUGGESTED, taskKey, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
+import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
-import { memoryProjectKey } from "../memory/project.ts";
+import { memoryProjectKey } from "@staix/agent-mem";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii } from "./memory-policy.ts";
 

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { memoryGitArgv } from "../src/memory/platform.ts";
+import { memoryGitArgv } from "@staix/agent-mem/platform";
 import { hubGitArgv, hubGitSync } from "../src/hub/git.ts";
 import { repoOf, snapshot } from "../src/hub/snapshots.ts";
 
@@ -68,7 +68,7 @@ test("a repo-configured fsmonitor, hooks or external-diff program runs for a pla
   }
 });
 
-test("core platform is the sole git argv builder; no direct git spawn outside the sandboxed tool (#281, #412)", () => {
+test("package platform is the sole git argv builder; no direct git spawn outside the sandboxed tool (#281, #412)", () => {
   const src = join(import.meta.dir, "..", "src");
   const offenders: string[] = [], builders: string[] = [];
   expect(hubGitArgv).toBe(memoryGitArgv);
@@ -86,7 +86,7 @@ test("core platform is the sole git argv builder; no direct git spawn outside th
   };
   walk(src);
   expect(offenders).toEqual([]);
-  expect(builders).toEqual([join(src, "memory", "platform.ts")]);
+  expect(builders).toEqual([]);
   // What this guard does not catch: a variable holding "git", execFile, or an absolute path to the binary. It is a
   // tripwire for the two spawn idioms this codebase uses, not a proof. src/local/tools.ts is exempt: its git argv
   // runs inside the sandbox through sandboxedExec.

@@ -7,8 +7,8 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { goalCommand, memoryCommand } from "../src/cli/memory.ts";
-import { extractNodes, MemoryStore, type NoteInput } from "../src/memory/store.ts";
-import { syncMemory, type Visibility } from "../src/memory/sync.ts";
+import { extractNodes, MemoryStore, type NoteInput } from "@staix/agent-mem";
+import { syncMemory, type Visibility } from "@staix/agent-mem";
 
 // #258 phase 2: two machines simulated by two homes and a bare git remote; long-term tasks and their leases.
 
@@ -115,7 +115,7 @@ test("through the hub: a peer links its claimed task to a long-term task, workin
   process.env.AGENTHUB_HOME = home;
   cleanup.push(() => { if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; });
   const seed = new MemoryStore({ home });
-  const project = (await import("../src/memory/project.ts")).memoryProjectKey(root);
+  const project = (await import("@staix/agent-mem")).memoryProjectKey(root);
   const goal = seed.goal({ project, scope: "project", title: "ship memory", milestones: [], dependsOn: [], actor: "user" });
   const foreign = seed.goal({ project: "elsewhere", scope: "project", title: "not ours", milestones: [], dependsOn: [], actor: "user" });
   seed.close();
@@ -167,7 +167,7 @@ test("review of #354: a lock a killed git left behind never hides this machine's
   expect(b.list().map((v) => v.text).sort()).toEqual(["one", "two"]);
   // A goal line whose actor is not a string (another version, a buggy writer) is skipped, never fatal to the store.
   const bad = { schema: "agent-hub.memory/v1", at: "2026-10-12T00:00:00.000Z", machine: a.machine.id, op: "goal", project: "work/app", scope: "project", title: "t", milestones: [], dependsOn: [], actor: { x: 1 } } as const;
-  const { entryId } = await import("../src/memory/store.ts");
+  const { entryId } = await import("@staix/agent-mem");
   const line = JSON.stringify({ ...bad, id: entryId(bad as never) }) + "\n";
   writeFileSync(join(a.dir, "log", `${a.machine.id}.jsonl`), line, { flag: "a" });
   expect(() => a.refresh()).not.toThrow();

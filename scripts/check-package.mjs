@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 assert.equal(manifest.name, '@staix/agent-hub');
+assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ['@staix/agent-mem'], 'Only the first-party memory core may be a runtime dependency');
+assert.match(manifest.dependencies['@staix/agent-mem'], /^\d+\.\d+\.\d+$/, 'The memory core must use an exact published version');
 assert.notEqual(manifest.private, true);
 assert.equal(manifest.publishConfig?.access, 'public');
 assert.deepEqual(manifest.bin, { ahub: 'src/cli/main.js', 'agent-hub': 'src/cli/main.js' });

@@ -19,7 +19,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 
 ## Conventions
 
-- Zero runtime dependencies. WebSocket, HTTP, sqlite, spawn and the test runner are Bun built-ins; the MCP SDK is a devDependency bundled into `plugins/agent-hub/server.js`.
+- Zero third-party runtime dependencies. Keep the first-party `@staix/agent-mem` memory core exact-pinned (initial consumption: `0.1.1`); do not vendor its implementation. WebSocket, HTTP, sqlite, spawn and the test runner are Bun built-ins; the MCP SDK is a devDependency bundled into `plugins/agent-hub/server.js`.
 - TS strict with `noUncheckedIndexedAccess`; relative imports carry the `.ts` extension.
 - Conventional commits in English, referencing the issue. Branch + PR, never commit to main.
 - Spec first: when the implementation has to differ from the spec, amend the spec in the same PR.
@@ -37,7 +37,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - `src/hub/budget.ts` (quota readings, pause records in `hub.db`, resume), `src/cli/statusline-tee.ts` (Claude's quota source).
 - `src/hub/board.ts` (sqlite), `src/hub/routing.ts` (`routing.toml`, `assign()`), `src/hub/tasks.ts` (the flow), `src/hub/hub-tools.ts` (tool and role definitions, read by the MCP server and the local worker alike), `src/memory/brief.ts`.
 - `src/adapters/local-worker.ts` + `src/local/` (tools, path guard, seatbelt runner): the hub-native peer. `src/omniroute/`: the only place that reads the gateway key and Access headers. `src/switchyard/`: config generator and session-scoped sidecar. `src/hub/routing.ts`: `routing.toml`.
-- Keep the portable memory core (`src/memory/{store,sync,import,project,home,platform,commands}.ts`) limited to built-ins and core imports; run `scripts/check-memory-boundary.ts` (also in `scripts/check.sh`) after changing that boundary. Keep deny, hardened git, realPath and process identity single-sourced in `src/memory/platform.ts`, re-exported by the local/hub/Pi modules. Keep hub privacy policy in `src/hub/memory-policy.ts` and peer read tools in `src/hub/read-tools.ts`; briefs, recall, client and capture stay in agent-hub. Never rewrite a memory log line or index a state not derived from the rows: changes are new entries, so incremental indexing stays equal to rebuild (`docs/memory.md`).
+- Import portable memory storage, sync, import, project/home, commands from `@staix/agent-mem` and Node-safe platform helpers from `@staix/agent-mem/platform`; keep deny, hardened git, realPath and process identity single-sourced in that package and re-exported by the local/hub/Pi modules. Keep `src/memory/` for hub integration only (briefs, recall, client and capture), hub privacy policy in `src/hub/memory-policy.ts` and peer read tools in `src/hub/read-tools.ts`. Keep portable-core boundary checks in the agent-mem package's CI; do not restore the removed hub-local core or its boundary checker. Preserve the package's append-only schema/hash/path compatibility and incremental index equal to rebuild; host policy and caller authority stay in the hub (`docs/memory.md`).
 - `src/cli/`: `main.ts` (commands), `launch.ts` (hub-owned flags), `init.ts` (marker blocks).
 - `plugins/agent-hub/`: plugin manifest, `.mcp.json` and the committed bundle. `templates/`: what `ahub init` writes.
 - `test/fakes/`: fake ACP agent, fake Codex app-server, fake claude-mem worker. No mocking library.

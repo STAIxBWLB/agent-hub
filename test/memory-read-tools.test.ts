@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore, type NoteInput, type View } from "../src/memory/store.ts";
+import { MemoryStore, type NoteInput, type View } from "@staix/agent-mem";
 import { memoryRead, validateMemoryRead, type MemoryScreen } from "../src/hub/read-tools.ts";
 import { withoutPii } from "../src/hub/memory-policy.ts";
 import { currentRouting } from "../src/hub/routing.ts";

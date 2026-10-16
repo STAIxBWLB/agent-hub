@@ -8,7 +8,7 @@ import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from 
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
-import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
+import { packageDigest, preserveRuntimeDependencies, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { readEvents } from "../hub/events.ts";
@@ -307,7 +307,7 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
   const base = join(home, "releases");
   const dest = join(base, `source-${plan.sourceDigest}`);
   if (existsSync(dest)) {
-    if (packageDigest(dest) !== plan.sourceDigest) throw new Error("preserved source package changed");
+    if (packageDigest(dest, { ownDependencies: true }) !== plan.sourceDigest) throw new Error("preserved source package changed");
     return dest;
   }
   mkdirSync(base, { recursive: true, mode: 0o700 });
@@ -317,7 +317,8 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
     for (const name of ["src", "plugins", "templates", ".claude-plugin", "package.json", "README.md", "LICENSE", "CHANGELOG.md"]) {
       cpSync(join(plan.sourceRoot, name), join(temporary, name), { recursive: true, dereference: false });
     }
-    if (packageDigest(temporary) !== plan.sourceDigest) throw new Error("source changed while being preserved");
+    preserveRuntimeDependencies(plan.sourceRoot, temporary);
+    if (packageDigest(temporary, { ownDependencies: true }) !== plan.sourceDigest) throw new Error("source changed while being preserved");
     renameSync(temporary, dest);
   } finally { rmSync(temporary, { recursive: true, force: true }); }
   return dest;
@@ -477,8 +478,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
   return {
     now, sleep, inspect: inspectRecovery,
     stage: async (op) => {
-      if (packageDigest(op.sourceRoot) !== op.plan.sourceDigest) throw new FinalRefusal("preserved source changed");
-      const target = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version) }
+      if (packageDigest(op.sourceRoot, { ownDependencies: true }) !== op.plan.sourceDigest) throw new FinalRefusal("preserved source changed");
+      const target = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version, { ownDependencies: true }) }
         : await stageRelease(op.plan.version, op.plan.integrity!, run);
       const identityPath = join(target.root, "src/cli/identity.ts");
       if (liveTestPeer && (!existsSync(identityPath) || !readFileSync(identityPath, "utf8").includes("export const LIVE_TEST_SUPPORTED = true;"))) {

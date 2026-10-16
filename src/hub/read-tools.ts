@@ -1,5 +1,5 @@
-import type { MemoryStore, View, Graph } from "../memory/store.ts";
-import { looksSecret } from "../memory/store.ts";
+import type { MemoryStore, View, Graph } from "@staix/agent-mem";
+import { looksSecret } from "@staix/agent-mem";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 
 export const MEMORY_READ_TOOLS = new Set(["hub_memory_search", "hub_memory_show", "hub_memory_graph"]);

@@ -1,8 +1,8 @@
 import { basename, dirname } from "node:path";
-import { DENY_NAMES, DENY_SEGMENTS } from "../memory/platform.ts";
+import { DENY_NAMES, DENY_SEGMENTS } from "@staix/agent-mem/platform";
 
 // One core deny policy for path guards, sandbox rules, capture and memory extraction.
-export { DENY_NAMES, DENY_SEGMENTS, isDenied } from "../memory/platform.ts";
+export { DENY_NAMES, DENY_SEGMENTS, isDenied } from "@staix/agent-mem/platform";
 
 /** Regex metacharacters only; `sbplString` quotes the finished regex. */
 const sbplEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

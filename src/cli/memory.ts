@@ -1,12 +1,12 @@
-import { looksSecret, MemoryStore } from "../memory/store.ts";
-import type { SyncOptions } from "../memory/sync.ts";
-import { rawMemoryCommand, rawGoalCommand } from "../memory/commands.ts";
-import { memoryProjectKey } from "../memory/project.ts";
+import { looksSecret, MemoryStore } from "@staix/agent-mem";
+import type { SyncOptions } from "@staix/agent-mem";
+import { rawMemoryCommand, rawGoalCommand } from "@staix/agent-mem";
+import { memoryProjectKey } from "@staix/agent-mem";
 import { mentionsPrivatePath, promotionScreen, withoutPii } from "../hub/memory-policy.ts";
 import { currentRouting, detectSignals } from "../hub/routing.ts";
 import { loadConfig } from "../hub/daemon.ts";
 
-export { MEMORY_USAGE, GOAL_USAGE } from "../memory/commands.ts";
+export { MEMORY_USAGE, GOAL_USAGE } from "@staix/agent-mem";
 
 const fail = (message: string): never => { throw new Error(message); };
 /** The project's config, or none when there is no valid one (reading memory needs none). */

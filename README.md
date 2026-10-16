@@ -39,10 +39,11 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Where it is going
 
-- **Memory as its own package** ([#412](https://github.com/STAIxBWLB/agent-hub/issues/412)).
+- **Curated memory** ([#412](https://github.com/STAIxBWLB/agent-hub/issues/412)).
   The memory core now lives in [agent-mem](https://github.com/STAIxBWLB/agent-mem)
-  with the `amem` CLI; agent-hub will consume it as a library. After the split,
-  memory becomes curated rather than captured: compression, removal, correction
+  (`@staix/agent-mem`, with the `amem` CLI), which agent-hub uses as its one
+  exact-pinned first-party dependency. Next, memory becomes curated rather than
+  captured: compression, removal, correction
   and failure-driven management, each shipped only after its contract and a
   measurement.
 - **Every peer able to do its share** ([#418](https://github.com/STAIxBWLB/agent-hub/issues/418)).
@@ -54,7 +55,7 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Install
 
-Requires [Bun](https://bun.sh) 1.3.0 or later on PATH.
+Requires [Bun](https://bun.sh) 1.4.2 or later on PATH.
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup

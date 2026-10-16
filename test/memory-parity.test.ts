@@ -1,40 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import * as core from "../src/memory/platform.ts";
-import { memoryHome } from "../src/memory/home.ts";
-import { MemoryStore } from "../src/memory/store.ts";
-import { canonicalPath, hubHome, realPath } from "../src/hub/project.ts";
-import { DENY_NAMES, DENY_SEGMENTS, isDenied } from "../src/local/deny.ts";
-import { hubGitArgv, hubGitEnv, hubGitSync } from "../src/hub/git.ts";
-import { processLiveness, processSignature } from "../src/pi/process-signature.ts";
+import { memoryHome } from "@staix/agent-mem";
+import { MemoryStore } from "@staix/agent-mem";
+import { canonicalPath, hubHome } from "../src/hub/project.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), "amem-parity-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
-
-test("hub deny policy re-exports the exact core function and constants (#412)", () => {
-  expect(isDenied).toBe(core.isDenied);
-  expect(DENY_NAMES).toBe(core.DENY_NAMES);
-  expect(DENY_SEGMENTS).toBe(core.DENY_SEGMENTS);
-});
-
-test("hub path resolution re-exports the exact core functions (#412)", () => {
-  expect(realPath).toBe(core.realPath);
-  expect(canonicalPath).toBe(core.canonicalPath);
-});
-
-test("hub git helpers re-export the exact core argv, environment and execution functions (#412)", () => {
-  expect(hubGitArgv).toBe(core.memoryGitArgv);
-  expect(hubGitEnv).toBe(core.memoryGitEnv);
-  expect(hubGitSync).toBe(core.memoryGitSync);
-});
-
-test("Pi process identity re-exports the exact Node-safe core functions (#412)", () => {
-  expect(processSignature).toBe(core.processSignature);
-  expect(processLiveness).toBe(core.processLiveness);
-});
 
 test("core memory home honors AMEM_HOME and preserves historical parent-home canonicalization", () => {
   const dir = temp(); mkdirSync(join(dir, "parent")); symlinkSync("parent", join(dir, "alias"));
@@ -53,7 +28,7 @@ test("core memory home honors AMEM_HOME and preserves historical parent-home can
 
 test("test preload discards inherited AMEM_HOME without opening the person's store", () => {
   const dir = temp(), hub = join(dir, "isolated-hub"), sentinel = join(dir, "must-not-open");
-  const source = `import { MemoryStore } from ${JSON.stringify(join(import.meta.dir, "../src/memory/store.ts"))}; const store = new MemoryStore(); console.log(store.dir); store.close();`;
+  const source = `import { MemoryStore } from ${JSON.stringify("@staix/agent-mem")}; const store = new MemoryStore(); console.log(store.dir); store.close();`;
   const child = Bun.spawnSync([process.execPath, "--preload", join(import.meta.dir, "hub-home.ts"), "-e", source], {
     env: { ...process.env, AMEM_HOME: sentinel, AGENTHUB_HOME: hub }, stdout: "pipe", stderr: "pipe",
   });
@@ -61,4 +36,16 @@ test("test preload discards inherited AMEM_HOME without opening the person's sto
   expect(child.stdout.toString().trim()).toBe(join(canonicalPath(hub), "memory"));
   expect(existsSync(join(hub, "memory", "index.db"))).toBe(true);
   expect(existsSync(sentinel)).toBe(false);
+});
+
+// Exercise the extension's dependency closure after TypeScript transpilation, on a real Node runtime.
+test("Pi process identity uses the package's Node-safe platform entry (#412)", async () => {
+  const result = await Bun.build({ entrypoints: [join(import.meta.dir, "../src/pi/process-signature.ts")], target: "node" });
+  expect(result.success).toBe(true);
+  const entry = join(temp(), "platform.mjs");
+  writeFileSync(entry, await result.outputs[0]!.text());
+  const child = spawnSync("node", ["--input-type=module", "-e",
+    `import { processSignature, processLiveness } from ${JSON.stringify(entry)}; if (typeof processSignature !== "function" || typeof processLiveness !== "function") process.exit(1);`], { encoding: "utf8" });
+  expect(child.stderr).not.toContain("bun:");
+  expect(child.status).toBe(0);
 });

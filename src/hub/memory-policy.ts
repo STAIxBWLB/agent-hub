@@ -1,7 +1,7 @@
 import { detectSignals, type Routing } from "./routing.ts";
 import { matchesPolicy } from "./path-policy.ts";
-import { looksSecret, type PromotionScreen } from "../memory/store.ts";
-import { nodePath, pathCandidates } from "../memory/project.ts";
+import { looksSecret, type PromotionScreen } from "@staix/agent-mem";
+import { nodePath, pathCandidates } from "@staix/agent-mem";
 
 /**
  * Whether a note is about a path the `pii.paths` policy makes private: a stored node's path, a path-like word of its

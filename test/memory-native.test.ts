@@ -9,7 +9,7 @@ import { memoryCommand } from "../src/cli/memory.ts";
 import { Briefs } from "../src/memory/brief.ts";
 import { citedIds, gather } from "../src/hub/ask.ts";
 import { Board } from "../src/hub/board.ts";
-import { extractNodes, MemoryStore } from "../src/memory/store.ts";
+import { extractNodes, MemoryStore } from "@staix/agent-mem";
 
 // #258 phase 1 through the hub: notes from the task flow land in tiers, approval promotes, PII and secrets stay out,
 // and the dashboard, briefs and the CLI read the same store.

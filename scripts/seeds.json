@@ -3074,22 +3074,6 @@
       "testName": "Pi roster return rejects a snapshot overtaken by start and a fresh retry delivers once (#378)"
     },
     {
-      "id": "memory-goal-read-freshness",
-      "file": "src/memory/store.ts",
-      "search": "goals(project?: string): GoalView[] {\n    this.ensureFresh();",
-      "replacement": "goals(project?: string): GoalView[] {",
-      "testFile": "test/memory-store.test.ts",
-      "testName": "review of #378: deferred goal is indexed by the next writer's relevant read"
-    },
-    {
-      "id": "memory-suggestion-read-freshness",
-      "file": "src/memory/store.ts",
-      "search": "suggestions(project?: string): Suggestion[] {\n    this.ensureFresh();",
-      "replacement": "suggestions(project?: string): Suggestion[] {",
-      "testFile": "test/memory-store.test.ts",
-      "testName": "review of #378: deferred suggestion verdict is indexed by the next other store's relevant read"
-    },
-    {
       "id": "board-overdue-cache-clock",
       "file": "src/ui/index.html",
       "search": "releaseFilter,lanes,showAllDone,[...overdue]",
