@@ -1991,9 +1991,11 @@ task list polling does not. `hub_status` stays conductor-only.
 - Assignment/review publication has a role-specific fence after every await and
   immediately before publication. Existing supersession events, role generation
   and task state suppress obsolete envelopes; accept, done and approval count as
-  supersession even when the owner id is unchanged. Current metadata is re-read
-  before constructing a still-valid envelope, so reviewer-only changes refresh
-  reviewer content and quiet bookkeeping does not suppress valid owner delivery.
+  supersession even when the owner id is unchanged. Supersession returns the
+  current task rather than aborting the remaining operation. Current metadata is
+  re-read before constructing a still-valid envelope, so reviewer-only changes
+  refresh reviewer content and quiet bookkeeping does not suppress valid owner
+  delivery.
 - Queue `r` prefills `discard` for `queued` and `retry` for `needs_review`, never
   `completed` by default. Every resolve needs reason and confirmation. Queued
   discard removes queued originals; needs-review discard settles its receipt and
