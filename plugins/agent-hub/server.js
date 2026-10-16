@@ -16541,9 +16541,9 @@ async function connectLoop() {
           return void push(msg.envs ?? [msg.env], msg.deliveryId, msg.generation);
         if (!msg.deliveryId)
           return log("hub push without a delivery id dropped: this session cannot show channel pushes");
-        client.request({ t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, state: "needs_review", reason: "this session cannot show channel pushes" }).then((receipt) => {
+        client.request({ t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, state: "failed_safe", reason: "this session cannot show channel pushes" }).then((receipt) => {
           if (!receipt.ok)
-            log(`needs_review receipt for delivery ${msg.deliveryId} rejected by hub: ${receipt.error}`);
+            log(`failed_safe receipt for delivery ${msg.deliveryId} rejected by hub: ${receipt.error}`);
         });
       };
       hub = client;

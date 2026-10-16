@@ -2239,3 +2239,16 @@ await import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});
   expect(daemon.bus.queueList("claude").find(row => row.state === "needs_review")?.reason).toContain("fixture notification write threw");
   expect(daemon.bus.queueList("claude").some(row => row.state === "failed")).toBe(false);
 });
+
+test("AC1: a push-capable session cannot return a possibly visible push as failed_safe (#434)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", channel: true });
+  cleanup.push(() => peer.close());
+  const pushes: any[] = []; peer.onPush = message => pushes.push(message);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle");
+  await console_.request({ t: "send", body: "possibly visible", to: ["claude"] });
+  await until(() => pushes.some(message => message.t === "deliver"));
+  const delivery = pushes.find(message => message.t === "deliver");
+  expect((await peer.request({ t: "delivery_receipt", deliveryId: delivery.deliveryId, generation: delivery.generation, state: "failed_safe" })).ok).toBe(false);
+  expect(daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("dispatching");
+});

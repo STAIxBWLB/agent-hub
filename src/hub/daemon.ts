@@ -4069,9 +4069,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "delivery_receipt": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
-        if (c.role !== "peer" || !(peer instanceof WsPeer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
+        if (c.role !== "peer" || !(peer instanceof WsPeer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review", "failed_safe"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
+        if (msg.state === "failed_safe" && (!peer.pullOnly || bus.queueShow(msg.deliveryId)?.state !== "dispatching")) return void reply({ ok: false, error: "safe failure requires an unseen push to a pull-only session" });
         const reason = typeof msg.reason === "string" ? sanitize(msg.reason).replace(/\s+/g, " ").trim().slice(0, 300) : "";
-        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state === "needs_review" ? { reason: reason || "Claude bridge could not confirm notification delivery" } : {}) });
+        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state !== "accepted" ? { reason: reason || "Claude bridge could not confirm notification delivery" } : {}) });
         return void reply({ ok: true });
       }
       case "inbox": {
