@@ -529,10 +529,10 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     expect(calls.some((argv) => argv.includes("exit"))).toBe(false);
 
     // A failed receipt is settled by what is live: a launcher still running is waited for, never doubled.
-    record(true, "term-elsewhere");
+    record(true);
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("attachment not verified within 600 s");
     expect(elapsed).toBe(600_000);
-    expect(progress.terminals["restored:codex"]).toBe("failed");
+    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
     // ...and once the planned thread attached there, the failed receipt is the restoration.
     replacement.sessionId = "thread-T"; attachedThread = "thread-T";
@@ -1452,7 +1452,7 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
 function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed") {
-  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0 };
+  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
   mkdirSync(stateDir);
@@ -1498,7 +1498,8 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
       launcherPid: process.pid, launcherSignature: processSignature(process.pid), launchId: "launch-433", handle: shown.handle, incarnationId: shown.incarnationId, worktreeId: "wt", env: {} }]));
   }
   return { root, stateDir, planned, progress, op, control, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
-    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; } }), creates: () => creates,
+    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
+    replaceTerminal: () => { shown.handle = "term-replacement"; shown.incarnationId = "inc-replacement"; },
     cleanup: () => { server.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -1611,7 +1612,7 @@ for (const wrong of [false, true]) test(`#433 pending launcher ${wrong ? "reject
       .rejects.toThrow(wrong ? "different conversation" : "attachment not verified within 600 s");
     expect(f.elapsed()).toBe(wrong ? 211_000 : 600_000);
     expect(f.creates()).toBe(0);
-    expect(f.progress.terminals["restored:codex"]).toBe("pending");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
   } finally { f.cleanup(); }
 });
 
@@ -1625,6 +1626,25 @@ for (const identity of ["instance", "operation"] as const) test(`#433 pending la
       .rejects.toThrow(identity === "operation" ? "target identity changed" : "target daemon changed before peer restore");
     expect(f.creates()).toBe(0);
     expect(f.elapsed()).toBe(identity === "operation" ? 1000 : 0);
-    expect(f.progress.terminals["restored:codex"]).toBe("pending");
+    if (identity === "operation") expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    else expect(f.progress.terminals["restored:codex"]).toBe("pending");
+  } finally { f.cleanup(); }
+});
+
+
+test("#433 interrupted pending wait persists exact chosen terminal and refuses a replacement on resume", async () => {
+  const f = delayedManagedFixture("codex", "pending");
+  f.control.attachAfterMs = 210_000; f.control.interruptAtMs = 30_000;
+  let saved: ProjectProgress | undefined;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => { saved = JSON.parse(JSON.stringify(f.progress)); }))
+      .rejects.toThrow("coordinator interrupted");
+    expect(saved?.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new", worktreeId: "wt" });
+    f.control.interruptAtMs = Infinity;
+    f.replaceTerminal(); f.setAttached(true);
+    Object.assign(f.progress, saved);
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("saved terminal identity changed");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    expect(f.creates()).toBe(0);
   } finally { f.cleanup(); }
 });

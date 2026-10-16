@@ -642,7 +642,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           continue;
         }
         // #215: the pending row of the receipt table, used wherever a pending launch meets an attached session.
-        const settle = async (attached: string) => {
+        const settle = async (attached: string, recovered?: TerminalBinding) => {
           // #21: a Claude session that never got a first turn has no transcript, so `claude --resume S` can never
           // succeed and accepting its fresh attach loses nothing. Otherwise only the planned id, or a new session
           // the operator or the plan accepted, counts as restored.
@@ -659,18 +659,19 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           // a launch writes the waiver first, but this must not rely on that.
           // The planned session needs no waiver: the target's snapshot already expects it.
           if (attached !== original.sessionId && attached !== plannedBinding.sessionId) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: waiver() });
-          progress.terminals[key] = await revalidateTerminal(planned, progress, { ...original, sessionId: attached }, false); save();
+          progress.terminals[key] = await revalidateTerminal(planned, progress, { ...(recovered ?? original), sessionId: attached }, !!recovered); save();
         };
         // #215: a pending or failed receipt is settled by what is live now (the receipt table in the recovery spec).
         if (receipt === "pending" || receipt === "failed") {
           const evidence = await peerEvidence(planned, progress, original.peer);
           if (evidence.state === "live" && evidence.session) { await settle(evidence.session); continue; }
           // #433: a signed launcher of this target is an outstanding launch, not a failed restoration.
-          // Keep pending/failed until authenticated attachment and terminal revalidation both succeed.
+          // Persist the exact chosen terminal before waiting so an interrupted coordinator cannot adopt a replacement.
           if (evidence.state === "live" && evidence.terminal) {
             const binding = { ...original, ...evidence.terminal };
+            progress.terminals[key] = binding; save();
             const session = await awaitAttachment(planned, progress, op, binding, save, fresh() ? null : original.sessionId);
-            await settle(session); continue;
+            await settle(session, binding); continue;
           }
           if (evidence.state !== "gone") throw blocked(evidence);
           if (receipt === "pending") {
