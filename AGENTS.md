@@ -19,7 +19,8 @@ Run this before reporting any task complete, and paste the output. A failing tes
 
 ## Conventions
 
-- Zero third-party runtime dependencies. Keep the first-party `@staix/agent-mem` memory core exact-pinned (initial consumption: `0.1.1`); do not vendor its implementation. WebSocket, HTTP, sqlite, spawn and the test runner are Bun built-ins; the MCP SDK is a devDependency bundled into `plugins/agent-hub/server.js`.
+- Zero third-party runtime dependencies. Keep the first-party `@staix/agent-mem` memory core exact-pinned; do not vendor its implementation. WebSocket, HTTP, sqlite, spawn and the test runner are Bun built-ins; the MCP SDK is a devDependency bundled into `plugins/agent-hub/server.js`.
+- amem (`@staix/agent-mem`) is developed from this project's sessions: change it in `../agent-mem` on a branch + PR under that repo's `AGENTS.md`, publish it through its tag workflow (the CHANGELOG section becomes the GitHub Release notes), then raise the exact pin here. Do not add new calls to the claude-mem worker (`src/memory/client.ts`, `capture.ts`); new memory capability goes into amem, which must stay usable without the hub (agent-mem#13).
 - TS strict with `noUncheckedIndexedAccess`; relative imports carry the `.ts` extension.
 - Conventional commits in English, referencing the issue. Branch + PR, never commit to main.
 - Spec first: when the implementation has to differ from the spec, amend the spec in the same PR.
