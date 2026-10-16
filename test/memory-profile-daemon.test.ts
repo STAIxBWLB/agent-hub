@@ -54,7 +54,9 @@ async function hub(f: ReturnType<typeof fixture>) {
   const task = (op: string, args: Record<string, unknown>) => tools.request({ t: "task", op, args });
   const status = async () => {
     const reply = await person.request({ t: "status" });
-    expect(reply).toMatchObject({ t: "status", status: { memoryProfile: expect.any(Object) } });
+    expect(reply.t).toBe("status");
+    expect(typeof reply.status?.memoryProfile).toBe("object");
+    expect(reply.status.memoryProfile).not.toBeNull();
     return reply.status.memoryProfile;
   };
   return { daemon, person, peer, tools, task, status };
