@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageDigest } from "../src/cli/recovery-package.ts";
-import { preserveSource } from "../src/cli/upgrade-runtime.ts";
-import type { UpgradePlan } from "../src/cli/upgrade.ts";
+import { makeRecoveryDriver, preserveSource } from "../src/cli/upgrade-runtime.ts";
+import type { RecoveryOperation, UpgradePlan } from "../src/cli/upgrade.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -66,4 +66,16 @@ test("legacy dependency-free recovery keeps its historical digest (#412)", () =>
   const preserved = preserveSource(plan(f.root), f.home);
   expect(packageDigest(preserved)).toBe(expected);
   expect(existsSync(join(preserved, "node_modules"))).toBe(false);
+});
+
+test("a preserved runtime never falls back to the checkout dependency when its own copy is missing (#412)", async () => {
+  const f = fixture(), before = plan(f.root), home = join(f.root, ".agenthub");
+  const preserved = preserveSource(before, home);
+  rmSync(join(preserved, "node_modules/@staix/agent-mem"), { recursive: true });
+  // The original checkout is an ancestor and still has matching bytes; it must not mask the missing copy.
+  expect(() => preserveSource(before, home)).toThrow("memory runtime dependency is unavailable");
+  const operation = { sourceRoot: preserved, plan: before } as unknown as RecoveryOperation;
+  await expect(makeRecoveryDriver().stage(operation)).rejects.toThrow("memory runtime dependency is unavailable");
+  symlinkSync(f.dependency, join(preserved, "node_modules/@staix/agent-mem"));
+  expect(() => preserveSource(before, home)).toThrow("runtime package must not contain symlinks");
 });

@@ -36,13 +36,16 @@ export function exactVersion(version: string): string {
 const MEMORY_ASSETS = ["src", "bin", "package.json", "README.md", "LICENSE"] as const;
 
 /** The sole runtime dependency is a bounded first-party package, never an arbitrary dependency tree. */
-function memoryRuntime(root: string): string | undefined {
+function memoryRuntime(root: string, ownDependencies = false): string | undefined {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const deps = pkg.dependencies ?? {};
   if (!Object.keys(deps).length) return undefined;
   const version = deps["@staix/agent-mem"];
   if (Object.keys(deps).length !== 1 || typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error("unsupported runtime dependencies in recovery package");
-  let dir = dirname(createRequire(join(root, "package.json")).resolve("@staix/agent-mem"));
+  let dir = ownDependencies ? join(root, "node_modules/@staix/agent-mem")
+    : dirname(createRequire(join(root, "package.json")).resolve("@staix/agent-mem"));
+  if (ownDependencies && !existsSync(dir)) throw new Error("memory runtime dependency is unavailable");
+  if (ownDependencies && lstatSync(dir).isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
   for (;;) {
     const manifest = join(dir, "package.json");
     if (existsSync(manifest)) {
@@ -53,7 +56,7 @@ function memoryRuntime(root: string): string | undefined {
       }
     }
     const parent = dirname(dir);
-    if (parent === dir) throw new Error("memory runtime dependency is unavailable");
+    if (ownDependencies || parent === dir) throw new Error("memory runtime dependency is unavailable");
     dir = parent;
   }
 }
@@ -69,7 +72,7 @@ export function preserveRuntimeDependencies(root: string, destination: string): 
   }
 }
 
-export function packageDigest(root: string): string {
+export function packageDigest(root: string, options: { ownDependencies?: boolean } = {}): string {
   const hash = createHash("sha256");
   const file = (path: string, name: string) => { hash.update(name); hash.update("\0"); hash.update(readFileSync(path)); hash.update("\0"); };
   const visit = (directory: string, prefix = "") => {
@@ -83,7 +86,7 @@ export function packageDigest(root: string): string {
   // Only runtime assets and the exact first-party package; never private state or unrelated dependencies.
   for (const name of ["src", "plugins", "templates", ".claude-plugin"]) visit(join(root, name), `${name}/`);
   hash.update(readFileSync(join(root, "package.json")));
-  const memory = memoryRuntime(root);
+  const memory = memoryRuntime(root, options.ownDependencies);
   if (memory) for (const name of MEMORY_ASSETS) {
     const path = join(memory, name), stat = lstatSync(path), prefix = `node_modules/@staix/agent-mem/${name}`;
     if (stat.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
@@ -92,12 +95,12 @@ export function packageDigest(root: string): string {
   return hash.digest("hex");
 }
 
-export function verifyPackage(root: string, version: string): string {
+export function verifyPackage(root: string, version: string, options: { ownDependencies?: boolean } = {}): string {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const plugin = JSON.parse(readFileSync(join(root, "plugins/agent-hub/.claude-plugin/plugin.json"), "utf8"));
   if (pkg.name !== "@staix/agent-hub" || pkg.version !== version || plugin.version !== version ||
       !existsSync(join(root, "src/cli/main.js"))) throw new Error("staged package identity/version mismatch");
-  return packageDigest(root);
+  return packageDigest(root, options);
 }
 
 export async function registryRelease(version: string, run: RunCommand = runCommand): Promise<{ version: string; integrity: string }> {

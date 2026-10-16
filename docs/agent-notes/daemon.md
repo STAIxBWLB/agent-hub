@@ -41,4 +41,4 @@ Scope: the operator console, control WS and its protocol, state files, the dashb
 
 - A Kimi one-launch TUI admission ends on its owning detach, roster removal, matched launcher cleanup or the unclaimed 30 s deadline. An old socket or launcher never clears a newer admission. Pin --mode tui in the hub-opened terminal argv.
 
-- When preserving a recovery source, copy only the exact-pinned `@staix/agent-mem` package through `preserveRuntimeDependencies` in `src/cli/recovery-package.ts`; include its identity and bytes in `packageDigest`. Never copy the whole node_modules tree or link a preserved source to a mutable installation. Keep no-dependency release digests compatible.
+- When preserving a recovery source, copy only the exact-pinned `@staix/agent-mem` package through `preserveRuntimeDependencies` in `src/cli/recovery-package.ts`; include its identity and bytes in `packageDigest`. Never copy the whole node_modules tree or link a preserved source to a mutable installation. Verify preserved sources with `ownDependencies: true` so a missing or symlinked memory copy cannot resolve an ancestor installation. Keep no-dependency release digests compatible.
