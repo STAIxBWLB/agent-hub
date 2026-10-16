@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.29 and control protocol 16. Live verification
+This guide describes ahub 0.12.30 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -204,8 +204,12 @@ restarts until an explicit assignment or reservation. The later unassign also
 fences planner undo, so undo and re-pull cannot restore the removed reservation.
 Former queued assignment or review requests are withdrawn without resolving
 uncertain deliveries, and the former agent loses current authority. A withdrawal
-notice uses delivery evidence or accepted/claimed board evidence; withdrawing an
-unread queue alone sends none.
+notice uses delivery evidence or that peer's own accept/self-claim after the
+latest assignment; another owner's in-progress state or an earlier acceptance
+does not count. Withdrawing an unread queue alone sends none. If a later person
+assignment supersedes an escalation or offline relay, the stale success result
+and decision note are suppressed, but the former owner is still told the current
+owner and to stop working.
 
 `ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]` uses a
 checked console operation when a revision is present. Without it, existing CLI
@@ -555,7 +559,7 @@ PID-name matching. See the operations guide and the
 
 ## Install and start
 
-Use Bun 1.3 or newer. Install the released package and install its Claude
+Use Bun 1.4.2 or newer. Install the released package and install its Claude
 channel plugin:
 
 ```bash
@@ -918,6 +922,14 @@ The exact-pinned `@staix/agent-mem` 0.3.0 resolves `AMEM_HOME`, then `$AGENTHUB_
 The daemon checks its selector at hub operation entry and before candidate/counter writes. It does not hot-switch handles or provide an atomic fence against selection changes during an in-flight core call. Quiesce consumers and close their handles before migration or selection changes; reopen through the supported session-preserving lifecycle afterward. Candidate/counter storage remains `M/candidates.db`, independent of `G`; `amem review` on a generation is still refused. Every running hub using this home needs an authenticated receipt: a matching ready binding, or a generation-capable unbound receipt (`disabled` when native memory is off, `unavailable` when opening failed) proving it holds no memory handle. An unbound daemon and zero running hubs are quiesced for memory; a stale bound handle, unreadable registry or unknown runtime is not ready. Existing JSON memory/goal results remain unchanged; the additive binding receipt belongs to daemon status, profile-check and the decay object. This source integration does not authorize installing a new runtime, migrating real memory, restarting sessions or claiming real-machine sync/capture receipts. Migration/deactivation and their limits belong to [agent-mem](https://github.com/STAIxBWLB/agent-mem); see [the hub profile contract](memory.md#selected-memory-profile).
 
 Run `ahub memory profile-check [--json]` from the person's terminal for the read-only preflight. It identifies live registry owners by signed process identity and authenticated daemon replies, then reports their loaded memory package and bound home/profile. The receipt names the current `AGENTHUB_HOME` registry scope; zero results establish no live daemon in that inventory, not system-wide process absence. Inventory and check separate custom registries too when they share `AMEM_HOME`. A missing or unreadable runtime receipt never counts as a different home or permission to migrate.
+
+Before real migration, first upgrade every hub sharing the home to 0.12.30. Obtain positive ready or unbound/quiesced receipts in every relevant registry; then quiesce consumers and close bound handles before changing the selector. A matching ready handle proves compatibility but is still an open handle. Verify synthetic cross-writes before the separately approved real migration, then reopen through the supported session-preserving lifecycle afterward. Merely installing this release does not authorize migration or provide live capture/device-sync evidence.
+
+Managed agents read through `hub_memory_search`, `hub_memory_show` and `hub_memory_graph`, with the server's project identity, the `memory_read` capability and current privacy screening. They cannot supply another project; private turns are refused. The tools bound UTF-8 input/output, screen before counts and truncation, and exclude their arguments/results from hub-managed capture. `hub_memory_correct` has its own `memory_correct` capability and records a screened correction candidate, not a note change. See [the complete memory contract](memory.md) for caps and refusal semantics.
+
+Review candidates and rendered/delivered/cited counters stay in machine-local `M/candidates.db`, outside sync, import, recall, briefs, ask and graph evidence. Public changes-requested reviews with unmet items may propose a fail candidate; missing cause/retry details stay unknown. Shared-v1 acceptance is a person's `amem review` action with its TTY/policy checks; selected generations still refuse that command. Read-time `(stale?)` hints and plan-fail advice never change stored rows or task authority. Structured fail notes are validated against 4000 UTF-8 bytes before screening or writes, with no silent truncation.
+
+Recall presentation omits generated task-approval outcome notes and shows only nonempty reasons from generated changes-requested notes; an ordinary decision that merely resembles a header stays visible. Contracts and fails remain eligible. Capped recall lines preserve memory headers and end at word boundaries, and one delivery deduplicates ids across restored/current prefaces and shared note lines. Stored notes and brief evidence are unchanged; platform recall retains its budget split.
 
 Between your machines, through a private git remote, with long-term tasks that span them:
 
@@ -1830,21 +1842,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.29), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.30), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.29 ahub upgrade --to 0.12.29 --dry-run
-bunx --package @staix/agent-hub@0.12.29 ahub upgrade --to 0.12.29 --yes
+bunx --package @staix/agent-hub@0.12.30 ahub upgrade --to 0.12.30 --dry-run
+bunx --package @staix/agent-hub@0.12.30 ahub upgrade --to 0.12.30 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.29 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.30 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1876,14 +1888,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.29 --dry-run
+ahub upgrade --to 0.12.30 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.29 --yes
+ahub upgrade --to 0.12.30 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -1948,7 +1960,9 @@ release. The global CLI is promoted last.
 
 A lost commit or start reply is reconciled against the actual daemon identity,
 package digest, terminal binding, and phase receipt. An uncertain terminal
-creation is never repeated blindly. If Claude shows its development-channel confirmation screen, confirm it in
+creation is never repeated blindly. Recovery retains the exact-pinned first-party memory package with the preserved runtime, includes its identity and bytes in the digest, and refuses missing, symlinked or changed retained dependencies instead of resolving a mutable ancestor/global installation. It does not copy the full dependency tree.
+
+After creating a managed terminal, the coordinator saves its binding before waiting up to 90 seconds for authenticated attachment to the expected target hub and conversation. An idle terminal alone is not attachment proof. Timeout retains the terminal and its diagnostic receipt; resume waits on that same binding rather than opening a duplicate. The zero-turn Claude exception still applies only when no original transcript exists. If Claude shows its development-channel confirmation screen, confirm it in
 the captured terminal, then run `ahub recovery resume <operation-id>`; resume must not open a duplicate terminal.
 Kimi and local sessions may start fresh with preserved routing and task context.
 A Claude session that never persisted a transcript (zero turns) also starts fresh:
