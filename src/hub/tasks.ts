@@ -2296,7 +2296,8 @@ export class Tasks {
     if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
     this.d.notify(line);
-    this.d.share?.(by, line);
+    // Display identity only: a queued recall may already contain this saved entry. Stored/captured text stays unchanged.
+    this.d.share?.(by, native ? noteLine(by, kind, `mem:${native.id} ${title ? `${title}: ` : ""}${text}`) : line);
     return `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term${this.d.memory && !res ? "; claude-mem unavailable" : ""})` : ""}; the other agents get it with their next message`;
   }
 

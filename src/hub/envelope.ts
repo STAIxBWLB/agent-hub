@@ -133,6 +133,36 @@ export function keepNotes(body: string, max: number): string {
   return extra > 0 ? lines.filter((l) => !(NOTE_LINE.test(l) && extra-- > 0)).join("\n") : body;
 }
 
+/** The same rendered memory reference rides only once in a recipient's preface, including shared note lines. */
+export function uniqueMemoryLines(body: string): string {
+  const reference = (line: string) => /^(?:note from \S+ \[(?:decision|finding|contract|fail)\]: )?mem:([a-f0-9]{8,64})(?=\s|:|$)/i.exec(line)?.[1]?.toLowerCase();
+  const references = [...new Set(body.split("\n").flatMap(line => reference(line) ?? []))];
+  const identity = (id: string) => {
+    const extensions = references.filter(other => other.length > id.length && other.startsWith(id));
+    const terminals = extensions.filter(other => !extensions.some(longer => longer.length > other.length && longer.startsWith(other)));
+    // An ambiguous prefix cannot identify either full entry; keep both full references.
+    return terminals.length === 1 ? terminals[0]! : id;
+  };
+  const ids = new Set<string>(), headers = new Set<string>();
+  let removed = false;
+  const lines = body.split("\n").filter((line) => {
+    const memory = reference(line);
+    const seen = memory ? ids : line.startsWith("Hub memory:") ? headers : undefined;
+    const key = memory ? identity(memory) : line;
+    if (!seen) return true;
+    if (seen.has(key)) { removed = true; return false; }
+    seen.add(key);
+    return true;
+  });
+  return removed ? lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() : body;
+}
+
+/** Recovery and a new session can regenerate the same context. Keep distinct context and every new note. */
+export function mergePrefaces(older: string, newer: string): string {
+  const contains = (whole: string, part: string) => `\n\n${whole}\n\n`.includes(`\n\n${part}\n\n`);
+  return uniqueMemoryLines(contains(older, newer) ? older : contains(newer, older) ? newer : `${older}\n\n${newer}`);
+}
+
 /** Notes follow each other line by line; the first one after other text starts a paragraph. */
 export function appendNote(body: string, line: string): string {
   return `${body}${NOTE_LINE.test(body.slice(body.lastIndexOf("\n") + 1)) ? "\n" : "\n\n"}${line}`;

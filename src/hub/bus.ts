@@ -1,4 +1,4 @@
-import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import { DeliveryJournal, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 
@@ -327,7 +327,7 @@ export class Bus {
     this.queues.clear();
     for (const [id, queue] of Object.entries(snapshot.queues ?? {})) this.queues.set(id, queue.map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) })));
     this.prefaces.clear();
-    for (const [id, e] of Object.entries(snapshot.prefaces ?? {})) this.prefaces.set(id, { ...e, ...(e.to ? { to: [...e.to] } : {}) });
+    for (const [id, e] of Object.entries(snapshot.prefaces ?? {})) this.prefaces.set(id, { ...e, body: uniqueMemoryLines(e.body), ...(e.to ? { to: [...e.to] } : {}) });
     this.seen.clear();
     for (const e of snapshot.seen ?? []) this.seen.set(e.id, { ...e, ...(e.to ? { to: [...e.to] } : {}) });
     this.attempts.clear();
@@ -529,12 +529,12 @@ export class Bus {
 
   /** Context the hub wants the peer to see once: it rides in front of the next delivery instead of costing a turn of its own. */
   preface(id: PeerId, text: string): void {
-    const body = quoteNotes(text);
+    const body = uniqueMemoryLines(quoteNotes(text));
     const existing = this.prefaces.get(id);
     if (existing) {
-      // Recovery and session recall may both contribute context. Keep the original id/hop so a queued
-      // preface remains deduplicated and append the new, separately generated context.
-      this.prefaces.set(id, { ...existing, body: `${existing.body}\n\n${body}` });
+      // A fresh daemon recalls again after restoring queued context. Merge repeated blocks,
+      // retain distinct context and keep the original envelope id/hop for retry bookkeeping.
+      this.prefaces.set(id, { ...existing, body: mergePrefaces(existing.body, body) });
       this.persist();
       return;
     }
@@ -545,14 +545,14 @@ export class Bus {
   /** Another peer's shared note: rides in the preface like recall. The newest NOTES_KEPT stay; older ones remain in claude-mem. */
   note(id: PeerId, line: string): void {
     const existing = this.prefaces.get(id);
-    this.prefaces.set(id, existing ? { ...existing, body: keepNotes(appendNote(existing.body, line), NOTES_KEPT) } : newEnvelope(HUB, line, { to: [id], kind: "presence" }));
+    this.prefaces.set(id, existing ? { ...existing, body: keepNotes(uniqueMemoryLines(appendNote(existing.body, line)), NOTES_KEPT) } : newEnvelope(HUB, uniqueMemoryLines(line), { to: [id], kind: "presence" }));
     this.persist();
   }
 
   /** A preface that went out with a failed delivery comes back ahead of whatever was prefaced meanwhile, instead of replacing it. */
   private restorePreface(id: PeerId, env: Envelope): void {
     const now = this.prefaces.get(id);
-    this.prefaces.set(id, !now ? env : now.id === env.id ? now : { ...env, body: keepNotes(`${env.body}\n\n${now.body}`, NOTES_KEPT) });
+    this.prefaces.set(id, !now ? { ...env, body: uniqueMemoryLines(env.body) } : now.id === env.id ? { ...now, body: uniqueMemoryLines(now.body) } : { ...env, body: keepNotes(mergePrefaces(env.body, now.body), NOTES_KEPT) });
   }
 
   /** Returns the peers the envelope was queued for. */

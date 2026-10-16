@@ -7,7 +7,7 @@ import { realPath } from "../hub/project.ts";
 import type { MemoryClient } from "./client.ts";
 import { detectSignals, type Routing } from "../hub/routing.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
-import { looksSecret, type PromotionScreen } from "./store.ts";
+import { looksSecret, type PromotionScreen, type View as MemoryView } from "./store.ts";
 
 const PLATFORMS = ["claude", "codex", "kimi", "agent-hub"];
 /** Peers whose own hooks already inject their own platform's context at session start. */
@@ -55,7 +55,7 @@ export function trimToTokens(text: string, tokens: number): string {
   const max = tokens * 3;
   if (text.length <= max) return text;
   const cut = text.lastIndexOf("\n", max);
-  return `${text.slice(0, cut > 0 ? cut : max)}\n(trimmed)`;
+  return `${cut >= 0 ? text.slice(0, cut) : ""}\n(trimmed)`;
 }
 
 /** The worker answers unknown projects and empty filters with a status page, not context. */
@@ -80,6 +80,52 @@ export async function recallFor(peer: PeerId, client: MemoryClient, chain: strin
   // The budget is split per block, or the first platform could crowd the others out of a cross-platform recall.
   const share = Math.floor(tokens / found.length);
   return `${HEADER}\n\n${found.map((b) => trimToTokens(b, share)).join("\n\n")}`;
+}
+
+/** Display-only outcome classification. Contracts and fails are never mistaken for automatic decision notes. */
+export function recallDisplayText(note: Pick<MemoryView, "kind" | "text">): string | undefined {
+  if (note.kind !== "decision") return note.text;
+  const [first = "", ...rest] = note.text.split(/\r?\n/);
+  if (/^Task #\d+ approved by /.test(first)) return undefined;
+  if (/^Task #\d+ changes requested by /.test(first)) return rest.join("\n").trim() || undefined;
+  return note.text;
+}
+
+export const RECALL_LINE_CHARS = 200;
+type RecallNote = Pick<MemoryView, "id" | "kind" | "tier" | "title" | "text">;
+
+/** A complete-word excerpt with its memory reference intact, capped in Unicode code points. */
+export function recallMemoryLine(note: RecallNote, idChars = 8): string | undefined {
+  const text = recallDisplayText(note);
+  if (text === undefined) return undefined;
+  // A rejection's title is another outcome header; only its actionable detail belongs in this view.
+  const body = `${text === note.text && note.title ? `${note.title}: ` : ""}${text}`.replace(/\s+/g, " ").trim();
+  const header = `mem:${note.id.slice(0, idChars)} ${note.kind} ${note.tier}: `;
+  const chars = Array.from(body), available = RECALL_LINE_CHARS - header.length;
+  if (chars.length <= available) return header + body;
+  const count = available - 4;
+  const prefix = chars.slice(0, count).join("");
+  const whole = chars[count] === " " || prefix.endsWith(" ") ? prefix.trimEnd() : prefix.slice(0, Math.max(0, prefix.lastIndexOf(" ")));
+  return header + (whole ? `${whole} ...` : "...");
+}
+
+/** Filter before the display cap, so outcome noise cannot displace an older relevant contract or fail. */
+export function recallMemoryLines(notes: readonly RecallNote[], limit = 30): string[] {
+  const prefixes = new Map<string, string | null>();
+  for (const note of notes) {
+    const prefix = note.id.slice(0, 8), previous = prefixes.get(prefix);
+    prefixes.set(prefix, previous === undefined || previous === note.id ? note.id : null);
+  }
+  const ids = new Set<string>(), lines: string[] = [];
+  for (const note of notes) {
+    if (ids.has(note.id)) continue;
+    // A colliding short prefix is not an identity; its full id keeps both entries visible.
+    const line = recallMemoryLine(note, prefixes.get(note.id.slice(0, 8)) === null ? note.id.length : 8);
+    if (line === undefined) continue;
+    ids.add(note.id); lines.push(line);
+    if (lines.length >= limit) break;
+  }
+  return lines;
 }
 
 /** #258: the hub's own long-term entries for this project (and shared ones), newest first, within a token budget. */
