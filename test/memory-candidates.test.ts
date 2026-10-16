@@ -125,3 +125,39 @@ test("one telemetry observation projects and fully screens visible rows once for
   for (const id of ids) expect(fullScreens.get(id)).toBe(2);
   expect(sidecar.counters(project).every(row => row.rendered === 1 && row.delivered === 1)).toBe(true);
 });
+
+test("original exact and prefix ids follow a real promotion to its live correction and telemetry target", () => {
+  const { store, sidecar, project, note } = fixture();
+  const original = note("promoted original decision", { tier: "short" });
+  const promoted = store.promote(original, "person", project)!;
+  expect(promoted).not.toBe(original);
+  const rows = store.list({ project, includeSuperseded: true });
+  // Core 0.2.0 hides the original even from includeSuperseded; its original id stays a promotion alias.
+  expect(rows.some(row => row.id === original)).toBe(false);
+  expect(rows.find(row => row.id === promoted)?.promotedFrom).toBe(original);
+  const before = logs(store);
+  const candidates = new Set<string>();
+  for (const input of [original, original.slice(0, 8), `mem:${original}`]) {
+    const args = correctionInput({ id: input, text: "person should review this correction", reason: "original promotion alias remains valid" });
+    const target = resolveVisibleMemory(store, project, screen, args.id);
+    expect(target.id).toBe(promoted);
+    candidates.add(sidecar.put({ project, kind: "correction", target: { id: target.id, revision: candidateTargetRevision(target) }, proposedText: args.text, reason: args.reason }, "public"));
+  }
+  expect(candidates.size).toBe(1);
+  const telemetry = new MemoryTelemetry(sidecar, store, project, screen);
+  telemetry.record(`mem:${original} mem:${original.slice(0, 8)} mem:${promoted}`, { deliveryId: "promoted-alias" }, "cited");
+  expect(sidecar.counters(project)).toHaveLength(1);
+  expect(sidecar.counters(project)[0]).toMatchObject({ key: { entryId: promoted }, cited: 1, rendered: null, delivered: null });
+  expect(logs(store)).toEqual(before);
+});
+
+test("promotion alias resolution refuses a hidden terminal and an ordinary supersession", () => {
+  const { store, project, note } = fixture();
+  const original = note("promotion boundary", { tier: "short" });
+  const copy = store.promote(original, "person", project)!;
+  const hiddenTerminalScreen: MemoryScreen = rows => screen(rows.filter(row => !("id" in row && row.id === copy) && !row.text.includes(`"id":"${copy}"`)));
+  for (const input of [original, original.slice(0, 8)]) expect(() => resolveVisibleMemory(store, project, hiddenTerminalScreen, input)).toThrow("memory read unavailable");
+  const newest = note("ordinary newer personal decision");
+  store.supersede(copy, newest, "person", project);
+  for (const input of [original, original.slice(0, 8), copy]) expect(() => resolveVisibleMemory(store, project, screen, input)).toThrow("memory read unavailable");
+});

@@ -109,12 +109,37 @@ test("pull observes the completed journal transaction and an empty second pull a
   const out = bus.pull("codex")!;
   expect(out.map(e => e.body)).toEqual(["mem:abcdefgh contract long: retain this contract", env.body]);
   expect(peer.batches).toEqual([]);
-  expect(observations.map(o => [o.field, o.state])).toEqual([["rendered", "dispatching"], ["delivered", "completed"]]);
+  expect(observations.map(o => [o.field, o.state])).toEqual([["rendered", "completed"], ["delivered", "completed"]]);
   expect(observations[0]!.id).toBe(observations[1]!.id);
   expect(observations[1]!.out).toEqual(out);
   expect(journal.get(observations[1]!.id)?.out).toEqual(out);
   expect(bus.pull("codex")).toEqual([]);
   expect(observations).toHaveLength(2);
+});
+
+test("a rolled-back pull restores queue and preface without publishing memory observations", () => {
+  const { bus, journal, observations } = setup({}, true);
+  bus.preface("codex", "mem:abcdefgh contract long: retain this contract");
+  const env = publish(bus);
+  const before = bus.snapshot();
+  const journalBefore = journal.list("codex");
+  const transition = journal.transition.bind(journal);
+  let attemptedId: string | undefined;
+  journal.transition = (...args) => {
+    if (args[1] === "completed") {
+      attemptedId = args[0];
+      throw new Error("injected pull completion failure");
+    }
+    return transition(...args);
+  };
+  expect(() => bus.pull("codex")).toThrow("injected pull completion failure");
+  expect(attemptedId).toBeDefined();
+  expect(journal.get(attemptedId!)).toBeUndefined();
+  expect(journal.list("codex")).toEqual(journalBefore);
+  expect(bus.queueIds("codex")).toEqual([env.id]);
+  expect(bus.snapshot().prefaces).toEqual(before.prefaces);
+  expect(bus.storageError).toBe("delivery journal unavailable");
+  expect(observations).toEqual([]);
 });
 
 test("condensation telemetry measures actual transport output rather than its originals", async () => {

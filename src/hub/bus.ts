@@ -248,11 +248,11 @@ export class Bus {
     catch { this.storageError = "delivery journal unavailable"; throw new Error("delivery journal unavailable"); }
   }
 
-  private durableHandoff(peer: PeerId, deliveryId: string, originals: Envelope[], out: Envelope[]): void {
+  private durableHandoff(peer: PeerId, deliveryId: string, originals: Envelope[], out: Envelope[], observe = true): void {
     if (!this.journal) return;
     const delivery = { id: deliveryId, peer, state: "dispatching" as const, createdAt: Date.now(), originals, out };
     this.journal.checkpointDelivery(this.snapshotWithoutJournal(), delivery);
-    this.memoryDelivery(peer, deliveryId, out, "rendered", originals);
+    if (observe) this.memoryDelivery(peer, deliveryId, out, "rendered", originals);
   }
 
   private snapshotWithoutJournal(): BusSnapshot {
@@ -830,7 +830,7 @@ export class Bus {
     const deliveryId = crypto.randomUUID();
     try {
       this.journal?.transaction(() => {
-        this.durableHandoff(id, deliveryId, batch, batch); // its bus snapshot is the queue after this pull
+        this.durableHandoff(id, deliveryId, batch, batch, false); // observe only after this outer transaction commits
         this.journal!.transition(deliveryId, "completed", "read through hub_inbox");
       });
     } catch (error) {
@@ -839,7 +839,10 @@ export class Bus {
       this.storageError = "delivery journal unavailable";
       throw error;
     }
-    if (this.journal) this.memoryDelivery(id, deliveryId, batch, "delivered");
+    if (this.journal) {
+      this.memoryDelivery(id, deliveryId, batch, "rendered");
+      this.memoryDelivery(id, deliveryId, batch, "delivered");
+    }
     this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
     this.onQueues?.();
     return batch;
