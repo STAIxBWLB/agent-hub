@@ -81,8 +81,15 @@ test("the token budget is split per platform so the first one cannot crowd out t
 
 
 test("recall outcome classification keeps reasons, contracts and fails without treating ordinary mentions as outcomes (#412)", () => {
-  const display = (text: string, kind: "decision" | "contract" | "fail" = "decision") => recallDisplayText({ text, kind });
+  const auto = { peer: "claude", task: "agent-hub#7@1792000000000", title: "agent-hub task #7: title" };
+  const display = (text: string, kind: "decision" | "contract" | "fail" = "decision", meta: { peer: string; task: string | null; title: string | null } = auto) => recallDisplayText({ text, kind, ...meta });
   expect(display("Task #7 approved by claude: title\naccepted")).toBeUndefined();
+  // An agent's own decision that starts like an outcome header is not an automatic note (PR #419 review).
+  const own = "Task #7 approved by claude: so we keep the transport";
+  expect(display(own, "decision", { peer: "codex", task: "agent-hub#7@1792000000000", title: null })).toBe(own);
+  expect(display(own, "decision", { ...auto, task: null })).toBe(own);
+  expect(display(own, "decision", { ...auto, task: "agent-hub#8@1792000000000" })).toBe(own);
+  expect(display(own, "decision", { ...auto, title: "my decision" })).toBe(own);
   expect(display("Task #7 changes requested by claude: title\n  \n")).toBeUndefined();
   expect(display("Task #7 changes requested by claude: title\r\n  Fix the privacy screen.\r\nKeep the contract.  ")).toBe("Fix the privacy screen.\nKeep the contract.");
   expect(display("Task #7 approved bystander is not an outcome")).toBe("Task #7 approved bystander is not an outcome");
@@ -100,9 +107,10 @@ test("recall selection from a noisy store retains the exact fail, contract, deci
     const fail = store.note({ ...base, kind: "fail", text: "Do not retry the discarded approach." });
     const contract = store.note({ ...base, kind: "contract", text: "Preserve the privacy boundary." });
     const decision = store.note({ ...base, text: "Keep the existing transport." });
-    for (let i = 0; i < 35; i++) store.note({ ...base, text: `Task #${i + 1} approved by claude: outcome\nApproved.` });
-    store.note({ ...base, text: "Task #40 changes requested by claude: empty\n " });
-    const rejection = store.note({ ...base, title: "automatic outcome title", text: "Task #41 changes requested by claude: task title\nAdd the missing guard." });
+    const outcome = (n: number) => ({ ...base, peer: "claude", task: `agent-hub#${n}@1792000000000`, title: `agent-hub task #${n}: automatic outcome title` });
+    for (let i = 0; i < 35; i++) store.note({ ...outcome(i + 1), text: `Task #${i + 1} approved by claude: outcome\nApproved.` });
+    store.note({ ...outcome(40), text: "Task #40 changes requested by claude: empty\n " });
+    const rejection = store.note({ ...outcome(41), text: "Task #41 changes requested by claude: task title\nAdd the missing guard." });
     const log = join(home, "memory", "log", `${store.machine.id}.jsonl`);
     const before = readFileSync(log, "utf8");
     const notes = store.list({ project: "agent-hub", tier: "long", limit: Number.MAX_SAFE_INTEGER });

@@ -82,17 +82,21 @@ export async function recallFor(peer: PeerId, client: MemoryClient, chain: strin
   return `${HEADER}\n\n${found.map((b) => trimToTokens(b, share)).join("\n\n")}`;
 }
 
-/** Display-only outcome classification. Contracts and fails are never mistaken for automatic decision notes. */
-export function recallDisplayText(note: Pick<MemoryView, "kind" | "text">): string | undefined {
+/**
+ * Display-only outcome classification. Only the note Tasks.review writes counts as automatic: its generated header
+ * names the note's own task and author, and its title is the task title Tasks.note sets. An agent's decision that
+ * merely starts the same way stays recallable; contracts and fails are never outcomes.
+ */
+export function recallDisplayText(note: Pick<MemoryView, "kind" | "text"> & Partial<Pick<MemoryView, "peer" | "task" | "title">>): string | undefined {
   if (note.kind !== "decision") return note.text;
   const [first = "", ...rest] = note.text.split(/\r?\n/);
-  if (/^Task #\d+ approved by /.test(first)) return undefined;
-  if (/^Task #\d+ changes requested by /.test(first)) return rest.join("\n").trim() || undefined;
-  return note.text;
+  const m = /^Task #(\d+) (approved|changes requested) by (\S+): /.exec(first);
+  if (!m || m[3] !== note.peer || !note.task?.match(new RegExp(`#${m[1]}@\\d+$`)) || !note.title?.startsWith(`agent-hub task #${m[1]}: `)) return note.text;
+  return m[2] === "approved" ? undefined : rest.join("\n").trim() || undefined;
 }
 
 export const RECALL_LINE_CHARS = 200;
-type RecallNote = Pick<MemoryView, "id" | "kind" | "tier" | "title" | "text">;
+type RecallNote = Pick<MemoryView, "id" | "kind" | "tier" | "title" | "text"> & Partial<Pick<MemoryView, "peer" | "task">>;
 
 /** A complete-word excerpt with its memory reference intact, capped in Unicode code points. */
 export function recallMemoryLine(note: RecallNote, idChars = 8): string | undefined {
