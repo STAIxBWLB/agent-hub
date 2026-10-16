@@ -1,43 +1,10 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { hubGitSync } from "./git.ts";
 
-const canonical = (path: string): string => {
-  const absolute = resolve(path);
-  try {
-    return realpathSync(absolute);
-  } catch {
-    const parent = dirname(absolute);
-    return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
-  }
-};
-
-export function canonicalPath(path: string): string {
-  return canonical(path);
-}
-
-/**
- * realpathSync, except that Bun (1.3.14, and 1.4.2 still: #121) throws ENOENT for an existing path containing a
- * backslash (issue #26). Such a path goes to the system realpath, which handles it and returns every component as
- * stored on disk: guardPath checks names, and on a case-insensitive disk `.GIT/config` or `id_rſa` would otherwise
- * pass for another file. A missing path or a dangling symlink still throws, which guardPath relies on. Other paths take
- * realpathSync's answer unchanged.
- */
-export function realPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch (error) {
-    if (!resolve(path).includes("\\")) throw error; // a relative path can sit under a backslash directory too
-    // The path as given: resolve() would fold a `..` after a symlink by text. GNU realpath accepts a dangling last
-    // component unless told -e; the BSD one on macOS refuses it by default.
-    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
-    const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
-    if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error;
-    return r.stdout.slice(0, -1);
-  }
-}
+import { canonicalPath as canonical } from "../memory/platform.ts";
+export { canonicalPath, realPath } from "../memory/platform.ts";
 
 function gitRoot(dir: string): string | undefined {
   const result = hubGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });

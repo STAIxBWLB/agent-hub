@@ -1,21 +1,8 @@
-import { basename, dirname, sep } from "node:path";
+import { basename, dirname } from "node:path";
+import { DENY_NAMES, DENY_SEGMENTS } from "../memory/platform.ts";
 
-/**
- * The one denylist. tools.ts checks paths against it, sandbox.ts turns it into seatbelt rules, capture.ts keeps
- * matching calls out of memory. Two lists would drift, and the gap is where a secret leaks.
- */
-// `.agenthub/archive` holds the state directories `ahub reset --all` moved there: hub.db with task text, PII included.
-export const DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
-/** Regex sources, matched against a file's basename. */
-export const DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
-
-const hasSegment = (rel: string, seg: string) => `/${rel}/`.includes(`/${seg}/`);
-
-/** True when a path names something the worker must never read, write or report. `extra`: substrings from `local.deny`. */
-export function isDenied(path: string, extra: string[] = []): boolean {
-  const norm = path.split(sep).join("/");
-  return DENY_SEGMENTS.some((s) => hasSegment(norm, s)) || DENY_NAMES.some((re) => new RegExp(re).test(basename(norm))) || extra.some((e) => e && norm.includes(e));
-}
+// One core deny policy for path guards, sandbox rules, capture and memory extraction.
+export { DENY_NAMES, DENY_SEGMENTS, isDenied } from "../memory/platform.ts";
 
 /** Regex metacharacters only; `sbplString` quotes the finished regex. */
 const sbplEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

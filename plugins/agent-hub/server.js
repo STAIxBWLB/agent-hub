@@ -6922,24 +6922,16 @@ var require_dist = __commonJS(function(exports, module) {
 
 // src/hub/control-client.ts
 import { readFileSync as readFileSync2 } from "fs";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 
 // src/hub/project.ts
-import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
-import { basename, dirname, isAbsolute, join, resolve } from "path";
+import { existsSync, lstatSync, readFileSync } from "fs";
+import { dirname as dirname2, isAbsolute, join as join2, resolve as resolve2 } from "path";
 
-// src/hub/git.ts
-import { spawnSync } from "child_process";
-var SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
-var CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
-var hubGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
-var hubGitEnv = (env = process.env) => ({ ...env, GIT_TERMINAL_PROMPT: "0" });
-function hubGitSync(args, options) {
-  const argv = hubGitArgv(args);
-  return spawnSync(argv[0], argv.slice(1), { ...options, env: hubGitEnv(options.env ?? process.env) });
-}
-
-// src/hub/project.ts
+// src/memory/platform.ts
+import { realpathSync } from "fs";
+import { basename, dirname, join, resolve, sep } from "path";
+import { spawnSync, execFileSync } from "child_process";
 var canonical = (path) => {
   const absolute = resolve(path);
   try {
@@ -6949,21 +6941,33 @@ var canonical = (path) => {
     return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
   }
 };
+function canonicalPath(path) {
+  return canonical(path);
+}
+var SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
+var CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
+var memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
+var memoryGitEnv = (env = process.env) => ({ ...env, GIT_TERMINAL_PROMPT: "0" });
+function memoryGitSync(args, options) {
+  const argv = memoryGitArgv(args);
+  return spawnSync(argv[0], argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
+}
+// src/hub/project.ts
 function gitRoot(dir) {
-  const result = hubGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const result = memoryGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (result.status !== 0)
     return;
   const root = result.stdout.trim();
-  return root ? canonical(root) : undefined;
+  return root ? canonicalPath(root) : undefined;
 }
 function hasConfig(dir) {
-  return existsSync(join(dir, ".agenthub", "config.json"));
+  return existsSync(join2(dir, ".agenthub", "config.json"));
 }
 function projectRoot(cwd) {
-  const input = isAbsolute(cwd) ? cwd : resolve(cwd);
+  const input = isAbsolute(cwd) ? cwd : resolve2(cwd);
   let dir;
   try {
-    dir = canonical(input);
+    dir = canonicalPath(input);
     if (!lstatSync(dir).isDirectory())
       throw new Error(`${cwd} is not a directory`);
   } catch (error) {
@@ -6971,27 +6975,27 @@ function projectRoot(cwd) {
   }
   const boundary = gitRoot(dir);
   const stop = boundary ?? parseRoot(dir);
-  for (let current = dir;; current = dirname(current)) {
+  for (let current = dir;; current = dirname2(current)) {
     if (hasConfig(current))
-      return canonical(current);
-    if (current === stop || current === dirname(current))
+      return canonicalPath(current);
+    if (current === stop || current === dirname2(current))
       break;
   }
   return boundary ?? dir;
 }
 function parseRoot(dir) {
   let current = dir;
-  while (dirname(current) !== current)
-    current = dirname(current);
+  while (dirname2(current) !== current)
+    current = dirname2(current);
   return current;
 }
 function stateMarker(stateDir) {
-  for (const file of [join(stateDir, "project.json"), join(stateDir, "status.json")]) {
+  for (const file of [join2(stateDir, "project.json"), join2(stateDir, "status.json")]) {
     try {
       const value = JSON.parse(readFileSync(file, "utf8"));
       const root = value.root ?? value.cwd;
       if (typeof root === "string")
-        return canonical(root);
+        return canonicalPath(root);
     } catch {}
   }
   return;
@@ -7000,15 +7004,15 @@ function projectContext(cwd, env = process.env) {
   const root = projectRoot(cwd);
   const override = env.AGENTHUB_STATE_DIR?.trim();
   if (!override)
-    return { root, stateDir: canonical(join(root, ".agenthub", "state")) };
+    return { root, stateDir: canonicalPath(join2(root, ".agenthub", "state")) };
   const declared = env.AGENTHUB_PROJECT_DIR?.trim();
-  const stateDir = canonical(override);
+  const stateDir = canonicalPath(override);
   const recorded = stateMarker(stateDir);
   if (recorded === root)
     return { root, stateDir };
-  if (!recorded && declared && canonical(declared) === root)
+  if (!recorded && declared && canonicalPath(declared) === root)
     return { root, stateDir };
-  return { root, stateDir: canonical(join(root, ".agenthub", "state")) };
+  return { root, stateDir: canonicalPath(join2(root, ".agenthub", "state")) };
 }
 
 // src/hub/control-client.ts
@@ -7019,8 +7023,8 @@ var PROTOCOL = 16;
 var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
-    const token = readFileSync2(join2(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync2(join3(stateDir, "status.json"), "utf8"));
+    const token = readFileSync2(join3(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     return {
@@ -7318,7 +7322,7 @@ var OUTCOMES_KEPT_MS = 7 * 24 * 3600000;
 // src/hub/roles.ts
 import { createHash } from "crypto";
 import { constants, closeSync, fstatSync, lstatSync as lstatSync2, openSync, readSync, readdirSync } from "fs";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 
 // templates/roles/dev/software-architect.md
 var software_architect_default = `---
@@ -7738,7 +7742,7 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join3(cwd, ".agenthub"), dir = join3(config, "roles");
+    const config = join4(cwd, ".agenthub"), dir = join4(config, "roles");
     for (const path of [config, dir]) {
       const stat = lstatSync2(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
@@ -7750,7 +7754,7 @@ function loadRoleCatalog(cwd) {
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join3(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join4(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -16153,7 +16157,7 @@ class StdioServerTransport {
 
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync3 } from "fs";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
@@ -16331,7 +16335,7 @@ var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync3(join5(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -16344,7 +16348,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync3(join5(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -16371,7 +16375,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync3(join4(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync3(join5(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -16400,7 +16404,7 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync3(join4(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync3(join5(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;

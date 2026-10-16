@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hubGitSync } from "../src/hub/git.ts";
+import { memoryGitArgv } from "../src/memory/platform.ts";
+import { hubGitArgv, hubGitSync } from "../src/hub/git.ts";
 import { repoOf, snapshot } from "../src/hub/snapshots.ts";
 
 /** A repository whose config names a program for every mechanism the helper disables; each writes its own marker. */
@@ -67,19 +68,25 @@ test("a repo-configured fsmonitor, hooks or external-diff program runs for a pla
   }
 });
 
-test("no direct git spawn under src/ outside the helper and the sandboxed tool (#281)", () => {
+test("core platform is the sole git argv builder; no direct git spawn outside the sandboxed tool (#281, #412)", () => {
   const src = join(import.meta.dir, "..", "src");
-  const offenders: string[] = [];
+  const offenders: string[] = [], builders: string[] = [];
+  expect(hubGitArgv).toBe(memoryGitArgv);
   const direct = /\bspawn(?:Sync)?\(\s*(?:\[\s*)?["'`]git["'`]/;
   const walk = (dir: string) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith(".ts") && p !== join(src, "hub", "git.ts") && p !== join(src, "local", "tools.ts") && direct.test(readFileSync(p, "utf8"))) offenders.push(p);
+      else if (e.name.endsWith(".ts")) {
+        const text = readFileSync(p, "utf8");
+        if (p !== join(src, "local", "tools.ts") && direct.test(text)) offenders.push(p);
+        if (/\b(?:const|function)\s+(?:memoryGitArgv|hubGitArgv)\b/.test(text)) builders.push(p);
+      }
     }
   };
   walk(src);
   expect(offenders).toEqual([]);
+  expect(builders).toEqual([join(src, "memory", "platform.ts")]);
   // What this guard does not catch: a variable holding "git", execFile, or an absolute path to the binary. It is a
   // tripwire for the two spawn idioms this codebase uses, not a proof. src/local/tools.ts is exempt: its git argv
   // runs inside the sandbox through sandboxedExec.

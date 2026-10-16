@@ -2,7 +2,15 @@
 
 The hub's own memory (#258): notes the agents and the hub save while they work, kept in two tiers and linked into a
 graph by what they are about. It sits beside claude-mem, which stays the capture and session-recall source where it is
-installed. Every machine keeps its own copy in `~/.agenthub/memory/` (directory 0700, files 0600).
+installed. Every machine keeps its own copy (directory 0700, files 0600).
+
+## Data directory
+
+`src/memory/home.ts` resolves the store directory in this order: `AMEM_HOME`, then
+`$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. Blank environment values are ignored.
+An explicit `StoreOptions.home` retains its existing parent-directory meaning: the store is under `<home>/memory`.
+The test preload (`test/hub-home.ts`) clears inherited `AMEM_HOME` and supplies an isolated `AGENTHUB_HOME` when none
+is provided; a test can set its own scoped `AMEM_HOME` afterward.
 
 ## Turning it on and off
 
