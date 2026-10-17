@@ -2952,7 +2952,8 @@ export async function startDaemon(opts: DaemonOptions) {
       return startPeer(peer, peer === "pi" || peer === "kimi" ? { mode: "headless", ...(resume ?? {}) } : {});
     }
     if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
-    const words = [...startWords(peer, mode), ...(resume ? ["--session-id", resume.sessionId, ...(resume.sessionFile ? ["--session-file", resume.sessionFile] : []), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : [])] : [])];
+    const words = [...startWords(peer, mode)];
+    if (resume) words.push("--session-id", resume.sessionId, ...(resume.sessionFile ? ["--session-file", resume.sessionFile] : []), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : []));
     const command = `ahub ${resume ? words.map(shellQuote).join(" ") : words.join(" ")}`;
     const since = Date.now() - (opening.get(peer) ?? 0);
     if (since < PEER_START_RETRY_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };
