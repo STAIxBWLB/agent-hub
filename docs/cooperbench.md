@@ -46,7 +46,7 @@ bun scripts/benchmarks/native.ts \
   --probe-target /tmp/agent-hub-cooperbench-upstream/dataset/pallets_click_task/task2068/feature1/tests.patch \
   --codex-bin /absolute/path/to/the/pinned/codex \
   --protect /tmp/agent-hub-cooperbench-upstream \
-  --protect /Users/yj.lee/workspace/work/dev/agent-hub/.agenthub/state/benchmarks \
+  --protect <project>/.agenthub/state/benchmarks \
   --protect /private/tmp/ahub-cc-bench-20261002-v3 \
   --cases 0
 ```

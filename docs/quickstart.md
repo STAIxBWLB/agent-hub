@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.31
+bun add -g github:STAIxBWLB/agent-hub#v0.12.32
 ahub setup
 ```
 
@@ -30,9 +30,11 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to 0.12.31
+## Upgrading to 0.12.32
 
-Existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
+The upgrade runs with the target release's own coordinator. If the operation blocks because a restored Codex, Claude or Pi terminal disappeared, the person runs `ahub recovery reattach <operation-id> codex|claude|pi` to relaunch that peer with its recorded session (one relaunch per receipt), then `ahub recovery resume` to finish.
+
+From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
 ```bash
 ahub jcode --mode headless
@@ -83,6 +85,7 @@ or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local]
 | `ahub board` | who has what; `ahub task show <id>` for one task |
 | `ahub task cancel <id> --reason <text>` | close obsolete work without approving it or stopping a native turn |
 | `ahub settings set planner <peer>` | pin the planner; status reports whether it came from settings, roles or the automatic choice |
+| `ahub settings reload` | apply edited config files without a restart; guarded values wait for your `y` in this terminal, and restart-only keys stay pending |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
 | `ahub memory profile-check` | a person's read-only check of running memory bindings in the current registry |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
@@ -110,8 +113,9 @@ contents: inspect them with `ahub tail`, then use `ahub permit <id> <option>` to
 allow. They can be denied on the page. PII task details remain available only via
 `ahub task show <id>` in the terminal. The page also starts a peer in its start
 mode (a TUI opens in a terminal when the hub has a terminal provider) and shows
-the settings; raising one needs `ahub ui --settings` or `ahub settings` in a
-terminal. See the operations guide, "Settings from the dashboard and the
+the settings with a Reload configuration button; raising one needs `ahub ui --settings`
+or `ahub settings` in a terminal, and guarded values from an edited file need
+`ahub settings reload` there. See the operations guide, "Settings from the dashboard and the
 terminal" and "Start modes".
 
 `ahub ui --no-open` prints a one-time link instead of launching a browser. Open it
