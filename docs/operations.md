@@ -1507,8 +1507,10 @@ The configured `kimi_cmd` must be a single executable or end in exactly `acp`;
 the TUI uses the executable or drops that final word. Other wrappers are refused
 with the headless command rather than guessed.
 
-The TUI is pull-only. Its model reads `hub_inbox` at the start of work and before
-reporting, and shares results explicitly with `hub_send`. Status, the console and
+The TUI is pull-only. Its model reads `hub_inbox` at the start of work, between
+steps of longer work and before reporting, and shares results, and mid-work
+blockers or changed contracts, explicitly with `hub_send` addressed with `to`
+(progress-only notes `[FYI]`). Status, the console and
 the dashboard show `pull-only`, the waiting count and the last inbox read. Messages
 and important markers do not push or interrupt it. There is no hub busy state,
 watchdog, console approval, hub permission mode, context reading, automatic quota
