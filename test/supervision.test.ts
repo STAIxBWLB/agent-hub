@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import type { Task } from "../src/hub/board.ts";
+import { Board, type Task } from "../src/hub/board.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { Bus } from "../src/hub/bus.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { loadRouting } from "../src/hub/routing.ts";
 import { SupervisionFeed, type SupervisionNotice, type SupervisionScope } from "../src/hub/supervision.ts";
 
 const task = (id: number, by = "claude", state: Task["state"] = "in_progress"): Task => ({
@@ -158,4 +164,24 @@ test("#438 cancelled historical roles do not trigger scoped offline or budget su
   expect(f.feed.peerOffline("kimi")).toBe(false); expect(f.feed.budgetPaused("codex", 180_000)).toBe(false); expect(f.notices).toEqual([]);
   f.tasks.push(task(2));
   expect(f.feed.peerOffline("kimi")).toBe(true); expect(f.feed.budgetPaused("codex", 180_000)).toBe(true);
+});
+test("#438 Tasks stall hook emits one ids-only supervision item per cause within configured scope", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-stall-supervision-")), board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
+  let scope: SupervisionScope = "own";
+  const notices: SupervisionNotice[] = [];
+  const feed = new SupervisionFeed({ conductor: () => "claude", scope: () => scope, tasks: () => board.list(), publicTitle: () => "PRIVATE TITLE", isPrivate: () => false, emit: notice => { notices.push(notice); } });
+  const tasks = new Tasks({ board, bus, cwd: root, project: "stall-fixture", routing: () => loadRouting(root), notify: () => {}, stallNotice: stall => { feed.taskStalled(stall); } });
+  try {
+    const owned = await tasks.propose("claude", { title: "PRIVATE TITLE", detail: "PRIVATE DETAIL", class: "implement" });
+    expect(notices).toHaveLength(1); expect(notices[0]).toMatchObject({ peer: "claude", task: owned.id, kind: "task", priority: "status" });
+    expect(notices[0]?.body).toContain(`#${owned.id}`); expect(notices[0]?.body).toContain("no-eligible-peer");
+    await tasks.releaseReady(); await tasks.releaseReady(); expect(notices).toHaveLength(1);
+    board.update(owned.id, "user", "reserved", { reserved: "pi" }); await tasks.releaseReady();
+    expect(notices).toHaveLength(2); expect(notices[1]?.body).toContain("reservation"); expect(notices[1]?.body).toContain("pi");
+    await tasks.releaseReady(); expect(notices).toHaveLength(2);
+    await tasks.propose("user", { title: "PRIVATE OTHER", class: "implement" }); expect(notices).toHaveLength(2);
+    scope = "off"; await tasks.propose("claude", { title: "PRIVATE OFF", class: "implement" }); expect(notices).toHaveLength(2);
+    scope = "all"; const other = await tasks.propose("user", { title: "PRIVATE ALL", class: "implement" }); expect(notices).toHaveLength(3); expect(notices[2]?.task).toBe(other.id);
+    expect(JSON.stringify(notices)).not.toContain("PRIVATE");
+  } finally { board.close(); rmSync(root, { recursive: true, force: true }); }
 });

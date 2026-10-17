@@ -7044,6 +7044,7 @@ function readControl(stateDir) {
       cwd: status.cwd,
       protocol: status.protocol,
       pid: status.pid,
+      features: Array.isArray(status.features) ? status.features.filter((feature) => typeof feature === "string") : [],
       ...typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}
     };
   } catch {
@@ -7053,6 +7054,7 @@ function readControl(stateDir) {
 
 class ControlClient {
   ws;
+  features = [];
   nextRid = 1;
   pending = new Map;
   onPush = () => {};
@@ -7116,6 +7118,7 @@ class ControlClient {
         if (expected.projectId && reply.projectId !== expected.projectId || expected.instanceId && reply.instanceId !== expected.instanceId || expected.projectRoot && reply.cwd !== expected.projectRoot) {
           return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
         }
+        client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature) => typeof feature === "string") : []);
         clearTimeout(timer);
         resolve(client);
       });
@@ -16272,6 +16275,7 @@ var TASK_TOOLS = [
   tool("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str } }, ["id", "check"]),
   tool("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str }, ["run"]),
   tool("hub_check_cancel", "Cancel your task-bound isolated check; only its owner or the person may cancel.", { run: str }, ["run"]),
+  tool("hub_delivery_retry", "Request one redelivery of your own needs_review delivery. An earlier attempt may have effects: inspect those effects before acting. Refuses another peer's row or any lineage already explicitly retried; a repeated uncertain row needs the person. Never completes/discards a delivery or changes task state.", { delivery_id: { type: "string", minLength: 1, maxLength: 256 } }, ["delivery_id"]),
   tool("hub_backlog_list", "Read public backlog cards with planning revisions. Configured planners only; PII remains a stub.", {}),
   tool("hub_backlog_plan", "Plan an unpinned backlog item outside frozen releases with the revision you read and a bounded reason. A person's rank is retained. Actual dates cannot be set.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", maxLength: 1000 }, fields: { type: "object", properties: { rank: { type: ["integer", "null"], minimum: 0 }, priority: { type: ["integer", "null"], minimum: 0, maximum: 3 }, release: { type: ["integer", "null"], minimum: 1 }, plannedStart: { type: ["integer", "null"], minimum: 1 }, due: { type: ["integer", "null"], minimum: 1 }, deps: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, reserved: { type: ["string", "null"], minLength: 1, maxLength: 32 } }, additionalProperties: false } }, ["id", "revision", "reason", "fields"]),
   tool("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
@@ -16280,10 +16284,11 @@ var TASK_TOOLS = [
   tool("hub_release_list", "Read public release scope and planned/actual dates for phased planning. Configured planners only.", {}),
   tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, role: { type: "string", description: "catalog role id for this task class; guidance only, no routing or authority change" }, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it. With after, the owner is reserved: offered the task first once it is ready" }, after: { type: "array", items: { type: "integer" }, description: "ids of tasks that must be approved first; until then this one waits, offered to nobody, and cannot be claimed" }, backlog: { type: "boolean", description: "stage unoffered work; owner is only a reservation, even when naming yourself" }, urgent: { type: "boolean", description: "hand it over even when its owner is paused for quota only briefly" }, goal: { type: "string", description: "id of this project's long-term task (ahub goal list) the work is part of" } }, ["title"]),
   tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it.", { id, plan: acceptPlan }, ["id"]),
+  tool("hub_task_cancel", "Cancel unaccepted proposed/backlog work you proposed as its configured planner; accepted work is person-only. Keeps history and does not stop a native turn or delete files.", { id, reason: str, superseded_by: str, revision: { type: "integer", minimum: 0 } }, ["id", "reason"]),
   tool("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer.", { id, reason: str }, ["id"]),
   tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs }, ["id", "summary"]),
   tool("hub_sdlc_record", "Record artifact ids or claimed local checks on your task. This grants no authority or external-check evidence. Only its owner/reviewer or the person may record; only its reviewer/person may name a reviewed head or phase checklist. Phase evidence refs are content hashes, not external verification.", { id, receipt: { type: "object", properties: { stage: { type: "string", enum: ["spec", "plan", "implement", "review", "verify", "merge", "release"] }, repo: str, issue: id, pr: id, localHead: str, localResult: { type: "string", enum: ["passed", "failed", "unknown"] }, reviewedHead: str, phase: { type: "object", properties: { id: str, head: str, tasks: { type: "array", maxItems: 64, items: { type: "object", properties: { id, after: { type: "array", maxItems: 16, items: id } }, required: ["id", "after"], additionalProperties: false } }, criteria: { type: "array", maxItems: 32, items: { type: "object", properties: { id: str, required: { type: "boolean" }, result: { type: "string", enum: ["verified", "failed", "unverified"] }, refs: { type: "array", maxItems: 8, items: str } }, required: ["id", "required", "result", "refs"], additionalProperties: false } } }, required: ["id", "tasks", "criteria"], additionalProperties: false } }, additionalProperties: false } }, ["id", "receipt"]),
-  tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested"] }, ready: { type: "boolean", description: "only proposed tasks with nothing left to wait for" } }),
+  tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested", "cancelled"] }, ready: { type: "boolean", description: "only proposed tasks with nothing left to wait for" } }),
   tool("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result (hub_task_show has it, with the done summary), and list what is unmet. Two changes_requested in a row move the task to another peer.", { id, head: { type: "string", description: "full SHA actually reviewed; enforce binds approval to the current PR head" }, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str, unmet: { type: "array", items: str, description: "each requirement of the plan or detail that the change does not meet" } }, ["id", "verdict"]),
   tool("hub_checkpoint", "Answer a checkpoint request from the hub (quota or context window pressure): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str, request_id: { type: "string", description: "The request id supplied by a context checkpoint request; required for context checkpoints" } }, ["summary"]),
   tool("hub_memory_search", "Search daemon-scoped visible memory, fails first. Query <=200 UTF-8 bytes; default 8, max 20 lines; whole output <=4 KB. Incomplete excerpts are marked. No project argument.", { query: { type: "string", maxLength: 200, description: "At most 200 UTF-8 bytes, enforced by the daemon" }, limit: { type: "integer", minimum: 1, maximum: 20 } }, ["query"]),
@@ -16344,11 +16349,36 @@ function profileTaskTools(profile = "dev", stages) {
   });
 }
 
+// src/hub/delivery-hints.ts
+var DELIVERY_RETRY_WARNING = sanitize("Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.");
+function renderHeldHint(value, now = Date.now(), recipientRetry = true) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return "";
+  const held = value;
+  const kinds = new Set(["chat", "task", "review", "status", "budget", "presence"]);
+  try {
+    if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > 32 || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096)
+      return "";
+    if (held.rows.some((row) => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.length || row.id.length > 256 || !Number.isFinite(row.createdAt) || !Array.isArray(row.senders) || !Array.isArray(row.kinds) || row.senders.some((sender) => typeof sender !== "string" || sender.length > 256) || row.kinds.some((kind) => !kinds.has(kind))))
+      return "";
+  } catch {
+    return "";
+  }
+  const rows = held.rows.map((row) => `${sanitize(row.id)} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
+  const action = recipientRetry ? "Use hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person." : "Ask the person to resolve these held deliveries; this delivery-only peer cannot initiate recipient retry.";
+  const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}
+${rows.join(`
+`)}
+${action}`;
+  return Buffer.byteLength(out, "utf8") <= 4096 ? out : `Held hub deliveries: ${held.count} (metadata truncated; ask the person to inspect the queue).`;
+}
+
 // src/adapters/claude-channel.ts
 var stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 var peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 var toolsMode = process.env.AGENTHUB_MODE === "tools";
+var deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
 var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles() {
   const read = (name) => {
@@ -16462,15 +16492,23 @@ var hub;
 var detached;
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 var pendingQueued;
-function withPendingHint(result) {
-  if (channel || toolsMode || !pendingQueued || pendingQueued.important < 1)
-    return result;
+async function withPendingHint(result, includeQueued = true) {
   const r = result;
-  const last = r.content?.[r.content.length - 1];
-  if (last?.type === "text" && typeof last.text === "string")
-    last.text += `
+  if (includeQueued && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
+    const last = r.content?.[r.content.length - 1];
+    if (last?.type === "text" && typeof last.text === "string")
+      last.text += `
 
 (${pendingQueued.important} important hub message(s) waiting: call hub_inbox before starting long local work)`;
+  }
+  if (hub && r.content) {
+    try {
+      const response = await hub.request({ t: "delivery_holds" }, 1000);
+      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
+      if (hint)
+        r.content.push({ type: "text", text: hint });
+    } catch {}
+  }
   return result;
 }
 async function push(envs, deliveryId, generation) {
@@ -16620,7 +16658,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           }
         ] : []
       ],
-      ...profileTaskTools(profile, lifecycleStages).filter((tool) => lifecycleStages !== undefined || tool.name !== "hub_sdlc_record"),
+      ...profileTaskTools(profile, lifecycleStages).filter((tool) => (lifecycleStages !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
       ...CONDUCTOR_TOOLS
     ]
   };
@@ -16675,7 +16713,7 @@ async function callTool(req) {
   }
   return text(`unknown tool ${name}`);
 }
-server.setRequestHandler(CallToolRequestSchema, async (req) => req.params.name === "hub_inbox" ? callTool(req) : withPendingHint(await callTool(req)));
+server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox"));
 await server.connect(new StdioServerTransport);
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));

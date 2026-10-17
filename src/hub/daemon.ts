@@ -2,6 +2,7 @@ import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-ru
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied } from "../local/deny.ts";
 import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
+import { renderHeldHint } from "./delivery-hints.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
 import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
@@ -55,7 +56,7 @@ import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
 import { Briefs } from "../memory/brief.ts";
-import { Board, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
+import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
@@ -789,7 +790,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // silence without facts would leave overlapping owners blind. Facts and silence ask the same question, so both switch
   // together. Cached until the board changes: it is asked per recipient of every message.
   let turnFreeNow: boolean | undefined;
-  const turnFree = (): boolean => (turnFreeNow ??= coordination === "turn-free" && !board.list().some((t) => t.state !== "approved" && tasks.isPii(t)));
+  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
+  const turnFree = (): boolean => ![...turns.values()].some(turn => turn.private) && (turnFreeNow ??= coordination === "turn-free" && !board.list().some((t) => !isClosedTaskState(t.state) && tasks.isPii(t)));
   /**
    * Why `to` does not get an agent's message (issue #107): sender and recipient are in one silent cohort, and the sender
    * has not stopped since its cohort task closed. Workflow events and anything to the console are never held back.
@@ -1237,6 +1239,7 @@ export async function startDaemon(opts: DaemonOptions) {
     sweepHeld: () => stopping || recoveryActive(),
     cancellationHeld: () => stopping || recoveryActive(),
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
+    stallNotice: stall => { supervision.taskStalled(stall); },
     roles: config.roles,
     turnFree,
     capable: (peer) => capable.has(peer),
@@ -1297,7 +1300,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const facts: Facts = new Facts({ root: opts.cwd, repo: factsRepo, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => repositoryFacts ? (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)) : undefined, peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []), projection: file => projections.project(file) });
   const progress = new ProgressObserver({
     tasks: () => board.list(),
-    isPrivate: () => board.list().some(task => task.state !== "approved" && tasks.isPii(task)),
+    isPrivate: () => [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task)),
     inference: { escalate: (conversation, turn) => inference?.escalate(conversation, turn) ?? Promise.resolve(undefined) },
     emit: conductorProgressSink(event, supervision),
     notify,
@@ -1480,7 +1483,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return undefined;
   };
   const activityRings = { kimi: new ActivityRing(), qwen: new ActivityRing() };
-  const contextPii = (peer: PeerId) => board.list().some(t => t.state !== "approved" && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
+  const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some(t => !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
   const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {
     // One outstanding request per peer. A quota transition may proceed without a summary rather than steal a context waiter.
     if (checkpointWaits.has(peer) || recoveryActive() || stopping) return Promise.resolve(undefined);
@@ -1574,7 +1577,6 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
   const runId = Date.now().toString(36);
   let turnSeq = 0;
-  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
   const pendingDeliveryTask = new Map<PeerId, number>();
   const taskAttribution = (peer: PeerId, delivery = turns.get(peer)?.deliveryTask): TaskAttribution => {
     const result = attribute(delivery, board.list("in_progress").filter(t => t.owner === peer).map(t => t.id));
@@ -1606,7 +1608,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const turnLog = repo ? new Turns(join(opts.stateDir, "hub.db")) : undefined;
   if (turnLog) startupCleanup.push(() => turnLog.close());
   /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
-  const holdsPii = (peer: PeerId) => board.list().some((t) => t.owner === peer && t.state !== "approved" && t.state !== "in_review" && tasks.isPii(t));
+  const holdsPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some((t) => t.owner === peer && !isClosedTaskState(t.state) && t.state !== "in_review" && tasks.isPii(t));
   const memoryObservations = memoryTelemetry ? new MemoryObservations(memoryTelemetry, (peer, envs) => {
     if (turns.get(peer)?.private || contextPii(peer) || envs.some(env => env.private)) return;
     for (const env of envs) {
@@ -1640,7 +1642,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return { tree, ms: Math.round(performance.now() - t0) };
   };
   function privateSnapshotWindow(): boolean {
-    return [...turns.values()].some(turn => turn.private) || board.list().some(task => task.state !== "approved" && tasks.isPii(task));
+    return [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
   }
   function reviewProjection(task: Task): string | undefined {
     if (!projections.enabled || tasks.isPii(task)) return undefined;
@@ -1766,7 +1768,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // names are answered by the hub; every call still passes daemon role/capability checks before its effects.
   const HUB_TOOLS = ["hub_send", ...TASK_TOOLS.map((t) => t.name), ...CONDUCTOR_TOOLS.map((t) => t.name)];
   const HUB_TOOL_TITLES = new Set(HUB_TOOLS.map((name) => `mcp__agent-hub__${name}`));
-  const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
+  const toolEnv = (peer: PeerId, deliveryOnly = false) => ({ ...(deliveryOnly ? { AGENTHUB_DELIVERY_ONLY: "true" } : {}), AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
   // A task op can write the board across awaits (triage, briefs, the dependents an approval releases): a recovery
@@ -1786,11 +1788,21 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      return text;
+      const hint = args[3] ? ownHeldHint(by) : "";
+      return hint ? `${text}\n\n${hint}` : text;
+    } catch (error) {
+      // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
+      const hint = args[3] ? ownHeldHint(by) : "";
+      if (hint && error instanceof Error) error.message += `\n\n${hint}`;
+      throw error;
     } finally {
       taskOpsInFlight--;
     }
   };
+  function ownHeldHint(peer: PeerId): string {
+    try { return renderHeldHint(bus.heldDeliveryHints(peer), Date.now(), !(bus.peers.get(peer) instanceof LocalPeer || bus.peers.get(peer) instanceof AcpPeer)); }
+    catch { return ""; } // unavailable telemetry is not a zero count or a reason to fail the tool itself
+  }
   /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
   const peerArg = (v: unknown, name: string): PeerId | undefined => {
     if (v == null || v === "") return undefined;
@@ -1916,6 +1928,13 @@ export async function startDaemon(opts: DaemonOptions) {
       return JSON.stringify(publicCheck(receipt));
     }
     switch (op) {
+      case "hub_delivery_retry": {
+        if (by === USER || by === HUB || !a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "delivery_id") || typeof a.delivery_id !== "string" || a.delivery_id.length < 1 || a.delivery_id.length > 256) throw new PreEffectToolRefusal("hub_delivery_retry accepts only your delivery_id; completed and discard require the person");
+        if (bus.peers.get(by) instanceof LocalPeer || bus.peers.get(by) instanceof AcpPeer) throw new PreEffectToolRefusal("delivery-only peers require the person to resolve held deliveries");
+        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("recovery or shutdown is holding delivery mutations");
+        bus.retryDelivery(by, a.delivery_id);
+        return `retry queued for delivery ${a.delivery_id}; check for earlier effects before acting`;
+      }
       case "hub_backlog_list":
         return JSON.stringify(tasks.backlogList(by));
       case "hub_release_list":
@@ -3061,7 +3080,7 @@ export async function startDaemon(opts: DaemonOptions) {
             : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null }, current);
         },
         onTurnFailure: () => { supervisionTurns.delete("qwen"); },
-        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen")).map(([name, value]) => ({ name, value })) }],
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen", true)).map(([name, value]) => ({ name, value })) }],
         preamble: sessionRoleContract("qwen"),
       });
       recoveryTaskPreface("qwen"); await ensurePreface("qwen");
@@ -3113,7 +3132,7 @@ export async function startDaemon(opts: DaemonOptions) {
             current);
         },
         onTurnFailure: () => { supervisionTurns.delete("kimi"); },
-        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi", true)).map(([name, value]) => ({ name, value })) }],
         preamble: sessionRoleContract("kimi"),
       });
       recoveryTaskPreface("kimi");
@@ -3732,7 +3751,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const settingSource = (authority: SettingAuthority) => authority === "terminal" ? "terminal" as const : "dashboard" as const;
   function rosterView() {
-    const open = board.list().filter(task => task.state !== "approved");
+    const open = board.list().filter(task => !isClosedTaskState(task.state));
     return [...KNOWN_PEERS, ...OPTIONAL_PEERS.filter(peer => config.roster?.[peer] !== undefined)].map(peer => ({ peer, on: onRoster(peer), startMode: startMode(peer), state: bus.stateOf(peer), queued: bus.queued(peer), tasks: open.filter(task => task.owner === peer || task.reviewer === peer).length }));
   }
   function rosterCandidate(def: SettingDef, value: SettingValue, undo = false): PeerRoster {
@@ -3807,7 +3826,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (owner instanceof PiPeer && owner.mode === "tui") await owner.resumeFromRoster();
       }
       writeStatus();
-      const stayed = !after ? board.list().filter(task => task.state !== "approved" && (task.owner === peer || task.reviewer === peer)) : [];
+      const stayed = !after ? board.list().filter(task => !isClosedTaskState(task.state) && (task.owner === peer || task.reviewer === peer)) : [];
       return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(after && peer === "codex" ? [`Codex 0.146.0 needs a manual return: resume the previous native session with ${codexResumeCommand()}.`] : []), ...(!after ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : []), ...stayed.map(task => sanitize(`task ${tasks.publicTitle(task)} stays with ${peer} as ${[task.owner === peer ? "owner" : "", task.reviewer === peer ? "reviewer" : ""].filter(Boolean).join(" and ")} (${task.state})`)), ...(!after && !handoff.length && !stayed.length ? ["No open tasks to hand over."] : [])].join("\n"), ...(!after ? { handoff } : {}) };
     } catch (error) {
       if (saved) writeStatus();
@@ -3911,7 +3930,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; ${def.applies === "peer start" ? "applies at the peer's next start" : def.applies === "live" ? "in force as soon as it is saved" : "read at the next hub start"}`] };
     try {
       const after = parseRouting(routingText(opts.cwd), routingCandidate(readOverlay(opts.cwd), def, value));
-      const open = board.list().filter((task) => task.state !== "approved");
+      const open = board.list().filter((task) => !isClosedTaskState(task.state));
       // A PII task's routing is fixed by its constraint and its text is private: it is counted, not shown.
       const shown = open.filter((task) => !tasks.isPii(task)).slice(0, 20);
       return { ok: true, lines: [`${def.key}: ${settingText(routingValue(currentRouting(opts.cwd, log), def))} -> ${settingText(routingValue(after, def))}`, ...(open.length ? [] : ["no open task: nothing is routed differently now"])],
@@ -4349,6 +4368,13 @@ export async function startDaemon(opts: DaemonOptions) {
           writeStatus();
           return void reply({ ok: true, delivery: queueView(bus.queueShow(msg.id)) });
         } catch { return void reply({ ok: false, error: "resolution refused: refresh the delivery revision and inspect active or already resolved work" }); }
+      }
+      case "delivery_holds": {
+        if (!c.peer || (c.role !== "peer" && c.role !== "tools")) return void reply({ ok: false, error: "held metadata requires a peer identity" });
+        try {
+          const held = bus.heldDeliveryHints(c.peer);
+          return void reply(held ? { ok: true, held } : { ok: false, error: "held metadata unavailable" });
+        } catch { return void reply({ ok: false, error: "held metadata unavailable" }); }
       }
       case "delivery_receipt": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;

@@ -6,6 +6,7 @@ import { DAEMON_FEATURES, PROTOCOL, ControlClient } from "../src/hub/control-cli
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
 import { personEnv } from "../src/hub/child-process.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 import { Board } from "../src/hub/board.ts";
 import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
 import { needs } from "../src/ui/needs.ts";
@@ -17,11 +18,11 @@ import { renderStatus } from "../src/cli/output.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function fixture() {
+async function fixture(extra: Partial<typeof DEFAULT_CONFIG> = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-cancel-surface-")), stateDir = join(root, "state");
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { enabled: false, keep: 1 } } });
+    config: { ...DEFAULT_CONFIG, ...extra, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { enabled: false, keep: 1 } } });
   cleanups.push(() => daemon.stop());
   const board = new Board(join(stateDir, "hub.db")); cleanups.push(() => board.close());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
@@ -126,4 +127,50 @@ test("peer actor cannot cancel another proposer work or expose a PII cancellatio
   const cancelled = await f.client.request({ t: "task", op: "hub_task_cancel", args: { id: task.id, reason: "patient 900101-1234567", superseded_by: "private patient reference" } });
   expect(cancelled.ok).toBe(true); expect(JSON.parse(cancelled.text)).toMatchObject({ title: "[pii]", state: "cancelled" });
   expect(cancelled.text).not.toContain("900101"); expect(cancelled.text).not.toContain("private patient reference");
+});
+
+
+class PrivateTurnPeer extends BasePeer {
+  async start() { this.setState("idle"); }
+  begin() { this.setState("busy"); }
+  finish() { this.setState("idle"); }
+  async deliver() {}
+  async stop() { this.setState("offline"); }
+}
+
+test.each(["idle", "busy"])("cancelled PII board roles do not latch privacy, while live private turn is preserved: %s", async mode => {
+  const running = mode === "busy";
+  const f = await fixture(), peer = new PrivateTurnPeer("codex");
+  f.daemon.bus.add(peer); await peer.start();
+  const task = f.board.propose("user", { title: "private historical task", class: "implement", signals: ["pii"] });
+  f.board.update(task.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "kimi" });
+  if (running) peer.begin();
+  expect((await f.client.request({ t: "task", op: "hub_task_cancel", args: { id: task.id, reason: "replaced" } })).ok).toBe(true);
+  const check = async (by: string) => {
+    const client = await ControlClient.connect(f.stateDir, { role: "tools", peer: by }); cleanups.push(() => client.close());
+    return client.request({ t: "task", op: "hub_check_result", args: { run: "12345678-1234-1234-1234-123456789abc" } });
+  };
+  const owner = await check("codex"), reviewer = await check("kimi");
+  expect(owner.ok).toBe(false); expect(reviewer.ok).toBe(false);
+  expect(String(owner.error).includes("PII turn")).toBe(running);
+  expect(String(reviewer.error)).not.toContain("PII turn");
+  if (running) {
+    expect(peer.state).toBe("busy"); // Cancellation never stops the adapter's existing turn.
+    peer.finish();
+    expect(String((await check("codex")).error)).not.toContain("PII turn");
+  }
+});
+
+
+test("daemon wires a cancelled-dependency stall to console and one ids-only supervision item", async () => {
+  const f = await fixture({ roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor", "planner"] }, conductor: { ...DEFAULT_CONFIG.conductor, feed: "all" } });
+  const conductor = new PrivateTurnPeer("claude"); f.daemon.bus.add(conductor); await conductor.start(); f.daemon.bus.pause("claude");
+  const primary = f.board.propose("user", { title: "retired parent body", class: "implement" });
+  const dependent = f.board.propose("user", { title: "dependent private body marker", class: "implement", deps: [primary.id] });
+  expect((await f.client.request({ t: "task", op: "hub_task_cancel", args: { id: primary.id, reason: "replaced" } })).ok).toBe(true);
+  const queued = f.daemon.bus.snapshot(false).queues.claude ?? [];
+  const notices = queued.filter(envelope => envelope.refs?.supervision && envelope.refs.supervisionKey === `supervision:claude:task:${dependent.id}:stall`);
+  expect(notices).toHaveLength(1); expect(notices[0]!.body).toContain("cancelled-dependency");
+  expect(notices[0]!.body).not.toContain("private body marker");
+  expect(readFileSync(join(f.stateDir, "hub.log"), "utf8")).toContain(`Task #${dependent.id} stalled: cancelled-dependency`);
 });

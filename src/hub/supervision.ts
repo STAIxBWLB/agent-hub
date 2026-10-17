@@ -1,4 +1,4 @@
-import { isClosedTaskState, type HistoryEntry, type Task, type TaskMoveReason } from "./board.ts";
+import { isClosedTaskState, type HistoryEntry, type Task, type TaskMoveReason, type TaskStall } from "./board.ts";
 import { sanitize, type Kind, type Priority } from "./envelope.ts";
 
 export type SupervisionScope = "own" | "all" | "off";
@@ -100,6 +100,18 @@ export class SupervisionFeed {
     else if (event === "reassigned") this.milestone(task.id, "moved", fields);
     else if (["assigned", "accepted", "declined", "escalated"].includes(event)) this.milestone(task.id, event as SupervisionMilestone, fields);
     this.checkRound();
+  }
+
+  /** Tasks owns durable cause/replan deduplication; the feed keeps its configured recipient and scope. */
+  taskStalled(stall: TaskStall): boolean {
+    const task = this.d.tasks().find(task => task.id === stall.task);
+    if (!task || isClosedTaskState(task.state) || !this.includes(task)) return false;
+    const cause = stall.cause;
+    const bits = [`#${stall.task}: stalled`, `cause ${cause.kind}`, `reason ${cause.code}`];
+    if (cause.peer) bits.push(`peer ${cause.peer}`);
+    if (cause.dependency !== undefined) bits.push(`dependency #${cause.dependency}`);
+    if (cause.refusals?.length) bits.push(`refusals ${cause.refusals.map(refusal => `${refusal.peer}:${refusal.code}`).join(", ")}`);
+    return this.send(`task:${stall.task}:stall`, bits.join("; "), "status", stall.task);
   }
 
   peerOffline(peer: string): boolean {

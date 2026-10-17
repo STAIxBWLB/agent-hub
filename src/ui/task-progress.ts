@@ -5,7 +5,7 @@ export interface PublicProgressTask {
   readonly deps?: readonly number[];
 }
 export interface ProgressStage {
-  id: number; stage: number; waiting: boolean; changes: boolean; label: string;
+  id: number; stage: number; waiting: boolean; changes: boolean; label: string; cancelled?: true;
 }
 export interface TaskProgress {
   total: number;
@@ -20,7 +20,7 @@ export function taskProgress(tasks: readonly PublicProgressTask[]): TaskProgress
   const stages = tasks.map(task => {
     if (task.state === "cancelled") {
       counts.cancelled = (counts.cancelled ?? 0) + 1;
-      return { id: task.id, stage: 4, waiting: false, changes: false, label: "cancelled (closed)" };
+      return { id: task.id, stage: 4, waiting: false, changes: false, label: "cancelled (closed)", cancelled: true as const };
     }
     if (task.state === "backlog") {
       counts.backlog = (counts.backlog ?? 0) + 1;

@@ -1,6 +1,8 @@
 import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
-import { DeliveryJournal, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
+import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
+import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 
 export type { DeliveryReceipt } from "./peers.ts";
 
@@ -361,7 +363,31 @@ export class Bus {
 
   queueShow(id: string): JournalDelivery | undefined { return this.journal?.get(id) ?? this.queueList().find((d) => d.id === id); }
 
-  resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: "user" | "hub" = "user"): void {
+  heldDeliveryHints(peer: string) { return this.storageError ? undefined : this.journal?.heldDeliveryHints(peer); }
+
+  /** Consent is for this peer's held row only, never authority to complete/discard or release a pause. */
+  retryDelivery(peer: string, id: string): void {
+    const refuse = () => { throw new PreEffectToolRefusal("recipient retry unavailable; inspect the held delivery or ask the person"); };
+    if (this.closed || this.recoveryHeld || this.storageError || peer === "user" || peer === HUB) return refuse();
+    const row = this.queueShow(id);
+    if (!row || row.peer !== peer || row.state !== "needs_review" || !this.journal || this.journal.retryEvidence(peer, row.originals) !== "unused") return refuse();
+    this.resolveDelivery(id, row.revision, "retry", "recipient requested one uncertain redelivery", `peer:${peer}`);
+  }
+
+  private retryOut(peer: string, originals: Envelope[], out: Envelope[]): Envelope[] {
+    if (!out.length || !this.journal || !this.journal.retryWarning(peer, originals)) return out;
+    return out.map((env, index) => {
+      if (index !== 0) return env;
+      const prefix = `${DELIVERY_RETRY_WARNING}\n\n`, marker = "\n[cut: rendered body exceeds delivery limit]";
+      if (prefix.length + env.body.length <= MAX_ENVELOPE_BODY) return { ...env, body: prefix + env.body };
+      let end = MAX_ENVELOPE_BODY - prefix.length - marker.length;
+      // The journal cap uses UTF-16 length; never cut between a Unicode surrogate pair.
+      if (Array.from(env.body.slice(end - 1, end + 1))[0]?.length === 2) end--;
+      return { ...env, body: prefix + env.body.slice(0, end) + marker };
+    });
+  }
+
+  resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: string = "user"): void {
     if (!this.journal || this.storageError) throw new Error("delivery journal unavailable");
     const record = this.queueShow(id);
     if (!record) throw new Error("unknown delivery");
@@ -370,7 +396,8 @@ export class Bus {
       this.journal.resolve(id, revision, action, reason, revision, actor); // verifies identical request; no second enqueue
       return;
     }
-    if (["dispatching", "accepted"].includes(record.state) || this.peers.get(record.peer)?.state === "busy") throw new Error("active delivery cannot be resolved");
+    const recipientConsent = actor === `peer:${record.peer}` && action === "retry" && record.state === "needs_review";
+    if (["dispatching", "accepted"].includes(record.state) || (this.peers.get(record.peer)?.state === "busy" && !recipientConsent)) throw new Error("active delivery cannot be resolved");
     if (record.revision !== revision) throw new Error("stale delivery revision");
     if (record.state === "queued" && action === "retry") throw new Error("queued delivery is already scheduled");
     if (action === "retry" && (this.queues.get(record.peer)?.length ?? 0) + record.originals.length > this.opts.queueCap) throw new Error("recipient queue is full");
@@ -785,14 +812,20 @@ export class Bus {
     if (index < 0) return;
     this.steering++;
     const deliveryId = crypto.randomUUID();
+    let removed = false, handedOff = false;
     try {
+      const out = this.retryOut(id, [env], [env]);
       queue.splice(index, 1);
-      this.durableHandoff(id, deliveryId, [env], [env]);
+      removed = true;
+      this.durableHandoff(id, deliveryId, [env], out);
+      handedOff = true;
       this.activeDeliveries.set(deliveryId, id);
-      try { await peer.steer([env], deliveryId); }
+      try { await peer.steer(out, deliveryId); }
       catch { this.uncertain(id, deliveryId, "steering outcome is uncertain"); }
-    } catch { this.storageError = "delivery journal unavailable"; }
-    finally { this.steering--; this.onQueues?.(); }
+    } catch {
+      if (removed && !handedOff) queue.splice(index, 0, env);
+      this.storageError = "delivery journal unavailable";
+    } finally { this.steering--; this.onQueues?.(); }
   }
 
   /** Holds on a peer's queue, for a drain and a pull alike: off roster, recovery, an uncertain delivery, a pause (console, budget, conductor). */
@@ -831,13 +864,15 @@ export class Bus {
     if (!preface && !queue.length) return [];
     const queued = [...queue];
     const batch = [...(preface ? [preface] : []), ...this.take(id, queue)];
-    this.prefaces.delete(id);
-    // Before the checkpoint, as in a drain, so the persisted snapshot carries it; on a failure the bus stops anyway.
-    this.remember(batch);
+    let out: Envelope[] = [];
     const deliveryId = crypto.randomUUID();
     try {
+      out = this.retryOut(id, batch, batch);
+      this.prefaces.delete(id);
+      // Before the checkpoint, as in a drain, so the persisted snapshot carries it; a failed policy read rolls back too.
+      this.remember(out);
       this.journal?.transaction(() => {
-        this.durableHandoff(id, deliveryId, batch, batch, false); // observe only after this outer transaction commits
+        this.durableHandoff(id, deliveryId, batch, out, false); // observe only after this outer transaction commits
         this.journal!.completeDelivered(deliveryId, id, "pull", "read through hub_inbox");
       });
     } catch (error) {
@@ -847,12 +882,12 @@ export class Bus {
       throw error;
     }
     if (this.journal) {
-      this.memoryDelivery(id, deliveryId, batch, "rendered");
-      this.memoryDelivery(id, deliveryId, batch, "delivered");
+      this.memoryDelivery(id, deliveryId, out, "rendered", batch);
+      this.memoryDelivery(id, deliveryId, out, "delivered", batch);
     }
     this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
     this.onQueues?.();
-    return batch;
+    return out;
   }
 
   private async drain(id: PeerId): Promise<void> {
@@ -874,8 +909,11 @@ export class Bus {
         const delivery = preface ? [preface, ...batch] : batch;
         const mayCondense = this.opts.condense && !delivery.some((e) => e.priority === "important");
         this.condensing += mayCondense ? 1 : 0;
-        const out = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
-        this.condensing -= mayCondense ? 1 : 0;
+        let out: Envelope[];
+        try {
+          const condensed = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
+          out = this.retryOut(id, delivery, condensed);
+        } finally { this.condensing -= mayCondense ? 1 : 0; }
         // A session that cannot show pushes may have taken the peer while this was condensed (issue #205).
         if (!this.deliverable(id)) {
           if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
@@ -887,16 +925,25 @@ export class Bus {
           this.dropIrrelevant(id, queue);
           continue;
         }
+        const deliveryId = crypto.randomUUID();
         if (this.journal) {
           if (this.prefaces.get(id) !== preface || batch.some((e) => !queue.some((item) => item.id === e.id))) continue;
+          const queued = [...queue], seen = [...this.seen];
           for (const env of batch) queue.splice(queue.findIndex((item) => item.id === env.id), 1);
           this.prefaces.delete(id);
-        }
-        this.remember(out);
+          this.remember(out); // the checkpoint must retain rendered reply ids across a restart
+          try { this.durableHandoff(id, deliveryId, delivery, out); }
+          catch (error) {
+            queue.splice(0, queue.length, ...queued);
+            if (preface) this.prefaces.set(id, preface);
+            this.seen.clear();
+            for (const [key, env] of seen) this.seen.set(key, env);
+            throw error;
+          }
+          this.activeDeliveries.set(deliveryId, id);
+        } else this.remember(out);
         this.lastDelivery.set(id, { out, originals: delivery });
         this.preparing.delete(id); // from here on the transport/journal owns settlement
-        const deliveryId = crypto.randomUUID();
-        if (this.journal) { this.durableHandoff(id, deliveryId, delivery, out); this.activeDeliveries.set(deliveryId, id); }
         try {
           try { this.onDeliver?.(id, delivery); } catch { /* observation must never affect delivery */ }
           if (this.journal) await peer.deliver(out, deliveryId);

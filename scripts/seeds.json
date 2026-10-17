@@ -1068,8 +1068,8 @@
     {
       "id": "override-local-schema",
       "file": "src/adapters/local-worker.ts",
-      "search": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages),",
-      "replacement": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(undefined, this.opts.sdlcStages),",
+      "search": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages).filter(tool => tool.name !== \"hub_delivery_retry\"),",
+      "replacement": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(undefined, this.opts.sdlcStages).filter(tool => tool.name !== \"hub_delivery_retry\"),",
       "testFile": "test/local-worker.test.ts",
       "testName": "local worker publishes resolved custom profile classes and selected plan fields to its actual provider (#259)"
     },
