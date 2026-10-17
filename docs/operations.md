@@ -1493,6 +1493,8 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   watcher cannot adopt unrelated raising local edits. A settings session cannot
   adopt routing fields outside its editable registry. Existing confirmation and
   roster lifecycle fences remain; use the confirmed roster setting for membership.
+Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain their running values until restart, because existing native sessions use the published relay catalogue and context contract. Routing policy changes apply to future decisions; local model/target changes apply at the next peer or sidecar creation.
+
 - Runtime/client ownership still requires restart for memory handles and sync,
   gateway/MLX, runner/check commands, profile/tool contracts, converters, existing
   session privacy/sandbox policies, the terminal provider and benchmark environment.
@@ -3391,5 +3393,3 @@ Native transparency/floating and the bridge were verified in the macOS spike.
 Real keystrokes, dragging and persistence, Spaces, message delivery and body
 click need the manual PR checklist before merge; automated fixtures do not
 establish those native results.
-
-Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain their running values until restart, because existing native sessions use the published relay catalogue and context contract. Routing policy changes apply to future decisions; local model/target changes apply at the next peer or sidecar creation.

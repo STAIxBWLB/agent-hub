@@ -22,7 +22,7 @@ class IdlePeer extends BasePeer {
   async deliver() {}
 }
 
-/** Real four-file loader, git trust and WS requests; never pass opts.config, which would bypass the reload baseline. */
+/** Real four-file loader, Git trust and WS requests; only the explicit embedding regression uses opts.config. */
 async function fixture(initial: { local?: unknown; trackedLocal?: boolean; embedded?: boolean } = {}) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-reload-daemon-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));

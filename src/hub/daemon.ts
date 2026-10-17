@@ -1207,7 +1207,7 @@ export async function startDaemon(opts: DaemonOptions) {
     board,
     bus,
     executionBudget,
-    routing: () => activeRouting(), // routing.toml is edited while the hub runs: re-read on change, last good parse kept
+    routing: () => activeRouting(), // only the complete validated reload can publish routing changes
     cwd: opts.cwd,
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory } : {}),
