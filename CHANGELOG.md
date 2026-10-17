@@ -4,15 +4,24 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Report task stalls once per cause, retain exact unread pull-only offers across detach, add the ready-unassigned sweep and revision-checked cancellation; current clients and upgrade/restart refuse incompatible daemons/targets while verified recovery features survive resume (#438).
-- Keep explicit GitHub issue references gated in projects without GitHub origins, clear obsolete receipt warnings and document unknown-payload retention without unsafe path-based deletion (#418).
-- Let a peer explicitly retry its own uncertain delivery once, with an effects-check warning, durable message-only lineage limits and ids-only hold hints. After upgrading, run `ahub jcode --mode headless` once per project to update an older owned MCP entry before daemon/conductor starts (#434).
-- Add task-bound complete spec reads and opt-in isolated container checks for sandboxed peers, with current capability routing and screened exact-head receipts (#418).
-- On upgrade, non-PII implement, test and bulk_edit owners need an enabled, available `checks.runner = "container"`; local/Pi owners of issue-backed tasks in every class (including review) also need authenticated spec access. These capability gates do not restrict designated reviewers; PII work remains local-only without the opt-in (#418).
-- CI: run the seeded guards as four parallel shards beside the check (PR wall time from about 26 to about 11 minutes), move artifacts to upload-artifact v7, pin setup-bun by SHA with the Bun version in `.bun-version`, add Dependabot for actions, refuse a release tag that is not on main, and split the GitHub Release from the npm publish job (#457).
-- Model restoration receipts as explicit pending/waiting/done/failed states; wait within the managed TUI bound even before a launch record exists, preserve completed conversations, and retain strict session/terminal fences without duplicate launches (#433).
-- Designate the planner with a live `planner` setting (exclusive), assign one automatically when no rostered peer plans, and show and change it in `ahub status`, the console (`l`) and the dashboard (#455).
-- Safely return unseen Claude pushes, settle superseded hub-only holds with hub audit identity, list every hold and explain inherited agent command markers (#434).
+## 0.12.31
+
+After upgrade, Jcode projects need the one-time MCP rewrite below. Cancellation requires a daemon advertising `task_cancel`; controlled downgrades refuse while cancelled rows exist (an old binary started by hand remains outside that protection). The repository now requires the `seeded guards` check. Installed managed-Pi #418 AC8 (#142), cancellation/sweep #438 AC7 and the native legs in #273/#1 remain unverified by this release preparation. Installation and the person's restart require separate receipts.
+
+- Retry an addressed uncertain delivery once, retaining message-only lineage evidence and excluding shared hub presence; delivery-only local/ACP peers leave resolution to the person. Run `ahub jcode --mode headless` once per Jcode project after upgrade, before daemon/conductor starts, to update its owned MCP entry (#448, #434).
+- Add cause-deduplicated stalls, durable unread pull-only offer attention, a guarded ready-unassigned sweep and revision-checked cancellation that preserves history without approving work or releasing dependents; refuse cancellation on older daemons and controlled downgrade with cancelled rows (#460, #438).
+- Require `seeded guards`, run its four shards beside both OS checks, read Bun from `.bun-version`, update pinned CI actions and separate OIDC npm publication from GitHub Release creation (#458, #457).
+- Wait for a pending managed terminal's authenticated session with explicit pending/waiting/done/failed restoration receipts and exact terminal fences, preserving completed conversations and the bounded no-duplicate-launch rules (#435, #433).
+- Record agent-mem co-development and the claude-mem capability freeze in project instructions; new portable memory functionality belongs in agent-mem and the hub keeps its exact pin (#436).
+- Safely return unseen Claude pushes, settle only provably moot hub-only holds, preserve stop notices and shared presence, show every hold and identify inherited agent markers in refusals (#440, #434).
+- Follow new Events rows while at the tail, preserve a row selected for reading and add Home/End or </> navigation to console panels (#442, #441).
+- Add bounded authenticated task-spec reads and opt-in isolated exact-head container checks; non-PII local/Pi implement, test and bulk_edit owners need available checks, and issue-backed owners in every class need spec access. Designated reviewers are exempt from these owner gates; PII work remains local-only without the opt-in (#443, #418).
+- Instruct pull-only Kimi sessions to check the hub between work steps and share blockers or changed contracts through the addressed hub tools (#444).
+- Open the dashboard with console `w`, the pet window with `o`, or the allowed `:ui` and `:pet` commands (#453, #452).
+- Keep waiting through late launcher records and id-less attachments, ignore offline session ids and use the operation's preserved-source coordinator when an older CLI mislabels tagged recovery receipts (#454, #433).
+- Designate an exclusive planner with the live `planner` setting, choose one automatically when needed and display or change it through status, console `l`/`y` and the dashboard (#456, #455).
+- Keep explicit GitHub issue references gated without a GitHub origin, clear warnings after receipt-directory removal and preserve unknown check payloads under the documented retention exception instead of unsafe deletion (#459, #418).
+- Resume an already-committed source through transient connection loss or typed database contention within the existing 30-second shutdown bound, without duplicate prepare, terminal close or commit; retain replacement and pending downgrade fences (#461, #438).
 
 ## 0.12.30
 
