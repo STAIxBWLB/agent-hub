@@ -895,8 +895,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         await awaitStopped(project, instance);
       }
       abandonRestartSnapshot(project.stateDir, op.id);
-      const planned = op.plan.projects.find(item => item.project.id === project.id);
-      const progress = op.projects.find(item => item.id === project.id);
+      const planned = op.plan.projects?.find(item => item.project.id === project.id);
+      const progress = op.projects?.find(item => item.id === project.id);
       const source = planned?.source.peers.find(peer => peer.id === "pi" && peer.state !== "offline");
       if (source && progress) {
         // abandonRestartSnapshot is deliberately a no-op for another operation or an unreadable snapshot.
