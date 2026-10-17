@@ -150,7 +150,7 @@ test.each(["owner", "reviewer"] as const)("context request and clean completion 
     utimesSync(routePath, new Date(tick), new Date(tick));
     // Routing privacy changes become visible only after the complete candidate is accepted.
     const reloaded = await f.console_.request({ t: "settings_reload" });
-    expect(reloaded.ok, reloaded.error).toBe(true);
+    expect(reloaded).toMatchObject({ ok: true });
   };
   const tick = Date.now(); await setPolicy("off", tick + 1);
   const owner = role === "owner" ? "claude" : "other";

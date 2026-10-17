@@ -208,7 +208,7 @@ test("queued completion screens raw tail again after the privacy policy changes 
   const console_ = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => console_.close());
   // Delivery re-screening uses the accepted routing snapshot, never an unvalidated file edit.
   const reloaded = await console_.request({ t: "settings_reload" });
-  expect(reloaded.ok, reloaded.error).toBe(true);
+  expect(reloaded).toMatchObject({ ok: true });
   expect(f.options().isCurrent?.(f.records.get(run)!)).toBe(true);
   f.daemon.bus.resume("codex");
   for (let attempt = 0; attempt < 100 && (f.daemon.bus.queued("codex") || f.records.get(run)?.status !== "stale"); attempt++) await Bun.sleep(5);

@@ -3775,7 +3775,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const candidate = opts.config ? structuredClone(desiredConfig) : fileConfig;
     if (opts.config) for (const change of configChanges(acceptedFileConfig, fileConfig)) putConfig(candidate, change.key, change.after);
     // Roster confirmation authorizes one peer only; unrelated membership edits stay unapplied.
-    if (rosterPeer) candidate.roster = { ...config.roster, [rosterPeer]: fileConfig.roster[rosterPeer] };
+    if (rosterPeer) {
+      const peer = SUPPORTED_PEERS.find(peer => peer === rosterPeer);
+      if (!peer) throw new Error("unknown roster peer");
+      candidate.roster = { ...config.roster, [peer]: fileConfig.roster[peer] };
+    }
     const changes = configChanges({ ...config, roles: policyRoles }, candidate);
     // Raw bytes alone do not prove authority: Git provenance can change while a declaration stays identical.
     const before = { ...config, roles: policyRoles };
