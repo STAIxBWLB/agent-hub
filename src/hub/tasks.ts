@@ -1683,7 +1683,8 @@ export class Tasks {
     const text = `Task #${task.id} stalled: ${cause.kind}${cause.peer ? ` ${cause.peer}` : ""}${cause.dependency ? ` #${cause.dependency}` : ""} (${cause.code}); configure the runner or peer, ahub task assign ${task.id} <peer>, re-plan dependencies, or cancel it.`;
     this.releaseNotice(text);
     try { this.d.stallNotice?.(stall); } catch { /* advisory never changes task authority */ }
-    for (const [peer, roles] of Object.entries(this.d.roles ?? {})) if (roles.includes("planner") && this.d.bus.isRostered(peer)) this.releaseNotice(`task #${task.id}: stall notice unavailable`, () => this.sweepNotice(task, peer, text, "planner"));
+    // Advice joins the planner's next delivery; it must not manufacture a turn beside a withheld backlog batch.
+    for (const [peer, roles] of Object.entries(this.d.roles ?? {})) if (roles.includes("planner") && this.d.bus.isRostered(peer)) this.releaseNotice(`task #${task.id}: stall notice unavailable`, () => this.d.tell?.(peer, noteLine(HUB, "finding", text)));
   }
   async cancel(id: unknown, by: PeerId, input: { reason: string; supersededBy?: string; expectedFlowRevision?: number }): Promise<Task> {
     if (typeof input.reason !== "string" || !input.reason.trim() || Buffer.byteLength(input.reason) > 4000 || input.supersededBy !== undefined && (typeof input.supersededBy !== "string" || !input.supersededBy.trim() || Buffer.byteLength(input.supersededBy) > 1000)) throw new PreEffectToolRefusal("cancellation needs a bounded reason and supersession reference");

@@ -25,12 +25,13 @@ async function fixture() {
   for (const id of ["pi", "planner", "reviewer"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const routing = loadRouting(root); routing.classes.implement!.peers = ["pi"];
   const caps = { pi: { tests: false, spec: false }, planner: { tests: true, spec: true } };
+  const told: { peer: string; text: string }[] = [];
   const notices: string[] = [], stalls: number[] = [], offers = new Set<string>();
   const mem = startFakeMemWorker(); cleanup.push(mem.stop);
   let privateTurn = false, held = false, screenLabel: "clear" | "pii" = "clear", screen: (() => void) | undefined;
   const make = () => new Tasks({ board, bus, routing: () => routing, project: "fixture", cwd: root, capabilities: () => caps, repository: "owner/repo", memory: new MemoryClient(mem.url), roles: { planner: ["planner"] }, sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1 },
     privateTurn: () => privateTurn, cancellationHeld: () => held, offerRead: (_peer, id) => offers.has(id), stallNotice: row => { stalls.push(row.task); },
-    piiScreen: async () => { screen?.(); return { label: screenLabel, ms: 1 }; }, notify: text => { notices.push(text); }, tell: () => {}, share: () => {} });
+    piiScreen: async () => { screen?.(); return { label: screenLabel, ms: 1 }; }, notify: text => { notices.push(text); }, tell: (peer, text) => { told.push({ peer, text }); }, share: () => {} });
   let tasks = make();
   const task = (state: Task["state"] = "proposed", by = "planner") => {
     let t = board.propose(by, { title: "original task", class: "implement", ...(state === "backlog" ? { backlog: true } : {}) });
@@ -40,7 +41,7 @@ async function fixture() {
     if (state === "changes_requested" || state === "approved") t = board.update(t.id, "reviewer", state, { state });
     return t;
   };
-  return { root, get board() { return board; }, get tasks() { return tasks; }, bus, caps, routing, notices, stalls, offers, task, saves: () => mem.calls.filter(call => call.path === "/api/memory/save"),
+  return { root, get board() { return board; }, get tasks() { return tasks; }, bus, caps, routing, notices, stalls, offers, told, task, saves: () => mem.calls.filter(call => call.path === "/api/memory/save"),
     privacy: () => { screenLabel = "pii"; routing.signals.pii_screen = "local"; },
     private: (value: boolean) => { privateTurn = value; },
     hold: (value: boolean) => { held = value; }, screen: (fn: () => void) => { screen = fn; routing.signals.pii_screen = "local"; },
@@ -193,4 +194,21 @@ test("persisted arbitrary stall codes and signatures never reach public metadata
   try { db.query("INSERT INTO task_stalls(task,payload) VALUES(?,?)").run(t.id, JSON.stringify({ task: t.id, signature: "PRIVATE", replanRevision: 0, cause: { kind: "no-eligible-peer", code: "PRIVATE" }, at: 1 })); }
   finally { db.close(); }
   expect(f.tasks.stalled()).toEqual([]);
+});
+
+
+test("stall planner advice is a once-per-cause preface, never an ordinary queued turn", async () => {
+  const f = await fixture();
+  const task = f.board.propose("planner", { title: "PRIVATE-title #1", class: "implement", reserved: "pi" });
+  await f.tasks.releaseReady(); await f.tasks.releaseReady();
+  expect(f.told).toHaveLength(1); expect(f.told[0]).toMatchObject({ peer: "planner" });
+  expect(f.told[0]!.text).toStartWith("note from hub [finding]: ");
+  expect(f.told[0]!.text).toContain(`Task #${task.id} stalled:`);
+  expect(f.told[0]!.text).not.toContain("PRIVATE-title");
+  expect(f.bus.queueIds("planner")).toEqual([]);
+  f.caps.pi.tests = true;
+  await f.tasks.releaseReady(); await f.tasks.releaseReady();
+  expect(f.told).toHaveLength(2); expect(f.told[1]!.text).toContain("(spec)");
+  expect(f.bus.queueIds("planner")).toEqual([]);
+  expect(f.stalls).toEqual([task.id, task.id]);
 });

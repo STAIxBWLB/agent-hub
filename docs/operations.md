@@ -2516,7 +2516,7 @@ recorded launch before recovery.
 
 ## Task stalls and cancellation
 
-A ready task with an ineligible reservation, no eligible peer or a cancelled dependency shows an ids-only stall cause in status and the Tasks panel. The hub reports a cause once, repeating only when the cause changes or the task is re-planned. It directs ownerless work to the designated planner, otherwise the person's attention list. Configure the missing capability, assign another eligible peer, re-plan or cancel the task as appropriate; a reservation never bypasses routing guards.
+A ready task with an ineligible reservation, no eligible peer or a cancelled dependency shows an ids-only stall cause in status and the Tasks panel. The hub reports a cause once, repeating only when the cause changes or the task is re-planned. It directs ownerless advice to the designated planner's next bounded preface and the configured supervision stream, otherwise the person's attention list; it does not create an extra ordinary turn beside backlog batching. Configure the missing capability, assign another eligible peer, re-plan or cancel the task as appropriate; a reservation never bypasses routing guards.
 
 An offer to a pull-only peer adds an advisory "open <peer>: task #N is waiting for it" attention item. It clears when that exact offer is accepted, declined, superseded or genuinely delivered and settled to the addressed peer. Another inbox read, an accepted-only receipt or a person's queue completion does not prove it was read. The attention item does not alter delivery state.
 
