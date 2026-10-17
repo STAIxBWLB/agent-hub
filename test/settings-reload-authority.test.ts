@@ -264,3 +264,15 @@ test("#439 nested routing extension keys cannot traverse an object prototype dur
     else delete prototype.reload439Proof;
   }
 }, 15_000);
+
+test("#439 confirmed routing dictionaries preserve quoted route names containing dots", async () => {
+  const f = await fixture();
+  f.git("rm", "--cached", "-f", ".agenthub/routing.toml");
+  writeFileSync(f.file("routing.toml"), f.routing + '\n[routes."sy/model.v1"]\ntype = "passthrough"\ntarget = "dsv4f"\n');
+  const preview = await f.reload();
+  expect(preview.ok).toBe(true);
+  expect(preview.confirmation?.keys).toContain("routing.routes");
+  expect((await f.row("routing.classes.implement.route")).values).not.toContain("sy/model.v1");
+  expect((await f.reload(preview.confirmation.token)).ok).toBe(true);
+  expect((await f.row("routing.classes.implement.route")).values).toContain("sy/model.v1");
+}, 15_000);

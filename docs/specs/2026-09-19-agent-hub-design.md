@@ -3164,3 +3164,5 @@ not durable task metadata or a migration.
 Inheritance and undo use the actual destination source trust. They may restore an unchanged effective startup value after explicit consent, but a shadowed edit that was never authorized is not an accepted fallback. New lower-layer raises remain refused even when an unchanged local overlay previously hid them.
 
 Reserved prototype path components are refused throughout nested routing extension tables before publication. Configuration path writes never traverse inherited object properties.
+
+Switchyard targets/routes and hub-route dictionaries retain opaque quoted keys, including dots. Each dictionary is one guarded value for reload confirmation and publication; privacy fields and ordinary registry settings retain leaf-level decisions.

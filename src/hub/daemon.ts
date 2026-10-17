@@ -3764,6 +3764,8 @@ export async function startDaemon(opts: DaemonOptions) {
     return JSON.stringify(before) === JSON.stringify(after) ? [] : [prefix];
   }
   function declaredPaths(value: unknown, prefix = ""): string[] {
+    // Switchyard dictionaries have opaque keys (including dots); publish each dictionary as one value.
+    if (["routing.targets", "routing.routes", "routing.hub_routes"].includes(prefix)) return [prefix];
     if (value && typeof value === "object" && !Array.isArray(value)) return Object.entries(value).flatMap(([key, child]) => declaredPaths(child, prefix ? `${prefix}.${key}` : key));
     return prefix ? [prefix] : [];
   }
@@ -3775,8 +3777,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const accepted: string[] = [], rejected: { key: string; reason: string }[] = [], guarded: string[] = [];
     const paths = new Set<string>();
     for (const layer of [...sources.trustLayers, ...acceptedSources.trustLayers]) {
-      const prefix = layer.name.endsWith(".toml") ? "routing." : "";
-      for (const path of declaredPaths(layer.raw)) paths.add(`${prefix}${path}`);
+      const prefix = layer.name.endsWith(".toml") ? "routing" : "";
+      for (const path of declaredPaths(layer.raw, prefix)) paths.add(path);
     }
     if (!opts.config) for (const change of configChanges(desiredConfig, fileConfig)) paths.add(change.key);
     for (const key of paths) {
