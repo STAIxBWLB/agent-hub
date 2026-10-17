@@ -147,9 +147,9 @@
     },
     {
       "id": "roster-s-authority",
-      "file": "src/hub/settings.ts",
-      "search": "  if (def.risk === \"safe\" || authority !== \"ordinary\") return undefined;",
-      "replacement": "  if (def.group === \"Roster\" || def.risk === \"safe\" || authority !== \"ordinary\") return undefined;",
+      "file": "src/hub/daemon.ts",
+      "search": "return settingsSet(a.key, a.value, authority, a.confirm, a.now, a.reason);",
+      "replacement": "return settingsSet(a.key, a.value, \"settings\", a.confirm, a.now, a.reason);",
       "testFile": "test/roster.test.ts",
       "testName": "roster writes use the existing human settings fence and dashboard authority (#315)"
     },
@@ -876,8 +876,8 @@
     {
       "id": "role-peer-scoped-apply",
       "file": "src/hub/daemon.ts",
-      "search": "roleAssignments[peer] = ids ?? resolvedProfile.catalog_roles[peer] ?? [];",
-      "replacement": "roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(stored.catalog_roles) };",
+      "search": "roleAssignments[peer] = catalogAssignments(config.catalog_roles)[peer] ?? resolvedProfile.catalog_roles[peer] ?? [];",
+      "replacement": "roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(config.catalog_roles) };",
       "testFile": "test/role-settings.test.ts",
       "testName": "catalog role application is scoped to the named peer and leaves other hand edits pending (#295)"
     },
