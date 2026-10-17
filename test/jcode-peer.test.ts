@@ -159,3 +159,19 @@ test("Jcode stays non-ready across socket unlink until delayed owned-process exi
   expect(peer.state).not.toBe("offline"); expect(peer.state).not.toBe("idle");
   await until(() => peer.state === "offline"); expect(() => process.kill(server.pid, 0)).toThrow();
 });
+
+test("pre-marker Jcode entries stay stale read-only until configure adds the delivery-only marker (#434)", () => {
+  const dir = root(), state = join(dir, "state"), bundle = "bundle";
+  configureJcodeMcp(dir, state, bundle);
+  const file = join(dir, JCODE_MCP_FILE), current = JSON.parse(readFileSync(file, "utf8"));
+  const legacy = structuredClone(current); delete legacy.mcpServers[JCODE_MCP_NAME].env.AGENTHUB_DELIVERY_ONLY;
+  writeFileSync(file, JSON.stringify(legacy)); const before = readFileSync(file, "utf8");
+  expect(jcodeMcpReady(dir, state, bundle)).toBe(false); expect(readFileSync(file, "utf8")).toBe(before);
+  for (const mutate of [(entry: any) => { entry.env.AGENTHUB_DELIVERY_ONLY = "false"; }, (entry: any) => { entry.command = "foreign"; }, (entry: any) => { entry.env.AGENTHUB_PEER_ID = "codex"; }, (entry: any) => { entry.env.AGENTHUB_STATE_DIR = "other"; }, (entry: any) => { entry.args.push("--extra"); }]) {
+    const changed = structuredClone(legacy); mutate(changed.mcpServers[JCODE_MCP_NAME]); writeFileSync(file, JSON.stringify(changed));
+    expect(jcodeMcpReady(dir, state, bundle)).toBe(false);
+  }
+  writeFileSync(file, before); expect(configureJcodeMcp(dir, state, bundle).changed).toBe(true);
+  expect(JSON.parse(readFileSync(file, "utf8")).mcpServers[JCODE_MCP_NAME].env.AGENTHUB_DELIVERY_ONLY).toBe("true");
+  expect(jcodeMcpReady(dir, state, bundle)).toBe(true);
+});

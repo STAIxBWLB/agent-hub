@@ -2,6 +2,7 @@ import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-ru
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied } from "../local/deny.ts";
 import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
+import { renderHeldHint } from "./delivery-hints.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
 import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
@@ -1764,7 +1765,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // names are answered by the hub; every call still passes daemon role/capability checks before its effects.
   const HUB_TOOLS = ["hub_send", ...TASK_TOOLS.map((t) => t.name), ...CONDUCTOR_TOOLS.map((t) => t.name)];
   const HUB_TOOL_TITLES = new Set(HUB_TOOLS.map((name) => `mcp__agent-hub__${name}`));
-  const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
+  const toolEnv = (peer: PeerId, deliveryOnly = false) => ({ ...(deliveryOnly ? { AGENTHUB_DELIVERY_ONLY: "true" } : {}), AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
   // A task op can write the board across awaits (triage, briefs, the dependents an approval releases): a recovery
@@ -1784,11 +1785,21 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      return text;
+      const hint = args[3] ? ownHeldHint(by) : "";
+      return hint ? `${text}\n\n${hint}` : text;
+    } catch (error) {
+      // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
+      const hint = args[3] ? ownHeldHint(by) : "";
+      if (hint && error instanceof Error) error.message += `\n\n${hint}`;
+      throw error;
     } finally {
       taskOpsInFlight--;
     }
   };
+  function ownHeldHint(peer: PeerId): string {
+    try { return renderHeldHint(bus.heldDeliveryHints(peer), Date.now(), !(bus.peers.get(peer) instanceof LocalPeer || bus.peers.get(peer) instanceof AcpPeer)); }
+    catch { return ""; } // unavailable telemetry is not a zero count or a reason to fail the tool itself
+  }
   /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
   const peerArg = (v: unknown, name: string): PeerId | undefined => {
     if (v == null || v === "") return undefined;
@@ -1916,6 +1927,13 @@ export async function startDaemon(opts: DaemonOptions) {
       return JSON.stringify(publicCheck(receipt));
     }
     switch (op) {
+      case "hub_delivery_retry": {
+        if (by === USER || by === HUB || !a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "delivery_id") || typeof a.delivery_id !== "string" || a.delivery_id.length < 1 || a.delivery_id.length > 256) throw new PreEffectToolRefusal("hub_delivery_retry accepts only your delivery_id; completed and discard require the person");
+        if (bus.peers.get(by) instanceof LocalPeer || bus.peers.get(by) instanceof AcpPeer) throw new PreEffectToolRefusal("delivery-only peers require the person to resolve held deliveries");
+        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("recovery or shutdown is holding delivery mutations");
+        bus.retryDelivery(by, a.delivery_id);
+        return `retry queued for delivery ${a.delivery_id}; check for earlier effects before acting`;
+      }
       case "hub_backlog_list":
         return JSON.stringify(tasks.backlogList(by));
       case "hub_release_list":
@@ -3045,7 +3063,7 @@ export async function startDaemon(opts: DaemonOptions) {
             : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null }, current);
         },
         onTurnFailure: () => { supervisionTurns.delete("qwen"); },
-        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen")).map(([name, value]) => ({ name, value })) }],
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen", true)).map(([name, value]) => ({ name, value })) }],
         preamble: sessionRoleContract("qwen"),
       });
       recoveryTaskPreface("qwen"); await ensurePreface("qwen");
@@ -3097,7 +3115,7 @@ export async function startDaemon(opts: DaemonOptions) {
             current);
         },
         onTurnFailure: () => { supervisionTurns.delete("kimi"); },
-        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi", true)).map(([name, value]) => ({ name, value })) }],
         preamble: sessionRoleContract("kimi"),
       });
       recoveryTaskPreface("kimi");
@@ -4321,6 +4339,13 @@ export async function startDaemon(opts: DaemonOptions) {
           writeStatus();
           return void reply({ ok: true, delivery: queueView(bus.queueShow(msg.id)) });
         } catch { return void reply({ ok: false, error: "resolution refused: refresh the delivery revision and inspect active or already resolved work" }); }
+      }
+      case "delivery_holds": {
+        if (!c.peer || (c.role !== "peer" && c.role !== "tools")) return void reply({ ok: false, error: "held metadata requires a peer identity" });
+        try {
+          const held = bus.heldDeliveryHints(c.peer);
+          return void reply(held ? { ok: true, held } : { ok: false, error: "held metadata unavailable" });
+        } catch { return void reply({ ok: false, error: "held metadata unavailable" }); }
       }
       case "delivery_receipt": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
