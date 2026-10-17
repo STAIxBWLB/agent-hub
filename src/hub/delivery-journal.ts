@@ -311,6 +311,8 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS resolution_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, delivery_id TEXT NOT NULL, observed_revision INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, result_revision INTEGER NOT NULL, result_state TEXT NOT NULL, UNIQUE(project_id, delivery_id, observed_revision, action, reason))`,
     );
+    const resolutionColumns = this.db.query("PRAGMA table_info(resolution_history)").all() as { name: string }[];
+    if (!resolutionColumns.some((column) => column.name === "actor")) this.db.run("ALTER TABLE resolution_history ADD COLUMN actor TEXT NOT NULL DEFAULT 'user'");
   }
   private readMeta(): Record<string, unknown> | null {
     return this.db
@@ -669,6 +671,7 @@ export class DeliveryJournal {
     action: JournalResolution,
     reason: string,
     requestRevision = revision,
+    actor: "user" | "hub" = "user",
   ): JournalDelivery {
     this.ensureOpen();
     text(reason, "resolution reason", 1_000_000);
@@ -678,14 +681,14 @@ export class DeliveryJournal {
       const resolved = this.resolution(id);
       if (resolved) {
         const current = this.get(id);
-        if (current && resolved.action === action && resolved.reason === reason && (requestRevision === resolved.observedRevision || requestRevision === current.revision)) return current;
+        if (current && resolved.action === action && resolved.reason === reason && resolved.actor === actor && (requestRevision === resolved.observedRevision || requestRevision === current.revision)) return current;
         throw new Error("stale delivery revision or conflicting operator resolution");
       }
       const prior = this.db
         .query(
-          "SELECT result_revision FROM resolution_history WHERE project_id = ? AND delivery_id = ? AND observed_revision = ? AND action = ? AND reason = ?",
+          "SELECT result_revision FROM resolution_history WHERE project_id = ? AND delivery_id = ? AND observed_revision = ? AND action = ? AND reason = ? AND actor = ?",
         )
-        .get(this.projectId, id, requestRevision, action, reason) as {
+        .get(this.projectId, id, requestRevision, action, reason, actor) as {
         result_revision: number;
       } | null;
       if (prior) return this.get(id)!;
@@ -715,7 +718,7 @@ export class DeliveryJournal {
       }
       this.db
         .query(
-          "INSERT INTO resolution_history (project_id, delivery_id, observed_revision, action, reason, result_revision, result_state) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO resolution_history (project_id, delivery_id, observed_revision, action, reason, result_revision, result_state, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           this.projectId,
@@ -725,14 +728,15 @@ export class DeliveryJournal {
           reason,
           result.revision,
           result.state,
+          actor,
         );
       this.pruneTerminal();
       return result;
     })();
   }
-  resolution(id: string): { action: JournalResolution; reason: string; observedRevision: number } | undefined {
-    const row = this.db.query("SELECT action,reason,observed_revision FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number } | null;
-    return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision } : undefined;
+  resolution(id: string): { action: JournalResolution; reason: string; observedRevision: number; actor: "user" | "hub" } | undefined {
+    const row = this.db.query("SELECT action,reason,observed_revision,actor FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number; actor: "user" | "hub" } | null;
+    return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;
   }
   private pruneTerminal(): void {
     const count = Number(

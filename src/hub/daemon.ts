@@ -1,3 +1,4 @@
+import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
 import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
@@ -1814,8 +1815,13 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "task_escalate":
         return line(await tasks.escalate(USER, a.id, undefined, undefined, true));
-      case "route_explain":
-        return tasks.explain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
+      case "route_explain": {
+        const trace = tasks.explain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass });
+        return [...trace, ...bus.knownPeers().flatMap(peer => {
+          if (trace.some(line => line.startsWith(`  hold: ${peer}'s queue is held:`))) return [];
+          const hold = queueHold(peer); return hold ? [`${peer} queue: ${hold}`] : [];
+        })].join("\n");
+      }
       case "turn_revert": {
         // `ahub undo --context` (issue #33): the conversation half of an undo; the CLI restores the files itself.
         const turn = turnLog?.get(String(a.turn));
@@ -2029,7 +2035,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return now;
   };
-  const queueHoldStatus = (peer: PeerId, heldBy?: string) => heldBy ? { heldBy, holdNote: queueHold(peer) } : {};
+  const queueHoldStatus = (peer: PeerId, heldBy?: string) => heldBy ? { heldBy, holdNote: queueHold(peer), heldRows: heldRows(peer) } : {};
   const logPermissionStart = (peer: string) => {
     const requested = defaultSources[peer];
     const selected = permissionMode(peer), pending = pendingPermissionDefaults.has(peer);
@@ -2122,37 +2128,58 @@ export async function startDaemon(opts: DaemonOptions) {
   const taskChanged = board.onChange;
   board.onChange = (task, entry) => {
     try { taskChanged?.(task, entry); }
-    finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
+    finally {
+      try { settleSupersededDeliveries(); }
+      finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
+    }
   };
 
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
   // message and keeps a phantom `queued N` after the queue drains (measured on a live 0.6.3 hub).
-  function movedDeliveryTasks(row: JournalDelivery): string[] {
-    return [...new Set(row.originals.flatMap((env) => {
-      const task = env.refs?.task ? board.get(Number(env.refs.task)) : undefined;
-      if (!task || (task.owner === row.peer && task.state !== "approved")) return [];
-      return [`task ${tasks.publicTitle(task)} ${task.state === "approved" ? "has been approved" : `has moved to ${task.owner ?? "nobody"}`}`];
-    }))];
+  function heldRows(peer: PeerId) {
+    return bus.queueList(peer).filter(row => row.state === "needs_review").map(row => ({
+      id: row.id, senders: [...new Set(row.originals.map(env => sanitize(env.from)))],
+      kinds: [...new Set(row.originals.map(env => env.kind))], createdAt: row.createdAt,
+      context: deliveryTaskContext(row.originals, board, peer),
+    }));
   }
   function queueHold(peer: PeerId): string | undefined {
-    const id = bus.queueSummary(peer).heldBy;
-    const row = id ? bus.queueShow(id) : undefined;
-    if (!row) return undefined;
-    const moved = movedDeliveryTasks(row);
-    return `held by needs_review ${id}${moved.length ? ` (${moved.join("; ")})` : ""}; ahub queue resolve ${id} --action completed|retry|discard --reason <text>`;
+    const rows = heldRows(peer);
+    if (!rows.length) return undefined;
+    return rows.map(row => `held by needs_review ${row.id} (from ${row.senders.join(",")}; kind ${row.kinds.join(",")}; age ${Math.max(0, Math.floor((Date.now() - row.createdAt) / 1000))}s${row.context ? `; ${row.context}` : ""}); ahub queue resolve ${row.id} --action completed|retry|discard --reason <text>`).join("; ");
+  }
+  let settlingSuperseded = false;
+  function settleSupersededDeliveries() {
+    if (settlingSuperseded || stopping || recoveryActive() || bus.isRecoveryHeld) return;
+    settlingSuperseded = true;
+    try {
+      for (const row of bus.queueList()) {
+        if (row.state !== "needs_review" || row.reason?.startsWith("requested stop:")) continue;
+        const reason = supersededDeliveryReason(row.originals, board, row.peer);
+        if (!reason) continue;
+        try { bus.resolveDelivery(row.id, row.revision, "completed", reason, "hub"); }
+        catch { /* Busy peers, storage failures and changed revisions remain held for the next queue/board change. */ }
+      }
+    } finally { settlingSuperseded = false; }
   }
   const noticedHolds = new Set<string>();
+  let reportingQueues = false;
   bus.onQueues = () => {
-    if (stopping) return;
-    for (const row of bus.queueList()) {
-      if (row.state !== "needs_review" || noticedHolds.has(row.id)) continue;
-      noticedHolds.add(row.id);
-      supervision.needsReview(row.peer, row.id);
-      const moved = movedDeliveryTasks(row);
-      notify(`${row.peer} queue held by needs_review ${row.id}${moved.length ? ` (${[...new Set(moved)].join("; ")})` : ""}; inspect: ahub queue show ${row.id}; resolve: ahub queue resolve ${row.id} --action completed|retry|discard --reason <text>`);
-    }
-    writeStatus();
+    if (stopping || settlingSuperseded || reportingQueues) return;
+    reportingQueues = true;
+    try {
+      settleSupersededDeliveries();
+      for (const peer of bus.knownPeers()) {
+        const rows = heldRows(peer);
+        if (!rows.some(row => !noticedHolds.has(row.id))) continue;
+        for (const row of rows) { noticedHolds.add(row.id); supervision.needsReview(peer, row.id); }
+        notify(`${peer} queue ${queueHold(peer)}`);
+      }
+      writeStatus();
+    } finally { reportingQueues = false; }
   };
+  // Opening the journal/restoring the snapshot preceded callbacks; classify those holds too.
+  settleSupersededDeliveries();
 
   // When each peer went offline; a peer never seen attached counts from hub start (issue #6).
   const offlineSince = new Map<PeerId, number>();
@@ -4050,9 +4077,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "delivery_receipt": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
-        if (c.role !== "peer" || !(peer instanceof WsPeer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
+        if (c.role !== "peer" || !(peer instanceof WsPeer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review", "failed_safe"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
+        if (msg.state === "failed_safe" && (!peer.pullOnly || bus.queueShow(msg.deliveryId)?.state !== "dispatching")) return void reply({ ok: false, error: "safe failure requires an unseen push to a pull-only session" });
         const reason = typeof msg.reason === "string" ? sanitize(msg.reason).replace(/\s+/g, " ").trim().slice(0, 300) : "";
-        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state === "needs_review" ? { reason: reason || "Claude bridge could not confirm notification delivery" } : {}) });
+        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state !== "accepted" ? { reason: reason || "Claude bridge could not confirm notification delivery" } : {}) });
         return void reply({ ok: true });
       }
       case "inbox": {
@@ -4566,7 +4594,7 @@ export async function startDaemon(opts: DaemonOptions) {
   writeFileSync(tokenFile, token, { mode: 0o600 });
   chmodSync(tokenFile, 0o600);
   budget.restore(); // pauses recorded by an earlier hub run stay in force; unfinished handoffs wait for peers to attach
-  writeStatus(); // #226: no hub.pid any more; status.json carries the pid with its signature
+  bus.onQueues(); // initial restored holds are reported only after the listener is bound; writes status.json too
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
   // #258: approvals whose settle entry a crash cut off are settled now (decisions, contracts and fails reach long-term).
