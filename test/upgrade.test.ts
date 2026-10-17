@@ -1524,7 +1524,7 @@ for (const wrapped of [false, true]) test(`#466 coordinator persists a proven ${
   const dataPath = "../src/cli/upgrade-presentation-data.ts", data = await import(dataPath);
   const upgradePath = "../src/cli/upgrade.ts", upgrade = await import(upgradePath);
   expect(typeof data.RecoveryPresentationError).toBe("function");
-  const cause = { kind: "native_recovery", reason: "launcher_unverified", projectId: "alpha", peer: "codex", handle: "fixture-terminal", launcherState: "unknown" };
+  const cause = { kind: "native_recovery", reason: "launcher_unverified", projectId: "alpha", peer: "codex", handle: "fixture-terminal", launcherState: "unknown" } as const;
   const f = fixture("restart", ["alpha"]);
   f.driver.verify = async (_planned, progress, _operation, save) => {
     if (wrapped) {
