@@ -1,3 +1,4 @@
+import { definitionOf } from "../adapters/registry.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
@@ -247,6 +248,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     const reconnectOnly: string[] = [];
     for (const peer of source.peers) {
       if (peer.state === "offline") continue;
+      const adapter = definitionOf(peer.id);
       if (peer.id === "kimi" && peer.args?.mode === "tui") {
         blockers.push("kimi: its pull-only terminal has no automatic restore; end it in that terminal, then make a new recovery plan (its session is not resumed by the hub)");
         continue;
@@ -283,12 +285,13 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         const session = peer.id === "codex" ? peer.threadId : peer.sessionId;
         if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required; next action: reconnect the original native session and make a new recovery plan`);
         else sessions[peer.id] = session;
-      } else if (peer.id === "qwen" || peer.id === "jcode") {
-        if (!qwenSessionId(peer.sessionId)) blockers.push(`${peer.id}: saved ACP session identity unavailable; end the peer and make a new recovery plan`);
+      } else if (adapter?.session.restoreOnStart || peer.id === "jcode") {
+        const session = adapter?.session.crashIdentity ? adapter.session.crashIdentity(peer).sessionId : qwenSessionId(peer.sessionId);
+        if (!session) blockers.push(`${peer.id}: saved ACP session identity unavailable; end the peer and make a new recovery plan`);
       } else if (peer.id === "pi" && peer.args?.mode === "tui") {
         if (!peer.sessionId) blockers.push("pi: original session ID is unknown; manual-required; next action: reconnect the original Pi session and make a new recovery plan");
         else sessions.pi = { sessionId: peer.sessionId, ...(peer.sessionFile ? { sessionFile: peer.sessionFile } : {}), ...(peer.args.backend ? { backend: peer.args.backend } : {}), ...(peer.args.model ? { model: peer.args.model } : {}) };
-      } else if (peer.id !== "kimi" && peer.id !== "qwen" && peer.id !== "local" && peer.id !== "pi") blockers.push(`${peer.id}: no automatic recovery adapter`);
+      } else if (peer.id !== "kimi" && peer.id !== "local" && peer.id !== "pi") blockers.push(`${peer.id}: no automatic recovery adapter`);
     }
     const terminals = await inspectTerminals(project.root, sessions, {
       ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId,
@@ -574,7 +577,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const verified = { ...target, targetFeatures };
       // Existing peer/waiver compatibility checks remain properties of the already verified bytes.
       if (op.targetDigest && op.targetDigest === target.digest && op.targetRoot === target.root) return verified;
-      if (op.plan.projects.some(p => p.source.peers.some(peer => peer.id === "qwen" && peer.state !== "offline"))) {
+      if (op.plan.projects.some(p => p.source.peers.some(peer => definitionOf(peer.id)?.session.restoreOnStart && peer.state !== "offline"))) {
         const catalog = join(target.root, "src/hub/peer-catalog.ts");
         const peers = existsSync(catalog) ? /export const OPTIONAL_PEERS\s*=\s*\[([^\]]*)\]/.exec(readFileSync(catalog, "utf8"))?.[1] : undefined;
         if (!peers || !/["']qwen["']/.test(peers)) throw new FinalRefusal("target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged");
@@ -671,7 +674,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           // #269: `ahub pi` without a mode now takes Pi's start mode (tui by default). This Pi ran headless (a terminal
           // one is filtered out above), so a snapshot that recorded no mode still restores it headless.
           if (peer.id === "pi" && typeof peer.args?.mode !== "string") args.push("--mode", "headless");
-          if (peer.id === "qwen" && peer.sessionId) args.push("--session-id", peer.sessionId);
+          if (definitionOf(peer.id)?.session.restoreOnStart && peer.sessionId) args.push("--session-id", peer.sessionId);
           if (peer.id === "jcode" && peer.sessionId) args.push("--session-id", peer.sessionId);
           if (peer.id === "jcode" && peer.args?.providerProfile) args.push("--provider-profile", peer.args.providerProfile);
           if (peer.id === "pi") {
