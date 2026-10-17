@@ -300,7 +300,13 @@ test("startup refuses two conductors and invalid reload retains roles/feed until
   expect((await successor.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(false);
   await peer.stop(); expect(notices).toEqual([]); // the rejected candidate's all-feed did not leak through
   writeFileSync(file, JSON.stringify(next));
-  expect((await console_.request({ t: "settings_reload" })).ok).toBe(true);
+  const preview = await console_.request({ t: "settings_reload" });
+  expect(preview.ok).toBe(true);
+  expect(preview.confirmation?.keys).toContain("roles.codex");
+  expect(preview.confirmation?.keys).toContain("conductor.feed");
+  expect(typeof preview.confirmation?.token).toBe("string");
+  expect((await successor.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(false);
+  expect((await console_.request({ t: "settings_reload", confirm: preview.confirmation.token })).ok).toBe(true);
   expect((await reconnected.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(false);
   expect((await successor.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(true);
   await peer.start(); await peer.stop();

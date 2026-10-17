@@ -14,6 +14,62 @@ export interface ApplyRule { applies: ApplyClass; reason?: string }
 export interface ConfigChange extends ApplyRule { key: string; before: unknown; after: unknown }
 export interface ConfigLayer { name: "config.json" | "config.local.json"; raw: Record<string, unknown> }
 export interface ReloadGuard { key: string; path: readonly string[]; risk: "safe" | "raises"; floor?: string | boolean | number; store: "runtime" | "config" | "routing" }
+export interface ConfigAuthorizationInput {
+  key: string;
+  before: unknown;
+  after: unknown;
+  source: "config" | "routing";
+  tracked: boolean | undefined;
+  authority: "ordinary" | "settings" | "terminal";
+  /** The daemon supplies this only for the selected setting or an explicitly confirmed reload key. */
+  confirmed?: boolean;
+  /** Root proved the destination equals an unchanged, effective startup declaration in this origin. */
+  acceptedFallback?: boolean;
+  guard?: ReloadGuard;
+}
+export interface ConfigAuthorizationDecision { key: string; allowed: boolean; guarded: boolean; reason: string }
+
+/** Pure per-leaf authority. Schema validation and named-key selection precede this decision. */
+export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuthorizationDecision {
+  const { key, before, after } = input;
+  const result = (allowed: boolean, guarded: boolean, reason: string): ConfigAuthorizationDecision => ({ key, allowed, guarded, reason });
+  if (same(before, after)) return result(true, false, "unchanged");
+  const supplied = input.guard;
+  const guard = supplied && (key === supplied.key || key === `${supplied.store === "routing" ? "routing." : ""}${supplied.path.join(".")}`) ? supplied : undefined;
+  const machine = input.source === "config" && ALL_MACHINE_LOCAL.some(path => key === path || key.startsWith(`${path}.`));
+  const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
+  const subset = (smaller: unknown, larger: unknown) => strings(larger) && (smaller === undefined || strings(smaller) && smaller.every(item => larger.includes(item)));
+  const numeric = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+  let tightening = false;
+  if (guard?.floor !== undefined && same(after, guard.floor)) tightening = true;
+  if (key.startsWith("tasks.wip_limits.") && numeric(before) && numeric(after) && after <= before) tightening = true;
+  if (key === "routing.constraints.pii" && before === "off" && after === "local_only") tightening = true;
+  if (key === "routing.signals.pii_screen" && before === "off" && after === "local") tightening = true;
+  if (key === "routing.signals.pii_patterns" && strings(after) && (before === undefined || strings(before) && before.every(pattern => after.includes(pattern)))) tightening = true;
+  if (key.startsWith("roles.") && subset(after, before)) tightening = true;
+  if (key.startsWith("capabilities.") && strings(after) && (before === undefined || subset(after, before))) tightening = true;
+  if (["limits.sender_per_min", "limits.pair_per_min", "limits.important_per_hour"].includes(key)
+    && numeric(before) && numeric(after) && after > 0 && (before === 0 || after <= before)) tightening = true;
+  if (key === "limits.repeat_window_s" && numeric(before) && numeric(after) && after >= before) tightening = true;
+  if (key === "conductor.feed") {
+    const levels = ["off", "own", "all"];
+    if (typeof before === "string" && typeof after === "string" && levels.includes(before) && levels.includes(after) && levels.indexOf(after) < levels.indexOf(before)) tightening = true;
+  }
+  if (["inference.enabled", "inference.triage", "review.adaptive"].includes(key) && before === true && after === false) tightening = true;
+  if (key === "review.min_reviews" && numeric(before) && numeric(after) && after >= before) tightening = true;
+  if (tightening) return result(true, false, "semantic tightening");
+  if (guard?.risk === "safe" && !machine) return result(true, false, "safe registered setting");
+  if (input.acceptedFallback && !machine) {
+    const person = input.authority === "terminal" || input.authority === "settings" && !!guard;
+    return result(person && input.confirmed === true, true, "restoring an unchanged effective startup value needs this key to be explicitly confirmed");
+  }
+  // Every other policy change is conservative: person intent never turns tracked or unknown code into host authority.
+  if (input.tracked !== false) return result(false, true, input.tracked ? "guarded source is tracked; retain the running value" : "guarded source trust is unknown; retain the running value");
+  if (input.authority === "ordinary") return result(false, true, "guarded change needs a selected setting or a confirmed terminal reload");
+  if (input.authority === "settings" && !guard) return result(false, true, "nonregistered policy requires a confirmed terminal reload");
+  if (input.confirmed !== true) return result(false, true, "guarded change needs explicit confirmation for this key");
+  return result(true, true, guard ? "confirmed registered setting" : "confirmed terminal reload");
+}
 type TrustLayer = ConfigLayer | { name: "routing.toml" | "routing.local.toml"; raw: Record<string, unknown> };
 type Authority = "ordinary" | "settings" | "terminal";
 type Check = (value: unknown, key: string) => void;
@@ -146,7 +202,7 @@ export function configChanges(running: HubConfig, next: HubConfig): ConfigChange
   walk(clean(running), clean(next), ""); return changes.sort((a, b) => a.key.localeCompare(b.key));
 }
 
-/** File authority is checked before stripped/defaulted effective values can hide a guarded edit. */
+/** Legacy all-or-nothing authority helper; daemon reload uses authorizeConfigLeaf for scoped publication. */
 export function assertReloadTrust(cwd: string, layers: readonly TrustLayer[], previousLayers: readonly TrustLayer[], guardedRules: readonly ReloadGuard[], authority: Authority, defaults?: object): void {
   const complete = [...layers, ...previousLayers.filter(prior => !layers.some(layer => layer.name === prior.name)).map(prior => ({ ...prior, raw: {} }))];
   for (const layer of complete) {

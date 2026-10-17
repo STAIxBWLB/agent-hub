@@ -99,9 +99,14 @@ test("redacted release labels retain stable mutation and console lookup identity
   try {
     const created = await person.request({ t: "task", op: "release_new", args: { name: "hidden-release", goal: "safe goal", order: 0 } });
     expect(created.ok).toBe(true);const id=JSON.parse(created.text).id;
-    writeFileSync(join(root, ".agenthub/routing.toml"), routing.replace(/^pii_patterns = .*$/m, 'pii_patterns = ["hidden-release"]'));
-    expect(await person.request({ t: "settings_reload" })).toMatchObject({ ok: true });
-    const listed = await person.request({ t: "task", op: "hub_release_list", args: {} });
+    writeFileSync(join(root, ".agenthub/routing.toml"), routing.replace(/^pii_patterns = .*$/m, `pii_patterns = ${JSON.stringify([...(Bun.TOML.parse(routing).signals as { pii_patterns: string[] }).pii_patterns, "hidden-release"])}`));
+    // A stricter privacy file is adopted automatically; observe its public result, not a person approval.
+    let listed = await person.request({ t: "task", op: "hub_release_list", args: {} });
+    const privacyDeadline = Date.now() + 3500;
+    while (JSON.parse(listed.text)[0]?.name !== "[withheld]" && Date.now() < privacyDeadline) {
+      await Bun.sleep(15);
+      listed = await person.request({ t: "task", op: "hub_release_list", args: {} });
+    }
     expect(JSON.parse(listed.text)[0]).toMatchObject({ id, name: "[withheld]" });
     expect(await person.request({ t: "task", op: "release_change", args: { id, revision: 0, fields: { state: "active" } } })).toMatchObject({ ok: true });
     const shown = await person.request({ t: "task", op: "release_show", args: { name: "hidden-release" } });

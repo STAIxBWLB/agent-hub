@@ -1921,8 +1921,9 @@ memory homes:
 - Real fixture daemon: live switches/WIP and undo, retained pause/queue/instance,
   actual sweep timer cancellation/rescheduling, atomic rename watcher, snapshot
   capture on a later turn and pending memory restart without opening a consumer.
-- Whole-candidate JSON/TOML/unknown-key refusal, one error notice, tracked guarded
-  changes, ordinary-authority laundering and agent-role request refusals.
+- Whole-candidate JSON/TOML/unknown-key refusal, one error notice, per-key retention
+  of valid unauthorized edits, automatic privacy tightening, scoped write/undo,
+  fingerprint-bound guarded reload confirmation and agent-role request refusals.
 
 To complete the native leg, use a disposable project from a person terminal (or
 an explicitly authorized per-invocation delegation under docs/security.md).

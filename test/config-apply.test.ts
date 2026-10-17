@@ -6,6 +6,76 @@ import { configApply, configChanges, validateRawConfig, validateEffectiveConfig,
 import { DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { SETTINGS } from "../src/hub/settings.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import * as configAuthorization from "../src/hub/config-apply.ts";
+
+type LeafDecision = { key: string; allowed: boolean; guarded: boolean; reason: string };
+const authorize = (input: Record<string, unknown>): LeafDecision => (configAuthorization as unknown as {
+  authorizeConfigLeaf(input: Record<string, unknown>): LeafDecision;
+}).authorizeConfigLeaf(input);
+const ordinary = { source: "config", tracked: true, authority: "ordinary" };
+
+test("#439 leaf authorization automatically admits privacy tightening and role removal from tracked or untracked sources", () => {
+  for (const tracked of [true, false, undefined]) {
+    for (const change of [
+      { key: "routing.constraints.pii", before: "off", after: "local_only" },
+      { key: "routing.signals.pii_patterns", before: ["old"], after: ["old", "new"] },
+      { key: "routing.signals.pii_screen", before: "off", after: "local" },
+      { key: "roles.codex", before: ["implementer", "conductor"], after: ["implementer"] },
+      { key: "capabilities.codex", before: ["memory_read", "check_run"], after: ["memory_read"] },
+    ]) {
+      const result = authorize({ ...ordinary, ...change, source: change.key.startsWith("routing.") ? "routing" : "config", tracked });
+      expect(result).toMatchObject({ key: change.key, allowed: true }); expect(result.reason.length).toBeGreaterThan(0);
+    }
+  }
+});
+
+test("#439 leaf authorization distinguishes registered WIP reductions, floors and increases", () => {
+  const guard = SETTINGS.find(entry => entry.key === "tasks.wip_limits.codex")!;
+  for (const after of [3, 0]) expect(authorize({ ...ordinary, key: guard.key, before: 5, after, guard }).allowed).toBe(true);
+  for (const tracked of [true, false, undefined]) expect(authorize({ ...ordinary, key: guard.key, before: 1, after: 5, tracked, guard }).allowed).toBe(false);
+  expect(authorize({ ...ordinary, key: guard.key, before: 1, after: 5, tracked: false, authority: "settings", confirmed: true, guard }).allowed).toBe(true);
+  expect(authorize({ ...ordinary, key: guard.key, before: 1, after: 5, tracked: false, authority: "terminal", guard }).allowed).toBe(false);
+});
+
+test("#439 machine command changes and removals require untracked confirmed terminal intent", () => {
+  for (const after of [["new-program"], undefined]) {
+    const change = { key: "kimi_cmd", before: ["old-program"], after };
+    for (const tracked of [true, undefined]) expect(authorize({ ...ordinary, ...change, tracked, authority: "terminal", confirmed: true })).toMatchObject({ allowed: false, guarded: true });
+    expect(authorize({ ...ordinary, ...change, tracked: false, authority: "terminal" }).allowed).toBe(false);
+    expect(authorize({ ...ordinary, ...change, tracked: false, authority: "settings", confirmed: true }).allowed).toBe(false);
+    expect(authorize({ ...ordinary, ...change, tracked: false, authority: "terminal", confirmed: true })).toMatchObject({ allowed: true, guarded: true });
+  }
+});
+
+test("#439 nonregistry policy changes are guarded while known semantic tightenings remain automatic", () => {
+  for (const change of [
+    { key: "limits.sender_per_min", before: 12, after: 0 },
+    { key: "conductor.feed", before: "own", after: "all" },
+    { key: "inference.enabled", before: false, after: true },
+    { key: "review.min_reviews", before: 5, after: 1 },
+    { key: "routing.classes.implement.route", before: "old", after: "new" },
+  ]) {
+    expect(authorize({ ...ordinary, ...change, tracked: false })).toMatchObject({ allowed: false, guarded: true });
+    expect(authorize({ ...ordinary, ...change, tracked: false, authority: "settings", confirmed: true }).allowed).toBe(false);
+    expect(authorize({ ...ordinary, ...change, tracked: false, authority: "terminal", confirmed: true }).allowed).toBe(true);
+  }
+  for (const change of [
+    { key: "limits.sender_per_min", before: 0, after: 12 },
+    { key: "limits.sender_per_min", before: 12, after: 6 },
+    { key: "limits.repeat_window_s", before: 60, after: 120 },
+    { key: "conductor.feed", before: "all", after: "own" },
+    { key: "inference.enabled", before: true, after: false },
+    { key: "review.min_reviews", before: 1, after: 5 },
+  ]) expect(authorize({ ...ordinary, ...change }).allowed).toBe(true);
+});
+
+test("#439 safe registry changes and identical values need no guarded adoption", () => {
+  const guard = SETTINGS.find(entry => entry.key === "research.enabled")!;
+  expect(authorize({ ...ordinary, key: guard.key, before: false, after: true, guard })).toMatchObject({ allowed: true, guarded: false });
+  expect(authorize({ ...ordinary, key: "kimi_cmd", before: ["same"], after: ["same"] })).toMatchObject({ allowed: true, guarded: false });
+  const protection = SETTINGS.find(entry => entry.key === "scoped_grants.protect_instructions")!;
+  expect(authorize({ ...ordinary, key: "protect_instruction_files", before: false, after: true, guard: protection }).allowed).toBe(true);
+});
 
 test("#439 every effective block and editable config key has an apply class, restart reasons and leaf overrides", () => {
   for (const key of Object.keys(DEFAULT_CONFIG)) expect(["live", "next use", "restart"]).toContain(configApply(key).applies);
@@ -83,4 +153,9 @@ test("#439 non-machine settings retain terminal authority outside Git without tr
   for (const key of ["routing.pi.context_window", "pi.dgx_coding", "pi.dgx_fast"]) {
     expect(configApply(key).applies).toBe("restart"); expect(configApply(key).reason).toContain("relay");
   }
+});
+
+test("#439 removing a restricted capabilities entry is a widening because absence grants all", () => {
+  for (const tracked of [true, false, undefined]) expect(authorize({ ...ordinary, key: "capabilities.codex", before: ["memory_read"], after: undefined, tracked }).allowed).toBe(false);
+  expect(authorize({ ...ordinary, key: "capabilities.codex", before: ["memory_read"], after: [], tracked: true }).allowed).toBe(true);
 });

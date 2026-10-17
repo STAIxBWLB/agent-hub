@@ -203,12 +203,15 @@ test("queued completion screens raw tail again after the privacy policy changes 
   f.daemon.bus.pause("codex");
   await f.complete(run, { tail: "newly-private content" });
   mkdirSync(join(f.root, ".agenthub"), { recursive: true });
-  const policy = readFileSync(join(import.meta.dir, "..", "templates", "routing.toml"), "utf8").replace(/^pii_patterns =.*$/m, `pii_patterns = [${JSON.stringify("(^|\\n)newly-private")}]`);
+  const basePolicy = readFileSync(join(import.meta.dir, "..", "templates", "routing.toml"), "utf8");
+  const policy = basePolicy.replace(/^pii_patterns =.*$/m, `pii_patterns = ${JSON.stringify([...(Bun.TOML.parse(basePolicy).signals as { pii_patterns: string[] }).pii_patterns, "(^|\\n)newly-private"])}`);
   writeFileSync(join(f.root, ".agenthub", "routing.toml"), policy);
   const console_ = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => console_.close());
-  // Delivery re-screening uses the accepted routing snapshot, never an unvalidated file edit.
-  const reloaded = await console_.request({ t: "settings_reload" });
+  // A harmless reload barrier carries ordinary dashboard authority, never person approval of tightening.
+  const snapshot = await console_.request({ t: "ui_snapshot", after: 0 });
+  const reloaded = await console_.request({ t: "ui_action", instanceId: snapshot.instanceId, action: { action: "setting_reload" } });
   expect(reloaded).toMatchObject({ ok: true });
+  expect(reloaded.confirmation).toBeUndefined();
   expect(f.options().isCurrent?.(f.records.get(run)!)).toBe(true);
   f.daemon.bus.resume("codex");
   for (let attempt = 0; attempt < 100 && (f.daemon.bus.queued("codex") || f.records.get(run)?.status !== "stale"); attempt++) await Bun.sleep(5);

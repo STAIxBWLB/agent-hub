@@ -877,7 +877,7 @@
       "id": "role-peer-scoped-apply",
       "file": "src/hub/daemon.ts",
       "search": "roleAssignments[peer] = catalogAssignments(config.catalog_roles)[peer] ?? resolvedProfile.catalog_roles[peer] ?? [];",
-      "replacement": "roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(config.catalog_roles) };",
+      "replacement": "roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(loadConfig(opts.cwd).catalog_roles) };",
       "testFile": "test/role-settings.test.ts",
       "testName": "catalog role application is scoped to the named peer and leaves other hand edits pending (#295)"
     },

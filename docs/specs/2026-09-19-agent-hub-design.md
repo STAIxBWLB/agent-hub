@@ -3124,3 +3124,41 @@ has ordinary authority. No client writes configuration files directly. Pending
 restart keys and reasons appear in status, console and dashboard. These requests and
 optional projections are additive; older daemons refuse unknown requests and the
 control protocol remains 16.
+
+### Reload authority and publication scope (#439 review amendment)
+
+Malformed syntax, unknown keys and invalid values still refuse the complete candidate
+before any publication. A valid but unauthorized key is different: retain that key's
+accepted value, report its name and reason, and continue applying independently
+eligible changes. A refused key never wedges an unrelated setting write.
+
+An individual setting write or undo publishes only its named registry path. Its
+preview and confirmation do not authorize other edits in either config file or either
+routing file. This includes catalog guidance: only the named peer is prepared (#295).
+Unapplied edits remain pending for a later explicit reload; accepting another key must
+not acknowledge them in the accepted source baseline.
+
+Privacy tightening is automatic from tracked or untracked files: enabling local PII
+constraints/screening, adding PII patterns, removing role memberships and narrowing an explicit capability list cannot
+be mistaken for a raise. Deleting a restricted capability entry restores the default of all capabilities and is a guarded widening. Roster membership changes always use their named confirmation and peer lifecycle, even when removing a peer; generic reload never bypasses those steps. Registered floors and known semantic reductions in admission
+or permission likewise remain available without authorizing a wider policy. Other
+agent-relevant policy, including limits, supervision feed, inference, review and crash
+resume, receives a per-key authority check even outside the settings registry.
+
+`ahub settings reload` is the explicit adoption path for guarded file edits. The daemon
+first returns the exact guarded keys and a confirmation token bound to the candidate
+bytes and accepted configuration revision. The person reviews that list and confirms
+from an interactive terminal; only then may the same candidate be adopted. Changed
+bytes or accepted state invalidate the token. An ordinary watcher or dashboard never
+confirms a raise; a settings session remains restricted to registry keys. Tracked or
+unverifiable MACHINE_LOCAL command and credential declarations cannot become trusted
+through confirmation. Refusal notices name each key and say to review and run
+`ahub settings reload` or revert the file; tracked machine-local declarations also
+require moving the declaration to an untracked machine-local source.
+
+Coordination pinning is local to a daemon lifetime. A setting reload preserves each
+existing task's captured mode and existing cohort silence; a daemon restart re-pins
+retained task rows to the startup mode. This is an explicit compatibility ceiling,
+not durable task metadata or a migration.
+
+Inheritance and undo use the actual destination source trust. They may restore an unchanged effective startup value after explicit consent, but a shadowed edit that was never authorized is not an accepted fallback. New lower-layer raises remain refused even when an unchanged local overlay previously hid them.

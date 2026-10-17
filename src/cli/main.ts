@@ -1355,7 +1355,30 @@ const commands: Record<string, () => Promise<void> | void> = {
         }
         return reply;
       };
-      if (sub === "reload") return console.log(paint([{ text: (await request({ t: "settings_reload" })).text }], false));
+      if (sub === "reload") {
+        let result = await request({ t: "settings_reload" });
+        const confirmation = result.confirmation;
+        if (Array.isArray(result.rejected)) for (const row of result.rejected.slice(0, 100)) console.log(terminalText(`${String(row.key).slice(0, 160)}: ${String(row.reason).slice(0, 1000)}`));
+        if (confirmation !== undefined) {
+          if (!confirmation || typeof confirmation.token !== "string" || !confirmation.token || confirmation.token.length > 256 || !Array.isArray(confirmation.keys) || !confirmation.keys.length || confirmation.keys.length > 200 || confirmation.keys.some((key: unknown) => typeof key !== "string" || key.length > 160)) fail("invalid reload confirmation; guarded settings were not applied");
+          const token = confirmation.token;
+          console.log("Guarded settings awaiting confirmation:");
+          for (const key of confirmation.keys) console.log(`  ${terminalText(key)}`);
+          if (!process.stdin.isTTY || !process.stdout.isTTY) fail("guarded settings need an interactive person's terminal; run ahub settings reload there; guarded settings were not applied");
+          const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+          const ended = new AbortController();
+          rl.once("close", () => ended.abort());
+          let accepted = false;
+          try { accepted = (await rl.question("Apply guarded settings? [y/N] ", { signal: AbortSignal.any([AbortSignal.timeout(30_000), ended.signal]) })).trim().toLowerCase() === "y"; }
+          catch { /* EOF, cancellation and a missed confirmation deadline grant nothing. */ }
+          finally { rl.close(); }
+          if (!accepted) return console.log("guarded settings were not applied");
+          result = await request({ t: "settings_reload", confirm: token });
+          if (result.confirmation !== undefined) fail("reload candidate changed; run ahub settings reload again to review it; guarded settings were not applied");
+          if (Array.isArray(result.rejected)) for (const row of result.rejected.slice(0, 100)) console.log(terminalText(`${String(row.key).slice(0, 160)}: ${String(row.reason).slice(0, 1000)}`));
+        }
+        return console.log(paint([{ text: result.text }], false));
+      }
       if (sub === "undo") {
         const view = await request({ t: "settings_get" }), undoDef = settingDef(view.undo);
         const rosterPeer = typeof undoDef !== "string" && undoDef.group === "Roster" ? undoDef.path[1] : undefined;

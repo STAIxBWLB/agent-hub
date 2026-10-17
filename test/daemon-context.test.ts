@@ -148,9 +148,12 @@ test.each(["owner", "reviewer"] as const)("context request and clean completion 
   const setPolicy = async (policy: string, tick: number) => {
     writeFileSync(routePath, readFileSync(routePath, "utf8").replace(/^pii = .*$/m, `pii = "${policy}"`));
     utimesSync(routePath, new Date(tick), new Date(tick));
-    // Routing privacy changes become visible only after the complete candidate is accepted.
-    const reloaded = await f.console_.request({ t: "settings_reload" });
-    expect(reloaded).toMatchObject({ ok: true });
+    if (policy === "off") {
+      // Weakening privacy is explicit person setup and must confirm the guarded bytes.
+      const proposed = await f.console_.request({ t: "settings_reload" });
+      expect(proposed).toMatchObject({ ok: true });
+      if (proposed.confirmation) expect(await f.console_.request({ t: "settings_reload", confirm: proposed.confirmation.token })).toMatchObject({ ok: true });
+    }
   };
   const tick = Date.now(); await setPolicy("off", tick + 1);
   const owner = role === "owner" ? "claude" : "other";
@@ -163,6 +166,10 @@ test.each(["owner", "reviewer"] as const)("context request and clean completion 
   // Settle the explicitly allowed off-policy note before measuring whether the context response leaks another note.
   await until(() => f.mem.calls.some(c => c.path === "/api/memory/save" && JSON.stringify(c.body).includes("PRIVATE-MARKER") && JSON.stringify(c.body).includes("work complete")));
   await setPolicy("local_only", tick + 2);
+  const privacyDeadline = Date.now() + 3500;
+  const title = async () => (await f.console_.request({ t: "ui_snapshot", after: 0 })).tasks.find((value: { id: number }) => value.id === 2)?.title;
+  while (await title() !== "[pii]" && Date.now() < privacyDeadline) await Bun.sleep(15);
+  expect(await title()).toBe("[pii]");
   const savesBefore = f.mem.calls.filter(c => c.path === "/api/memory/save").length;
   const rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "clean checkpoint with no PII pattern", request_id: firstId } });
   expect(rejected.ok).toBe(false); expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);

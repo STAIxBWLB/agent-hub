@@ -1487,8 +1487,10 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   `ahub settings reload` use one complete validation/apply path. Debounced changes
   of config.json, config.local.json, routing.toml and routing.local.toml use it too,
   including atomic file replacement. Invalid candidates apply nothing and emit
-  one bounded error notice. Recovery/shutdown hold reloads.
-- Reload checks the actual files' Git provenance. Changed machine-local or raising
+  one bounded error notice. Valid but unauthorized keys retain their accepted value and are reported per key; other eligible changes still apply. Recovery/shutdown hold reloads.
+- Individual writes and undo publish only the named setting. Other file edits remain unapplied.
+- `ahub settings reload` lists guarded keys and requires an interactive terminal and exact `y` within 30 seconds before adopting them. Candidate bytes or accepted state changes invalidate that confirmation. Watchers and ordinary dashboard reloads never confirm a raise.
+- Privacy tightening (local PII constraints/screening, added PII patterns and removed roles/capabilities) is automatic, including tracked files. Reload checks the actual files' Git provenance. Changed machine-local or raising
   values from tracked/unverifiable files are refused; an ordinary dashboard or
   watcher cannot adopt unrelated raising local edits. A settings session cannot
   adopt routing fields outside its editable registry. Existing confirmation and
@@ -1499,7 +1501,7 @@ Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain 
   gateway/MLX, runner/check commands, profile/tool contracts, converters, existing
   session privacy/sandbox policies, the terminal provider and benchmark environment.
   The exhaustive reasons are in the issue #439 spec amendment. A pending file value
-  is not applied to the running consumer.
+  is not applied to the running consumer. Coordination creation pins last for the daemon lifetime; a restart re-pins retained rows to its startup mode.
 - `ahub settings undo` (the dashboard's "Undo last write") puts back the one
   previous version of the file the last write changed. It refuses when that
   file was edited since, and when it would put a stored never-ask back (set it

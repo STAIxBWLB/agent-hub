@@ -58,9 +58,20 @@ async function fixture(initial: { local?: unknown; trackedLocal?: boolean; embed
   await client.request({ t: "status" }); // same-socket barrier after the fire-and-forget subscription
   const get = () => client.request({ t: "settings_get" });
   const row = async (key: string) => (await get()).rows.find((item: { key: string }) => item.key === key);
-  const reload = () => client.request({ t: "settings_reload" });
+  const reload = (confirm?: string) => client.request({ t: "settings_reload", ...(confirm ? { confirm } : {}) });
+  // Only tests explicitly approving a complete person-reviewed candidate use this helper; watchers and
+  // ordinary/dashboard reloads below never acquire or submit this terminal confirmation token.
+  const personReload = async () => {
+    const preview = await reload();
+    expect(preview.ok, String(preview.error)).toBe(true);
+    if (!preview.confirmation) return preview;
+    expect(typeof preview.confirmation.token).toBe("string");
+    const result = await reload(preview.confirmation.token);
+    expect(result.ok, String(result.error)).toBe(true);
+    return result;
+  };
   const set = (key: string, value: unknown) => client.request({ t: "settings_set", key, value, reason: "reload regression" });
-  return { dir, state, file, shared, routing, configText, daemon, client, pushes, get, row, reload, set, git, ticks: () => ticks };
+  return { dir, state, file, shared, routing, configText, daemon, client, pushes, get, row, reload, personReload, set, git, ticks: () => ticks };
 }
 
 test("#439 daemon settings writes apply safe switches and WIP without disturbing a pause or queue; undo reloads", async () => {
@@ -129,16 +140,17 @@ test("#439 unknown nested config key cannot partially enable an otherwise valid 
 }, 15_000);
 
 for (const forbidden of ["machine-local", "raises"] as const) {
-  test(`#439 tracked ${forbidden} edit refuses before applying safe changes`, async () => {
+  test(`#439 tracked ${forbidden} edit stays rejected while independent safe changes apply`, async () => {
     const f = await fixture();
     const changed = { ...f.shared, research: { enabled: true }, ...(forbidden === "machine-local"
       ? { local: { read_allow: ["/tmp/reload-secret"] } }
       : { tasks: { wip_limits: { codex: 2 } } }) };
     writeFileSync(f.file("config.json"), JSON.stringify(changed));
     const result = await f.reload();
-    expect(result.ok).toBe(false);
-    expect(String(result.error)).toMatch(/tracked|committed|authority/i);
-    expect((await f.row("research.enabled")).value).toBe(false);
+    expect(result.ok).toBe(true);
+    const key = forbidden === "machine-local" ? "local.read_allow" : "tasks.wip_limits.codex";
+    expect(result.rejected.some((entry: { key: string; reason: string }) => entry.key.includes(key) && /tracked|committed|authority/i.test(entry.reason))).toBe(true);
+    expect((await f.row("research.enabled")).value).toBe(true);
     expect((await f.row("tasks.wip_limits.codex")).value).toBe(1);
     expect(f.daemon.bus.peers.has("local")).toBe(false);
   }, 15_000);
@@ -149,9 +161,10 @@ test("#439 ordinary dashboard reload cannot launder an unrelated untracked raise
   writeFileSync(f.file("config.local.json"), JSON.stringify({ tasks: { wip_limits: { codex: 2 } }, research: { enabled: true } }));
   const before = await f.client.request({ t: "status" });
   const result = await f.client.request({ t: "ui_action", instanceId: before.status.instanceId, action: { action: "setting_reload" } });
-  expect(result.ok).toBe(false);
+  expect(result.ok).toBe(true);
+  expect(result.rejected.some((entry: { key: string }) => entry.key.includes("tasks.wip_limits.codex"))).toBe(true);
   expect((await f.row("tasks.wip_limits.codex")).value).toBe(1);
-  expect((await f.row("research.enabled")).value).toBe(false);
+  expect((await f.row("research.enabled")).value).toBe(true);
 }, 15_000);
 
 test("#439 tools and peer roles cannot reload, edit, preview or undo settings", async () => {
@@ -179,7 +192,7 @@ test("#439 atomic config rename is watched and applies safe values without an ex
 test("#439 restart-only file differences are reported without opening native memory", async () => {
   const f = await fixture();
   writeFileSync(f.file("config.local.json"), JSON.stringify({ memory: { enabled: true } }));
-  const result = await f.reload();
+  const result = await f.personReload();
   expect(result.ok).toBe(true);
   const pending = result.pendingRestart.find((entry: { key: string }) => entry.key === "memory.enabled");
   expect(pending).toBeDefined();
@@ -217,9 +230,9 @@ test("#439 tracked routing constraints cannot widen privacy during an otherwise 
   writeFileSync(f.file("config.local.json"), JSON.stringify({ research: { enabled: true } }));
   writeFileSync(f.file("routing.toml"), f.routing.replace('pii = "local_only"', 'pii = "off"'));
   const result = await f.reload();
-  expect(result.ok).toBe(false);
-  expect(String(result.error)).toMatch(/tracked|committed|authority/i);
-  expect((await f.row("research.enabled")).value).toBe(false);
+  expect(result.ok).toBe(true);
+  expect(result.rejected.some((entry: { key: string; reason: string }) => entry.key.includes("constraints.pii") && /tracked|committed|authority/i.test(entry.reason))).toBe(true);
+  expect((await f.row("research.enabled")).value).toBe(true);
 }, 15_000);
 
 
@@ -230,10 +243,11 @@ test("#439 a settings dashboard cannot reload a command outside its editable aut
   const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
   writeFileSync(f.file("config.local.json"), JSON.stringify({ pi: { cmd: ["untrusted-fixture-only"] }, research: { enabled: true } }));
   const response = await fetch(`${url.origin}/action`, { method: "POST", headers: { origin: url.origin, "content-type": "application/json", cookie }, body: JSON.stringify({ action: "setting_reload", authority: "terminal" }) });
-  const result = await response.json() as { ok: boolean; error?: string };
-  expect(result.ok).toBe(false);
-  expect(result.error).toContain("terminal authority");
-  expect((await f.row("research.enabled")).value).toBe(false);
+  const result = await response.json() as { ok: boolean; applied?: string[]; rejected?: { key: string; reason: string }[] };
+  expect(result.ok).toBe(true);
+  expect(result.rejected?.some(entry => entry.key.includes("pi.cmd") && /confirmed terminal reload/i.test(entry.reason))).toBe(true);
+  expect(result.applied ?? []).not.toContain("pi.cmd");
+  expect((await f.row("research.enabled")).value).toBe(true);
   expect(f.daemon.bus.peers.has("pi")).toBe(false);
 }, 15_000);
 
@@ -245,9 +259,11 @@ test("#439 ordinary reload cannot activate an unchanged declaration whose Git tr
   writeFileSync(f.file("config.local.json"), JSON.stringify({ ...local, research: { enabled: true } }));
   const instanceId = (await f.client.request({ t: "status" })).status.instanceId;
   const result = await f.client.request({ t: "ui_action", instanceId, action: { action: "setting_reload" } });
-  expect(result.ok).toBe(false);
-  expect(String(result.error)).toContain("authority");
-  expect((await f.row("research.enabled")).value).toBe(false);
+  expect(result.ok).toBe(true);
+  expect(result.rejected.some((entry: { key: string; reason: string }) => entry.key.includes("permission_modes.codex") && /selected setting|confirmed terminal reload/i.test(entry.reason))).toBe(true);
+  expect((await f.row("permission_modes.codex")).value).not.toBe("never-ask");
+  expect((await f.row("permission.codex")).value).not.toBe("never-ask");
+  expect((await f.row("research.enabled")).value).toBe(true);
 }, 15_000);
 
 test("#439 relay changes stay pending across reloads while watchdog changes reach the next peer turn", async () => {
@@ -256,7 +272,7 @@ test("#439 relay changes stay pending across reloads while watchdog changes reac
   f.git("rm", "--cached", "-f", ".agenthub/routing.toml");
   writeFileSync(f.file("routing.toml"), f.routing.replace(/dgx_max_context_tokens = \d+/, "dgx_max_context_tokens = 123456"));
   writeFileSync(f.file("config.local.json"), JSON.stringify({ watchdog_ms: 120_000, pi: { dgx_coding: "future-coding-model" } }));
-  const result = await f.reload();
+  const result = await f.personReload();
   expect(result.ok).toBe(true);
   expect(result.pendingRestart.map((item: { key: string }) => item.key)).toContain("routing.pi.dgx_max_context_tokens");
   expect(result.pendingRestart.map((item: { key: string }) => item.key)).toContain("pi.dgx_coding");
@@ -264,22 +280,22 @@ test("#439 relay changes stay pending across reloads while watchdog changes reac
   (peer as any).setState("busy");
   expect((peer as any).watchdogMs).toBe(120_000);
   (peer as any).setState("idle");
-  expect((await f.reload()).pendingRestart).toEqual(result.pendingRestart);
+  expect((await f.personReload()).pendingRestart).toEqual(result.pendingRestart);
   writeFileSync(f.file("routing.toml"), f.routing);
   writeFileSync(f.file("config.local.json"), JSON.stringify({ watchdog_ms: 120_000 }));
-  expect((await f.reload()).pendingRestart).toEqual([]);
+  expect((await f.personReload()).pendingRestart).toEqual([]);
 }, 15_000);
 
 test("#439 embedded callers retain desired restart values across unchanged and unrelated reloads", async () => {
   const f = await fixture({ embedded: true });
   writeFileSync(f.file("config.local.json"), JSON.stringify({ memory: { enabled: true } }));
-  const first = await f.reload();
+  const first = await f.personReload();
   expect(first.ok).toBe(true);
   expect(first.pendingRestart.map((x: {key: string}) => x.key)).toContain("memory.enabled");
-  expect((await f.reload()).pendingRestart).toEqual(first.pendingRestart);
+  expect((await f.personReload()).pendingRestart).toEqual(first.pendingRestart);
   writeFileSync(f.file("config.local.json"), JSON.stringify({ memory: { enabled: true }, research: { enabled: true } }));
-  expect((await f.reload()).pendingRestart).toEqual(first.pendingRestart);
+  expect((await f.personReload()).pendingRestart).toEqual(first.pendingRestart);
   expect((await f.row("research.enabled")).value).toBe(true);
   writeFileSync(f.file("config.local.json"), JSON.stringify({ research: { enabled: true } }));
-  expect((await f.reload()).pendingRestart).toEqual([]);
+  expect((await f.personReload()).pendingRestart).toEqual([]);
 }, 15_000);

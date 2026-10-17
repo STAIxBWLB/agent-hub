@@ -34,8 +34,8 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
-import { ALL_MACHINE_LOCAL, stripUntrusted } from "./config-trust.ts";
-import { assertReloadTrust, configApply, configChanges, validateEffectiveConfig } from "./config-apply.ts";
+import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
+import { authorizeConfigLeaf, configApply, configChanges, validateEffectiveConfig } from "./config-apply.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
@@ -588,15 +588,19 @@ export async function startDaemon(opts: DaemonOptions) {
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
   let runningRouting = currentRouting(opts.cwd, log);
   let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting);
-  let acceptedFileConfig: HubConfig;
-  try { acceptedFileConfig = loadConfig(opts.cwd, acceptedSources.layers); }
-  catch { acceptedFileConfig = structuredClone(config); } // explicit embedding remains usable with broken files
+  const startupSources = structuredClone(acceptedSources.trustLayers);
+  const embeddedConfig = structuredClone(config);
   let desiredConfig = structuredClone(config);
+  const startupRouting = structuredClone(runningRouting);
+  let desiredRouting = structuredClone(runningRouting);
+  let configRevision = 0;
+  let reloadConfirmation: { token: string; fingerprint: string; revision: number; keys: string[] } | undefined;
   let pendingRestart: { key: string; reason: string }[] = [];
   let lastReloadFailure: string | undefined;
   let reloadDebounce: ReturnType<typeof setTimeout> | undefined;
+  let configWatchPending = false;
   const configWatchers: { path: string; listener: (current: import("node:fs").Stats, previous: import("node:fs").Stats) => void }[] = [];
-  const stopConfigWatch = () => { clearTimeout(reloadDebounce); for (const item of configWatchers.splice(0)) unwatchFile(item.path, item.listener); };
+  const stopConfigWatch = () => { configWatchPending = false; clearTimeout(reloadDebounce); for (const item of configWatchers.splice(0)) unwatchFile(item.path, item.listener); };
   const activeRouting = () => runningRouting;
   // #455: the planner in force. `policyRoles` is what the config files say; settlePlanner derives config.roles from it in
   // place (Tasks holds the same object): an explicit `planner` key is exclusive, and with none and no rostered planner
@@ -2159,7 +2163,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const permissionModes = new Map<string, PermissionMode>(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, mode === "never-ask" ? "ask" : mode]));
   for (const peer of pendingPermissionDefaults.keys()) permissionModes.set(peer, "ask");
   const changedPermissionDefaults = new Set<string>();
-  const permissionMode = (peer: string): PermissionMode => {
+  const applyPendingPermissionDefault = (peer: string): void => {
     if (changedPermissionDefaults.has(peer) && (!bus.peers.has(peer) || bus.peers.get(peer)!.state === "offline")) {
       changedPermissionDefaults.delete(peer);
       const mode = config.permission_modes[peer] ?? "ask";
@@ -2171,8 +2175,8 @@ export async function startDaemon(opts: DaemonOptions) {
       if (config.permission_default_sources?.[peer]) defaultSources[peer] = config.permission_default_sources[peer]!;
       else delete defaultSources[peer];
     }
-    return permissionModes.get(peer) ?? "ask";
   };
+  const permissionMode = (peer: string): PermissionMode => permissionModes.get(peer) ?? "ask";
   const permissionModeSources = new Map(Object.entries(defaultSources).map(([peer, value]) => [peer, value.source]));
   const unattendedPeers = new Set<string>();
   const startingUnattended = new Map<string, boolean>();
@@ -2673,7 +2677,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #248: the add-ons it works with, once per attach (names and versions only).
       // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
       // still did its work under that attachment.
-      if (e.state === "offline") attachedNow.delete(e.peer);
+      if (e.state === "offline") { attachedNow.delete(e.peer); applyPendingPermissionDefault(e.peer); }
       else if (!attachedNow.has(e.peer)) {
         attachedNow.add(e.peer);
         const peer = e.peer, attachment = ++attachments;
@@ -3013,6 +3017,7 @@ export async function startDaemon(opts: DaemonOptions) {
   async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
     let unmute: (() => void) | undefined;
     try {
+      applyPendingPermissionDefault(peer);
       if (peer === "pi" || peer === "local") { await ensureSpec(true); await refreshRunner(); }
       return await startPeerBody(peer, args, (p) => { unmute = muteState(p); });
     } finally {
@@ -3749,10 +3754,6 @@ export async function startDaemon(opts: DaemonOptions) {
     if (value === undefined) delete node[parts.at(-1)!];
     else node[parts.at(-1)!] = structuredClone(value);
   }
-  const reloadGuards = [...SETTINGS,
-    ...["roles", "capabilities", "pi.enabled"].map(key => ({ key, path: key.split("."), risk: "raises" as const, store: "config" as const })),
-    ...["local", "targets", "routes", "hub_routes", "signals", "constraints", "pi", "classes", "max_switch_prefill_tokens"].map(key => ({ key: `routing.${key}`, path: [key], risk: "raises" as const, store: "routing" as const })),
-  ];
   function changedRawPaths(before: unknown, after: unknown, prefix = ""): string[] {
     const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
     if (object(before) || object(after)) {
@@ -3761,122 +3762,179 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return JSON.stringify(before) === JSON.stringify(after) ? [] : [prefix];
   }
-  function prepareConfiguration(sources: ConfigSources, authority: SettingAuthority, rosterPeer?: string) {
-    assertReloadTrust(opts.cwd, sources.trustLayers, acceptedSources.trustLayers, reloadGuards, authority, DEFAULT_CONFIG);
-    if (authority === "settings") {
-      const editable = SETTINGS.filter(def => def.store === "routing").map(def => def.path.join("."));
-      for (const layer of sources.trustLayers.filter(layer => layer.name.endsWith(".toml"))) {
-        const previous = acceptedSources.trustLayers.find(old => old.name === layer.name)?.raw;
-        if (changedRawPaths(previous, layer.raw).some(path => !editable.includes(path))) throw new Error("routing policy outside editable settings requires terminal authority");
-      }
-    }
+  function declaredPaths(value: unknown, prefix = ""): string[] {
+    if (value && typeof value === "object" && !Array.isArray(value)) return Object.entries(value).flatMap(([key, child]) => declaredPaths(child, prefix ? `${prefix}.${key}` : key));
+    return prefix ? [prefix] : [];
+  }
+  const isMachineKey = (key: string) => ALL_MACHINE_LOCAL.some(path => key === path || key.startsWith(`${path}.`));
+  function prepareConfiguration(sources: ConfigSources, authority: SettingAuthority, scope?: string, confirmed: readonly string[] = []) {
     const fileConfig = loadConfig(opts.cwd, sources.layers);
     validateEffectiveConfig(fileConfig);
-    const candidate = opts.config ? structuredClone(desiredConfig) : fileConfig;
-    if (opts.config) for (const change of configChanges(acceptedFileConfig, fileConfig)) putConfig(candidate, change.key, change.after);
-    // Roster confirmation authorizes one peer only; unrelated membership edits stay unapplied.
-    if (rosterPeer) {
-      const peer = SUPPORTED_PEERS.find(peer => peer === rosterPeer);
-      if (!peer) throw new Error("unknown roster peer");
-      candidate.roster = { ...config.roster, [peer]: fileConfig.roster[peer] };
+    const candidate = structuredClone(desiredConfig), routing = structuredClone(desiredRouting);
+    const accepted: string[] = [], rejected: { key: string; reason: string }[] = [], guarded: string[] = [];
+    const paths = new Set<string>();
+    for (const layer of [...sources.trustLayers, ...acceptedSources.trustLayers]) {
+      const prefix = layer.name.endsWith(".toml") ? "routing." : "";
+      for (const path of declaredPaths(layer.raw)) paths.add(`${prefix}${path}`);
+    }
+    if (!opts.config) for (const change of configChanges(desiredConfig, fileConfig)) paths.add(change.key);
+    for (const key of paths) {
+      if (scope && key !== scope) continue;
+      const route = key.startsWith("routing."), path = (route ? key.slice(8) : key).split(".");
+      const layers = sources.trustLayers.filter(layer => layer.name.endsWith(route ? ".toml" : ".json"));
+      const priorLayers = acceptedSources.trustLayers.filter(layer => layer.name.endsWith(route ? ".toml" : ".json"));
+      const current = [...layers].reverse().find(layer => valueAt(layer.raw, path) !== undefined);
+      const prior = [...priorLayers].reverse().find(layer => valueAt(layer.raw, path) !== undefined);
+      const changedLayers = [...new Set([...layers.map(layer => layer.name), ...priorLayers.map(layer => layer.name)])].filter(name => JSON.stringify(valueAt(layers.find(layer => layer.name === name)?.raw, path)) !== JSON.stringify(valueAt(priorLayers.find(layer => layer.name === name)?.raw, path)));
+      const rawChanged = changedLayers.length > 0;
+      if (opts.config && !rawChanged) continue; // embedding overrides are not file defaults
+      const before = valueAt(route ? desiredRouting : desiredConfig, path);
+      const after = valueAt(route ? sources.routing : opts.config && !current ? embeddedConfig : fileConfig, path);
+      const rawAfter = current ? valueAt(current.raw, path) : undefined;
+      if (!rawChanged && JSON.stringify(before) === JSON.stringify(after)) continue;
+      const machine = !route && isMachineKey(key);
+      const origin = current ?? prior;
+      let tracked = origin ? configTracked(opts.cwd, origin.name) : false;
+      if (!machine && tracked === undefined && !configRepositoryPresent(opts.cwd)) tracked = false;
+      const guard = SETTINGS.find(def => def.store === (route ? "routing" : "config") && def.path.join(".") === path.join("."));
+      const acceptedFallback = !machine && tracked !== undefined && !!current && JSON.stringify(after) === JSON.stringify(valueAt(route ? startupRouting : embeddedConfig, path)) && JSON.stringify(after) === JSON.stringify(rawAfter) && JSON.stringify(rawAfter) === JSON.stringify(valueAt(startupSources.find(layer => layer.name === current.name)?.raw, path));
+      if (key.startsWith("roster.") && scope !== key && JSON.stringify(before) !== JSON.stringify(after)) {
+        rejected.push({ key, reason: "use the confirmed ahub roster add/remove setting; a full reload cannot bypass peer lifecycle" });
+        continue;
+      }
+      const input = { key, before, acceptedFallback, after: machine && rawChanged ? rawAfter : after, source: route ? "routing" as const : "config" as const, tracked, authority, guard, confirmed: !!scope || confirmed.includes(key) };
+      const decision = authorizeConfigLeaf(input);
+      if (!decision.allowed) {
+        const next = `${decision.reason}; review and run ahub settings reload, or revert this key${machine && tracked !== false ? "; move machine-local declarations to an untracked local file first" : ""}`;
+        rejected.push({ key, reason: next });
+        if (!scope && authority === "terminal" && authorizeConfigLeaf({ ...input, confirmed: true }).allowed) guarded.push(key);
+        continue;
+      }
+      putConfig(route ? routing : candidate, path.join("."), after);
+      if (route) {
+        routing.sources ??= {};
+        const origin = sources.routing.sources?.[path.join(".")];
+        if (origin) routing.sources[path.join(".")] = origin; else delete routing.sources[path.join(".")];
+      }
+      if (!route && path[0] === "permission_modes" && path[1]) {
+        candidate.permission_default_sources ??= {};
+        const source = fileConfig.permission_default_sources?.[path[1]];
+        if (source) candidate.permission_default_sources[path[1]] = source;
+        else delete candidate.permission_default_sources[path[1]];
+      }
+      accepted.push(key);
     }
     const changes = configChanges({ ...config, roles: policyRoles }, candidate);
-    // Raw bytes alone do not prove authority: Git provenance can change while a declaration stays identical.
-    const before = { ...config, roles: policyRoles };
-    if (authority !== "terminal") {
-      for (const path of ALL_MACHINE_LOCAL) {
-        for (const changed of changedRawPaths(valueAt(before, path.split(".")), valueAt(candidate, path.split(".")), path)) {
-          const def = SETTINGS.find(def => def.store === "config" && def.path.join(".") === changed);
-          const value = valueAt(candidate, changed.split("."));
-          if (!def || authority === "ordinary" && (value === undefined || value !== def.floor)) throw new Error(`${changed}: effective guarded change requires ${authority === "settings" ? "terminal" : "settings or terminal"} authority`);
-        }
-      }
-      if (authority === "ordinary") for (const def of SETTINGS.filter(def => def.store === "config" && def.risk === "raises")) {
-        const old = valueAt(before, def.path), value = valueAt(candidate, def.path);
-        if (JSON.stringify(old) !== JSON.stringify(value) && (value === undefined || value !== def.floor)) throw new Error(`${def.key}: effective guarded change requires settings or terminal authority`);
-      }
-      if (authority === "settings") for (const key of ["roles", "capabilities", "pi.enabled"]) {
-        if (changedRawPaths(valueAt(before, key.split(".")), valueAt(candidate, key.split("."))).length) throw new Error(`${key}: non-editable policy requires terminal authority`);
-      }
-    }
-
     const running = structuredClone({ ...config, roles: policyRoles });
-    for (const change of changes) {
-      if (change.key === "roster" || change.key.startsWith("roster.")) {
-        if (change.key !== `roster.${rosterPeer}`) throw new Error("roster: use the confirmed roster setting to change participation");
-      }
-      if (change.applies !== "restart") putConfig(running, change.key, change.after);
-    }
+    for (const change of changes) if (change.applies !== "restart") putConfig(running, change.key, change.after);
     validateEffectiveConfig(running);
     conductorPeer(running.roles);
     for (const peer of Object.keys(running.catalog_roles ?? {})) selectedRoles(peer, running.roles, { ...resolvedProfile.catalog_roles, ...catalogAssignments(running.catalog_roles) }, catalog);
-    const problem = running.mlx.enabled === false ? mlxPinProblem(sources.routing, sources.texts["routing.toml"] !== null) : undefined;
+    const problem = running.mlx.enabled === false ? mlxPinProblem(routing, sources.texts["routing.toml"] !== null) : undefined;
     if (problem) throw new Error(problem);
-    return { sources, fileConfig, candidate, running, changes };
+    return { sources, fileConfig, candidate, running, routing, changes, accepted, rejected, guarded: guarded.sort() };
   }
-  function configWriteCheck(scratch: string, authority: SettingAuthority, rosterPeer?: string): HubConfig {
+  /** Acknowledging one field never hides another pending edit in the same file. */
+  function acknowledgeConfiguration(sources: ConfigSources, paths: readonly string[]): void {
+    const layers = acceptedSources.trustLayers.map(layer => ({ ...layer, raw: structuredClone(layer.raw) }));
+    for (const name of CONFIG_SOURCE_FILES) {
+      let layer = layers.find(layer => layer.name === name);
+      const relevant = paths.filter(key => key.startsWith("routing.") === name.endsWith(".toml"));
+      if (!relevant.length) continue;
+      if (!layer) { layer = { name, raw: {} }; layers.push(layer); }
+      const next = sources.trustLayers.find(layer => layer.name === name)?.raw;
+      for (const key of relevant) {
+        const path = key.startsWith("routing.") ? key.slice(8) : key;
+        const raw = valueAt(next, path.split("."));
+        const winning = [...sources.trustLayers].reverse().find(source => source.name.endsWith(name.endsWith(".toml") ? ".toml" : ".json") && valueAt(source.raw, path.split(".")) !== undefined);
+        if (raw !== undefined && winning?.name !== name) continue; // a shadowed edit was never authorized by its no-op effective value
+        putConfig(layer.raw, path, raw);
+      }
+    }
+    acceptedSources = { ...sources, trustLayers: layers, layers: layers.filter((layer): layer is typeof layer & { name: "config.json" | "config.local.json" } => layer.name.endsWith(".json")), routing: desiredRouting };
+  }
+  function configWriteCheck(scratch: string, authority: SettingAuthority, scope?: string): HubConfig {
     const texts = configSourceTexts(opts.cwd), next = configSourceTexts(scratch);
     texts["config.json"] = next["config.json"];
     texts["config.local.json"] = next["config.local.json"];
-    return prepareConfiguration(parseConfigSources(texts), authority, rosterPeer).fileConfig;
+    const prepared = prepareConfiguration(parseConfigSources(texts), authority, scope);
+    const refusal = prepared.rejected.find(item => item.key === scope);
+    if (refusal) throw new Error(`${refusal.key}: ${refusal.reason}`);
+    return prepared.fileConfig;
   }
-  function routingWriteCheck(authority: SettingAuthority, overlay: import("./routing.ts").RoutingOverlay | undefined): void {
+  function routingWriteCheck(authority: SettingAuthority, overlay: import("./routing.ts").RoutingOverlay | undefined, scope?: string): void {
     const texts = configSourceTexts(opts.cwd);
     texts["routing.local.toml"] = overlay === undefined ? null : overlayToml(overlay);
-    prepareConfiguration(parseConfigSources(texts), authority);
+    const prepared = prepareConfiguration(parseConfigSources(texts), authority, scope);
+    const refusal = prepared.rejected.find(item => item.key === scope);
+    if (refusal) throw new Error(`${refusal.key}: ${refusal.reason}`);
   }
-  /** The only publication path for a complete candidate, independent of its initiating surface. */
-  async function reloadConfig(authority: SettingAuthority, rosterPeer?: string): Promise<Record<string, unknown>> {
+  function runConfigWatch(): void {
+    if (stopping) return;
+    if (rosterChanging) { configWatchPending = true; return; }
+    void reloadConfig("ordinary");
+  }
+  /** The only publication path; named writes are scoped, full guarded reloads need person confirmation. */
+  async function reloadConfig(authority: SettingAuthority, scope?: string, confirm?: unknown): Promise<Record<string, unknown>> {
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding configuration reload" };
-    let fingerprint = "unavailable";
+    let fingerprint = "unavailable", published = false;
     try {
       const texts = configSourceTexts(opts.cwd);
       fingerprint = configFingerprint(texts);
-      const prepared = prepareConfiguration(parseConfigSources(texts), authority, rosterPeer);
+      if (confirm !== undefined && (typeof confirm !== "string" || authority !== "terminal" || scope || !reloadConfirmation || reloadConfirmation.token !== confirm || reloadConfirmation.fingerprint !== fingerprint || reloadConfirmation.revision !== configRevision)) return { ok: false, error: "configuration confirmation is stale or changed; run ahub settings reload again" };
+      const sources = parseConfigSources(texts);
+      const prepared = prepareConfiguration(sources, authority, scope, confirm === undefined ? [] : reloadConfirmation!.keys);
+      if (confirm !== undefined && prepared.rejected.some(item => reloadConfirmation!.keys.includes(item.key))) return { ok: false, error: "configuration trust changed; run ahub settings reload again" };
+      if (scope && prepared.rejected.some(item => item.key === scope)) return { ok: false, error: prepared.rejected.find(item => item.key === scope)!.reason };
       const { changes, candidate } = prepared;
-      const routingChanges = changedRawPaths(
-        { ...runningRouting, sources: undefined }, { ...prepared.sources.routing, sources: undefined }, "routing",
-      );
-      // Allocate a new optional consumer before publishing any running config change.
+      const routingChanges = changedRawPaths({ ...runningRouting, sources: undefined }, { ...prepared.routing, sources: undefined }, "routing");
       if (prepared.running.snapshots.enabled && repo && !turnLog) turnLog = new Turns(join(opts.stateDir, "hub.db"));
+      const priorDesired = JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers]);
       const rolesChanged = changes.some(change => change.key === "roles" || change.key.startsWith("roles.") || change.key === "planner");
       const beforeConductor = conductorPeer(config.roles);
+      published = true;
       for (const change of changes) {
         if (change.applies === "restart" || change.key === "roles" || change.key.startsWith("roles.")) continue;
         putConfig(config, change.key, change.after);
       }
       if (rolesChanged) { policyRoles = structuredClone(prepared.running.roles); settlePlanner(); }
-      if (beforeConductor && (beforeConductor !== conductorPeer(config.roles) || config.conductor.feed === "off")) {
-        bus.revokeSupervision(beforeConductor); supervision.resetPending(beforeConductor); budgetFeedSeen.clear();
-      }
-      const defaultChanges = [...changes, ...configChanges(acceptedFileConfig, prepared.fileConfig)];
-      for (const change of defaultChanges.filter(change => change.key === "permission_modes" || change.key.startsWith("permission_modes."))) {
+      for (const change of changes.filter(change => change.key === "permission_modes" || change.key.startsWith("permission_modes."))) {
         for (const peer of change.key === "permission_modes" ? SUPPORTED_PEERS : [change.key.split(".")[1]!]) changedPermissionDefaults.add(peer);
       }
-      config.permission_default_sources = prepared.fileConfig.permission_default_sources;
+      config.permission_default_sources = candidate.permission_default_sources;
+      for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
       if (changes.some(change => change.key === "task_sweep" || change.key.startsWith("task_sweep."))) rescheduleSweep();
       if (changes.some(change => ["batch_max", "batch_ms", "queue_cap"].includes(change.key))) bus.configureScheduling({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap });
-      if (changes.some(change => change.key === "watchdog_ms")) for (const peer of bus.peers.values()) {
-        if (peer instanceof BasePeer) peer.configureWatchdog(config.watchdog_ms);
-      }
+      if (changes.some(change => change.key === "watchdog_ms")) for (const peer of bus.peers.values()) if (peer instanceof BasePeer) peer.configureWatchdog(config.watchdog_ms);
       Object.assign(limits, config.limits);
       turnFreeNow = undefined;
-      runningRouting = { ...prepared.sources.routing, pi: runningRouting.pi };
-      acceptedSources = prepared.sources;
-      acceptedFileConfig = prepared.fileConfig;
+      runningRouting = { ...prepared.routing, pi: runningRouting.pi };
       desiredConfig = structuredClone(candidate);
+      desiredRouting = structuredClone(prepared.routing);
+      acknowledgeConfiguration(sources, prepared.accepted);
+      if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
       storedConfigCache = undefined;
-      lastReloadFailure = undefined;
+      if (beforeConductor && (beforeConductor !== conductorPeer(config.roles) || config.conductor.feed === "off")) {
+        bus.revokeSupervision(beforeConductor); supervision.resetPending(beforeConductor); budgetFeedSeen.clear();
+      }
+      if (confirm !== undefined) reloadConfirmation = undefined;
+      if (prepared.guarded.length) reloadConfirmation = { token: randomUUID(), fingerprint, revision: configRevision, keys: prepared.guarded };
+      const refusal = prepared.rejected.map(item => `${item.key}: ${item.reason}`).join("; ");
+      const failure = refusal ? `${fingerprint}:${refusal}` : undefined;
+      if (failure && lastReloadFailure !== failure) { try { notify(`configuration keys retained: ${sanitize(refusal).slice(0, 1200)}`); } catch { log("configuration keys retained; notice unavailable"); } }
+      lastReloadFailure = failure;
       writeStatus();
       const applied = [...changes.filter(change => change.applies !== "restart").map(change => change.key), ...routingChanges.filter(key => configApply(key).applies !== "restart")];
-      return { ok: true, applied, pendingRestart, text: applied.length ? `configuration reloaded: ${applied.join(", ")}` : pendingRestart.length ? `pending restart: ${pendingRestart.map(item => item.key).join(", ")}` : "configuration unchanged" };
+      return { ok: true, applied, pendingRestart, rejected: prepared.rejected,
+        ...(prepared.guarded.length ? { confirmation: { token: reloadConfirmation!.token, keys: reloadConfirmation!.keys } } : {}),
+        text: [applied.length ? `configuration reloaded: ${applied.join(", ")}` : pendingRestart.length ? `pending restart: ${pendingRestart.map(item => item.key).join(", ")}` : "configuration unchanged", ...(prepared.rejected.length ? [`retained keys: ${prepared.rejected.map(item => item.key).join(", ")}; review ahub settings reload or revert the file`] : [])].join("\n") };
     } catch (error) {
-      const message = sanitize((error as Error).message).slice(0, 600);
+      const message = sanitize(error instanceof Error ? error.message : "configuration reload could not be confirmed").slice(0, 600);
       const failure = `${fingerprint}:${message}`;
-      if (lastReloadFailure !== failure) { lastReloadFailure = failure; try { notify(`configuration reload refused: ${message}`); } catch { log("configuration reload refused; notice unavailable"); } }
-      return { ok: false, error: message, pendingRestart };
+      if (lastReloadFailure !== failure) { lastReloadFailure = failure; try { notify(`configuration reload ${published ? "unconfirmed" : "refused"}: ${message}; run ahub settings reload after reviewing or reverting the file`); } catch { log("configuration reload notice unavailable"); } }
+      return { ok: false, error: message, ...(published ? { applied: true } : {}), pendingRestart };
     }
   }
 
@@ -3975,8 +4033,8 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roster changes" };
       rosterChanging = peer;
-      if (undo) undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, peer), (_routing, overlay) => routingWriteCheck(authority, overlay));
-      else writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, peer));
+      if (undo) undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), (_routing, overlay) => routingWriteCheck(authority, overlay));
+      else writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, `roster.${peer}`));
       // Apply exactly the authorized key. Other file edits stay pending until the next hub start.
       config.roster = next;
       settlePlanner(); // #455: an automatic planner follows the roster
@@ -4003,7 +4061,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const owner = bus.peers.get(peer);
         if (owner instanceof PiPeer && owner.mode === "tui") await owner.resumeFromRoster();
       }
-      const reloaded = await reloadConfig(authority, peer);
+      const reloaded = await reloadConfig(authority, `roster.${peer}`);
       if (reloaded.ok !== true) return { ...reloaded, saved: true };
       writeStatus();
       const stayed = !after ? board.list().filter(task => !isClosedTaskState(task.state) && (task.owner === peer || task.reviewer === peer)) : [];
@@ -4011,7 +4069,7 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch (error) {
       if (saved) writeStatus();
       return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
-    } finally { if (rosterChanging === peer) { rosterChanging = undefined; bus.rosterChanged(peer); } }
+    } finally { if (rosterChanging === peer) { rosterChanging = undefined; bus.rosterChanged(peer); if (configWatchPending && !stopping) { configWatchPending = false; clearTimeout(reloadDebounce); reloadDebounce = setTimeout(runConfigWatch, 100); reloadDebounce.unref?.(); } } }
   }
   /** A checked definition and value, or the refusal. Every settings write and preview starts here. */
   function settingInput(key: unknown, raw: unknown): { def: SettingDef; value: SettingValue } | { error: string } {
@@ -4054,19 +4112,19 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       if (def.store === "routing") {
         const from = routingValue(activeRouting(), def);
-        const next = writeRoutingSetting(opts.cwd, opts.stateDir, def, value, (_routing, overlay) => routingWriteCheck(authority, overlay));
+        const next = writeRoutingSetting(opts.cwd, opts.stateDir, def, value, (_routing, overlay) => routingWriteCheck(authority, overlay, def.key));
         if (!next) return { ok: true, text: `${def.key}: ${OVERLAY_FILE} already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
         saved = true;
-        const result = await reloadConfig(authority);
+        const result = await reloadConfig(authority, def.key);
         if (result.ok !== true) return { ...result, saved: true };
         recordSetting(def.key, from, routingValue(activeRouting(), def), source, false, reason);
         return { ok: true, text: `${def.key}: ${settingText(routingValue(activeRouting(), def))} (in force now)` };
       }
       if (peer && value === null && storedLocally(opts.cwd, def) && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
       const from = settingScalar(valueAt(storedConfig(), def.path));
-      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, def.path.join(".")))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
       saved = true;
-      const result = await reloadConfig(authority);
+      const result = await reloadConfig(authority, def.path.join("."));
       if (result.ok !== true) return { ...result, saved: true };
       const to = settingScalar(valueAt(storedConfig(), def.path));
       recordSetting(def.key, from, to, source, false, reason);
@@ -4094,8 +4152,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} again (never-ask, or inherit where the shared file holds it) with the confirmation instead; nothing was undone` };
     try {
       const from = read();
-      undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority), (_routing, overlay) => routingWriteCheck(authority, overlay));
-      const result = await reloadConfig(authority);
+      undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, def.path.join(".")), (_routing, overlay) => routingWriteCheck(authority, overlay, def.key));
+      const result = await reloadConfig(authority, def.store === "routing" ? def.key : def.path.join("."));
       if (result.ok !== true) return { ...result, saved: true };
       recordSetting(def.key, from, read(), settingSource(authority), true, reason);
       if (def.type === "roles") { prepareRoleSelection(def.path[1]!); event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) }); }
@@ -4891,7 +4949,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: true, ...settingsView(), roster: rosterView() });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
-        return void reloadConfig("terminal").then(reply);
+        return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));
       case "settings_preview":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
         return void reply(msg.undo === true ? settingsUndoPreview() : settingsPreview(msg.key, msg.value));
@@ -5114,7 +5172,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const listener = (current: import("node:fs").Stats, previous: import("node:fs").Stats) => {
       if (stopping || current.mtimeMs === previous.mtimeMs && current.size === previous.size && current.ino === previous.ino && current.nlink === previous.nlink) return;
       clearTimeout(reloadDebounce);
-      reloadDebounce = setTimeout(() => { void reloadConfig("ordinary"); }, 100);
+      reloadDebounce = setTimeout(runConfigWatch, 100);
       reloadDebounce.unref?.();
     };
     watchFile(path, { persistent: false, interval: 100 }, listener);
