@@ -21,7 +21,7 @@ class Peer extends BasePeer {
   async stop() { this.setState("offline"); }
   async deliver(envelopes: Envelope[]) { this.received.push(...envelopes); }
 }
-async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; available?: boolean; availability?: () => Promise<RunnerState>; staleDeliver?: boolean } = {}) {
+async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; available?: boolean; availability?: (signal?: AbortSignal) => Promise<RunnerState>; staleDeliver?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-capability-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/owner/project.git"]]) {
     const r = hubGitSync(["-C", root, ...args], { encoding: "utf8" }); if (r.status) throw new Error("fixture git failed");
@@ -286,4 +286,27 @@ test("direct local control start refreshes failed spec auth without restarting (
     if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
     if (previousKey === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = previousKey;
   }
+});
+
+
+test("daemon stop aborts and awaits background runner refresh before resolving", async () => {
+  const checkedAt = Date.now(); let calls = 0, finish!: () => void, signal: AbortSignal | undefined;
+  const f = await fixture({ availability: async abort => {
+    if (++calls === 1) return { available: true, checkedAt };
+    signal = abort;
+    await new Promise<void>(resolve => { finish = resolve; });
+    return { available: true, checkedAt: Date.now() };
+  } });
+  const client = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => client.close());
+  const originalNow = Date.now;
+  let stopping: Promise<void> | undefined;
+  try {
+    Date.now = () => checkedAt + 60_001;
+    await client.request({ t: "status" }); expect(calls).toBe(2);
+    let stopped = false; stopping = f.daemon.stop().then(() => { stopped = true; });
+    await Bun.sleep(0);
+    expect(stopped).toBe(false); expect(signal?.aborted).toBe(true);
+    await client.request({ t: "status" }); expect(calls).toBe(2);
+  } finally { Date.now = originalNow; finish?.(); await stopping; }
+  await Bun.sleep(0); expect(calls).toBe(2);
 });

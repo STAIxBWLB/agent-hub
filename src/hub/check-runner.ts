@@ -5,6 +5,7 @@ import { lstat, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFi
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { hubGitEnv, hubGitSync } from "./git.ts";
 import { hostExecutable } from "./host-executable.ts";
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 export const CHECK_IMAGE = "oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895";
@@ -84,6 +85,7 @@ export class ContainerRunner {
   private readonly queue: Entry[] = [];
   private active?: Entry;
   private closing = false;
+  private readonly probes = new Map<AbortController, Promise<RunnerState>>();
   private availableCache?: { at: number; value: RunnerState };
   private readonly now: () => number;
   private readonly signature: string;
@@ -111,18 +113,29 @@ export class ContainerRunner {
   }
   private enabled(): boolean { return typeof this.options.enabled === "function" ? this.options.enabled() : this.options.enabled; }
   async available(signal?: AbortSignal): Promise<RunnerState> {
+    if (this.closing) return { available: false, reason: "stopping" };
     if (!this.enabled()) return { available: false, reason: "not enabled" };
     if (!this.signature) return { available: false, reason: "hub identity unavailable" };
     if (!this.common) {
       try { this.common = this.git(["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim(); } catch { return { available: false, reason: "git source unavailable" }; }
     }
     if (this.availableCache && this.now() - this.availableCache.at < 60_000) return this.availableCache.value;
+    const abort = new AbortController(), cancelled = () => abort.abort();
+    signal?.addEventListener("abort", cancelled, { once: true });
+    if (signal?.aborted) abort.abort();
+    const pending = Promise.resolve().then(() => this.probeAvailability(abort.signal)).finally(() => {
+      signal?.removeEventListener("abort", cancelled); this.probes.delete(abort);
+    });
+    this.probes.set(abort, pending);
+    return pending;
+  }
+  private async probeAvailability(signal: AbortSignal): Promise<RunnerState> {
     let value: RunnerState;
     try {
       const probe = async (args: string[]) => {
-        if (signal?.aborted) throw new Error("check stopped");
+        if (this.closing || signal.aborted) throw new Error("check stopped");
         const result = await this.command(args, { signal, timeoutMs: 15_000 });
-        if (signal?.aborted) throw new Error("check stopped");
+        if (this.closing || signal.aborted) throw new Error("check stopped");
         return result;
       };
       const version = await probe(["--version"]);
@@ -136,7 +149,7 @@ export class ContainerRunner {
           : network.code === 0 && !isolatedNetwork(network.stdout)
           ? { available: false, reason: "network isolation unverified" }
           : { available: true, platform: `linux/arm64 (apple-container ${version.stdout.trim().slice(0, 80)})` };
-    } catch { if (signal?.aborted) throw new Error("check stopped"); value = { available: false, reason: "container unavailable" }; }
+    } catch { if (this.closing || signal.aborted) return { available: false, reason: this.closing ? "stopping" : "check stopped" }; value = { available: false, reason: "container unavailable" }; }
     const checkedAt = this.now();
     value.checkedAt = checkedAt;
     this.availableCache = { at: checkedAt, value };
@@ -148,7 +161,7 @@ export class ContainerRunner {
     if (!Number.isSafeInteger(request.task) || request.task <= 0 || !request.owner || !["test", "typecheck"].includes(request.check) || !request.ref || request.ref.startsWith("-")) throw new Error("invalid check request");
     if (request.check === "test" && (!Array.isArray(request.files) || request.files.length < 1 || request.files.length > 32 || request.files.some(p => typeof p !== "string" || !/^test\/[A-Za-z0-9._/-]+\.test\.ts$/.test(p) || !safePath(p)))) throw new Error("invalid test files");
     if (request.check === "typecheck" && request.files?.length) throw new Error("typecheck takes no files");
-    if (this.entries.size >= 3) throw new Error("busy");
+    if (this.entries.size >= 3) throw new PreEffectToolRefusal("busy");
     const run = randomUUID();
     const receipt: RunReceipt = { ...request, files: request.files ? [...request.files] : undefined, run, sha: "", tree: "", lockfile: "", excluded: 0, dependency_files: 0,
       runner: "container", image: CHECK_IMAGE, platform: "linux/arm64 (apple-container unknown)", container: `agenthub-check-${run}`, hub_pid: process.pid, hub_signature: this.signature, created: this.now(), status: "queued", exit: null,
@@ -230,6 +243,20 @@ export class ContainerRunner {
       if (match[2] !== "blob" || !["100644", "100755"].includes(match[1]!)) throw new Error("unsupported source entry");
       return { mode: match[1]!, oid: match[3]!, path: match[4]! };
     });
+    // Refuse lossy staging on case-folding/normalizing hosts, independent of the current host's filesystem.
+    // Include every directory prefix and denied entry before creating any staging directory or writing a blob.
+    const foldedPaths = new Map<string, { spelling: string; directory: boolean }>();
+    for (const entry of parsed) {
+      const parts = entry.path.split("/");
+      for (let i = 1; i <= parts.length; i++) {
+        const spelling = parts.slice(0, i).join("/"), directory = i < parts.length;
+        // Upper/lower expansion conservatively includes Unicode multi-character case folds (e.g. sharp s).
+        const folded = spelling.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+        const prior = foldedPaths.get(folded);
+        if (prior && (prior.spelling !== spelling || prior.directory !== directory)) throw new Error("source path collision");
+        foldedPaths.set(folded, { spelling, directory });
+      }
+    }
     let bytes = 0;
     const paths = new Set<string>();
     await mkdir(src, { recursive: true, mode: 0o700 }); check();
@@ -372,9 +399,12 @@ export class ContainerRunner {
     const live = this.entries.get(run); if (live) return { ...live.receipt };
     try {
       const r = JSON.parse(await readFile(join(this.records, `${run}.json`), "utf8")) as RunReceipt;
-      if (r.run !== run || r.container !== `agenthub-check-${run}` || !Number.isFinite(r.created) || !Number.isSafeInteger(r.hub_pid) || r.hub_pid <= 0 || typeof r.hub_signature !== "string" || !["queued", "running", "finished", "stale"].includes(r.status)) return undefined;
+      if (!r || r.run !== run || r.container !== `agenthub-check-${run}` || !Number.isFinite(r.created) || !Number.isSafeInteger(r.hub_pid) || r.hub_pid <= 0 || typeof r.hub_signature !== "string" || !["queued", "running", "finished", "stale"].includes(r.status)) throw new Error("invalid receipt");
       return r;
-    } catch { return undefined; }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+      throw new Error("check receipt unavailable");
+    }
   }
   async consumeOutput(run: string): Promise<void> { if (/^[a-f0-9-]{36}$/.test(run)) await rm(join(this.root, run, "output.log"), { force: true }); }
   async cancel(run: string): Promise<void> {
@@ -399,8 +429,10 @@ export class ContainerRunner {
   }
   async stopAll(): Promise<void> {
     this.closing = true; clearInterval(this.retentionTimer);
+    for (const abort of this.probes.keys()) abort.abort();
     for (const entry of this.entries.values()) { entry.receipt.interrupted = true; entry.abort.abort(); }
     if (this.active) await this.cleanup(this.active.receipt.container);
+    await Promise.allSettled([...this.probes.values()]);
     while (this.entries.size) await new Promise(r => setTimeout(r, 5));
   }
   async sweep(): Promise<string[]> {

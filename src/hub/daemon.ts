@@ -1103,15 +1103,23 @@ export async function startDaemon(opts: DaemonOptions) {
     },
   };
   const checkRunner = opts.boundedTools?.runner?.(checkOptions) ?? new ContainerRunner(checkOptions);
-  startupCleanup.push(() => { void checkRunner.stopAll(); });
-  let runnerState = await checkRunner.available();
+  const runnerRefreshAbort = new AbortController();
+  startupCleanup.push(() => { runnerRefreshAbort.abort(); void checkRunner.stopAll(); });
+  let runnerState = await checkRunner.available(runnerRefreshAbort.signal);
   const orphanChecks = (await checkRunner.sweep()).map(line => boundedSafe(line) ? sanitize(line) : "orphan check: details withheld by privacy policy");
   if (opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container")) await ensureSpec();
   let runnerStateAt = runnerState.checkedAt ?? Date.now(), refreshingRunner: Promise<void> | undefined;
   const refreshRunner = (): Promise<void> => {
+    if (stopping || runnerRefreshAbort.signal.aborted) return Promise.resolve();
     if (Date.now() - runnerStateAt < 60_000) return Promise.resolve();
     if (refreshingRunner) return refreshingRunner;
-    refreshingRunner = checkRunner.available().then(value => { runnerState = value; runnerStateAt = value.checkedAt ?? Date.now(); }, () => { runnerState = { available: false, reason: "container unavailable" }; runnerStateAt = Date.now(); }).finally(() => { refreshingRunner = undefined; });
+    refreshingRunner = checkRunner.available(runnerRefreshAbort.signal).then(value => {
+      if (stopping || runnerRefreshAbort.signal.aborted) return;
+      runnerState = value; runnerStateAt = value.checkedAt ?? Date.now();
+    }, () => {
+      if (stopping || runnerRefreshAbort.signal.aborted) return;
+      runnerState = { available: false, reason: "container unavailable" }; runnerStateAt = Date.now();
+    }).finally(() => { refreshingRunner = undefined; });
     return refreshingRunner;
   };
   const peerCapabilities = () => {
@@ -4719,6 +4727,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    runnerRefreshAbort.abort();
     // A stop someone asked for is not a crash, even if it then runs past the shutdown deadline: forget the sessions now.
     try { removeSessions(opts.stateDir, instanceId); } catch { /* the state dir is gone */ }
     checksClosed = true;
@@ -4732,7 +4741,8 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
-      await checkRunner.stopAll();
+      try { await checkRunner.stopAll(); }
+      finally { await refreshingRunner; }
       await Promise.allSettled([...starting.values()]);
       // A fingerprint still being detected belongs in the research records written below; its peer must still be
       // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).

@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
+import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { CHECK_IMAGE, ContainerRunner, type CheckRequest, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
 const roots: string[] = [];
 const runners: ContainerRunner[] = [];
@@ -372,4 +374,92 @@ test.each(["run", "cp"])("silent %s remains bounded by its own command cap", asy
   expect(receipt.duration_ms).toBe(stage === "run" ? 120_000 : 180_000);
   expect(receipt.error).toContain(stage === "run" ? "container start failed" : "container source transfer failed");
   expect(f.calls.some(args => args[0] === "exec")).toBe(false);
+});
+
+// Index-only fixtures retain both spellings even on a case-insensitive host filesystem.
+test.each([
+  ["Case.txt", "case.txt"], ["Dir/one.txt", "dir/two.txt"], ["FILE", "file/child.txt"],
+  ["café.txt", "café.txt"], ["Straße.txt", "STRASSE.txt"],
+])("snapshot refuses folded Git path collisions before staging writes: %s / %s", async (left, right) => {
+  let screened = 0;
+  const f = await fixture({ isDenied: () => { screened++; return false; } });
+  f.git(["config", "core.precomposeunicode", "false"]);
+  const oid = f.git(["rev-parse", "HEAD:bun.lock"]);
+  for (const path of [left, right]) f.git(["update-index", "--add", "--cacheinfo", `100644,${oid},${path}`]);
+  f.git(["commit", "-m", "colliding git names"]);
+  const receipt = await f.runner.start(f.request).done;
+  expect(receipt.error).toContain("source path collision"); expect(receipt.exit).toBeNull();
+  expect(screened).toBe(0); // No per-file staging loop began, including files sorted before the collision.
+  expect(f.calls.some(args => args[0] === "run" || args[0] === "cp")).toBe(false);
+});
+
+test("receipt lookup distinguishes absent storage from malformed invalid and unreadable storage", async () => {
+  const f = await fixture(), run = "12345678-1234-1234-1234-123456789abc", path = join(f.root, "state/checks", `${run}.json`);
+  expect(await f.runner.result(run)).toBeUndefined();
+  await mkdir(join(f.root, "state/checks"), { recursive: true });
+  for (const text of ["{bad JSON", "{}", "null"]) {
+    await writeFile(path, text);
+    await expect(f.runner.result(run)).rejects.toThrow("check receipt unavailable");
+  }
+  await rm(path); await mkdir(path);
+  await expect(f.runner.result(run)).rejects.toThrow("check receipt unavailable");
+});
+
+test.each(["--version", "system", "image", "network"])("stopAll owns and awaits independent availability during %s", async stage => {
+  let original!: ContainerCommand, entered!: () => void, finish!: () => void, signal: AbortSignal | undefined;
+  const calls: string[] = [], started = new Promise<void>(resolve => { entered = resolve; });
+  const f = await fixture({ command: async (args, options) => {
+    calls.push(args[0]!);
+    if (args[0] === stage) { signal = options?.signal; entered(); await new Promise<void>(resolve => { finish = resolve; }); }
+    return original(args, options);
+  } }); original = f.command;
+  const availability = f.runner.available(); await started;
+  let stopped = false; const stopping = f.runner.stopAll().then(() => { stopped = true; });
+  await Bun.sleep(0); const before = calls.length;
+  expect(stopped).toBe(false); expect(signal?.aborted).toBe(true);
+  finish(); await stopping;
+  expect((await availability).available).toBe(false);
+  await f.runner.available(); await Bun.sleep(0);
+  expect(calls).toHaveLength(before);
+});
+
+
+test("queue saturation settles a real Pi refusal once and replays it after reopening", async () => {
+  let original!: ContainerCommand, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const f = await fixture({ command: async (args, options) => {
+    if (args[0] === "exec") { entered(); return new Promise(resolve => options?.signal?.addEventListener("abort", () => resolve({ code: null, stdout: "" }), { once: true })); }
+    return original(args, options);
+  } }); original = f.command;
+  const active = f.runner.start(f.request); await started;
+  f.runner.start(f.request); f.runner.start(f.request);
+  const file = join(f.root, "pi-ledger.db"); let ledger = new PiToolReceipts(file), attempts = 0;
+  const start = async () => { attempts++; f.runner.start(f.request); return "unexpected admission"; };
+  try {
+    expect(await ledger.execute("session", "full", "hub_check_start", {}, start)).toBe("error: busy");
+    await ledger.close(); ledger = new PiToolReceipts(file);
+    expect(await ledger.execute("session", "full", "hub_check_start", {}, start)).toBe("error: busy");
+    expect(attempts).toBe(1); expect(ledger.unsettled).toBe(false);
+  } finally { await ledger.close(); await f.runner.stopAll(); await active.done; }
+});
+
+test("unreadable or malformed check storage stays uncertain in real Pi receipts and is never replayed", async () => {
+  const f = await fixture(), file = join(f.root, "pi-ledger.db"), run = "12345678-1234-1234-1234-123456789abc";
+  const path = join(f.root, "state/checks", `${run}.json`);
+  let ledger = new PiToolReceipts(file), attempts = 0;
+  // Same absence boundary as the daemon; result() storage errors must propagate past it.
+  const read = async () => { attempts++; const receipt = await f.runner.result(run); if (!receipt) throw new PreEffectToolRefusal("check unavailable"); return JSON.stringify(receipt); };
+  try {
+    expect(await ledger.execute("session", "absent", "hub_check_result", { run }, read)).toBe("error: check unavailable");
+    await mkdir(join(f.root, "state/checks"), { recursive: true });
+    await writeFile(path, "{corrupt");
+    expect(await ledger.execute("session", "corrupt", "hub_check_result", { run }, read)).toContain("outcome is uncertain");
+    await rm(path); await mkdir(path);
+    expect(await ledger.execute("session", "unreadable", "hub_check_result", { run }, read)).toContain("outcome is uncertain");
+    await ledger.close(); ledger = new PiToolReceipts(file);
+    const before = attempts;
+    expect(await ledger.execute("session", "absent", "hub_check_result", { run }, read)).toBe("error: check unavailable");
+    for (const id of ["corrupt", "unreadable"]) expect(await ledger.execute("session", id, "hub_check_result", { run }, read)).toContain("outcome is uncertain");
+    expect(attempts).toBe(before); expect(ledger.unsettled).toBe(true);
+  } finally { await ledger.close(); }
 });
