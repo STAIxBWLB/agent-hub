@@ -94,9 +94,17 @@ async function runNamed(checkout: string, seed: Seed, runRoot: string, phase: st
   if (watchOut || watchErr || code > 1) throw new Error("invalid detection: watchdog or abnormal test termination");
   return { output, code };
 }
-export async function seededCheck(root: string): Promise<void> {
+/** #457: shard `i/n` takes every n-th seed starting at the i-th (1-based), so n shards cover each seed exactly once. */
+export function shardSeeds(seeds: Seed[], spec: string | undefined): Seed[] {
+  if (spec === undefined) return seeds;
+  const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(spec);
+  const index = Number(match?.[1]), count = Number(match?.[2]);
+  if (!match || index > count || count > 64) throw new Error(`invalid shard ${JSON.stringify(spec)}: use i/n with 1 <= i <= n <= 64`);
+  return seeds.filter((_seed, position) => position % count === index - 1);
+}
+export async function seededCheck(root: string, shard?: string): Promise<void> {
   const start = performance.now();
-  const seeds = readSeeds(readFileSync(join(root, "scripts/seeds.json"), "utf8"));
+  const seeds = shardSeeds(readSeeds(readFileSync(join(root, "scripts/seeds.json"), "utf8")), shard);
   for (const seed of seeds) {
     const seedStart = performance.now();
     const own = realPath(mkdtempSync(join(tmpdir(), `ahub-seed-${seed.id}-`)));
@@ -116,9 +124,13 @@ export async function seededCheck(root: string): Promise<void> {
       throw new Error(`${seed.id}: ${error instanceof Error ? error.message : String(error)}; preserved fixture ${own}`);
     }
   }
-  console.log(`seeded: OK (${seeds.length} sequential guards, ${((performance.now() - start) / 1000).toFixed(3)} s)`);
+  console.log(`seeded: OK (${seeds.length} sequential guards${shard ? `, shard ${shard}` : ""}, ${((performance.now() - start) / 1000).toFixed(3)} s)`);
 }
 if (import.meta.main) {
-  try { await seededCheck(resolve(import.meta.dir, "..")); }
+  const args = process.argv.slice(2);
+  try {
+    if (args.length && (args.length !== 2 || args[0] !== "--shard")) throw new Error("usage: bun scripts/seeded-check.ts [--shard i/n]");
+    await seededCheck(resolve(import.meta.dir, ".."), args[1]);
+  }
   catch (error) { console.error(`seeded: ERROR ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }
 }
