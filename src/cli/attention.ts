@@ -9,7 +9,7 @@ export interface AttentionState {
   storageBlocked?: boolean;
   recoveryNeed?: { id?: string; running: boolean; since?: number };
   queue?: readonly { id: string; peer?: string; state: string }[];
-  attentionFacts?: { kind: "review" | "offline"; id: number; peer?: string }[];
+  attentionFacts?: { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
 }
 /** Allowlisted adapter between console-owned facts and the shared body-free model. */
 export function consoleNeeds(state: AttentionState, now: number): Needs {
@@ -42,6 +42,8 @@ export function attentionFacts(raw: unknown): NonNullable<AttentionState["attent
   if (!Array.isArray(raw)) return [];
   return raw.flatMap<NonNullable<AttentionState["attentionFacts"]>[number]>(row => {
     if (!row || typeof row !== "object" || !Number.isSafeInteger(row.id) || row.id < 1) return [];
+    if (row.kind === "stall" && row.level === "act") return [{ kind: "stall" as const, id: row.id }];
+    if (row.kind === "offer" && row.level === "act" && typeof row.peer === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(row.peer)) return [{ kind: "offer" as const, id: row.id, peer: row.peer }];
     if (row.kind === "review" && row.level === "act") return [{ kind: "review" as const, id: row.id }];
     if (row.kind === "offline" && row.level === "watch" && typeof row.peer === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(row.peer)) return [{ kind: "offline" as const, id: row.id, peer: row.peer }];
     return [];
@@ -49,6 +51,8 @@ export function attentionFacts(raw: unknown): NonNullable<AttentionState["attent
 }
 
 export function attentionCommand(item: NeedItem): string {
+  if (item.kind === "offer") return `open ${item.peer}: task #${item.id} is waiting for it; ahub task show ${item.id}`;
+  if (item.kind === "stall") return `ahub task show ${item.id}; configure the peer or ahub task assign ${item.id} <peer>, or ahub task cancel ${item.id} --reason <text>`;
   if (item.kind === "delivery") return `ahub queue list${item.id ? `; ahub queue show ${item.id}` : ""}`;
   if (item.kind === "review") return `ahub task show ${item.id}; ahub review ${item.id} approved|changes_requested`;
   if (item.kind === "offline") return `ahub status; ahub task show ${item.id}; ahub task assign ${item.id} <peer>`;

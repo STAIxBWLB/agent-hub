@@ -8,7 +8,14 @@ import type { SdlcReceipt } from "./sdlc.ts";
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
 export type TaskClass = (typeof CLASSES)[number];
-export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested";
+export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested" | "cancelled";
+
+export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
+export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number }
+export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
+export const TASK_STALL_CODES = ["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable"] as const;
+export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
+export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency"; peer?: string; dependency?: number; code: TaskStallCode; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
 
 export interface TaskRefs {
   repo?: string;
@@ -31,6 +38,7 @@ export interface HistoryEntry {
   by: PeerId;
   event: string; // proposed | assigned | accepted | declined | done | approved | changes_requested | escalated | reassigned
   note?: string;
+  supersededBy?: string;
   /** The owner an event that set it left the task with (#67); absent in rows written before 0.11. */
   owner?: PeerId | null;
   /** On a decline or an escalation: the owner it was declined for or taken from (#207); later reroutes leave it out. */
@@ -46,6 +54,8 @@ export interface HistoryEntry {
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
 }
 export interface Task extends PlanningFields {
+  offer?: TaskOffer;
+  cancelled?: TaskCancellation;
   external?: GitHubSource;
   planningRevision?: number;
   id: number;
@@ -91,12 +101,13 @@ export function planningUndoEntry(task: Pick<Task, "history">): HistoryEntry | u
 
 /** The moves the state machine allows. `accept` and `done` are transitions, not states: they carried no behaviour of their own. */
 const MOVES: Record<TaskState, TaskState[]> = {
-  backlog: ["proposed"],
-  proposed: ["in_progress", "backlog"],
-  in_progress: ["in_review", "approved", "proposed"], // approved: class without a reviewer; proposed: owner declined or was taken off
-  in_review: ["approved", "changes_requested"],
-  changes_requested: ["in_progress", "proposed"], // proposed: declined redo waits for reassignment
+  backlog: ["proposed", "cancelled"],
+  proposed: ["in_progress", "backlog", "cancelled"],
+  in_progress: ["in_review", "approved", "proposed", "cancelled"], // approved: class without a reviewer; proposed: owner declined or was taken off
+  in_review: ["approved", "changes_requested", "cancelled"],
+  changes_requested: ["in_progress", "proposed", "cancelled"], // proposed: declined redo waits for reassignment
   approved: [],
+  cancelled: [],
 };
 
 const JSON_COLS = ["refs", "plan", "deps", "signals", "history", "sdlc"] as const;
@@ -145,6 +156,8 @@ export class Board {
       if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${empty}'`);
     }
     // And from before issue #207: existing rows reserve nobody.
+    for (const col of ["offer", "cancelled"]) if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN ${col} TEXT`);
+    this.db.run("CREATE TABLE IF NOT EXISTS task_stalls (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
     if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
     if (!have.has("external_repo")) this.db.run("ALTER TABLE tasks ADD COLUMN external_repo TEXT");
     if (!have.has("external_issue")) this.db.run("ALTER TABLE tasks ADD COLUMN external_issue INTEGER");
@@ -193,16 +206,44 @@ export class Board {
 
   /** Structural status facts only; avoid decoding text, plans and growing history on each status write. */
   statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
-    return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
+    return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state NOT IN ('approved','cancelled') ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
   }
   statusReservations(): string[] {
-    return (this.db.query("SELECT DISTINCT reserved FROM tasks WHERE state NOT IN ('approved', 'backlog') AND reserved IS NOT NULL ORDER BY reserved").all() as { reserved: string }[]).map(row => row.reserved);
+    return (this.db.query("SELECT DISTINCT reserved FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND reserved IS NOT NULL ORDER BY reserved").all() as { reserved: string }[]).map(row => row.reserved);
   }
   plannerWip(peer: string, except?: number): number {
-    const row = this.db.query(`SELECT COUNT(*) AS n FROM tasks WHERE state NOT IN ('approved', 'backlog') AND (? IS NULL OR id != ?) AND
+    const row = this.db.query(`SELECT COUNT(*) AS n FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND (? IS NULL OR id != ?) AND
       (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND
         json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1))`).get(except ?? null, except ?? null, peer, peer) as { n: number };
     return row.n;
+  }
+
+  recordTaskOffer(id: number, offer: TaskOffer, expectedFlowRevision: number): void {
+    const task = this.get(id);
+    if (!task || task.owner !== offer.owner || isClosedTaskState(task.state) || task.history.length !== expectedFlowRevision || offer.assignmentFlowRevision !== expectedFlowRevision) throw new Error("task offer changed");
+    const changed = this.db.query("UPDATE tasks SET offer=? WHERE id=? AND owner=? AND history=?").run(JSON.stringify(offer), id, offer.owner, JSON.stringify(task.history));
+    if (!changed.changes) throw new Error("task offer changed");
+  }
+  recordStall(stall: TaskStall): boolean {
+    const old = this.stalls().find(row => row.task === stall.task);
+    if (old?.signature === stall.signature && old.replanRevision === stall.replanRevision) return false;
+    this.db.query("INSERT INTO task_stalls(task,payload) VALUES(?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload").run(stall.task, JSON.stringify(stall));
+    return true;
+  }
+  clearStall(task: number): void { this.db.query("DELETE FROM task_stalls WHERE task=?").run(task); }
+  stalls(): TaskStall[] {
+    return (this.db.query("SELECT payload FROM task_stalls ORDER BY task").all() as { payload: string }[]).flatMap(row => {
+      try {
+        const value = JSON.parse(row.payload) as TaskStall, cause = value.cause;
+        const peer = (id: unknown) => typeof id === "string" && /^[a-z][a-z0-9_-]{0,63}$/i.test(id);
+        if (Object.keys(value).some(key => !["task", "signature", "replanRevision", "cause", "at"].includes(key)) || !Number.isSafeInteger(value.task) || value.task < 1 || !Number.isSafeInteger(value.replanRevision) || value.replanRevision < 0 || !Number.isFinite(value.at)
+          || !cause || !["reservation", "no-eligible-peer", "cancelled-dependency"].includes(cause.kind) || !TASK_STALL_CODES.includes(cause.code)
+          || cause.peer !== undefined && !peer(cause.peer) || cause.dependency !== undefined && (!Number.isSafeInteger(cause.dependency) || cause.dependency < 1)
+          || cause.refusals !== undefined && (!Array.isArray(cause.refusals) || cause.refusals.length > 64 || cause.refusals.some(row => Object.keys(row).some(key => !["peer", "code"].includes(key)) || !peer(row.peer) || !TASK_STALL_CODES.includes(row.code)))
+          || Object.keys(cause).some(key => !["kind", "peer", "dependency", "code", "refusals"].includes(key)) || value.signature !== JSON.stringify(cause)) return [];
+        return [value];
+      } catch { return []; }
+    });
   }
 
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */
@@ -213,7 +254,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}, expectedFlowRevision?: number): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}, expectedFlowRevision?: number): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -224,10 +265,10 @@ export class Board {
     if (next.state === "backlog" && (next.owner || next.reviewer)) throw new Error(`task #${id}: backlog cannot have an owner or reviewer`);
     if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
     if (patch.state === "backlog" && taskHasStarted(task)) throw new Error(`task #${id}: started work cannot return to backlog`);
-    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
     this.db
-      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, updated = ? WHERE id = ?")
-      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, Date.now(), id);
+      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
+      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id);
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;
@@ -374,6 +415,7 @@ export interface ReviewOutcome {
 
 function parse(row: Record<string, unknown>): Task {
   const out = { ...row } as Record<string, unknown>;
+  for (const key of ["offer", "cancelled"]) if (row[key] == null) delete out[key]; else out[key] = JSON.parse(String(row[key]));
   for (const col of JSON_COLS) {
     if (col === "sdlc" && row[col] == null) delete out[col];
     else out[col] = JSON.parse(String(row[col]));

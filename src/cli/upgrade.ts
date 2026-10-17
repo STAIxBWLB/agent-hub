@@ -350,11 +350,11 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
 }
 
 export interface RecoveryDriver {
-  stage(op: RecoveryOperation): Promise<{ root: string; digest: string }>;
-  inspect(project: Project): Promise<Inspection>;
-  prepare(project: Project, operation: string, instance: string): Promise<void>;
+  stage(op: RecoveryOperation): Promise<{ root: string; digest: string; targetFeatures?: readonly string[] }>;
+  inspect(project: Project, targetFeatures?: readonly string[]): Promise<Inspection>;
+  prepare(project: Project, operation: string, instance: string, targetFeatures?: readonly string[]): Promise<void>;
   abort(project: Project, operation: string, instance: string): Promise<void>;
-  commit(project: Project, operation: string, instance: string): Promise<void>;
+  commit(project: Project, operation: string, instance: string, targetFeatures?: readonly string[]): Promise<void>;
   closeTerminals(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, save: () => void): Promise<void>;
   start(project: Project, op: RecoveryOperation): Promise<void>;
   restore(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, group: "native" | "claude", save: () => void): Promise<void>;
@@ -386,6 +386,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       return op;
     }
   } catch (error) { releaseRunner(); throw error; }
+  let targetFeatures: readonly string[] = [];
   const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
   const step = (value: string) => { op.step = value; save(); };
   // #225: one restart per project per resume, so a target that keeps dying never spins unattended.
@@ -425,7 +426,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
   const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
     const project = planned.project, instance = planned.source.instanceId!;
-    await driver.prepare(project, id, instance);
+    await driver.prepare(project, id, instance, targetFeatures);
     const deadline = driver.now() + idleTimeoutMs;
     for (;;) {
       const live = await driver.inspect(project);
@@ -455,13 +456,14 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     step("stage");
     const target = await driver.stage(op);
     if (op.targetDigest && (target.root !== op.targetRoot || target.digest !== op.targetDigest)) throw new FinalRefusal("staged target changed since operation started");
+    targetFeatures = target.targetFeatures ?? [];
     op.targetRoot = target.root; op.targetDigest = target.digest; save();
 
-    // Check every untouched source before stopping even the first project.
+    // Every source receives the verified target's features before any hold, terminal close or runtime effect.
     for (let i = 0; i < op.projects.length; i++) {
       const progress = op.projects[i]!, planned = op.plan.projects[i]!;
+      const live = await driver.inspect(planned.project, targetFeatures);
       if (progress.phase !== "pending") continue;
-      const live = await driver.inspect(planned.project);
       if (!["running", "stopped", "missing"].includes(live.state)) throw new Error(`${planned.project.id}: the source reads as ${live.state}; wait until it answers`);
       if (live.state !== "running" || live.instanceId !== planned.source.instanceId || live.version !== planned.source.version) {
         throw new Error(`${planned.project.id}: source runtime changed`);
@@ -506,7 +508,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
           await driver.closeTerminals(planned, progress, op, save);
           // Durable, unlike `step`: from here the source may have committed, which status and abort must not forget.
           progress.commitSent = true; save();
-          await driver.commit(project, id, planned.source.instanceId!);
+          await driver.commit(project, id, planned.source.instanceId!, targetFeatures);
           const deadline = driver.now() + 30_000;
           do {
             try { live = await driver.inspect(project); }

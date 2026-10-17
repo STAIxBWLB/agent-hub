@@ -153,3 +153,9 @@ test("role/off regrant replays withdrawn live approval and hold notices without 
   expect(f.feed.needsReview("kimi", "delivery")).toBe(true);
   expect(f.feed.checkRound()).toBe(false);
 });
+test("#438 cancelled historical roles do not trigger scoped offline or budget supervision", () => {
+  const f = fixture([task(1, "claude", "cancelled")]);
+  expect(f.feed.peerOffline("kimi")).toBe(false); expect(f.feed.budgetPaused("codex", 180_000)).toBe(false); expect(f.notices).toEqual([]);
+  f.tasks.push(task(2));
+  expect(f.feed.peerOffline("kimi")).toBe(true); expect(f.feed.budgetPaused("codex", 180_000)).toBe(true);
+});

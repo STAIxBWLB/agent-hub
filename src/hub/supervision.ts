@@ -1,4 +1,4 @@
-import type { HistoryEntry, Task, TaskMoveReason } from "./board.ts";
+import { isClosedTaskState, type HistoryEntry, type Task, type TaskMoveReason } from "./board.ts";
 import { sanitize, type Kind, type Priority } from "./envelope.ts";
 
 export type SupervisionScope = "own" | "all" | "off";
@@ -11,7 +11,7 @@ export interface SupervisionFields {
   check?: "passed" | "failed" | "unknown";
   verdict?: "approved" | "changes_requested";
   reason?: SupervisionReason;
-  sweep?: "unaccepted-assignment" | "idle-owner" | "review-pending";
+  sweep?: "unaccepted-assignment" | "idle-owner" | "review-pending" | "ready-unassigned";
 }
 export interface SupervisionNotice {
   peer: string;
@@ -103,12 +103,12 @@ export class SupervisionFeed {
   }
 
   peerOffline(peer: string): boolean {
-    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && t.state !== "approved" && (t.owner === peer || t.reviewer === peer))) return false;
+    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer))) return false;
     return this.send(`peer:${peer}:offline`, `${peer}: offline`);
   }
 
   budgetPaused(peer: string, resetsAt?: number): boolean {
-    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && t.state !== "approved" && (t.owner === peer || t.reviewer === peer))) return false;
+    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer))) return false;
     const resetDate = new Date(resetsAt ?? NaN);
     const reset = Number.isFinite(resetDate.getTime()) ? resetDate.toISOString() : "unknown";
     return this.send(`peer:${peer}:budget`, `${peer}: budget paused; reset ${reset}`, "status", undefined, "budget");

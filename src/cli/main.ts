@@ -353,6 +353,7 @@ function fail(message: string): never {
 async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false, connection?: ControlClient): Promise<string> {
   const hub = connection ?? await connect();
   try {
+    if (op === "hub_task_cancel" && !hub.features.includes("task_cancel")) fail("this daemon does not support task cancellation; upgrade it first");
     const res = await hub.request({ t: "task", op, args: a }, op === "github_import" ? 60_000 : 30_000);
     if (!res.ok) { if (throwOnError) throw new Error(res.error); audit("refused"); fail(res.error); }
     return res.text;
@@ -1189,6 +1190,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       finally { hub.close(); }
       return;
     }
+    if (sub === "cancel") {
+      const { one, rest: positional } = takeFlags(rest, ["--reason", "--superseded-by", "--revision"], []);
+      const revision = one["--revision"] === undefined ? undefined : Number(one["--revision"]);
+      if (positional.length !== 1 || !/^[1-9]\d*$/.test(positional[0]!) || !one["--reason"]?.trim() || (revision !== undefined && (!/^\d+$/.test(one["--revision"]!) || !Number.isSafeInteger(revision)))) fail("usage: ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]");
+      return console.log(await taskOp("hub_task_cancel", { id: Number(positional[0]), reason: one["--reason"], ...(one["--superseded-by"] === undefined ? {} : { superseded_by: one["--superseded-by"] }), ...(revision === undefined ? {} : { revision }) }));
+    }
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {
@@ -1214,7 +1221,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString() }]);
       return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);
     }
-    if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | unassign <id> | escalate <id>");
+    if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | unassign <id> | cancel <id> --reason <text> | escalate <id>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
     const urgent = rest.includes("--urgent"), backlog = rest.includes("--backlog");

@@ -158,7 +158,7 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
   }
 }
 
-export async function inspectRecovery(project: Project): Promise<Inspection> {
+export async function inspectRecovery(project: Project, targetFeatures?: readonly string[]): Promise<Inspection> {
   // #226: the claim is judged by the registry as it is now, never by the plan's frozen copy, which holds the source's
   // pid from planning time (after a reboot another process may hold it). A registry that cannot be read throws: the
   // caller reads that as not inspected, never as stopped.
@@ -196,9 +196,9 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
   }
   if (!status || !control) return { state: "unavailable", peers: [], blockers: ["authenticated source status unavailable"] };
   let response: any;
-  try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId }, sourceProtocol ?? PROTOCOL); }
+  try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId, ...(targetFeatures === undefined ? {} : { targetFeatures }) }, sourceProtocol ?? PROTOCOL); }
   catch (error) {
-    if (isDatabaseBusy(error)) throw error;
+    if (isDatabaseBusy(error) || targetFeatures !== undefined) throw error;
     // A stop can complete between authenticated status and the second read. Never infer stopped
     // from a connection failure: the coordinator will inspect the ownership manifest again.
     return { state: "unavailable", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
@@ -359,10 +359,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     if (result.code !== 0) throw new Error(`target command ${args[0]} failed; inspect recovery state before retrying`);
     return result;
   };
-  const control = (project: Project, op: string, id: string, instance: string) => {
+  const control = (project: Project, op: string, id: string, instance: string, targetFeatures?: readonly string[]) => {
     const sourceProtocol = readControl(project.stateDir)?.protocol;
     const protocol = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) ? sourceProtocol : PROTOCOL;
-    return rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance }, protocol).then(() => {});
+    return rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance, ...(targetFeatures === undefined ? {} : { targetFeatures }) }, protocol).then(() => {});
   };
   const revalidateTerminal = async (planned: PlannedProject, progress: ProjectProgress, saved: TerminalBinding, exact: boolean): Promise<TerminalBinding> => {
     const options = { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId };
@@ -532,15 +532,17 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (liveTestPeer && (!existsSync(identityPath) || !readFileSync(identityPath, "utf8").includes("export const LIVE_TEST_SUPPORTED = true;"))) {
         throw new FinalRefusal("target does not support live-test delegation; choose a supporting target before retrying; runtimes unchanged");
       }
-      // #215: the protocol and waiver checks are properties of these bytes. Once they passed (the runner recorded the
-      // digest), a resume does not check again, so a transient probe failure cannot refuse an operation for good;
-      // changed bytes are the runner's final "staged target changed".
-      if (op.targetDigest && op.targetDigest === target.digest && op.targetRoot === target.root) return target;
-      const protocol = await run([process.execPath, "-e", `import { PROTOCOL } from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(PROTOCOL)`]);
-      const read = protocol.code === 0 ? Number.parseInt(protocol.stdout.trim(), 10) : NaN;
-      // A probe that did not answer (killed, a null exit code maps to 1) says nothing about the target: retry.
-      if (!Number.isInteger(read)) throw new Error(`the staged target's control protocol could not be read (probe exit ${protocol.code}); staged package retained, runtimes unchanged; resume again once it can run`);
-      if (read !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
+      // Capabilities are read from these verified target bytes on every resume, including cached staging.
+      const probe = await run([process.execPath, "-e", `import * as target from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(JSON.stringify({protocol: target.PROTOCOL, features: target.DAEMON_FEATURES ?? []}))`]);
+      let metadata: { protocol?: unknown; features?: unknown } | undefined;
+      try { if (probe.code === 0) metadata = JSON.parse(probe.stdout); } catch { /* Unknown metadata refuses before effects. */ }
+      if (!metadata || typeof metadata !== "object" || !Number.isInteger(metadata.protocol)) throw new Error(`the staged target's control protocol could not be read (probe exit ${probe.code}); staged package retained, runtimes unchanged; resume again once it can run`);
+      if (!Array.isArray(metadata.features) || !metadata.features.every((feature: unknown) => typeof feature === "string" && feature.length > 0)) throw new Error("the staged target features could not be read; staged package retained, runtimes unchanged");
+      const targetFeatures: readonly string[] = [...metadata.features];
+      if (metadata.protocol !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
+      const verified = { ...target, targetFeatures };
+      // Existing peer/waiver compatibility checks remain properties of the already verified bytes.
+      if (op.targetDigest && op.targetDigest === target.digest && op.targetRoot === target.root) return verified;
       if (op.plan.projects.some(p => p.source.peers.some(peer => peer.id === "qwen" && peer.state !== "offline"))) {
         const catalog = join(target.root, "src/hub/peer-catalog.ts");
         const peers = existsSync(catalog) ? /export const OPTIONAL_PEERS\s*=\s*\[([^\]]*)\]/.exec(readFileSync(catalog, "utf8"))?.[1] : undefined;
@@ -555,11 +557,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
         throw new FinalRefusal(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
       }
-      return target;
+      return verified;
     },
-    prepare: (p, id, instance) => control(p, "prepare", id, instance),
+    prepare: (p, id, instance, features) => control(p, "prepare", id, instance, features),
     abort: (p, id, instance) => control(p, "abort", id, instance),
-    commit: (p, id, instance) => control(p, "commit", id, instance),
+    commit: (p, id, instance, features) => control(p, "commit", id, instance, features),
     release: (p, id, instance) => control(p, "release", id, instance),
     closeTerminals: async (planned, progress, op, save) => {
       for (const binding of planned.terminals as TerminalBinding[]) {

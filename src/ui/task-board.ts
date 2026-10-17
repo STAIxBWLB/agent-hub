@@ -23,7 +23,7 @@ export function boardColumns(tasks: readonly BoardCardInput[], peers: Readonly<R
   ];
   const states = new Map(tasks.map(task => [task.id, task.state])), unknown: number[] = [];
   for (const task of tasks) {
-    const index = task.state === "backlog" ? 0 : task.state === "proposed" ? 1 : ["in_progress", "changes_requested"].includes(task.state) ? 2 : task.state === "in_review" ? 3 : task.state === "approved" ? 4 : -1;
+    const index = task.state === "backlog" ? 0 : task.state === "proposed" ? 1 : ["in_progress", "changes_requested"].includes(task.state) ? 2 : task.state === "in_review" ? 3 : ["approved", "cancelled"].includes(task.state) ? 4 : -1;
     const column = columns[index];
     if (!column) { unknown.push(task.id); continue; }
     const waiting: string[] = [];

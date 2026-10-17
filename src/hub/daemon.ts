@@ -78,7 +78,7 @@ import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, type DashboardSession } from "./ui.ts";
-import { PROTOCOL, stateDirFor } from "./control-client.ts";
+import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
@@ -1235,6 +1235,8 @@ export async function startDaemon(opts: DaemonOptions) {
     review: config.review,
     sweep: taskSweepConfig(config.task_sweep),
     sweepHeld: () => stopping || recoveryActive(),
+    cancellationHeld: () => stopping || recoveryActive(),
+    offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
     roles: config.roles,
     turnFree,
     capable: (peer) => capable.has(peer),
@@ -1945,6 +1947,14 @@ export async function startDaemon(opts: DaemonOptions) {
         if (silent && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
         return [line(t), overlap, tasks.planGuardText(t)].filter(Boolean).join("\n");
       }
+      case "hub_task_cancel": {
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["id", "reason", "superseded_by", "revision"].includes(key))
+          || !Number.isSafeInteger(a.id) || a.id < 1 || typeof a.reason !== "string" || !a.reason.trim() || a.reason.length > 2000
+          || a.superseded_by !== undefined && (typeof a.superseded_by !== "string" || !a.superseded_by.trim() || a.superseded_by.length > 2000)
+          || a.revision !== undefined && (!Number.isSafeInteger(a.revision) || a.revision < 0)) throw new PreEffectToolRefusal("invalid cancellation request");
+        if (by !== USER && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("cancellation unavailable during a PII turn");
+        return JSON.stringify(tasks.publicView(await tasks.cancel(a.id, by, { reason: a.reason, supersededBy: a.superseded_by, expectedFlowRevision: a.revision })));
+      }
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason));
       case "hub_task_done": {
@@ -2303,6 +2313,11 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const status = (includeAttentionItems = false, includeAttentionInput = false) => {
     const taskNeeds = board.statusTasks();
+    const taskStalls = tasks.stalled();
+    const pendingTaskOffers = tasks.pendingOffers().filter(offer => {
+      const peer = bus.peers.get(offer.peer);
+      return peer instanceof WsPeer && peer.pullOnly;
+    });
     const peerIds = statusPeerIds(taskNeeds);
     const view = {
     ...(crashReport.length ? { crash: crashReport } : {}),
@@ -2312,6 +2327,7 @@ export async function startDaemon(opts: DaemonOptions) {
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
     protocol: PROTOCOL,
+    features: DAEMON_FEATURES,
     stopping,
     pid: process.pid,
     cwd: opts.cwd,
@@ -2331,6 +2347,7 @@ export async function startDaemon(opts: DaemonOptions) {
     isolatedChecks: { pending: checkPending.size, orphans: orphanChecks },
     taskCapabilities: peerCapabilities(),
     tasks: board.counts(),
+    taskStalls, pendingTaskOffers,
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
     };
@@ -2347,6 +2364,7 @@ export async function startDaemon(opts: DaemonOptions) {
       storageBlocked: !!bus.storageError,
       recovery: recoveryOperationId ? { id: recoveryOperationId, running: true } : undefined,
       tasks: taskNeeds,
+      facts: [...taskStalls.map(stall => ({ kind: "stall" as const, id: stall.task })), ...pendingTaskOffers.map(offer => ({ kind: "offer" as const, id: offer.task, peer: offer.peer }))],
       budget: Object.fromEntries(Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused ? { paused: { since: row.paused.since, resetsAt: row.paused.resetsAt } } : {}])),
     };
     const attention = needs(attentionInput, Date.now());
@@ -3631,7 +3649,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
@@ -4022,10 +4040,19 @@ export async function startDaemon(opts: DaemonOptions) {
   async function recoveryOp(msg: any): Promise<Record<string, unknown>> {
     if (typeof msg.op !== "string" || !["inspect", "prepare", "commit", "abort", "release"].includes(msg.op)) return recoveryError("unknown recovery operation");
     if (typeof msg.expectedInstanceId !== "string" || msg.expectedInstanceId !== instanceId) return recoveryError("expected daemon instance does not match");
+    const incompatibleCancellationTarget = () => {
+      const ids = board.list().filter(task => task.state === "cancelled").map(task => task.id);
+      return ids.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_cancel"))
+        ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
+    };
+    const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;
+    if (checkTarget) { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+
     if (msg.op === "inspect" || msg.op === "prepare" || msg.op === "commit") {
       const pi = bus.peers.get("pi");
       if (pi instanceof PiPeer && pi.state === "idle") {
         try { await pi.captureResume(); } catch (error) { return recoveryError((error as Error).message); }
+        if (checkTarget) { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
       }
     }
     if (msg.op === "inspect" && msg.operationId === undefined) return { t: "recovery", ok: true, recovery: recoveryView() };
@@ -4041,6 +4068,7 @@ export async function startDaemon(opts: DaemonOptions) {
         recoveryPeerSnapshot = undefined;
       }
       if (recoveryOperationId && recoveryOperationId !== op) return recoveryError("another recovery operation is active");
+      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
       recoveryOperationId = op;
       if (!recoveryPhase) recoveryPhase = "preparing";
       armRecoveryLease();
@@ -4048,6 +4076,7 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.setRecoveryHold(true);
       bus.setRecoveryHold(true);
       await bus.fenceRecovery();
+      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
       const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
       if (!blocked.length && permissions.size === 0 && recoveryReady()) {
         recoveryPeerSnapshot ??= Object.values(recoveryPeers());
@@ -4095,6 +4124,7 @@ export async function startDaemon(opts: DaemonOptions) {
         peers,
         integrity: integrity(),
       };
+      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
       try { writeRestartSnapshot(opts.stateDir, snapshot); } catch { return recoveryError("could not persist restart state"); }
       recoveryCommitted = true;
       clearTimeout(recoveryLeaseTimer);
@@ -4281,7 +4311,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
         });
       }
-      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL });
+      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES });
     }
     if (stopping && msg.t !== "status" && msg.t !== "kill") return void reply({ ok: false, error: "hub is stopping" });
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });

@@ -437,7 +437,8 @@ export class Bus {
     const before = this.journal.get(id);
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
     if (state === "failed" || state === "needs_review") this.deliveryFailed(peer);
-    this.journal.transition(id, state, receipt.reason);
+    if (state === "completed") this.journal.completeDelivered(id, peer, "adapter", receipt.reason);
+    else this.journal.transition(id, state, receipt.reason);
     if (before?.state === "dispatching" && (state === "accepted" || state === "completed")) {
       this.memoryDelivery(peer, id, before.out, "delivered", before.originals);
       this.delivered(peer, before.originals);
@@ -464,8 +465,8 @@ export class Bus {
     for (const [id, owner] of this.activeDeliveries) {
       if (owner !== peer) continue;
       const row = this.journal.get(id);
-      if (row?.out.some((e) => e.id === envelopeId)) {
-        this.journal.transition(id, "completed", "correlated reply");
+      if (row?.peer === peer && ["dispatching", "accepted"].includes(row.state) && row.out.some((e) => e.id === envelopeId)) {
+        this.journal.completeDelivered(id, peer, "reply", "correlated reply");
         if (row.state === "dispatching") this.memoryDelivery(peer, id, row.out, "delivered", row.originals);
         this.activeDeliveries.delete(id);
         this.refreshRecoveryHold(peer);
@@ -837,7 +838,7 @@ export class Bus {
     try {
       this.journal?.transaction(() => {
         this.durableHandoff(id, deliveryId, batch, batch, false); // observe only after this outer transaction commits
-        this.journal!.transition(deliveryId, "completed", "read through hub_inbox");
+        this.journal!.completeDelivered(deliveryId, id, "pull", "read through hub_inbox");
       });
     } catch (error) {
       queue.splice(0, queue.length, ...queued);

@@ -8,6 +8,7 @@ export function stateDirFor(cwd: string): string {
 
 /** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). 14 = native context-window status and session-bound context checkpoint request ids (issue #185). 15 = conductor tools and permission deadlines/closed events (issues #190, #194). 16 = a Claude session without channel evidence: hello `channel: false` and `inbox` (issue #205). The plugin is installed apart from the daemon, so they can drift. */
 export const PROTOCOL = 16;
+export const DAEMON_FEATURES = ["task_cancel"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL] as const;
 
@@ -30,6 +31,7 @@ export interface ControlDescriptor {
   cwd?: string;
   protocol?: number;
   pid?: number;
+  features?: readonly string[];
   /** #226: the daemon's processSignature, written into status.json only (not the status reply); absent before 0.12.21. */
   pidSignature?: string;
 }
@@ -41,7 +43,7 @@ export function readControl(stateDir: string): ControlDescriptor | undefined {
     const token = readFileSync(join(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token) return undefined;
     return { url: `ws://127.0.0.1:${status.controlPort}`, token, projectId: status.projectId,
-      instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, pid: status.pid,
+      instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, pid: status.pid, features: Array.isArray(status.features) ? status.features.filter((feature: unknown): feature is string => typeof feature === "string") : [],
       ...(typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}) };
   } catch {
     return undefined;
@@ -50,6 +52,7 @@ export function readControl(stateDir: string): ControlDescriptor | undefined {
 
 /** One authenticated control connection. `request` correlates replies by `rid`; everything else goes to `onPush`. */
 export class ControlClient {
+  features: readonly string[] = [];
   private nextRid = 1;
   private readonly pending = new Map<number, (msg: any) => void>();
   onPush: (msg: any) => void = () => {};
@@ -103,6 +106,7 @@ export class ControlClient {
             (expected.projectRoot && reply.cwd !== expected.projectRoot)) {
           return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
         }
+        client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature: unknown): feature is string => typeof feature === "string") : []);
         clearTimeout(timer);
         resolve(client);
       });

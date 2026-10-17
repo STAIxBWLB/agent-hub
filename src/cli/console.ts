@@ -194,6 +194,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const [status, budget, tasks, queue, ready] = replies;
       captureConsoleSelection(state);
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
+      if (status.status) state.features = Array.isArray(status.status.features) ? status.status.features : [];
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (status.status && status.ok !== false) {
         state.attentionFacts = attentionFacts(status.status.attentionItems);
