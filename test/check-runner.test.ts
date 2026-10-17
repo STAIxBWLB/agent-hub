@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
-import { CHECK_IMAGE, ContainerRunner, type CheckRequest, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
+import { CHECK_IMAGE, ContainerRunner, type CheckRequest, type ContainerCommand, type RunReceipt, type RunnerOptions } from "../src/hub/check-runner.ts";
 const roots: string[] = [];
 const runners: ContainerRunner[] = [];
 afterEach(async () => { for (const r of runners.splice(0)) await r.stopAll(); for (const p of roots.splice(0)) await rm(p, { recursive: true, force: true }); });
@@ -462,5 +463,77 @@ test("unreadable or malformed check storage stays uncertain in real Pi receipts 
     expect(await ledger.execute("session", "absent", "hub_check_result", { run }, read)).toBe("error: check unavailable");
     for (const id of ["corrupt", "unreadable"]) expect(await ledger.execute("session", id, "hub_check_result", { run }, read)).toContain("outcome is uncertain");
     expect(attempts).toBe(before); expect(ledger.unsettled).toBe(true);
+  } finally { await ledger.close(); }
+});
+
+
+test.each(["first save", "stale save", "success"])("queued cancellation %s preserves Pi certainty and settles its handle", async failure => {
+  let original!: ContainerCommand, entered!: () => void, target = "", storagePath = "", currentReads = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }), notices: string[] = [];
+  const f = await fixture({ onResult: receipt => { notices.push(receipt.run); }, isCurrent: request => {
+    if ((request as RunReceipt).run === target && failure === "stale save" && ++currentReads === 2) {
+      rmSync(storagePath); mkdirSync(storagePath); // First save landed; stale re-save must now fail on real storage.
+      return false;
+    }
+    return true;
+  }, command: async (args, options) => {
+    if (args[0] === "exec") { entered(); return new Promise(resolve => options?.signal?.addEventListener("abort", () => resolve({ code: null, stdout: "" }), { once: true })); }
+    return original(args, options);
+  } }); original = f.command;
+  const active = f.runner.start(f.request); await started;
+  const queued = f.runner.start(f.request); target = queued.run;
+  storagePath = join(f.root, "state/checks", `${target}.json`);
+  if (failure === "first save") await mkdir(storagePath);
+  let settled = false; void queued.done.then(() => { settled = true; });
+  const file = join(f.root, "pi-cancel.db"); let ledger = new PiToolReceipts(file), calls = 0;
+  const cancel = async () => { calls++; await f.runner.cancel(target); return JSON.stringify({ cancelled: true }); };
+  try {
+    const result = await ledger.execute("session", "cancel", "hub_check_cancel", { run: target }, cancel);
+    expect(settled).toBe(true);
+    expect((await queued.done).cancelled).toBe(true);
+    expect(f.runner.queuedRuns).not.toContain(target);
+    if (failure === "success") {
+      expect(result).toBe(JSON.stringify({ cancelled: true })); expect(notices.filter(run => run === target)).toHaveLength(1);
+    } else {
+      expect(result).toContain("outcome is uncertain");
+      expect(await queued.done).toMatchObject({ output_withheld: true, error: "check receipt storage unavailable" });
+      expect(notices).not.toContain(target);
+    }
+    await ledger.close(); ledger = new PiToolReceipts(file);
+    const replay = await ledger.execute("session", "cancel", "hub_check_cancel", { run: target }, cancel);
+    if (failure === "success") expect(replay).toBe(result);
+    else expect(replay).toContain("outcome is uncertain");
+    expect(calls).toBe(1);
+    const replacement = f.runner.start(f.request); // The cancellation never strands queue capacity.
+    expect(f.runner.queuedRuns).toContain(replacement.run);
+  } finally { await ledger.close(); await f.runner.stopAll(); await active.done; }
+});
+
+test.each([
+  ["stopping", "runner unavailable: stopping"], ["disabled", "runner unavailable: not enabled"],
+  ["dash ref", "invalid check request"], ["bad task", "invalid check request"],
+  ["test file", "invalid test files"], ["typecheck files", "typecheck takes no files"],
+])("proven start guard %s settles a Pi refusal before allocating entries", async (kind, message) => {
+  const f = await fixture({ enabled: kind !== "disabled" });
+  if (kind === "stopping") await f.runner.stopAll();
+  const request = { ...f.request, ...(kind === "dash ref" ? { ref: "-invalid" } : {}), ...(kind === "bad task" ? { task: 0 } : {}),
+    ...(kind === "test file" ? { files: ["../escape.test.ts"] } : {}), ...(kind === "typecheck files" ? { check: "typecheck" as const } : {}) };
+  const file = join(f.root, "pi-guard.db"); let ledger = new PiToolReceipts(file), calls = 0;
+  const start = async () => { calls++; f.runner.start(request); return "unexpected admission"; };
+  try {
+    expect(await ledger.execute("session", "guard", "hub_check_start", {}, start)).toBe(`error: ${message}`);
+    await ledger.close(); ledger = new PiToolReceipts(file);
+    expect(await ledger.execute("session", "guard", "hub_check_start", {}, start)).toBe(`error: ${message}`);
+    expect(calls).toBe(1); expect(ledger.unsettled).toBe(false);
+    expect(f.runner.activeRun).toBeUndefined(); expect(f.runner.queuedRuns).toEqual([]); expect(f.calls).toEqual([]);
+  } finally { await ledger.close(); }
+});
+
+test("arbitrary start-policy callback failure remains uncertain instead of becoming a refusal", async () => {
+  const f = await fixture({ enabled: () => { throw new Error("unexpected policy failure"); } });
+  const ledger = new PiToolReceipts(join(f.root, "pi-policy.db"));
+  try {
+    expect(await ledger.execute("session", "policy", "hub_check_start", {}, async () => { f.runner.start(f.request); return "unexpected"; })).toContain("outcome is uncertain");
+    expect(ledger.unsettled).toBe(true); expect(f.runner.activeRun).toBeUndefined(); expect(f.runner.queuedRuns).toEqual([]);
   } finally { await ledger.close(); }
 });

@@ -167,11 +167,11 @@ export class ContainerRunner {
     return value;
   }
   start(request: CheckRequest): RunHandle {
-    if (this.closing) throw new Error("runner unavailable: stopping");
-    if (!this.enabled()) throw new Error("runner unavailable: not enabled");
-    if (!Number.isSafeInteger(request.task) || request.task <= 0 || !request.owner || !["test", "typecheck"].includes(request.check) || !request.ref || request.ref.startsWith("-")) throw new Error("invalid check request");
-    if (request.check === "test" && (!Array.isArray(request.files) || request.files.length < 1 || request.files.length > 32 || request.files.some(p => typeof p !== "string" || !/^test\/[A-Za-z0-9._/-]+\.test\.ts$/.test(p) || !safePath(p)))) throw new Error("invalid test files");
-    if (request.check === "typecheck" && request.files?.length) throw new Error("typecheck takes no files");
+    if (this.closing) throw new PreEffectToolRefusal("runner unavailable: stopping");
+    if (!this.enabled()) throw new PreEffectToolRefusal("runner unavailable: not enabled");
+    if (!Number.isSafeInteger(request.task) || request.task <= 0 || !request.owner || !["test", "typecheck"].includes(request.check) || typeof request.ref !== "string" || !request.ref || request.ref.startsWith("-")) throw new PreEffectToolRefusal("invalid check request");
+    if (request.check === "test" && (!Array.isArray(request.files) || request.files.length < 1 || request.files.length > 32 || request.files.some(p => typeof p !== "string" || !/^test\/[A-Za-z0-9._/-]+\.test\.ts$/.test(p) || !safePath(p)))) throw new PreEffectToolRefusal("invalid test files");
+    if (request.check === "typecheck" && request.files?.length) throw new PreEffectToolRefusal("typecheck takes no files");
     if (this.entries.size >= 3) throw new PreEffectToolRefusal("busy");
     const run = randomUUID();
     const receipt: RunReceipt = { ...request, files: request.files ? [...request.files] : undefined, run, sha: "", tree: "", lockfile: "", excluded: 0, dependency_files: 0,
@@ -428,10 +428,13 @@ export class ContainerRunner {
       receipt.status = receipt.status === "stale" || !this.current(receipt) ? "stale" : "finished";
       receipt.duration_ms = Math.max(0, this.now() - receipt.created);
       receipt.error = "check cancelled before start";
-      try { await this.save(receipt); }
-      catch { receipt.error = "check receipt storage unavailable"; receipt.output_withheld = true; }
-      if (!this.current(receipt) && receipt.status !== "stale") { receipt.status = "stale"; await this.save(receipt).catch(() => {}); }
-      entry.resolve({ ...receipt });
+      try {
+        await this.save(receipt);
+        if (!this.current(receipt) && receipt.status !== "stale") { receipt.status = "stale"; await this.save(receipt); }
+      } catch {
+        receipt.error = "check receipt storage unavailable"; receipt.output_withheld = true;
+        throw new Error("check receipt storage unavailable");
+      } finally { entry.resolve({ ...receipt }); }
       try { if (receipt.status !== "stale") await this.options.onResult?.({ ...receipt }); } catch { /* A saved cancellation is never retried. */ }
       return;
     }

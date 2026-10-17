@@ -475,6 +475,15 @@ export class Tasks {
     return { ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.id === "kimi" && peer.pullOnly).map(peer => peer.id), offRoster: SUPPORTED_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
+  /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
+  private requireCapabilities(task: Parameters<typeof assign>[0], peer: PeerId, role: TaskAssignmentRole = "owner", preEffect = true): void {
+    if (!this.d.capabilities || this.isPii(task)) return;
+    const { state: _state, ...draft } = task; // backlog/readiness must not bypass an explicit reservation's admission
+    const admission = assign(draft, this.states(), this.d.routing(), { candidates: role === "owner" ? [peer] : [], ...(role === "owner" ? { namedOwner: peer } : { namedReviewer: peer }), ...this.weights(task.class) });
+    const missing = admission.trace.filter(line => line.startsWith(`  ${role} candidate ${peer}: skipped, missing `));
+    if (missing.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot assign ${peer}: ${missing.join("; ")}`);
+  }
+
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
   private weights(cls: TaskClass) {
     const now = Date.now();
@@ -752,6 +761,7 @@ export class Tasks {
         if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
         if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
+        if (patch.reserved) this.requireCapabilities(task, patch.reserved);
         const rows = new Map(this.d.board.list().map(row => [row.id, row]));
         const pending = [...(patch.deps ?? task.deps ?? [])], seen = new Set<number>();
         while (pending.length) {
@@ -987,6 +997,7 @@ export class Tasks {
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
     if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }
+    if (reserved) this.requireCapabilities({ ...draft, signals, ...(external ? { external } : {}) }, reserved);
     let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
     created?.();
     if (screening) task = this.screenedTask(task, screened);
@@ -2284,11 +2295,7 @@ export class Tasks {
     const task = this.need(id, role === "owner", preEffect);
     this.checkFlowRevision(task, expectedFlowRevision, preEffect);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
-    if (this.d.capabilities && !this.isPii(task)) {
-      const admission = assign(task, this.states(), this.d.routing(), { candidates: role === "owner" ? [peer] : [], ...(role === "owner" ? { namedOwner: peer } : { namedReviewer: peer }), ...this.weights(task.class) });
-      const missing = admission.trace.filter(line => line.startsWith(`  ${role} candidate ${peer}: skipped, missing `));
-      if (missing.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot assign ${peer}: ${missing.join("; ")}`);
-    }
+    this.requireCapabilities(task, peer, role, preEffect);
     if (role === "reviewer") {
       if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer can no longer change`);
       this.ready(task, preEffect);
