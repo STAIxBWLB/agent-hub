@@ -340,3 +340,29 @@ test("#146R4 non-GitHub project keys do not turn bare title numbers into GitHub 
     expect(result.owner).toBeUndefined(); expect(result.trace.join("\n")).toContain("missing spec");
   }
 });
+
+test("#149 explicit GitHub reference forms require spec without a GitHub project origin", () => {
+  const routing = loadRouting("/tmp/no-project");
+  for (const cls of ["review", "plan"] as const) routing.classes[cls]!.local_allowed = true;
+  const references = [
+    { title: "Review owner/project#12" },
+    { detail: "Contract owner/project#12" },
+    { detail: "Contract https://github.com/owner/project/issues/12" },
+    { refs: { repo: "owner/project" } },
+    { title: "Review #12", refs: { repo: "owner/project" } },
+    { external: { provider: "github" as const, repo: "owner/project", issue: 12, url: "https://github.com/owner/project/issues/12" } },
+  ];
+  for (const repository of [undefined, "k-project@12345678", "gitlab.com/~/x/y", "path:/project"]) {
+    for (const cls of ["review", "plan"] as const) for (const peer of ["local", "pi"]) for (const reference of references) {
+      const work = { class: cls, signals: [], title: "Review work", detail: "", refs: {}, ...reference };
+      for (const nomination of [{ candidates: [peer], namedOwner: peer }, { reserved: peer }]) {
+        const { reserved, ...opts } = nomination;
+        const result = assign({ ...work, ...(reserved ? { reserved } : {}) }, { [peer]: "idle" }, routing,
+          { repository, capabilities: { [peer]: { tests: true, spec: false, specReason: "gh unavailable" } }, ...opts });
+        const label = `${repository}/${cls}/${peer}/${JSON.stringify(reference)}`;
+        expect(result.owner, label).toBeUndefined();
+        expect(result.trace.join("\n"), label).toContain("missing spec: gh unavailable");
+      }
+    }
+  }
+});

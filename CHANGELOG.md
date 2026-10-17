@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Keep explicit GitHub issue references gated in projects without GitHub origins, clear obsolete receipt warnings and document unknown-payload retention without unsafe path-based deletion (#418).
 - Let a peer explicitly retry its own uncertain delivery once, with an effects-check warning, durable message-only lineage limits and ids-only hold hints. After upgrading, run `ahub jcode --mode headless` once per project to update an older owned MCP entry before daemon/conductor starts (#434).
 - Add task-bound complete spec reads and opt-in isolated container checks for sandboxed peers, with current capability routing and screened exact-head receipts (#418).
 - On upgrade, non-PII implement, test and bulk_edit owners need an enabled, available `checks.runner = "container"`; local/Pi owners of issue-backed tasks in every class (including review) also need authenticated spec access. These capability gates do not restrict designated reviewers; PII work remains local-only without the opt-in (#418).
