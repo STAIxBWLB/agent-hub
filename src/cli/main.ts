@@ -1882,6 +1882,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         row(verifiedJcodeCommand(config.jcode_cmd, cwd), "jcode", "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged");
       }
       if (config.roster.qwen === true) {
+        // ponytail: keep this bounded CLI-version probe and 0.25.0 pin in the A1 guard baseline; A2 moves every version probe together when VersionContext gains its observed input.
         const v = version(config.qwen_cmd[0]!);
         row(v === "0.25.0", "qwen", v === "0.25.0" ? "CLI reports 0.25.0; native ACP identity/modes and provider access require a separate live check" : "Qwen Code 0.25.0 executable not confirmed; provider and ACP readiness unknown");
       } // issue #83

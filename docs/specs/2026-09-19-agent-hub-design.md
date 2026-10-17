@@ -3217,6 +3217,9 @@ native-mode maps where API 1 cannot express their scoped write/edit hooks; this 
 an A1 compatibility ceiling, not an unmanaged policy or a refusal. A2 must migrate
 those handlers and their representation before interpreting a missing mapping.
 Display-only permission grants remain exact copies of the existing explanations.
+The bounded Qwen doctor CLI-version probe and its 0.25.0 pin remain unchanged in
+the transitional guard baseline. A2 moves all version probes together and amends
+`VersionContext` once; A1 adds no observed-version input or native readiness claim.
 The native Kimi mode-id constant moves to a dependency-free leaf while its public
 re-export remains intact, so either registry-first or definition-first imports work.
 
