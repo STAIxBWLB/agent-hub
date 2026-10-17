@@ -293,7 +293,7 @@ Status. `ahub recovery status <id>` reports the receipt (phase, step, update
 time, error); whether a runner process holds the operation now (`runner.state`
 `running` with its pid, or `none`); `stale` when the receipt says `running` but
 no runner holds it; each project's phase and effect receipts (`closed:<peer>`,
-`restored:<peer>` as `done`, `pending` or `failed`); whether the shared plugin
+`restored:<peer>` as `done`, `pending`, `waiting:pending`, `waiting:failed` or `failed`); whether the shared plugin
 and the global CLI were installed; any lost continuity and disposition; and
 `next`, the commands that apply now. It never contains task or message text.
 `resume` does not start a second runner while one is alive.
