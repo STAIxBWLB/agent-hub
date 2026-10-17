@@ -80,6 +80,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub task role <id> <role|none>", "person only: change bounded catalog guidance on an open task; routing and authority are unchanged"],
     ["ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]", "name the owner (default) or reviewer; a task that still waits reserves its owner; --revision refuses stale console actions"],
     ["ahub task unassign <id> [--role owner|reviewer] [--revision N]", "person only: remove the owner/reservation or reviewer without routing a replacement or stopping native work"],
+    ["ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]", "person only: close obsolete work with a reason; retain its history without stopping native work or releasing dependents"],
     ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned", "your later verdict on an approved task, kept in the research records (research must be on)"],
     ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]...", "give a review verdict on a task"],
     ["ahub route explain <id>", "why a task went where it went, its reserved owner included"],
