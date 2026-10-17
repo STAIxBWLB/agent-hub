@@ -1,3 +1,4 @@
+import { BOUNDED_TASK_TOOLS } from "../hub/hub-tools.ts";
 import { MEMORY_READ_TOOLS } from "../hub/read-tools.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -48,7 +49,7 @@ export class Capture {
   }
 
   observe(call: { tool: string; args: string; output: string; id: string; paths: string[] }): void {
-    if (!this.sessionId || (MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || this.opts.skip?.includes(call.tool)) return;
+    if (!this.sessionId || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || this.opts.skip?.includes(call.tool)) return;
     // Anything that names a denylisted path is kept out of memory entirely, input and output alike.
     if (call.paths.some((p) => p.split(/\s+/).some((word) => isDenied(word, this.opts.deny)))) return;
     void this.client.request("POST", "/api/sessions/observations", {

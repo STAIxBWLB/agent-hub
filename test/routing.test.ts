@@ -247,3 +247,96 @@ test("a pull-only name never bypasses roster, pause, exclusion, PII or self-revi
   expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: ["kimi"], namedOwner: "kimi", namedReviewer: "kimi" }).reviewer).toBeUndefined();
   expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: [], namedReviewer: "kimi", notReviewer: "kimi" }).reviewer).toBeUndefined();
 });
+
+test("#418 routing refuses missing bounded capabilities for all nomination paths", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-caps-")));
+  const caps = { pi: { tests: false, spec: false, testsReason: "runner unavailable: disabled", specReason: "gh unauthenticated" }, codex: { tests: true, spec: true } };
+  for (const cls of ["implement", "test", "bulk_edit"] as const) for (const nomination of [{}, { namedOwner: "pi" }, { candidates: ["pi"] }]) {
+    const result = assign({ ...task(cls), reserved: "pi" }, { pi: "idle", codex: "idle" }, routing, { capabilities: caps, repository: "STAIxBWLB/agent-hub", ...nomination });
+    expect(result.owner).not.toBe("pi");
+    expect(result.trace.join("\n")).toContain("runner unavailable: disabled");
+  }
+  const spec = assign({ ...task("review"), title: "Review #418", detail: "", refs: {} }, { pi: "idle", codex: "idle" }, routing,
+    { capabilities: { ...caps, pi: { ...caps.pi, tests: true } }, repository: "STAIxBWLB/agent-hub", candidates: ["pi"] });
+  expect(spec.owner).toBeUndefined();
+  expect(spec.trace.join("\n")).toContain("gh unauthenticated");
+});
+
+
+test("#418 a project without GitHub origin does not require spec for unreferenced work", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-no-spec-")));
+  const opts = { repository: "path:/project", capabilities: { pi: { tests: true, spec: false } } };
+  expect(assign({ ...task("implement"), title: "ordinary change" }, { pi: "idle" }, routing, opts).owner).toBe("pi");
+  expect(assign({ ...task("implement"), title: "change #418" }, { pi: "idle" }, routing, opts).owner).toBe("pi");
+});
+
+test("#418 imported GitHub tasks require spec capability without textual references", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-import-spec-")));
+  const imported = { ...task("implement"), title: "Review workflow", detail: "Read the complete contract", refs: {},
+    external: { provider: "github" as const, repo: "owner/project", issue: 418, url: "https://github.com/owner/project/issues/418" } };
+  const opts = { repository: "owner/project", candidates: ["pi"], capabilities: { pi: { tests: true, spec: false, specReason: "gh unauthenticated" } } };
+  const refused = assign(imported, { pi: "idle" }, routing, opts);
+  expect(refused.owner).toBeUndefined();
+  expect(refused.trace.join("\n")).toContain("gh unauthenticated");
+  expect(assign(imported, { pi: "idle" }, routing, { ...opts, capabilities: { pi: { tests: true, spec: true } } }).owner).toBe("pi");
+});
+
+test("#418 bare detail hub task numbers do not require spec while qualified and URL contracts do", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-qualified-spec-")));
+  const work = { ...task("implement"), title: "ordinary implementation", detail: "after #80/#81/#83", refs: { paths: ["#418"] } };
+  const opts = { repository: "owner/project", candidates: ["pi"], capabilities: { pi: { tests: true, spec: false, specReason: "gh unauthenticated" } } };
+  expect(assign(work, { pi: "idle" }, routing, opts).owner).toBe("pi");
+  for (const detail of ["owner/project#418", "https://github.com/owner/project/issues/418", "foreign/repo#418", "https://github.com/foreign/repo/issues/418"]) {
+    const result = assign({ ...work, detail }, { pi: "idle" }, routing, opts);
+    expect(result.owner).toBeUndefined();
+    expect(result.trace.join("\n")).toContain("missing spec");
+  }
+});
+
+
+test("#418 PII capability exemptions keep implement test and bulk_edit on-prem with runner off", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-pii-cap-exempt-")));
+  const opts = { repository: "owner/project", capabilities: { local: { tests: false, spec: false }, pi: { tests: false, spec: false }, codex: { tests: true, spec: true } } };
+  for (const cls of ["implement", "test", "bulk_edit"] as const) {
+    const pii = { ...task(cls, ["pii"]), title: "private contract #418", detail: "", refs: {} };
+    expect(assign(pii, { local: "idle", codex: "idle", pi: "idle" }, routing, opts)).toMatchObject({ owner: "local", reviewer: "user" });
+    expect(assign(pii, { local: "idle", codex: "idle" }, routing, { ...opts, candidates: ["codex"], namedOwner: "codex" }).owner).toBeUndefined();
+  }
+});
+
+test("#418 a source file suffix does not require a spec capability", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-path-not-spec-")));
+  const work = { ...task("implement"), title: "Edit src/hub/tasks.ts#12", detail: "See src/hub/tasks.ts#12", refs: {} };
+  expect(assign(work, { pi: "idle" }, routing, { repository: "owner/project", capabilities: { pi: { tests: true, spec: false } } }).owner).toBe("pi");
+});
+
+test("#418 reviewers do not need owner-only bounded tests or spec capabilities", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-reviewer-caps-")));
+  const capabilities = { codex: { tests: true, spec: true }, pi: { tests: false, spec: false }, local: { tests: false, spec: false } };
+  for (const peer of ["pi", "local"] as const) for (const cls of ["implement", "test", "bulk_edit"] as const) {
+    const work = { ...task(cls), title: "Implement #418", detail: "", refs: {} };
+    const opts = { capabilities, repository: "STAIxBWLB/agent-hub", candidates: ["codex"], roles: { [peer]: ["reviewer"] } };
+    const states = { codex: "idle", [peer]: "idle" } as const;
+    expect(assign(work, states, routing, opts).reviewer).toBe(peer);
+    expect(assign(work, states, routing, { ...opts, namedReviewer: peer }).reviewer).toBe(peer);
+    expect(assign(work, states, routing, { ...opts, namedReviewer: peer, offRoster: [peer] }).reviewer).not.toBe(peer);
+  }
+});
+
+test("#146R4 non-GitHub project keys do not turn bare title numbers into GitHub spec requirements", () => {
+  const routing = loadRouting("/tmp/no-project");
+  for (const cls of ["review", "plan"] as const) routing.classes[cls]!.local_allowed = true;
+  for (const repository of [undefined, "k-project@12345678", "gitlab.com/~/x/y", "path:/project"]) {
+    for (const cls of ["review", "plan"] as const) for (const peer of ["local", "pi"]) {
+      const work = { class: cls, signals: [], title: "Review #12", detail: "after hub task #4", refs: {} };
+      const result = assign(work, { [peer]: "idle" }, routing, { repository, candidates: [peer], namedOwner: peer, capabilities: { [peer]: { tests: true, spec: false } } });
+      expect(result.owner, `${repository}/${cls}/${peer}`).toBe(peer);
+      expect(result.trace.some(line => line.includes("missing spec"))).toBe(false);
+    }
+  }
+  for (const peer of ["local", "pi"]) {
+    const result = assign({ class: "review", signals: [], title: "Review #12", refs: {} }, { [peer]: "idle" }, routing,
+      { repository: "owner/project", candidates: [peer], namedOwner: peer, capabilities: { [peer]: { tests: true, spec: false } } });
+    expect(result.owner).toBeUndefined(); expect(result.trace.join("\n")).toContain("missing spec");
+  }
+});
