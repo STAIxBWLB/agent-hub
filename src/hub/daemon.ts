@@ -1,3 +1,6 @@
+import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
+import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
+import { isDenied } from "../local/deny.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
 import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
@@ -58,9 +61,9 @@ import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
 import { closeSync, constants as fsConstants, openSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { realPath } from "./project.ts";
+import { realPath, hubHome } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
@@ -104,7 +107,7 @@ import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
 import { memoryProjectKey } from "@staix/agent-mem";
 import { nativeRecall } from "../memory/recall.ts";
-import { promotionScreen, withoutPii } from "./memory-policy.ts";
+import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -147,7 +150,7 @@ export interface HubConfig {
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
-  checks: { timeout_s: number; [cls: string]: string | number };
+  checks: { timeout_s: number; runner?: "container"; [cls: string]: string | number | undefined };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
   /** #247: opt-in research records of each approved task in ~/.agenthub/research (ids, counts and tokens only). */
@@ -358,7 +361,7 @@ export function loadConfig(cwd: string): HubConfig {
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
     task_sweep: taskSweepConfig(file.task_sweep),
-    checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
+    checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "container" ? "container" : undefined },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     research: { enabled: file.research?.enabled === true }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
@@ -423,6 +426,12 @@ export interface DaemonOptions {
   researchGraceMs?: number;
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
   memorySync?: typeof syncMemory;
+  /** Host-only test/embedding transports. Never read from config or tool input. */
+  boundedTools?: {
+    specAvailable?: typeof specAvailable;
+    fetchSpec?: typeof fetchSpec;
+    runner?: (options: RunnerOptions) => Pick<ContainerRunner, "available" | "start" | "result" | "consumeOutput" | "cancel" | "sweep" | "stopAll" | "markStale">;
+  };
 }
 
 interface Client {
@@ -718,12 +727,12 @@ export async function startDaemon(opts: DaemonOptions) {
   if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
   // Capabilities (issue #39): enforced here and in taskOp, never by role text alone. Unlisted peers keep everything.
   // A listed peer whose value is not a list gets nothing: whoever listed it meant to narrow it.
-  const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "memory_correct" | "memory_read" | "important"): boolean => {
+  const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "memory_correct" | "memory_read" | "important" | "spec_read" | "check_run"): boolean => {
     if (peer === USER || peer === HUB || !Object.hasOwn(config.capabilities, peer)) return true;
     const list = config.capabilities[peer];
     return Array.isArray(list) && list.includes(cap);
   };
-  const CAPABILITIES = ["propose", "assign", "remember", "memory_correct", "memory_read", "important"];
+  const CAPABILITIES = ["propose", "assign", "remember", "memory_correct", "memory_read", "important", "spec_read", "check_run"];
   for (const [peer, list] of Object.entries(config.capabilities)) {
     if (!PEER_ID.test(peer)) log(`capabilities.${peer} is not a peer id; ignored (capabilities is an object of lists, one per peer)`);
     else if (!Array.isArray(list)) log(`capabilities.${peer} is not a list: ${peer} gets no capabilities`);
@@ -786,7 +795,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const staleOff = config.experiments?.stale_notices === "deliver";
   if (staleOff) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
-  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence,
+  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff || relevantNotice(peer, env), silence,
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (p instanceof WsPeer) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
@@ -1023,8 +1032,8 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => executionBudget.close());
   // Completion checks (issue #7): only from a config file git does not track, one at a time, killed on stop.
   const allowedChecks = new Set([...CLASSES, ...Object.keys(resolvedProfile.classes)]);
-  const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => allowedChecks.has(k) && typeof v === "string" && v.trim())) as Record<string, string>;
-  const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && !(k in checkCommands));
+  const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => k !== "runner" && allowedChecks.has(k) && typeof v === "string" && v.trim())) as Record<string, string>;
+  const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && k !== "runner" && !(k in checkCommands));
   if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
   // Commands and the other machine-local fields came only from a file git vouched for (loadConfig, issue #17).
   for (const line of config.ignored ?? []) log(`${line}; only a config file nobody committed may set it`);
@@ -1034,7 +1043,82 @@ export async function startDaemon(opts: DaemonOptions) {
   const runningChecks = new Set<() => void>();
   let checksClosed = false; // set on stop: a check still queued then must not start and outlive the hub
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
+  // Bounded capabilities (#418): inactive sandboxed peers need no host account probe.
+  // A config-file daemon probes configured Pi/runner at startup; embeddings opt in or probe lazily on use.
+  let specState: Awaited<ReturnType<typeof specAvailable>> = { available: false, reason: "gh unavailable: not probed" };
+  let specProbe: Promise<void> | undefined;
+  const ensureSpec = () => specProbe ??= (opts.boundedTools?.specAvailable ?? specAvailable)({ projectDir: opts.cwd }).then(value => { specState = value; }, () => { specState = { available: false, reason: "gh unavailable" }; });
+  const checkPending = new Set<string>();
+  const checkConnections = new WeakMap<object, string>();
+  const checkBindings = new Map<string, Pick<RunReceipt, "task" | "owner" | "generation" | "updated" | "revision">>();
+  const connectionGeneration = (id: string): string | undefined => {
+    const peer = bus.peers.get(id);
+    if (!peer || peer.state === "offline") return undefined;
+    let token = checkConnections.get(peer);
+    if (!token) { token = randomUUID(); checkConnections.set(peer, token); }
+    const native = peer instanceof WsPeer || peer instanceof CodexPeer || peer instanceof PiPeer ? peer.sessionGeneration : peer.recoveryMetadata?.().sessionId;
+    if (peer instanceof PiPeer && native === undefined) return undefined;
+    return `${instanceId}:${token}:${String(native ?? "")}`;
+  };
+  const currentCheck = (receipt: { task: number; owner: string; updated: number | string; generation: number | string; revision?: number }) => {
+    const task = board.get(receipt.task);
+    return !!task && task.owner === receipt.owner && task.state === "in_progress" && task.updated === receipt.updated && task.history.length === receipt.revision
+      && connectionGeneration(receipt.owner) === receipt.generation && may(receipt.owner, "check_run") && membershipAllowed(receipt.owner) && !tasks.isPii(task)
+      && !turns.get(receipt.owner)?.private && !contextPii(receipt.owner);
+  };
+  const boundedSafe = (text: string) => !looksSecret(text) && screenMemory([{ title: null, text }]).length === 1
+    && !mentionsPrivatePath(text, [], [...(config.pii?.paths ?? []), ...config.local.deny], opts.cwd);
+  const publicCheck = (receipt: RunReceipt) => {
+    const safeTail = boundedSafe(receipt.tail), safeError = !receipt.error || boundedSafe(receipt.error);
+    return { run: receipt.run, task: receipt.task, status: receipt.status, sha: receipt.sha, tree: receipt.tree, lockfile: receipt.lockfile,
+      excluded: receipt.excluded, runner: receipt.runner, image: receipt.image, platform: receipt.platform,
+      check: receipt.check, ...(receipt.files ? { files: receipt.files } : {}), exit: receipt.exit, timed_out: receipt.timed_out,
+      cancelled: receipt.cancelled, interrupted: receipt.interrupted, duration_ms: receipt.duration_ms,
+      tail: safeTail ? receipt.tail : "", output_bytes: receipt.output_bytes, truncated: receipt.truncated,
+      output_withheld: receipt.output_withheld || !safeTail || !safeError, ...(safeError && receipt.error ? { error: receipt.error } : {}) };
+  };
+  const checkOptions: RunnerOptions = {
+    projectDir: opts.cwd, stateDir: opts.stateDir, storageDir: join(hubHome(), "checks"),
+    projectKey: createHash("sha256").update(realPath(opts.cwd)).digest("hex").slice(0, 24),
+    enabled: () => config.checks.runner === "container",
+    isDenied: path => isDenied(path, config.local.deny) || matchesPolicy(opts.cwd, path, config.pii?.paths ?? [], true),
+    isCurrent: currentCheck,
+    onResult: async receipt => {
+      if (!currentCheck(receipt)) { await checkRunner.markStale(receipt.run); return; }
+      // Only a screened, current-owner result is delivered; no tail enters capture or diagnostic logs.
+      const view = publicCheck(receipt);
+      checkBindings.set(receipt.run, { task: receipt.task, owner: receipt.owner, generation: receipt.generation, updated: receipt.updated, revision: receipt.revision });
+      while (checkBindings.size > 200) checkBindings.delete(checkBindings.keys().next().value!);
+      if (stopping || !currentCheck(receipt)) { await checkRunner.markStale(receipt.run); return; }
+      bus.publish(newEnvelope(HUB, sanitize(JSON.stringify(view)), { to: [receipt.owner], kind: "task", refs: { task: String(receipt.task), boundedCheck: receipt.run } }));
+      log(`check ${receipt.run}: exit ${receipt.exit ?? "unknown"}, bytes ${receipt.output_bytes}`);
+    },
+  };
+  const checkRunner = opts.boundedTools?.runner?.(checkOptions) ?? new ContainerRunner(checkOptions);
+  startupCleanup.push(() => { void checkRunner.stopAll(); });
+  let runnerState = await checkRunner.available();
+  const orphanChecks = (await checkRunner.sweep()).map(line => boundedSafe(line) ? sanitize(line) : "orphan check: details withheld by privacy policy");
+  if (opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container")) await ensureSpec();
+  let runnerStateAt = runnerState.checkedAt ?? Date.now(), refreshingRunner: Promise<void> | undefined;
+  const refreshRunner = (): Promise<void> => {
+    if (Date.now() - runnerStateAt < 60_000) return Promise.resolve();
+    if (refreshingRunner) return refreshingRunner;
+    runnerState = { available: false, reason: "availability being checked" };
+    refreshingRunner = checkRunner.available().then(value => { runnerState = value; runnerStateAt = value.checkedAt ?? Date.now(); }, () => { runnerState = { available: false, reason: "container unavailable" }; runnerStateAt = Date.now(); }).finally(() => { refreshingRunner = undefined; });
+    return refreshingRunner;
+  };
+  const peerCapabilities = () => {
+    // A stale true never widens routing while a new service probe is outstanding.
+    if (Date.now() - runnerStateAt >= 60_000) void refreshRunner();
+    return Object.fromEntries([...new Set([...SUPPORTED_PEERS, ...bus.peers.keys()])].map(peer => {
+    if (peer !== "pi" && peer !== "local") return [peer, { tests: true, spec: true }];
+    return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"),
+      testsReason: !may(peer, "check_run") ? `capabilities.${peer}` : `runner unavailable: ${runnerState.reason ?? "unknown"}`,
+      specReason: !may(peer, "spec_read") ? `capabilities.${peer}` : specState.reason ?? "gh unauthenticated" }];
+    }));
+  };
   const tasks: Tasks = new Tasks({
+    capabilities: peerCapabilities, repository: memoryRepo,
     recordPlanning: change => event({ type: "planning", ...change }),
     wipLimit: peer => Object.hasOwn(config.tasks.wip_limits ?? {}, peer) ? config.tasks.wip_limits![peer]! : 1,
     profile: profileName(config.profile),
@@ -1116,6 +1200,21 @@ export async function startDaemon(opts: DaemonOptions) {
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
   relevantNotice = (peer, env) => {
+    if (env.from === HUB && env.refs?.boundedCheck) {
+      const run = env.refs.boundedCheck, binding = checkBindings.get(run);
+      let outputSafe = false;
+      try {
+        const value = JSON.parse(env.body) as { tail?: unknown; error?: unknown };
+        outputSafe = typeof value.tail === "string" && boundedSafe(value.tail)
+          && (value.error === undefined || typeof value.error === "string" && boundedSafe(value.error));
+      } catch { /* An unknown projection never reaches a model. */ }
+      if (!binding || binding.owner !== peer || !currentCheck(binding) || !outputSafe) {
+        checkBindings.delete(run);
+        void checkRunner.markStale(run).catch(() => {});
+        return false;
+      }
+      return true;
+    }
     if (env.from !== HUB || !env.refs?.supervision) return tasks.relevant(peer, env);
     if (conductorPeer(config.roles) !== peer || config.conductor.feed === "off") return false;
     const key = env.refs.supervisionKey ?? "";
@@ -1460,7 +1559,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (row && tasks.isPii(row)) return;
     return { ...(row ? { task: taskKey(memoryProject, row) } : {}), turn: turns.get(peer)?.id ?? null, session: contextSession(peer) ?? null };
   }) : undefined;
-  bus.onMemoryDelivery = (peer, id, out, field) => memoryObservations?.delivery(peer, id, out, field);
+  bus.onMemoryDelivery = (peer, id, out, field) => { if (!out.some(env => env.refs?.boundedCheck)) memoryObservations?.delivery(peer, id, out, field); };
   const citeMemory = (peer: PeerId, text: string, id: string, envs: readonly Envelope[] = []) => {
     if (!tasks.nameable(text) || looksSecret(text) || !screenMemory([{ title: null, text }]).length) return;
     memoryObservations?.cite(peer, text, id, envs);
@@ -1525,6 +1624,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const contextTailSeen = new Map<PeerId, string>();
   const intervals = [
     setInterval(() => {
+      void refreshRunner().catch(() => {});
       try { tasks.flushPlannerNotices(); } catch { /* the board remains authoritative if notice delivery fails */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
@@ -1640,6 +1740,12 @@ export async function startDaemon(opts: DaemonOptions) {
     return id;
   };
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    if (BOUNDED_TASK_TOOLS.has(op)) {
+      const keys = op === "hub_task_spec" ? ["id"] : op === "hub_check_start" ? ["id", "check", "files"] : ["run"];
+      if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !keys.includes(key))
+        || (keys.includes("id") ? !Number.isSafeInteger(a.id) || a.id < 1 : typeof a.run !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(a.run))) throw new PreEffectToolRefusal("invalid bounded task request");
+      if (by !== USER && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("bounded task tools unavailable during a PII turn");
+    }
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
     if (op === "hub_memory_correct") correctionInput(a);
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
@@ -1660,7 +1766,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // console reads a PII task's text deliberately, with `ahub task show <id>`.
     const onPrem = inProcess && by === "local" && piiTurn;
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => { const task = board.get(t.id); return task && by === USER ? tasks.resultLine(task) : `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`; };
-    const need = (cap: "propose" | "assign" | "remember" | "memory_read" | "memory_correct", what: string) => {
+    const need = (cap: "propose" | "assign" | "remember" | "memory_read" | "memory_correct" | "spec_read" | "check_run", what: string) => {
       if (may(by, cap)) return;
       log(`capabilities: ${by} may not ${what} (${op})`);
       throw new PreEffectToolRefusal(`${by} may not ${what} (no "${cap}" in capabilities.${by} in .agenthub/config.json)`);
@@ -1678,6 +1784,73 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (op === "hub_memory_correct") { need("memory_correct", "propose memory corrections"); return tasks.correct(by, a); }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
+    if (op === "hub_task_spec") {
+      need("spec_read", "read assigned specifications");
+      const authorized = () => {
+        const task = board.get(a.id);
+        if (!task || task.state === "backlog" || task.owner !== by && task.reviewer !== by || tasks.isPii(task) || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("spec unavailable");
+        return task;
+      };
+      const task = authorized(), generation = connectionGeneration(by), updated = task.updated, revision = task.history.length;
+      const deadline = Date.now() + 25_000; // retain a response margin inside the control client's 30-second cap
+      const issues = specRefs(task, memoryRepo);
+      if (!issues.length) throw new PreEffectToolRefusal("no assigned spec references");
+      await ensureSpec();
+      authorized();
+      if (!specState.available) throw new PreEffectToolRefusal(specState.reason ?? "gh unauthenticated");
+      const specs = [];
+      for (const issue of issues) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new PreEffectToolRefusal("timeout");
+        specs.push(await (opts.boundedTools?.fetchSpec ?? fetchSpec)(memoryRepo, issue, { screen: boundedSafe, projectDir: opts.cwd, timeoutMs: Math.min(15_000, remaining) }));
+        const current = authorized();
+        if (current.updated !== updated || current.history.length !== revision || connectionGeneration(by) !== generation || !may(by, "spec_read")) throw new PreEffectToolRefusal("spec unavailable");
+      }
+      const result = JSON.stringify({ specs });
+      if (Buffer.byteLength(result) > 80 * 1024) throw new PreEffectToolRefusal("too large");
+      if (!specs.every(spec => boundedSafe(`${spec.title}\n${spec.body}`))) throw new PreEffectToolRefusal("spec withheld by privacy policy");
+      return result;
+    }
+    if (op === "hub_check_start") {
+      need("check_run", "run isolated checks");
+      if (stopping || recoveryActive()) throw new PreEffectToolRefusal("runner unavailable: recovery or shutdown");
+      const authorized = () => {
+        const task = board.get(a.id);
+        if (!task || task.owner !== by || task.state !== "in_progress" || tasks.isPii(task) || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("check unavailable");
+        return task;
+      };
+      const task = authorized(), updated = task.updated, revision = task.history.length, generation = connectionGeneration(by);
+      if (!generation) throw new PreEffectToolRefusal("check requires an attached owner");
+      if (a.check !== "test" && a.check !== "typecheck"
+        || a.check === "test" && (!Array.isArray(a.files) || a.files.length < 1 || a.files.length > 32 || a.files.some((file: unknown) => typeof file !== "string" || !/^test\/[A-Za-z0-9._/-]+\.test\.ts$/.test(file) || file.split("/").some(part => !part || part === "." || part === "..")))
+        || a.check === "typecheck" && a.files !== undefined) throw new PreEffectToolRefusal("invalid check request");
+      await refreshRunner();
+      const current = authorized();
+      if (current.updated !== updated || current.history.length !== revision || connectionGeneration(by) !== generation || !may(by, "check_run") || stopping || recoveryActive()) throw new PreEffectToolRefusal("check unavailable");
+      if (!runnerState.available) throw new PreEffectToolRefusal(`runner unavailable: ${runnerState.reason ?? "unknown"}`);
+      const ref = current.refs.commit ?? current.refs.branch;
+      if (!ref) throw new PreEffectToolRefusal("check requires task branch or commit");
+      const handle = checkRunner.start({ task: current.id, owner: by, generation, updated, revision: current.history.length, ref, check: a.check, ...(a.files === undefined ? {} : { files: a.files }) });
+      checkPending.add(handle.run);
+      void handle.done.finally(() => checkPending.delete(handle.run)).catch(() => {});
+      return JSON.stringify({ run: handle.run });
+    }
+    if (op === "hub_check_result" || op === "hub_check_cancel") {
+      need("check_run", "read or cancel isolated checks");
+      let receipt = await checkRunner.result(a.run);
+      if (!receipt || receipt.owner !== by && by !== USER || tasks.isPii(board.get(receipt.task) ?? { title: "", detail: "", refs: {} } as Task)) throw new PreEffectToolRefusal("check unavailable");
+      if (!currentCheck(receipt)) { await checkRunner.markStale(receipt.run); receipt = { ...receipt, status: "stale" }; }
+      if (receipt.status === "stale" && by !== USER) throw new PreEffectToolRefusal("check unavailable: stale binding");
+      if (op === "hub_check_cancel") {
+        await checkRunner.cancel(receipt.run);
+        return JSON.stringify({ run: receipt.run, cancelled: true });
+      }
+      if (by !== USER && !currentCheck(receipt)) throw new PreEffectToolRefusal("check unavailable: stale binding");
+      await checkRunner.consumeOutput(receipt.run);
+      if (by !== USER && (!currentCheck(receipt) || turns.get(by)?.private || contextPii(by))) throw new Error("check unavailable: stale binding");
+      // Policy can change during output cleanup, so form the final projection again.
+      return JSON.stringify(publicCheck(receipt));
+    }
     switch (op) {
       case "hub_backlog_list":
         return JSON.stringify(tasks.backlogList(by));
@@ -1874,7 +2047,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || checkPending.size !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -2086,6 +2259,8 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
+    isolatedChecks: { pending: checkPending.size, orphans: orphanChecks },
+    taskCapabilities: peerCapabilities(),
     tasks: board.counts(),
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
@@ -2579,6 +2754,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
+    if (peer === "pi" || peer === "local") { await ensureSpec(); await refreshRunner(); }
     const mode = startMode(peer);
     const owner = bus.peers.get(peer);
     if (mode === "headless") {
@@ -3735,6 +3911,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #272: the rest of what recoveryReady() waits for, so the upgrade screen can name the wait. Display only.
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
+      ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...((piReceipts?.inFlight ?? 0) !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),
       ...([...bus.peers].filter(([, peer]) => peer instanceof PiPeer && peer.state !== "busy" && !peer.recoveryReady).map(([id, peer]) => !membershipAllowed(id) && peer instanceof PiPeer && peer.mode === "tui" ? `${id} is not settled; end the retained Pi TUI, then prepare again` : `${id} is not settled`)),
@@ -4514,6 +4691,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
+      await checkRunner.stopAll();
       await Promise.allSettled([...starting.values()]);
       // A fingerprint still being detected belongs in the research records written below; its peer must still be
       // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).

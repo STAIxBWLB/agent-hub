@@ -45,7 +45,7 @@ const until = async (cond: () => boolean) => {
 };
 const PII = "patient 900101-1234567 needs a follow-up";
 
-async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>) {
+async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>, capabilities?: Record<string, import("../src/hub/routing.ts").PeerCapabilities>) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
   const bus = new Bus({ batchMs: 0 });
   const peers = Object.fromEntries(peerIds.map((id) => [id, new FakePeer(id)]));
@@ -60,7 +60,7 @@ async function setup(peerIds = ["claude", "codex", "kimi", "local"], observation
   const shared: string[] = [];
   const told: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
+  const tasks = new Tasks({ board, bus, ...(capabilities ? { capabilities: () => capabilities, repository: "STAIxBWLB/agent-hub" } : {}), routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
   const saves = () => mem.calls.filter((c) => c.path === "/api/memory/save").map((c) => c.body as any);
   return { dir, bus, peers, board, tasks, notices, shared, told, mem, saves };
 }
@@ -3464,4 +3464,19 @@ test("owner unassignment fences an in-flight completion check (#424)", async () 
   await until(() => board.get(task.id)!.history.some(entry => entry.event === "check finished late"));
   expect(board.get(task.id)).toMatchObject({ owner: null, state: "proposed" });
   expect(peers.claude!.got.some(env => env.kind === "review" && env.refs?.task === String(task.id))).toBe(false);
+});
+
+
+test("#418 Tasks applies capability refusal to proposal, manual assignment, decline reroute and explain", async () => {
+  const f = await setup(["pi", "codex", "claude"], undefined, {
+    pi: { tests: false, spec: false, testsReason: "runner unavailable", specReason: "gh unavailable" },
+    codex: { tests: true, spec: true }, claude: { tests: true, spec: true },
+  });
+  const task = await f.tasks.propose(USER, { title: "Implement #418", class: "implement" });
+  expect(task.owner).toBe("codex");
+  expect(f.tasks.explain(task.id).join("\n")).toContain("missing tests: runner unavailable");
+  await expect(f.tasks.assignTo(task.id, "pi", USER)).rejects.toThrow();
+  expect(f.board.get(task.id)?.owner).toBe("codex");
+  await f.tasks.decline("codex", task.id, "cannot continue");
+  expect(f.board.get(task.id)?.owner).not.toBe("pi");
 });

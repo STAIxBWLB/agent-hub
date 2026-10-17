@@ -1,3 +1,4 @@
+import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 import { CandidateStore, memoryProjectKey } from "@staix/agent-mem";
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -83,6 +84,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemo
   const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
+    boundedTools: emulatedBoundedTools(),
     cwd: ROOT,
     stateDir,
     controlPort: 0,

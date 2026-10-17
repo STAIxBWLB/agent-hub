@@ -1,6 +1,9 @@
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CLASSES, type Task, type TaskClass } from "./board.ts";
+import { specRefs } from "./spec-read.ts";
+
+export interface PeerCapabilities { tests: boolean; spec: boolean; testsReason?: string; specReason?: string; }
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
@@ -248,10 +251,12 @@ export interface Assignment {
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
 export function assign(
-  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state">>,
+  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state" | "title" | "detail" | "refs">>,
   states: Record<PeerId, PeerState>,
   routing: Routing,
   opts: {
+    capabilities?: Record<PeerId, PeerCapabilities>;
+    repository?: string;
     exclude?: PeerId[];
     /** Owner admission limits do not remove otherwise eligible reviewers. */
     excludeOwners?: PeerId[];
@@ -292,7 +297,16 @@ export function assign(
   if (opts.waitsFor?.length) return { trace: [...trace, `blocked: waits for ${opts.waitsFor.map((id) => `#${id}`).join(", ")} (not approved)`, ...(reserved ? [`reserved owner ${reserved}: offered first once it is ready`] : [])] };
   const pii = task.signals.includes("pii_path") || (task.signals.includes("pii") && routing.constraints.pii === "local_only");
 
+  let needsSpec = false;
+  if (opts.repository && /#[1-9][0-9]*/.test(`${task.title ?? ""}\n${task.detail ?? ""}\n${JSON.stringify(task.refs ?? {})}`)) try { needsSpec = specRefs({ title: task.title ?? "", detail: task.detail ?? "", refs: task.refs ?? {} }, opts.repository).length > 0; }
+  catch { needsSpec = true; } // an invalid/foreign reference never grants a sandboxed peer spec access
+  const needsTests = ["implement", "test", "bulk_edit"].includes(task.class);
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
+    if (opts.capabilities) {
+      const caps = peerEntry(opts.capabilities, peer);
+      if (needsTests && !caps?.tests) return `missing tests: ${caps?.testsReason ?? "capability unavailable"}`;
+      if (needsSpec && !caps?.spec) return `missing spec: ${caps?.specReason ?? "capability unavailable"}`;
+    }
     if (opts.offRoster?.includes(peer)) return "off roster";
     const named = role === "owner" ? opts.namedOwner ?? reserved : opts.namedReviewer;
     if (opts.pullOnly?.includes(peer) && named !== peer) return "pull-only: takes work when named or when it claims it";

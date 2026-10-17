@@ -247,3 +247,25 @@ test("a pull-only name never bypasses roster, pause, exclusion, PII or self-revi
   expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: ["kimi"], namedOwner: "kimi", namedReviewer: "kimi" }).reviewer).toBeUndefined();
   expect(assign(task("implement"), { kimi: "idle" }, routing, { pullOnly: ["kimi"], candidates: [], namedReviewer: "kimi", notReviewer: "kimi" }).reviewer).toBeUndefined();
 });
+
+test("#418 routing refuses missing bounded capabilities for all nomination paths", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-caps-")));
+  const caps = { pi: { tests: false, spec: false, testsReason: "runner unavailable: disabled", specReason: "gh unauthenticated" }, codex: { tests: true, spec: true } };
+  for (const cls of ["implement", "test", "bulk_edit"] as const) for (const nomination of [{}, { namedOwner: "pi" }, { candidates: ["pi"] }]) {
+    const result = assign({ ...task(cls), reserved: "pi" }, { pi: "idle", codex: "idle" }, routing, { capabilities: caps, repository: "STAIxBWLB/agent-hub", ...nomination });
+    expect(result.owner).not.toBe("pi");
+    expect(result.trace.join("\n")).toContain("runner unavailable: disabled");
+  }
+  const spec = assign({ ...task("review"), title: "Review #418", detail: "", refs: {} }, { pi: "idle", codex: "idle" }, routing,
+    { capabilities: { ...caps, pi: { ...caps.pi, tests: true } }, repository: "STAIxBWLB/agent-hub", candidates: ["pi"] });
+  expect(spec.owner).toBeUndefined();
+  expect(spec.trace.join("\n")).toContain("gh unauthenticated");
+});
+
+
+test("#418 a project without GitHub origin does not require spec for unreferenced work", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-no-spec-")));
+  const opts = { repository: "path:/project", capabilities: { pi: { tests: true, spec: false } } };
+  expect(assign({ ...task("implement"), title: "ordinary change" }, { pi: "idle" }, routing, opts).owner).toBe("pi");
+  expect(assign({ ...task("implement"), title: "change #418" }, { pi: "idle" }, routing, opts).owner).toBeUndefined();
+});
