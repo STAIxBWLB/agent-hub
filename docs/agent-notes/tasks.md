@@ -28,3 +28,5 @@ Scope: the task flow, assignment, the state machine and the hub's MCP tools. Rea
 - Compose structured `hub_remember` fail fields through `composeRememberText` before screening or writes; reject over 4000 UTF-8 bytes without truncation. Treat plan-fail matches as screened advisory priority only, never a state-transition guard; skip all plan-memory work for PII tasks.
 
 - Keep candidate production in Tasks: screen review/correction payloads and current task/turn privacy before CandidateStore writes; recheck after asynchronous screening. Never make candidate failures roll back a saved review, or let a peer accept a candidate. Keep candidate tool arguments/results out of capture.
+
+- Feed the same current spec/test capability map into every `assign()` path, explicit nomination and reservation; refuse missing capabilities before a manual assignment write. Bind spec/check authority and result delivery to the current task, owner, peer generation and privacy policy.

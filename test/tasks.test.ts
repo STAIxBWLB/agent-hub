@@ -46,7 +46,7 @@ const until = async (cond: () => boolean) => {
 };
 const PII = "patient 900101-1234567 needs a follow-up";
 
-async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>) {
+async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>, capabilities?: Record<string, import("../src/hub/routing.ts").PeerCapabilities>) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
   const bus = new Bus({ batchMs: 0 });
   const peers = Object.fromEntries(peerIds.map((id) => [id, new FakePeer(id)]));
@@ -61,7 +61,7 @@ async function setup(peerIds = ["claude", "codex", "kimi", "local"], observation
   const shared: string[] = [];
   const told: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
+  const tasks = new Tasks({ board, bus, ...(capabilities ? { capabilities: () => capabilities, repository: "STAIxBWLB/agent-hub" } : {}), routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
   const saves = () => mem.calls.filter((c) => c.path === "/api/memory/save").map((c) => c.body as any);
   return { dir, bus, peers, board, tasks, notices, shared, told, mem, saves };
 }
@@ -3468,6 +3468,31 @@ test("owner unassignment fences an in-flight completion check (#424)", async () 
 });
 
 
+test("#418 Tasks applies capability refusal to proposal, manual assignment, decline reroute and explain", async () => {
+  const f = await setup(["pi", "codex", "claude"], undefined, {
+    pi: { tests: false, spec: false, testsReason: "runner unavailable", specReason: "gh unavailable" },
+    codex: { tests: true, spec: true }, claude: { tests: true, spec: true },
+  });
+  const task = await f.tasks.propose(USER, { title: "Implement #418", class: "implement" });
+  expect(task.owner).toBe("codex");
+  expect(f.tasks.explain(task.id).join("\n")).toContain("missing tests: runner unavailable");
+  await expect(f.tasks.assignTo(task.id, "pi", USER)).rejects.toThrow();
+  expect(f.board.get(task.id)?.owner).toBe("codex");
+  await f.tasks.decline("codex", task.id, "cannot continue");
+  expect(f.board.get(task.id)?.owner).not.toBe("pi");
+});
+
+
+test("#418 PII proposal and manual assignment retain local-only work without runner or spec capability", async () => {
+  for (const cls of ["implement", "test", "bulk_edit"] as const) {
+    const f = await setup(["local", "codex"], undefined, { local: { tests: false, spec: false }, codex: { tests: true, spec: true } });
+    const proposed = await f.tasks.propose(USER, { title: `${PII} #418`, class: cls });
+    expect(proposed).toMatchObject({ owner: "local", reviewer: "user" });
+    const staged = f.board.propose(USER, { title: `${PII} #418 manual`, class: cls, signals: ["pii"] });
+    await expect(f.tasks.assignTo(staged.id, "local", USER)).resolves.toMatchObject({ owner: "local", reviewer: "user" });
+  }
+});
+
 test("escalation withdrawal is still needed by the former owner until approval (#434 follow-up)", async () => {
   const base = await setup(["codex", "kimi", "claude"]);
   const task = await base.tasks.propose(USER, { title: "withdrawal contract", class: "implement", owner: "codex" });
@@ -3510,4 +3535,59 @@ test("#434 public route explanation lists all held peers once and screens append
   expect(explanation.split("\n").filter(line => line.includes("selected-hold"))).toHaveLength(1);
   expect(explanation).toContain("detached queue: needs_review detached-hold");
   expect(explanation).not.toContain("900101"); expect(explanation).toContain("[routing explanation withheld: it matches a PII pattern]");
+});
+
+test("#146 explicit backlog and dependency reservations refuse missing capabilities before a row exists", async () => {
+  const caps = { pi: { tests: false, spec: true }, local: { tests: true, spec: false } };
+  const f = await setup(["pi", "local"], undefined, caps);
+  const dependency = f.board.propose(USER, { title: "dependency", class: "implement" });
+  for (const owner of ["pi", "local"]) for (const backlog of [true, false]) {
+    const before = f.board.list();
+    await expect(f.tasks.propose(USER, { title: "reserved work", detail: "STAIxBWLB/agent-hub#418", class: "implement", owner, ...(backlog ? { backlog: true } : { after: [dependency.id] }) })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    expect(f.board.list()).toEqual(before);
+  }
+});
+
+test("#146 backlog reservation patches refuse missing capabilities without history or revision writes", async () => {
+  const f = await setup(["pi", "local"], undefined, { pi: { tests: false, spec: true }, local: { tests: true, spec: false } });
+  const task = f.board.propose(USER, { title: "backlog work", detail: "https://github.com/STAIxBWLB/agent-hub/issues/418", class: "implement", backlog: true });
+  for (const peer of ["pi", "local"]) {
+    const before = f.board.get(task.id);
+    await expect(f.tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { reserved: peer }, reason: "reserve work" })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    expect(f.board.get(task.id)).toEqual(before);
+  }
+});
+
+test("#146 PII local reservations retain capability exemption on proposals and backlog patches", async () => {
+  const f = await setup(["local"], undefined, { local: { tests: false, spec: false } });
+  const dependency = f.board.propose(USER, { title: "dependency", class: "implement" });
+  for (const backlog of [true, false]) {
+    const task = await f.tasks.propose(USER, { title: `${PII} #418`, class: "implement", owner: "local", ...(backlog ? { backlog: true } : { after: [dependency.id] }) });
+    expect(task).toMatchObject({ owner: null, reserved: "local" });
+  }
+  const task = f.board.propose(USER, { title: `${PII} #418`, class: "implement", signals: ["pii"], backlog: true });
+  expect(await f.tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { reserved: "local" }, reason: "reserve on premise" })).toMatchObject({ reserved: "local" });
+});
+
+test("#146 reservation admission rechecks capabilities after awaited proposal and planning privacy screens", async () => {
+  const f = await setup(["pi"]), caps = { pi: { tests: true, spec: true } }, routing = loadRouting(f.dir);
+  routing.signals.pii_screen = "local";
+  const tasks = new Tasks({ board: f.board, bus: f.bus, routing: () => routing, cwd: f.dir, project: "agent-hub", repository: "STAIxBWLB/agent-hub", capabilities: () => caps,
+    piiScreen: async () => { caps.pi.tests = false; return { label: "clear", ms: 1 }; }, notify: () => {}, share: () => {}, tell: () => {} });
+  const before = f.board.list();
+  await expect(tasks.propose(USER, { title: "work", class: "implement", owner: "pi", backlog: true })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(f.board.list()).toEqual(before);
+  caps.pi.tests = true;
+  const task = f.board.propose(USER, { title: "backlog", class: "implement", backlog: true });
+  const saved = f.board.get(task.id);
+  await expect(tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { reserved: "pi" }, reason: "reserve work" })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  expect(f.board.get(task.id)).toEqual(saved);
+});
+
+test("#146 capability admission keeps eligible offline reservations and same-value person planning", async () => {
+  const f = await setup(["pi"], undefined, { pi: { tests: true, spec: true } });
+  f.peers.pi!.set("offline");
+  const task = await f.tasks.propose(USER, { title: "reserved #418", class: "implement", owner: "pi", backlog: true });
+  expect(task).toMatchObject({ reserved: "pi", owner: null });
+  expect(await f.tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { reserved: "pi" }, reason: "retain reservation" })).toMatchObject({ reserved: "pi" });
 });

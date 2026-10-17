@@ -18,7 +18,7 @@ import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasSta
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, detectSignals, LOCAL, peerEntry, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, detectSignals, LOCAL, peerEntry, PI, predictSplit, type Assignment, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -78,6 +78,8 @@ export interface TasksDeps {
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
   review?: { adaptive: boolean; min_reviews: number };
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
+  capabilities?: () => Record<PeerId, PeerCapabilities>;
+  repository?: string;
   failing?: () => Record<PeerId, string>;
   /** Peers whose queue a needs_review delivery holds, with the hold detail (issue #90); routing explains the hold, never rejects. */
   held?: () => Record<PeerId, string>;
@@ -470,7 +472,16 @@ export class Tasks {
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    return { pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.id === "kimi" && peer.pullOnly).map(peer => peer.id), offRoster: SUPPORTED_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.id === "kimi" && peer.pullOnly).map(peer => peer.id), offRoster: SUPPORTED_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+  }
+
+  /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
+  private requireCapabilities(task: Parameters<typeof assign>[0], peer: PeerId, role: TaskAssignmentRole = "owner", preEffect = true): void {
+    if (!this.d.capabilities || this.isPii(task)) return;
+    const { state: _state, ...draft } = task; // backlog/readiness must not bypass an explicit reservation's admission
+    const admission = assign(draft, this.states(), this.d.routing(), { candidates: role === "owner" ? [peer] : [], ...(role === "owner" ? { namedOwner: peer } : { namedReviewer: peer }), ...this.weights(task.class) });
+    const missing = admission.trace.filter(line => line.startsWith(`  ${role} candidate ${peer}: skipped, missing `));
+    if (missing.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot assign ${peer}: ${missing.join("; ")}`);
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
@@ -753,6 +764,7 @@ export class Tasks {
         if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
         if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
+        if (patch.reserved) this.requireCapabilities(task, patch.reserved);
         const rows = new Map(this.d.board.list().map(row => [row.id, row]));
         const pending = [...(patch.deps ?? task.deps ?? [])], seen = new Set<number>();
         while (pending.length) {
@@ -991,6 +1003,7 @@ export class Tasks {
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
     if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }
+    if (reserved) this.requireCapabilities({ ...draft, signals, ...(external ? { external } : {}) }, reserved);
     let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
     created?.();
     if (screening) task = this.screenedTask(task, screened);
@@ -1339,7 +1352,7 @@ export class Tasks {
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     const signals = this.signalsFor(draft, routing);
     const base = profileClass(target.class, this.d.profileData ?? this.d.profile);
-    const trace = [...(this.d.profile && this.d.profile !== "dev" ? [`profile class ${target.class} (base ${base}, ${this.d.profile})`] : []), ...assign({ class: base, signals }, this.states(), routing, this.weights(base)).trace];
+    const trace = [...(this.d.profile && this.d.profile !== "dev" ? [`profile class ${target.class} (base ${base}, ${this.d.profile})`] : []), ...assign({ class: base, signals, ...draft }, this.states(), routing, this.weights(base)).trace];
     // A draft is not sent to the PII screen (issue #198): a proposal is, and a pii or unknown verdict adds the pii signal.
     return [...workflow, ...(this.screenOn() && !signals.includes("pii") ? [...trace, "pii_screen is on: at proposal a pii or unknown verdict adds signal pii (local only)"] : trace)];
   }
@@ -2288,6 +2301,7 @@ export class Tasks {
     const task = this.need(id, role === "owner", preEffect);
     this.checkFlowRevision(task, expectedFlowRevision, preEffect);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
+    this.requireCapabilities(task, peer, role, preEffect);
     if (role === "reviewer") {
       if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer can no longer change`);
       this.ready(task, preEffect);

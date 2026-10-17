@@ -1,3 +1,4 @@
+import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 import { CandidateStore, memoryProjectKey } from "@staix/agent-mem";
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -60,7 +61,8 @@ test("checked console assignment and unassignment bind the current task revision
 });
 
 test("a PII owner withdrawal notice uses the public title and a private delivery (#424)", async () => {
-  const { daemon, console_ } = await hub();
+  const { daemon, console_ } = await hub({ boundedTools: undefined });
+  expect((await console_.request({ t: "status" })).status.taskCapabilities.local.tests).toBe(false);
   class Local extends BasePeer {
     got: any[] = [];
     async deliver(envs: any[]) { this.got.push(...envs); }
@@ -79,10 +81,11 @@ test("a PII owner withdrawal notice uses the public title and a private delivery
   expect(notice.body).not.toContain("900101");
 });
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles } = {}) {
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles; boundedTools?: Parameters<typeof startDaemon>[0]["boundedTools"] } = {}) {
   const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
+    boundedTools: emulatedBoundedTools(),
     cwd: ROOT,
     stateDir,
     controlPort: 0,

@@ -146,6 +146,11 @@ export class PiPeer extends BasePeer {
     if (this.opts.mode === "headless") return !this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null;
     return this.stopping && !this.ownerClaimed && !!this.ownerPid && processLiveness(this.ownerPid, this.ownerSignature) === "gone";
   }
+  /** Stable across turns, invalidated when the verified native owner/session changes. Not caller supplied. */
+  get sessionGeneration(): string | undefined {
+    return this.ownerClaimed && this.ownerPid && this.ownerSignature ? `${this.ownerPid}:${this.ownerSignature}:${this.sessionId ?? ""}` : undefined;
+  }
+
   recoveryMetadata(): Record<string, unknown> {
     const exists = !!this.sessionFile && existsSync(this.sessionFile);
     if (exists) { this.persistedOnce = true; this.verifiedEmptyResume = undefined; }

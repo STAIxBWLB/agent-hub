@@ -1,3 +1,4 @@
+import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,7 +42,7 @@ async function fixture(args: string[] = [], recordProtocol = false, routingOptio
     .replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"')
     .replace('[classes.implement]\npeers = ["pi", "local", "codex", "kimi"]', `[classes.implement]\npeers = ${JSON.stringify(routingOptions.implementPeers ?? ["kimi", "codex"])}`);
   writeFileSync(join(dir, ".agenthub/routing.toml"), routing);
-  const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, ...(routingOptions.roster ? { roster: routingOptions.roster } : {}),
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal", ...args, ...(recordProtocol ? ["--record-protocol", join(dir, "protocol.jsonl")] : [])],
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },

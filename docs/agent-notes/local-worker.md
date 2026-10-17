@@ -17,3 +17,5 @@ Scope: the hub-native local worker, its tools, path guard, denylist and seatbelt
 - A tool that asks for approval passes its name to `ctx.permit`, and `write`/`edit` also the `guardPath` result, never the model's path string: also pass the original path separately through every permit wrapper; `ask-when-needed` grants only when both the original project-relative spelling and the real path avoid protected names through `grantablePath` (`src/hub/permission-mode.ts`). `bash` and mutating `git` pass no path. After the awaited approval `write`/`edit` run `guardPath` again and refuse a target that changed (#242).
 
 - Honor the live `protect_instruction_files` policy in scoped grants for the three instruction names; keep reads, explicit approval and never-ask unchanged. Only the settings registry writes this machine-local policy (#323).
+
+- For sandboxed task checks, use the opt-in hub-owned bounded container runner; never widen Seatbelt, expose credentials, mount host paths or fall back to a host command. Keep spec/check arguments and results out of capture.
