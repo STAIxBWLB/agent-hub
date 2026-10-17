@@ -1,4 +1,4 @@
-import { supersededDeliveryReason } from "./delivery-superseded.ts";
+import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
 import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
@@ -1815,8 +1815,13 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "task_escalate":
         return line(await tasks.escalate(USER, a.id, undefined, undefined, true));
-      case "route_explain":
-        return [...tasks.explain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }), ...bus.knownPeers().flatMap(peer => { const hold = queueHold(peer); return hold ? [`${peer} queue: ${hold}`] : []; })].join("\n");
+      case "route_explain": {
+        const trace = tasks.explain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass });
+        return [...trace, ...bus.knownPeers().flatMap(peer => {
+          if (trace.some(line => line.startsWith(`  hold: ${peer}'s queue is held:`))) return [];
+          const hold = queueHold(peer); return hold ? [`${peer} queue: ${hold}`] : [];
+        })].join("\n");
+      }
       case "turn_revert": {
         // `ahub undo --context` (issue #33): the conversation half of an undo; the CLI restores the files itself.
         const turn = turnLog?.get(String(a.turn));
@@ -2135,7 +2140,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return bus.queueList(peer).filter(row => row.state === "needs_review").map(row => ({
       id: row.id, senders: [...new Set(row.originals.map(env => sanitize(env.from)))],
       kinds: [...new Set(row.originals.map(env => env.kind))], createdAt: row.createdAt,
-      context: supersededDeliveryReason(row.originals, board, peer),
+      context: deliveryTaskContext(row.originals, board, peer),
     }));
   }
   function queueHold(peer: PeerId): string | undefined {
@@ -2145,11 +2150,11 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   let settlingSuperseded = false;
   function settleSupersededDeliveries() {
-    if (settlingSuperseded || stopping || recoveryActive()) return;
+    if (settlingSuperseded || stopping || recoveryActive() || bus.isRecoveryHeld) return;
     settlingSuperseded = true;
     try {
       for (const row of bus.queueList()) {
-        if (row.state !== "needs_review") continue;
+        if (row.state !== "needs_review" || row.reason?.startsWith("requested stop:")) continue;
         const reason = supersededDeliveryReason(row.originals, board, row.peer);
         if (!reason) continue;
         try { bus.resolveDelivery(row.id, row.revision, "completed", reason, "hub"); }

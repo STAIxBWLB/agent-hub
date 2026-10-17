@@ -36,3 +36,15 @@ test("planner coordination and untagged legacy task notices remain held while op
   expect(supersededDeliveryReason([notice()], live, "pi")).toBeUndefined();
   expect(supersededDeliveryReason([notice("task", "hub", "planner")], board, "pi")).toBe("superseded: task #42 approved");
 });
+
+test("mixed and legacy row context never becomes automatic settlement authority (#434 follow-up)", async () => {
+  const { deliveryTaskContext } = await import("../src/hub/delivery-superseded.ts");
+  const peer = newEnvelope("pi", "private peer text", { refs: { task: "42" } });
+  expect(deliveryTaskContext([notice(), peer], board, "pi")).toBe("task #42 approved");
+  expect(supersededDeliveryReason([notice(), peer], board, "pi")).toBeUndefined();
+  const live = { get: () => ({ ...task, state: "in_progress" as const }) };
+  expect(deliveryTaskContext([peer], live, "pi")).toBe("task #42 moved");
+  expect(supersededDeliveryReason([peer], live, "pi")).toBeUndefined();
+  expect(deliveryTaskContext([notice()], live, "pi")).toBe("task #42 moved");
+  expect(supersededDeliveryReason([notice()], live, "pi")).toBeUndefined();
+});

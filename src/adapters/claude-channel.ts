@@ -217,8 +217,13 @@ async function connectLoop(): Promise<void> {
         if (channel) return void push(msg.envs ?? [msg.env], msg.deliveryId, msg.generation);
         // A push this session cannot show has not reached the model: safely return its originals for pull.
         if (!msg.deliveryId) return log("hub push without a delivery id dropped: this session cannot show channel pushes");
-        void client.request({ t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, state: "failed_safe", reason: "this session cannot show channel pushes" })
-          .then((receipt) => { if (!receipt.ok) log(`failed_safe receipt for delivery ${msg.deliveryId} rejected by hub: ${receipt.error}`); });
+        const receipt = { t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, reason: "this session cannot show channel pushes" };
+        void client.request({ ...receipt, state: "failed_safe" }).then(async result => {
+          if (result.ok) return;
+          // An older hub cannot accept failed_safe: preserve its prior uncertainty contract rather than strand dispatching.
+          const fallback = await client.request({ ...receipt, state: "needs_review" });
+          if (!fallback.ok) log(`delivery receipt for ${msg.deliveryId} remains unconfirmed by hub`);
+        }).catch(() => log(`delivery receipt for ${msg.deliveryId} remains unconfirmed by hub`));
       };
       hub = client;
       attempt = -1;

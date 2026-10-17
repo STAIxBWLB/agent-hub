@@ -1,3 +1,4 @@
+import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -3464,4 +3465,20 @@ test("owner unassignment fences an in-flight completion check (#424)", async () 
   await until(() => board.get(task.id)!.history.some(entry => entry.event === "check finished late"));
   expect(board.get(task.id)).toMatchObject({ owner: null, state: "proposed" });
   expect(peers.claude!.got.some(env => env.kind === "review" && env.refs?.task === String(task.id))).toBe(false);
+});
+
+
+test("escalation withdrawal is still needed by the former owner until approval (#434 follow-up)", async () => {
+  const base = await setup(["codex", "kimi", "claude"]);
+  const task = await base.tasks.propose(USER, { title: "withdrawal contract", class: "implement", owner: "codex" });
+  const published: Envelope[] = [], publish = base.bus.publish.bind(base.bus);
+  base.bus.publish = envelope => { published.push(envelope); return publish(envelope); };
+  await base.tasks.escalate(USER, task.id, "manual handoff");
+  const withdrawal = published.find(envelope => envelope.to?.includes("codex") && envelope.body.includes("Stop working on it."))!;
+  expect(withdrawal).toBeDefined();
+  expect(withdrawal.refs?.taskRecipient).not.toBe("owner");
+  expect(supersededDeliveryReason([withdrawal], base.board, "codex")).toBeUndefined();
+  base.board.update(task.id, USER, "accepted", { state: "in_progress" });
+  base.board.update(task.id, USER, "approved", { state: "approved" });
+  expect(supersededDeliveryReason([withdrawal], base.board, "codex")).toBe(`superseded: task #${task.id} approved`);
 });

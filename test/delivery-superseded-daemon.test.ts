@@ -16,8 +16,8 @@ async function fixture() {
   board.update(task.id, "codex", "done", { state: "in_review" });
   const journal = new DeliveryJournal({ file, projectRoot: dir, projectId: "superseded", instanceId: "old" });
   const notice = (kind: "task" | "review" = "task") => newEnvelope("hub", "private title", { kind, refs: { task: String(task.id), ...(kind === "task" ? { taskRecipient: "reviewer" as const } : {}) }, to: ["claude"] });
-  function held(id: string, originals: ReturnType<typeof notice>[], peer = "claude") {
-    journal.createDelivery({ id, peer, state: "needs_review", createdAt: Date.now(), originals, out: originals });
+  function held(id: string, originals: ReturnType<typeof notice>[], peer = "claude", reason?: string) {
+    journal.createDelivery({ id, peer, state: "needs_review", createdAt: Date.now(), originals, out: originals, reason });
   }
   return { dir, file, board, task, journal, notice, held };
 }
@@ -89,27 +89,22 @@ test("AC2: a superseded hold settles on receipt and drains queued work (#434)", 
 });
 
 test("AC3: releasing recovery classifies restored obsolete holds without an attached peer (#434)", async () => {
-  const f = await fixture();
-  const { Bus } = await import("../src/hub/bus.ts");
-  const { supersededDeliveryReason } = await import("../src/hub/delivery-superseded.ts");
-  f.held("offline-presence", [newEnvelope("hub", "private memory", { kind: "presence" })]);
-  const bus = new Bus({ journal: f.journal, batchMs: 0 });
-  bus.setRecoveryHold(true);
-  bus.onQueues = () => {
-    if (bus.isRecoveryHeld) return;
-    for (const row of bus.queueList()) {
-      if (row.state !== "needs_review") continue;
-      const reason = supersededDeliveryReason(row.originals, f.board, row.peer);
-      if (reason) bus.resolveDelivery(row.id, row.revision, "completed", reason, "hub");
-    }
-  };
+  const f = await fixture(); f.journal.close(); f.board.close();
+  const daemon = await start(f), client = await ControlClient.connect(f.dir, { role: "console" });
+  const inspection = new DeliveryJournal({ file: f.file, projectRoot: f.dir, projectId: "superseded", instanceId: (await client.request({ t: "status" })).status.instanceId });
   try {
-    expect(bus.peers.size).toBe(0);
-    expect(bus.queueShow("offline-presence")?.state).toBe("needs_review");
-    bus.setRecoveryHold(false);
-    expect(bus.queueShow("offline-presence")?.state).toBe("completed");
-    expect(f.journal.resolution("offline-presence")?.actor).toBe("hub");
-  } finally { bus.closeJournal(); f.board.close(); rmSync(f.dir, { recursive: true, force: true }); }
+    daemon.bus.setRecoveryHold(true);
+    const presence = newEnvelope("hub", "private memory", { kind: "presence" });
+    inspection.createDelivery({ id: "offline-presence", peer: "claude", state: "needs_review", createdAt: Date.now(), originals: [presence], out: [presence] });
+    // Exercise the daemon-installed onQueues callback while held, then the bus's actual release notification.
+    daemon.bus.publish(newEnvelope("user", "waiting work", { to: ["codex"] }));
+    expect(daemon.bus.peers.size).toBe(0);
+    expect(daemon.bus.queueShow("offline-presence")?.state).toBe("needs_review");
+    daemon.bus.setRecoveryHold(false);
+    expect(daemon.bus.queueShow("offline-presence")?.state).toBe("completed");
+    expect(inspection.resolution("offline-presence")?.actor).toBe("hub");
+    expect(daemon.bus.snapshot(false).prefaces.claude?.body).toContain("private memory");
+  } finally { inspection.close(); client.close(); await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
 test("a held kind task reviewer reminder settles when the reviewer changes (#434 review)", async () => {
@@ -129,4 +124,42 @@ test("a held kind task reviewer reminder settles when the reviewer changes (#434
     expect(reassigned).toMatchObject({ ok: true });
     expect(daemon.bus.queueShow("reviewer-reminder")?.state).toBe("completed");
   } finally { await client.close(); await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+
+test("requested peer stops retain approved hub notices for the person (#434 follow-up)", async () => {
+  const f = await fixture();
+  f.board.update(f.task.id, "claude", "approved", { state: "approved" });
+  f.held("requested-stop", [f.notice()], "claude", "requested stop: ahub stop claude");
+  f.journal.close(); f.board.close();
+  const daemon = await start(f);
+  try { expect(daemon.bus.queueShow("requested-stop")?.state).toBe("needs_review"); }
+  finally { await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test("mixed held rows keep informational approved task context without authorizing settlement (#434 follow-up)", async () => {
+  const f = await fixture();
+  f.board.update(f.task.id, "claude", "approved", { state: "approved" });
+  f.held("mixed-context", [f.notice(), newEnvelope("pi", "private peer words", { refs: { task: String(f.task.id) } })]);
+  f.journal.close(); f.board.close();
+  const daemon = await start(f), client = await ControlClient.connect(f.dir, { role: "console" });
+  try {
+    expect(daemon.bus.queueShow("mixed-context")?.state).toBe("needs_review");
+    const row = (await client.request({ t: "status" })).status.peers.claude.heldRows[0];
+    expect(row.context).toBe(`task #${f.task.id} approved`);
+    expect(JSON.stringify(row)).not.toContain("private peer words");
+  } finally { client.close(); await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test("route explain lists an already represented peer hold only once (#434 follow-up)", async () => {
+  const f = await fixture(); f.held("dedupe-review", [f.notice("review")]); f.journal.close(); f.board.close();
+  const daemon = await start(f), client = await ControlClient.connect(f.dir, { role: "console" });
+  const { BasePeer } = await import("../src/hub/peers.ts");
+  class QuietPeer extends BasePeer { async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver() {} }
+  try {
+    for (const id of ["codex", "claude"]) { const peer = new QuietPeer(id); daemon.bus.add(peer); await peer.start(); }
+    const result = await client.request({ t: "task", op: "route_explain", args: { id: f.task.id } });
+    expect(result.ok).toBe(true);
+    expect(result.text.split("\n").filter((line: string) => line.includes("queue") && line.includes("dedupe-review"))).toHaveLength(1);
+  } finally { client.close(); await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });

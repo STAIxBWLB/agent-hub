@@ -387,12 +387,12 @@ export class Bus {
           const ids = new Set(record.originals.map((env) => env.id));
           queue.splice(0, queue.length, ...queue.filter((env) => !ids.has(env.id)));
         }
-        if (action === "retry") {
+        if (action === "retry" || action === "completed" && actor === "hub") {
           for (const env of record.originals) {
             if (env.from === HUB && env.kind === "presence") this.restorePreface(record.peer, env);
-            else if (!queue.some((old) => old.id === env.id)) queue.push(env);
+            else if (action === "retry" && !queue.some((old) => old.id === env.id)) queue.push(env);
           }
-          this.queues.set(record.peer, queue);
+          if (action === "retry") this.queues.set(record.peer, queue);
         }
         this.persist();
       });

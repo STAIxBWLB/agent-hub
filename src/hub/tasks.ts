@@ -2219,7 +2219,7 @@ export class Tasks {
     if (from && task.reviewer && task.reviewer !== USER && this.requestedChanges(task).has(task.reviewer)) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
     const stopFormerOwner = (moved: Task) => {
       if (from && moved.owner && moved.owner !== from) this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${from} it moved to ${moved.owner}`, () =>
-        this.tell({ ...moved, owner: from }, `Task #${moved.id} moved to ${moved.owner} (${why}). Stop working on it.`, this.isPii(moved)));
+        this.tell({ ...moved, owner: from }, `Task #${moved.id} moved to ${moved.owner} (${why}). Stop working on it.`, this.isPii(moved), "withdrawal"));
     };
     // Only our landed move authorizes a success notice and decision note. The former owner's stop
     // message still names the current owner when a later assignment superseded this move.
@@ -2570,9 +2570,9 @@ export class Tasks {
     }
   }
 
-  private tell(task: Task, body: string, pii: boolean): void {
+  private tell(task: Task, body: string, pii: boolean, audience: "owner" | "withdrawal" = "owner"): void {
     if (!task.owner || task.owner === USER) return;
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: "task", priority: "important", refs: { task: String(task.id), taskRecipient: "owner" }, ...(pii ? { private: true } : {}) }));
+    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: "task", priority: "important", refs: { task: String(task.id), ...(audience === "owner" ? { taskRecipient: "owner" as const } : {}) }, ...(pii ? { private: true } : {}) }));
   }
 }
 
