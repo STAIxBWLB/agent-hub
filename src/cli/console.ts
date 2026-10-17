@@ -34,6 +34,17 @@ export interface ConsoleOptions {
   runCommand?: (args: string[], output: (text: string) => void, done: () => void, columns?: number) => (() => void);
   pollMs?: number;
 }
+/** Exact navigation sequences only (#309, #441); anything else in a multi-character read is a paste. */
+const NAVIGATION = ["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", ...FIRST_KEYS, ...LAST_KEYS].filter(key => key.startsWith("\x1b"));
+export function navigationPresses(text: string): string[] | undefined {
+  const keys: string[] = [];
+  for (let at = 0; at < text.length;) {
+    const key = NAVIGATION.find(k => text.startsWith(k, at));
+    if (!key) return undefined;
+    keys.push(key); at += key.length;
+  }
+  return keys.length ? keys : undefined;
+}
 export const RESTORE_CONSOLE = "\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h";
 /** Console-only styling uses event structure; tail text and message bodies are never parsed for meaning. */
 export function eventTone(e: BusEvent): Tone | undefined {
@@ -299,10 +310,11 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       terminal.raw(true);
       removers.push(terminal.onData(text => {
         // A pasted chunk can only edit text, never approve, confirm or run commands. Bracketed-paste delimiters are stripped.
-        // Under the modal key table it does nothing at all. A read holding nothing but arrow sequences is that many
-        // key presses (key repeat, a slow link), not a paste (#309): each arrow reaches the reducer on its own.
-        if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", ...FIRST_KEYS, ...LAST_KEYS].includes(text)) {
-          if (/^(?:\x1b\[[ABCD])+$/.test(text)) { for (const key of text.match(/\x1b\[[ABCD]/g)!) handle(key); }
+        // Under the modal key table it does nothing at all. A read holding nothing but arrow or Home/End sequences is
+        // that many key presses (key repeat, a slow link), not a paste (#309, #441): each reaches the reducer on its own.
+        const presses = navigationPresses(text);
+        if (Array.from(text).length > 1 && presses?.length !== 1) {
+          if (presses) { for (const key of presses) handle(key); }
           else {
             state.attentionMessages = []; state.attentionSelection = undefined;
             if (state.help && state.mode === "panels") { draw(); return; }

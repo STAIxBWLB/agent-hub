@@ -1,6 +1,6 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow, appendEvent } from "../src/cli/console-state.ts";
-import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
+import { eventTone, navigationPresses, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderBoard, renderStatus } from "../src/cli/output.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -918,6 +918,12 @@ describe("console layout (#213)", () => {
       f.input(key);
       expect(lastFrame()).toContain("? keys"); // the command line stayed closed
     }
+    // A held key coalesced into one read is that many presses, as arrows are (#309): still no command line.
+    for (const read of ["\x1b[F\x1b[F", "\x1bOF\x1bOF", "\x1b[H\x1b[B\x1b[4~"]) {
+      f.input(read);
+      expect(lastFrame()).toContain("? keys");
+      expect(lastFrame()).not.toContain(": FF");
+    }
     f.input("\x1b"); f.input("q"); await running;
   });
   test("errors and refusals take the failure tone; informing notices take attention", () => {
@@ -1637,4 +1643,21 @@ test("#441 Home/< selects the first row and End/> the last, in any panel, and Ho
   let t = state(true); t.panel = 3; t.tasks = [1, 2, 3].map(id => ({ id, state: "proposed", title: `t${id}` }));
   t = reduceConsole(t, ">", NOW).state;
   expect(selectedPanelRow(t)?.id).toBe(3);
+});
+
+test("#441 navigation reads split into presses only when made of known sequences; filters, tabs and the cap pick rows", () => {
+  expect(navigationPresses("\x1b[F\x1b[F")).toEqual(["\x1b[F", "\x1b[F"]);
+  expect(navigationPresses("\x1b[7~\x1b[8~\x1b[C")).toEqual(["\x1b[7~", "\x1b[8~", "\x1b[C"]);
+  expect(navigationPresses("\x1b[Fy")).toBeUndefined();
+  expect(navigationPresses("<>")).toBeUndefined(); // typed characters stay a paste in one read
+  let s = reduceConsole(state(true), "5", NOW).state;
+  for (const [n, peer] of [[1, "pi"], [2, "kimi"], [3, "pi"], [4, "kimi"]] as const) appendEvent(s, { text: `e${n}`, peer });
+  for (const [key, want] of [["\x1b[7~", "e1"], ["\x1b[8~", "e4"]] as const) { s = reduceConsole(s, key, NOW).state; expect(selectedPanelRow(s)?.text).toBe(want); }
+  s = reduceConsole(s, "f", NOW).state; // the first peer filter selects its newest row
+  expect([s.peerFilter, selectedPanelRow(s)?.text]).toEqual(["pi", "e3"]);
+  s = reduceConsole(reduceConsole(s, "4", NOW).state, "\x1b[C", NOW).state; // Right from Queue into Events
+  expect([s.panel, selectedPanelRow(s)?.text]).toEqual([5, "e3"]);
+  s.peerFilter = undefined; s.selection = 0; // hold the oldest row, then let the cap drop it
+  appendEvent(s, { text: "e5" }, 4);
+  expect([s.events.map(e => e.text), s.selection, selectedPanelRow(s)?.text]).toEqual([["e2", "e3", "e4", "e5"], 0, "e2"]);
 });
