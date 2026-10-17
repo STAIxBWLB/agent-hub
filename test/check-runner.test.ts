@@ -380,6 +380,7 @@ test.each(["run", "cp"])("silent %s remains bounded by its own command cap", asy
 test.each([
   ["Case.txt", "case.txt"], ["Dir/one.txt", "dir/two.txt"], ["FILE", "file/child.txt"],
   ["café.txt", "café.txt"], ["Straße.txt", "STRASSE.txt"],
+  ["ß.txt", "ẞ.txt"], ["ß/one.txt", "ẞ/two.txt"],
 ])("snapshot refuses folded Git path collisions before staging writes: %s / %s", async (left, right) => {
   let screened = 0;
   const f = await fixture({ isDenied: () => { screened++; return false; } });

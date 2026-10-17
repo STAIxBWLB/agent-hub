@@ -47,6 +47,17 @@ interface Entry { receipt: RunReceipt; resolve: (receipt: RunReceipt) => void; a
 function safePath(path: string): boolean {
   return !!path && !isAbsolute(path) && !path.includes("\\") && !path.includes("\0") && path.split("/").every(p => p !== ".." && p !== "." && p !== "");
 }
+function foldedPath(path: string): string {
+  let folded = path.normalize("NFC");
+  // Reach a fixed point: capital sharp s first lowers to sharp s, then expands to ss on the next pass.
+  // Fail closed if a future Unicode mapping does not stabilize within this conservative finite bound.
+  for (let step = 0; step < 8; step++) {
+    const next = folded.toUpperCase().toLowerCase().normalize("NFC");
+    if (next === folded) return folded;
+    folded = next;
+  }
+  throw new Error("source path folding unavailable");
+}
 function hash(data: Uint8Array): string { return createHash("sha256").update(data).digest("hex"); }
 function isolatedNetwork(stdout: string): boolean {
   try {
@@ -250,8 +261,7 @@ export class ContainerRunner {
       const parts = entry.path.split("/");
       for (let i = 1; i <= parts.length; i++) {
         const spelling = parts.slice(0, i).join("/"), directory = i < parts.length;
-        // Upper/lower expansion conservatively includes Unicode multi-character case folds (e.g. sharp s).
-        const folded = spelling.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+        const folded = foldedPath(spelling);
         const prior = foldedPaths.get(folded);
         if (prior && (prior.spelling !== spelling || prior.directory !== directory)) throw new Error("source path collision");
         foldedPaths.set(folded, { spelling, directory });
