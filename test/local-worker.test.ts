@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalPeer, type LocalOptions } from "../src/adapters/local-worker.ts";
@@ -8,6 +8,7 @@ import { Tasks } from "../src/hub/tasks.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { Bus } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Capture } from "../src/memory/capture.ts";
@@ -87,6 +88,34 @@ test("a bulk edit: tool calls run in the project, one conclusion is shared, the 
   expect(sent).not.toContain("private chain of thought"); // reasoning_content is never stored
   expect(`${sent}${lines.join()}${said[0]!.body}`).not.toContain("sk-fake-secret");
   expect(model.requests[0]!.body.tools.map((t: any) => t.function.name)).toEqual(["read", "write", "edit", "bash", "git", "hub_send"]);
+});
+
+test("a delivery-only local peer does not offer recipient retry and waits for person resolution after uncertainty (#434)", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-local-held-")));
+  const model = startFakeModelServer({ key: "sk-fake-secret", script: (_body, call) => {
+    if (call === 1) return { tool_calls: [toolCall("write", { path: "effect.txt", content: "saved" })] };
+    if (call === 2) throw new Error("model failed after write");
+    return { content: "person released follow-up" };
+  } });
+  process.env.OMNIROUTE_API_KEY = "sk-fake-secret";
+  const durable = new DeliveryJournal({ file: join(cwd, "hub.db"), projectRoot: cwd, projectId: "local-held", instanceId: "fixture" });
+  const bus = new Bus({ journal: durable, batchMs: 0 });
+  const peer = new LocalPeer("local", { cwd, omni: new OmniRoute({ urls: [model.url], access_hosts: [] }), fixedModel: "m", tools: { deny: [], permit: async () => true }, taskTool: async () => "fixture task result" });
+  bus.add(peer); await peer.start();
+  cleanup.push(() => { durable.close(); rmSync(cwd, { recursive: true, force: true }); }, model.stop, () => peer.stop());
+  bus.publish(newEnvelope("user", "write then answer", { to: ["local"], priority: "important" }));
+  await until(() => durable.list("local").some(row => row.state === "needs_review") && peer.state === "idle", "uncertain local turn");
+  expect(readFileSync(join(cwd, "effect.txt"), "utf8")).toBe("saved");
+  expect(model.requests[0]!.body.tools.some((tool: any) => tool.function.name === "hub_delivery_retry")).toBe(false);
+  const held = durable.list("local").find(row => row.state === "needs_review")!;
+  const followup = newEnvelope("user", "ordinary follow-up", { to: ["local"], priority: "important" });
+  bus.publish(followup);
+  expect(bus.queueIds("local")).toEqual([followup.id]);
+  expect(model.requests).toHaveLength(2);
+  bus.resolveDelivery(held.id, held.revision, "completed", "person inspected the write");
+  await until(() => model.requests.length === 3 && peer.state === "idle", "person-released follow-up");
+  expect(bus.queueIds("local")).toEqual([]);
+  expect(readFileSync(join(cwd, "effect.txt"), "utf8")).toBe("saved");
 });
 
 test("a refused approval and a malformed tool call come back to the model as text; the step limit ends a loop", async () => {

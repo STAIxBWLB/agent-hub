@@ -69,7 +69,7 @@ trap 'exit 143' TERM
 # runner's OS environment before Bun starts; identity tests set their own child markers.
 # An `ahub claude` session also carries its hub's project, state dir and launch identity:
 # a fixture's plugin would send that project at hello and be refused by the fixture hub.
-env -u AGENTHUB_PEER_ID -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
+env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
   -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID bun test --timeout 20000 &
 test_pid=$!
 scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-600}" &
