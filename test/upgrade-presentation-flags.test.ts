@@ -20,14 +20,14 @@ test("#466 recovery colour has exactly console precedence for TTY, pipes and env
 
 test("#466 presentation flags leave command arguments and audit values intact", async () => {
   const { readRecoveryPresentationFlags } = await flags();
-  const original = ["dispose", "operation", "--reason", "--json", "--stop-and-archive", "--color", "never", "--verbose"];
+  const original = ["dispose", "operation", "--reason", "--json", "--stop-and-archive", "--color=never", "--verbose"];
   const parsed = readRecoveryPresentationFlags(original, { isTTY: false, columns: 120 });
   expect(parsed.args).toEqual(["dispose", "operation", "--reason", "--json", "--stop-and-archive"]);
-  expect(parsed.flags).toEqual(["--color", "never", "--verbose"]);
+  expect(parsed.flags).toEqual(["--color=never", "--verbose"]);
   expect(parsed.json).toBe(false);
   expect(parsed.options.columns).toBe(120);
   expect(parsed.options.verbose).toBe(true);
-  expect(original).toEqual(["dispose", "operation", "--reason", "--json", "--stop-and-archive", "--color", "never", "--verbose"]);
+  expect(original).toEqual(["dispose", "operation", "--reason", "--json", "--stop-and-archive", "--color=never", "--verbose"]);
   expect(readRecoveryPresentationFlags(["--to", "--json"], { isTTY: true }).args).toEqual(["--to", "--json"]);
 });
 
@@ -38,5 +38,12 @@ test("#466 raw JSON is a separate output decision and invalid colours refuse", a
   expect(parsed.options.color).toBe(true);
   expect(parsed.args).toEqual(["status", "operation"]);
   expect(() => readRecoveryPresentationFlags(["--color=invalid"], { isTTY: true })).toThrow("--color=auto|always|never");
-  expect(() => readRecoveryPresentationFlags(["--color"], { isTTY: true })).toThrow("needs a value");
+  expect(() => readRecoveryPresentationFlags(["--color"], { isTTY: true })).toThrow("--color=auto|always|never");
+});
+
+test("#466 colour grammar refuses bare, space-form and repeated flags exactly like the console", async () => {
+  const { readRecoveryPresentationFlags } = await flags();
+  for (const argv of [["--color"], ["--color", "never"], ["--color=auto", "--color=never"]]) {
+    expect(() => readRecoveryPresentationFlags(argv, { isTTY: true })).toThrow("--color=auto|always|never");
+  }
 });

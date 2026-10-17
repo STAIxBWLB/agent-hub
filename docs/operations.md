@@ -2153,7 +2153,10 @@ step really runs again and is labelled `checking retained release`. Waits use
 the coordinator's actual recorded start and deadline, for example
 `[waiting] alpha: restoring Codex and Pi sessions (waiting 2m10s of 10m)`.
 Older receipts without timing metadata say `timing unknown`; updatedAt is never
-used as a substitute. Approval waits point to `ahub console`. Korean text and
+used as a substitute. Timing-only save failures log a warning and do not fail
+the operation. Stable waits print only on change and at most once per minute.
+Approval waits point to `ahub console`; native attachment waits point to the
+recorded launch and conversation. Korean text and
 long paths wrap to the measured width on plan, progress and menu screens.
 Enter opens the operation's screen while the runner works on. Ctrl+C leaves the
 command, at any prompt and while following, and never stops the runner: the
@@ -2182,9 +2185,9 @@ When more than one restoration failed, the second and later peers get
 `f-<peer>`. `s` refreshes the screen, `j` prints the receipt as JSON and `q`
 leaves the operation as it is.
 
-The marked recommendation is the Enter default. It never chooses fresh-session
-or stop-and-archive automatically: an eligible reattach, active follow, retryable
-resume or read-only diagnostic/refresh is preferred. Unknown failures recommend
+The marked recommendation is a read-only Enter default: refresh the plan, follow
+an active runner, read the receipt or refresh the operation. Apply, resume and
+reattach require their explicit keys; buffered Enter never starts them. Unknown failures recommend
 reading `j` before retrying effects. A wait whose runner cannot be verified is
 shown disabled with its reason, and cannot run a command. Stop, archive, reset
 and fresh-session choices carry a warning and name the consequence before the

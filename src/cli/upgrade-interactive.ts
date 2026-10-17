@@ -1,5 +1,5 @@
-import { renderPlan, renderOperation, renderBlocked, renderSummary, renderStep, renderWait, renderMenu, type RecoveryPresentationOptions, type MenuPresentationItem } from "./upgrade-presentation.ts";
-import { wrap } from "./console-state.ts";
+import { renderPlan, renderOperation, renderBlocked, renderSummary, renderStep, renderWait, renderMenu, choiceInstruction, type RecoveryPresentationOptions, type MenuPresentationItem } from "./upgrade-presentation.ts";
+import { quoted, wrap } from "./console-state.ts";
 import { operationLines, stepLabel } from "./upgrade-labels.ts";
 export { operationLines, stepLabel } from "./upgrade-labels.ts";
 import { recoveryArgv } from "../hub/recovery-store.ts";
@@ -55,11 +55,11 @@ export interface UpgradeHost {
 function emit(io: ScreenIO, lines: readonly string[]): void { for (const line of lines) io.out(line); }
 function human(io: ScreenIO, line: string): void {
   if (!io.presentation) return io.out(line);
-  emit(io, wrap(line, io.presentation.columns));
+  emit(io, wrap(/\p{Cc}/u.test(line) ? quoted(line) : line, io.presentation.columns));
 }
 function ask(io: ScreenIO, question: string): Promise<string | null> {
   if (!io.presentation) return io.ask(question);
-  const lines = wrap(question, io.presentation.columns);
+  const lines = wrap(/\p{Cc}/u.test(question) ? quoted(question) : question, io.presentation.columns);
   emit(io, lines.slice(0, -1));
   return io.ask(lines.at(-1) ?? "> ");
 }
@@ -123,7 +123,7 @@ export function planLines(plan: UpgradePlan, current: string): string[] {
  * it was scheduled from, which is not the outcome.
  */
 export async function follow(host: UpgradeHost, io: ScreenIO, id: string, scheduled?: number): Promise<"completed" | "open" | "left"> {
-  let step = "", waiting = "", unowned = 0, tick = 0, started = clock(io);
+  let step = "", waiting = "", unowned = 0, tick = 0, started = clock(io), lastWaitAt = -Infinity;
   const resuming = scheduled !== undefined;
   let resumeAnnounced = false;
   for (;; tick++) {
@@ -136,11 +136,11 @@ export async function follow(host: UpgradeHost, io: ScreenIO, id: string, schedu
       if (op.step !== step) {
         const now = clock(io);
         if (io.presentation && step) emit(io, renderStep(resuming && step === "stage" ? "checking retained release" : stepLabel(step), "done", Math.max(0, now - started), io.presentation));
-        step = op.step; waiting = ""; tick = 0; started = now;
+        step = op.step; waiting = ""; tick = 0; started = now; lastWaitAt = -Infinity;
         if (io.presentation) {
           if (resuming && !resumeAnnounced) { human(io, `resuming from ${step === "stage" ? "checking retained release" : stepLabel(step)}`); resumeAnnounced = true; }
-          if (op.phase === "blocked") emit(io, renderStep(stepLabel(step), "blocked", 0, io.presentation));
-          else if (op.phase === "completed") emit(io, renderStep(stepLabel(step), "done", 0, io.presentation));
+          if (op.phase === "blocked") emit(io, renderStep(stepLabel(step), "blocked", undefined, io.presentation));
+          else if (op.phase === "completed") emit(io, renderStep(stepLabel(step), "done", undefined, io.presentation));
           else emit(io, renderStep(resuming && step === "stage" ? "checking retained release" : stepLabel(step), "running", undefined, io.presentation));
         } else human(io, `  ${stepLabel(step)}`);
       }
@@ -155,14 +155,19 @@ export async function follow(host: UpgradeHost, io: ScreenIO, id: string, schedu
       // A hub that is not ready and names no cause (one older than #272 lists only busy peers and approvals) still waits.
       const held = Object.values(live).some((i) => i?.recovery?.operationId === id && i.recovery.ready === false);
       const now = [...new Set(Object.values(live).flatMap((i) => i?.recovery?.waiting ?? []))].join(", ") || (held ? "the hub is not quiet yet (it names no cause: a completion check, a task command or a Pi call may be in flight)" : "");
-      if (now && (now !== waiting || !!io.presentation)) {
+      if (now && (now !== waiting || io.presentation && clock(io) - lastWaitAt >= 60_000)) {
+        lastWaitAt = clock(io);
         if (io.presentation) emit(io, renderWait(op, step, Object.values(live).flatMap(value => value?.recovery?.waiting ?? []).length ? Object.values(live).flatMap(value => value?.recovery?.waiting ?? []) : [now], io.presentation));
         else human(io, `    waiting for: ${now}`);
       }
       waiting = now;
     }
     if (io.presentation && !unwritten && !/^(re)?prepare:/.test(step) && op.waits?.[step] && !op.waits[step]!.waitEndedAt && tick % 8 === 0) {
-      emit(io, renderWait(op, step, ["waiting for the recorded native session to attach"], io.presentation));
+      const reason = "waiting for the recorded native session to attach";
+      if (waiting !== reason || clock(io) - lastWaitAt >= 60_000) {
+        emit(io, renderWait(op, step, [reason], io.presentation));
+        waiting = reason; lastWaitAt = clock(io);
+      }
     }
     await io.sleep(250);
   }
@@ -262,6 +267,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
     if (io.presentation && op.phase === "blocked") emit(io, renderBlocked(op, choices, io.presentation));
     for (const choice of choices) {
       if (choice.kind === "wait") { if (typeof runner !== "number") {
+        if (io.presentation && op.phase !== "blocked") human(io, choiceInstruction(op, choice, io.presentation));
         if (io.presentation) menu.set("w", { label: "wait for the current recovery condition", disabledReason: runner === "unknown" ? "runner ownership is unknown; refresh to read its claim" : "no verified runner is working; refresh after the reported condition changes", act: async () => {} });
         else human(io, `  ${choice.text}`);
       } }
@@ -280,7 +286,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
     }
     menu.set("s", { label: "refresh", act: async () => {} });
     menu.set("j", { label: "receipt as JSON", act: async () => io.out(JSON.stringify(publicOperation(op, runner, live), null, 2)) });
-    const preferred = ["a", "w", ...(op.error && op.failure?.code !== "database_busy" ? ["j"] : []), "r", "s"].find(key => menu.has(key) && !menu.get(key)!.disabledReason);
+    const preferred = [typeof runner === "number" ? "w" : runner === "unknown" ? "s" : "j", "s"].find(key => menu.has(key) && !menu.get(key)!.disabledReason);
     if (io.presentation) {
       const items: MenuPresentationItem[] = [...menu].map(([key, item]) => ({ key, label: item.label, ...(item.disabledReason ? { disabledReason: item.disabledReason } : {}), ...(key === preferred ? { recommended: true } : {}), ...(["e", "x"].includes(key) || key === "f" || key.startsWith("f-") ? { destructive: true } : {}) }));
       emit(io, renderMenu(items, io.presentation));
@@ -313,11 +319,11 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
     if (!plan.projects.length) human(io, plan.kind === "upgrade" ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
     const endable = plan.projects.flatMap((p) => p.source.peers.filter((peer) => ["tui", "headless"].includes(peerKind(p, peer))).map((peer) => ({ planned: p, peer })));
     const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", ...(endable.length ? ["[k] end agents"] : []), "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
-    const preferred = blocked || !plan.projects.length ? "r" : "a";
+    const preferred = "r"; // Enter never closes terminals, stops a hub, resumes or reattaches implicitly.
     if (io.presentation) {
       if (blocked) human(io, "Blocked: take the next action each blocker names, then refresh.");
       const items: MenuPresentationItem[] = [
-        ...(!blocked ? [{ key: "a", label: "apply this reviewed plan", recommended: preferred === "a" }] : []),
+        ...(!blocked ? [{ key: "a", label: "apply this reviewed plan" }] : []),
         { key: "r", label: "refresh the plan", recommended: preferred === "r" },
         ...(endable.length ? [{ key: "k", label: "end selected agents before upgrading", destructive: true }] : []),
         { key: "j", label: "plan as JSON" },

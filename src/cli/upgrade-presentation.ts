@@ -1,7 +1,8 @@
-import { paint, wrap, type Tone } from "./console-state.ts";
+import { paint, quoted, wrap, type Tone } from "./console-state.ts";
 import { operationLines, stepLabel } from "./upgrade-labels.ts";
 import { recordedPeerGuidance, stopAndArchiveSummary, type RecordedPeerGuidance } from "./recovery-guidance.ts";
 import { restoreReceiptStatus } from "./upgrade-restore-state.ts";
+import { recoveryCommand } from "../hub/recovery-store.ts";
 import type { Inspection, NextChoice, RecoveryOperation, UpgradePlan } from "./upgrade.ts";
 
 export interface RecoveryPresentationOptions {
@@ -25,7 +26,10 @@ export interface MenuPresentationItem {
  */
 function lines(value: string, tone: Tone, options: RecoveryPresentationOptions): string[] {
   const columns = Number.isFinite(options.columns) ? Math.max(2, Math.floor(options.columns)) : 80;
-  return wrap(value, columns).map(text => paint([{ text, tone }], options.color));
+  // A logical renderer line must stay one logical line: receipt text cannot introduce another hub heading.
+  // Quote only control-containing values so ordinary text and command previews retain their exact spelling.
+  const logical = /\p{Cc}/u.test(value) ? quoted(value) : value;
+  return wrap(logical, columns).map(text => paint([{ text, tone }], options.color));
 }
 function elapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -100,6 +104,12 @@ const launcherEvidence: Readonly<Record<string, string>> = {
   live: "a launcher was live, but its saved binding was not verified",
 };
 
+/** Preserve coordinator guidance verbatim except for its exact retained status command in ordinary human output. */
+export function choiceInstruction(op: RecoveryOperation, choice: NextChoice, options: RecoveryPresentationOptions): string {
+  return choice.kind === "wait" && !options.verbose
+    ? choice.text.split(recoveryCommand(op, "status")).join(`ahub recovery status ${op.id}`) : choice.text;
+}
+
 export function renderBlocked(op: RecoveryOperation, choices: readonly NextChoice[], options: RecoveryPresentationOptions): string[] {
   let happened = "The recovery coordinator blocked this operation.";
   let why = "The detailed cause is unknown in this receipt; no missing evidence is treated as success.";
@@ -155,7 +165,7 @@ export function renderBlocked(op: RecoveryOperation, choices: readonly NextChoic
   }
   const output = [...lines(`What happened: ${happened}`, "failure", options), ...lines(`Why: ${why}`, "muted", options), ...lines(`What to do: ${action}`, "attention", options)];
   for (const choice of choices) {
-    const instruction = choice.kind === "wait" && !options.verbose ? `Check ahub recovery status ${op.id} again after the reported condition changes.` : choice.text;
+    const instruction = choiceInstruction(op, choice, options);
     output.push(...lines(`  ${instruction}`, choice.kind === "stop" || choice.kind === "fresh" ? "failure" : "info", options));
   }
   if (guidance) {
@@ -177,10 +187,17 @@ export function renderWait(op: RecoveryOperation, step: string, waiting: readonl
   const end = timing?.waitEndedAt === undefined ? options.now() : Date.parse(timing.waitEndedAt);
   const known = Number.isFinite(start) && Number.isFinite(deadline) && Number.isFinite(end) && deadline >= start && end >= start;
   const clock = known ? `waiting ${elapsed(end - start)} of ${elapsed(deadline - start)}` : "timing unknown";
+  // These are coordinator step categories, never classifications inferred from a reason or error string.
+  const category = step.split(":")[0];
+  const action = category === "restore" || category === "restore-claude"
+    ? "Check the recorded native launch and session attachment; keep the recorded conversation and use an offered coordinator action if attachment does not complete."
+    : category === "prepare" || category === "reprepare"
+      ? "If an approval is pending, answer it in ahub console. Active turns must finish or be cancelled in their own terminal."
+      : "Review the recorded waiting condition and use an offered coordinator action; the action needed for this step is unknown.";
   return [
     ...lines(`[waiting] ${stepLabel(step)} (${clock})`, "attention", options),
     ...(waiting.length ? waiting.flatMap(reason => lines(`  Waiting for: ${reason}`, "attention", options)) : lines("The hub has not provided a waiting reason.", "muted", options)),
-    ...lines("If an approval is pending, answer it in ahub console. Active turns must finish or be cancelled in their own terminal.", "info", options),
+    ...lines(action, "info", options),
   ];
 }
 

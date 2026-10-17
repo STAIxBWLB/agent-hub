@@ -200,12 +200,12 @@ await import(${JSON.stringify(main)});
     expect(screen).toContain(String.fromCharCode(27) + "[");
     expect(plain).toContain(wrapped(`restart to ${after.version}: plan`, `Coordinator version ${after.version}`, "",
       `${after.projectId}  ${root}  hub ${after.version} (running)`));
-    expect(plain).toContain("[a] apply this reviewed plan (recommended; Enter)\n[r] refresh the plan\n[j] plan as JSON\n[x] reset a project's hub [warning]\n[q] quit\n>");
+    expect(plain).toContain("[a] apply this reviewed plan\n[r] refresh the plan (recommended; Enter)\n[j] plan as JSON\n[x] reset a project's hub [warning]\n[q] quit\n>");
     const announced = /operation ([a-f0-9-]{36}) started/.exec(screen)?.[1];
     expect(announced).toBeDefined();
     expect(plain).toContain(wrapped(`operation ${announced} started; Enter opens its menu, Ctrl+C leaves, and neither stops the restart`,
       "[running] staging the release (timing unknown)") + "\n");
-    expect(plain.trimEnd()).toEndWith(wrapped("[done] completed (0s)", "restart completed",
+    expect(plain.trimEnd()).toEndWith(wrapped("[done] completed (timing unknown)", "restart completed",
       `${after.projectId}: running on ${after.version} (fresh readback).`,
       `${after.projectId}: target ${after.version} had started; this is a recorded historical step.`,
       ...["codex", "pi", "claude"].map(peer => `${after.projectId} ${peer}: ${peer}: recorded session identity unavailable; inspect the retained recovery receipt before choosing a conversation`),

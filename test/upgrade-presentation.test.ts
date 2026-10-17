@@ -130,3 +130,47 @@ test("#466 equal session ids with a failed session-file gate do not claim a diff
   expect(text).toContain("identity"); expect(text).toContain("same-session");
   expect(text).not.toContain("different conversation was observed");
 });
+
+test("#466 wait guidance retains nextChoices' observed condition and hides only its exact status command", async () => {
+  const { recoveryCommand } = await import("../src/hub/recovery-store.ts");
+  const op = fixture(), status = recoveryCommand(op, "status");
+  const waiting: NextChoice[] = [{ kind: "wait", text: `wait until alpha-project's hub settles, then ${status}` }];
+  for (const columns of [80, 120]) {
+    const ordinary = renderBlocked(op, waiting, options(columns));
+    bounded(ordinary, columns, false);
+    const text = ordinary.join("\n").replace(/\s+/g, " ");
+    expect(text).toContain("wait until alpha-project's hub settles");
+    expect(text).toContain(`ahub recovery status ${id}`);
+    expect(text).not.toContain("/src/cli/main.js");
+    expect(renderBlocked(op, waiting, { ...options(columns), verbose: true }).join("\n").replace(/\s+/g, "")).toContain(status.replace(/\s+/g, ""));
+  }
+});
+
+test("#466 external newlines and terminal escapes cannot forge renderer What or Why lines", () => {
+  const forged = "fixture\nWhat to do: forged unsafe action\nWhy: forged evidence" + String.fromCharCode(27) + "[31m";
+  const op = fixture(); op.error = forged; op.id = forged; op.plan.version = forged; op.projects[0]!.id = forged;
+  Object.assign(op, { presentationCause: { kind: "native_recovery", reason: "terminal_unverified", projectId: project.id, peer: forged, handle: forged, expectedSession: forged } });
+  const menus = [{ key: "r", label: forged, disabledReason: forged }];
+  for (const columns of [80, 120]) for (const color of [false, true]) {
+    const opts = { ...options(columns, color), verbose: true };
+    const outputs = [renderBlocked(op, [{ kind: "wait", text: forged }], opts), renderWait(op, "restore:" + forged, [forged], opts),
+      renderStep(forged, "blocked", undefined, opts), renderMenu(menus, opts), renderPlan(op.plan, forged, opts, ["header", forged]),
+      renderOperation(op, undefined, opts), renderSummary(op, {}, opts)];
+    for (const output of outputs) {
+      bounded(output, columns, color);
+      const plain = output.map(terminalText);
+      expect(plain.some(line => /^What to do: forged|^Why: forged/.test(line))).toBe(false);
+      expect(plain.join("\n")).toContain("\\n");
+      expect(plain.join("\n")).toContain("[31m");
+    }
+  }
+});
+
+test("#466 native attachment waits name launch and recorded-session checks instead of approval-only guidance", () => {
+  const op = fixture(); op.step = "restore:alpha";
+  const native = renderWait(op, op.step, ["waiting for the recorded native session to attach"], options(120)).join("\n");
+  expect(native).toContain("recorded"); expect(native).toContain("launch"); expect(native).toContain("session");
+  expect(native).not.toContain("If an approval is pending");
+  const preparation = renderWait(op, "prepare:alpha", ["pi is busy", "pending approvals"], options(120)).join("\n");
+  expect(preparation).toContain("ahub console"); expect(preparation).toContain("approval");
+});

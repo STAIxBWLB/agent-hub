@@ -476,13 +476,17 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   };
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
   const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
+    const saveTiming = () => {
+      try { save(); }
+      catch { console.warn("Recovery timing observation could not be saved; recovery continues"); }
+    };
     const project = planned.project, instance = planned.source.instanceId!;
     await driver.prepare(project, id, instance, targetFeatures);
     const startedAt = driver.now(), deadline = startedAt + idleTimeoutMs;
     const waitStep = op.step;
     if (waitStep) {
       (op.waits ??= {})[waitStep] = { waitStartedAt: new Date(startedAt).toISOString(), deadlineAt: new Date(deadline).toISOString() };
-      save();
+      saveTiming();
     }
     let waitFailed = false;
     try {
@@ -506,7 +510,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       const finish = () => {
         if (!waitStep) return;
         op.waits![waitStep] = { ...op.waits![waitStep]!, waitEndedAt: new Date(driver.now()).toISOString() };
-        save();
+        saveTiming();
       };
       // A best-effort end observation must not replace the error that stopped the actual wait.
       if (waitFailed) { try { finish(); } catch { /* original wait failure remains authoritative */ } }

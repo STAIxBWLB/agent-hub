@@ -26,17 +26,21 @@ function host(op: RecoveryOperation, overrides: Partial<UpgradeHost> = {}): Upgr
     endPeer: async () => "unused", runnerStoppable: () => false, stopRunner: async () => false, entry, version: "0.12.31", ...overrides };
 }
 
-test("#466 Enter recommends only the offered reattach action and keeps all restore decisions in io.run", async () => {
+test("#466 an explicit reattach key keeps all restore decisions in io.run", async () => {
   const op = fixture(), launch = { packageEntrypoint: entry, command: "fixture only", argv: [], env: {} };
   const binding = { peer: "pi" as const, handle: "term-pi", incarnationId: "inc-pi", worktreeId: "wt-pi", projectRoot: project.root, sessionId: "saved-pi", launch, launchMetadata: launch };
   op.step = "restore-claude:alpha"; op.projects[0]!.phase = "started"; op.projects[0]!.instanceId = "target";
   op.blockedReattachment = { projectId: "alpha", peer: "pi" }; op.projects[0]!.terminals["restored:pi"] = { state: "failed" };
   op.projects[0]!.reattachments = { pi: { state: "ready", cause: "detached after restore", at: 1, binding } };
-  const before = JSON.stringify(op), f = screen(["", "q"]);
+  const before = JSON.stringify(op), f = screen(["a", "q"]);
   await operationScreen(host(op, { live: async () => ({ alpha: { state: "running", instanceId: "target", version: "0.12.31", peers: [], blockers: [], recovery: { operationId: id, phase: "restored" } } }) }), f.io, id);
   expect(f.ran).toEqual([[entry, "recovery", "reattach", id, "pi"]]);
   expect(f.output.join("\n")).toContain("recommended"); expect(f.output.join("\n")).toContain("Enter");
   expect(JSON.stringify(op)).toBe(before);
+  const enterOnly = screen(["", "q"]);
+  await operationScreen(host(op, { live: async () => ({ alpha: { state: "running", instanceId: "target", version: "0.12.31", peers: [], blockers: [], recovery: { operationId: id, phase: "restored" } } }) }), enterOnly.io, id);
+  expect(enterOnly.ran).toEqual([]);
+
   for (const line of [...f.output, ...f.asked]) for (const part of line.split("\n")) expect(Bun.stringWidth(terminalText(part))).toBeLessThanOrEqual(80);
 });
 
@@ -80,8 +84,8 @@ test("#466 completed summary uses only read-only final inspection, or says runti
   expect(unknown.output.join("\n")).toContain("runtime unknown"); expect(unknown.ran).toEqual([]);
 });
 
-test("#466 the reviewed plan marks apply as the Enter default and still uses host.apply", async () => {
-  const op = fixture(), f = screen([""]); let applied = 0;
+test("#466 an explicit apply key still uses host.apply", async () => {
+  const op = fixture(), f = screen(["a"]); let applied = 0;
   await planScreen(host(op, { lock: () => undefined, apply: async () => { applied++; return op; }, read: () => ({ ...op, phase: "completed" }) }), f.io);
   expect(applied).toBe(1); expect(f.ran).toEqual([]); expect(f.output.join("\n")).toContain("recommended");
 });
@@ -131,4 +135,42 @@ test("#466 presentation mutation choices equal nextChoices over the unchanged 54
         count++;
       }
   expect(count).toBe(540);
+});
+
+test("#466 buffered Enter after declining reset never applies the plan", async () => {
+  const op = fixture(), f = screen(["x", "", "", "q"]); let applied = 0;
+  await planScreen(host(op, { lock: () => undefined, apply: async () => { applied++; return op; } }), f.io);
+  expect(applied).toBe(0); expect(f.ran).toEqual([]);
+  expect(f.output.map(terminalText).join("\n")).toContain("[r] refresh the plan (recommended; Enter)");
+});
+
+test("#466 Enter never resumes an operation implicitly", async () => {
+  const op = fixture(), f = screen(["", "q"]);
+  await operationScreen(host(op), f.io, id);
+  expect(f.ran).toEqual([]);
+});
+
+test("#466 stable wait prints only a changed condition and at most a minute tick", async () => {
+  const op = fixture(); op.phase = "running"; op.step = "prepare:alpha";
+  let now = 0, ticks = 0; const f = screen([], () => now);
+  f.io.sleep = async ms => { now += ms; ticks++; };
+  f.io.typed = () => ticks >= 260;
+  await follow(host(op, { runner: () => 123, live: async () => ({ alpha: { state: "running", peers: [], blockers: [], recovery: { operationId: id, phase: "prepared", ready: false, waiting: ["pi approval pending"] } } }) }), f.io, id);
+  const waits = f.output.map(terminalText).filter(line => line.startsWith("[waiting]"));
+  expect(waits).toHaveLength(2); expect(now).toBe(65_000);
+});
+
+test("#466 first-seen completed steps have unknown elapsed time", async () => {
+  const op = fixture(), f = screen([]); op.phase = "completed"; op.step = "completed";
+  await follow(host(op), f.io, id);
+  expect(f.output.map(terminalText)).toContain("[done] completed (timing unknown)");
+  expect(f.output.map(terminalText).join("\n")).not.toContain("(0s)");
+});
+
+test("#466 a non-blocked unsettled target keeps the exact wait condition visible", async () => {
+  const op = fixture(), f = screen(["q"]); op.phase = "running"; op.projects[0]!.phase = "started";
+  await operationScreen(host(op, { live: async () => ({ alpha: { state: "unknown", peers: [], blockers: [] } }) }), f.io, id);
+  const text = f.output.map(terminalText).join("\n").replace(/\s+/g, " ");
+  expect(text).toContain("wait until alpha's hub settles");
+  expect(text).toContain(`ahub recovery status ${id}`); expect(f.ran).toEqual([]);
 });

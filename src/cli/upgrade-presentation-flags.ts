@@ -15,10 +15,9 @@ export function readRecoveryPresentationFlags(
       args.push(arg);
       if (i + 1 < argv.length) args.push(argv[++i]!);
     } else if (arg === "--color") {
-      const value = argv[++i];
-      if (value === undefined) throw new Error("--color needs a value");
-      color = value; flags.push(arg, value);
+      throw new Error("usage: ahub <command> [--color=auto|always|never]");
     } else if (arg.startsWith("--color=")) {
+      if (color !== undefined) throw new Error("usage: ahub <command> [--color=auto|always|never]");
       color = arg.slice("--color=".length); flags.push(arg);
     } else if (arg === "--json") { json = true; flags.push(arg); }
     else if (arg === "--verbose") { verbose = true; flags.push(arg); }

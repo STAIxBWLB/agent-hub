@@ -81,7 +81,7 @@ test("#466 restart dry-run and default pipe retain the old plan document and nev
   const knownPlan = { schema: 1, kind: "restart", version: VERSION, sourceRoot: PACKAGE_ROOT, sourceDigest: parsed.sourceDigest,
     projects: [], blockers: ["no running registered projects in scope"], fingerprint: parsed.fingerprint };
   expect(plain.out).toBe(JSON.stringify(knownPlan, null, 2) + "\n");
-  const never = await f.cli(["restart", "--color", "never", "--dry-run"]);
+  const never = await f.cli(["restart", "--color=never", "--dry-run"]);
   expect(never.code, never.err).toBe(0); expect(never.out).toBe(plain.out); expect(never.err).toBe(plain.err);
   const defaultPipe = await f.cli(["restart"]), neverPipe = await f.cli(["restart", "--color=never"]);
   expect(defaultPipe.code).toBe(1); expect(defaultPipe.err).toContain("plan has blockers; no runtime was changed");
@@ -93,7 +93,7 @@ test("#466 explicit-version upgrade plan is identical in default and never-color
   const f = fixture();
   const plain = await f.cli(["upgrade", "--to", VERSION, "--dry-run"]);
   expect(plain.code, plain.err).toBe(0);
-  const never = await f.cli(["upgrade", "--to", VERSION, "--dry-run", "--color", "never"]);
+  const never = await f.cli(["upgrade", "--to", VERSION, "--dry-run", "--color=never"]);
   expect(never.code, never.err).toBe(0); expect(never.out).toBe(plain.out); expect(never.err).toBe(plain.err);
   const plan = JSON.parse(plain.out);
   expect(Object.keys(plan)).toEqual(["schema", "kind", "version", "sourceRoot", "sourceDigest", "integrity", "projects", "blockers", "fingerprint"]);

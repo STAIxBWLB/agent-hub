@@ -485,13 +485,17 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
   };
   /** #414: an idle terminal is not an authenticated peer. Keep its receipt while waiting, including on resume. */
   const awaitAttachment = async (planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, waiting: Extract<RestoreReceipt, { state: "waiting" }>, save: () => void, expectedSession: string | null = waiting.binding.sessionId): Promise<string> => {
+    const saveTiming = () => {
+      try { save(); }
+      catch { console.warn("Recovery timing observation could not be saved; recovery continues"); }
+    };
     const binding = waiting.binding;
     const matchesTerminal = (terminal: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId">) => terminal.handle === binding.handle && terminal.incarnationId === binding.incarnationId && terminal.worktreeId === binding.worktreeId;
     const startedAt = now(), deadline = startedAt + RECONNECT_WAIT_MS;
     const waitStep = op.step;
     if (waitStep) {
       (op.waits ??= {})[waitStep] = { waitStartedAt: new Date(startedAt).toISOString(), deadlineAt: new Date(deadline).toISOString() };
-      save();
+      saveTiming();
     }
     let waitFailed = false;
     try {
@@ -565,7 +569,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const finish = () => {
         if (!waitStep) return;
         op.waits![waitStep] = { ...op.waits![waitStep]!, waitEndedAt: new Date(now()).toISOString() };
-        save();
+        saveTiming();
       };
       // Metadata storage must not hide the attachment failure or change its recovery outcome.
       if (waitFailed) { try { finish(); } catch { /* original attachment failure remains authoritative */ } }

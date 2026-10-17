@@ -469,7 +469,12 @@ async function onTerminal(screens: (io: ScreenIO) => Promise<void>, presentation
         if (!ended) rl.pause();
         const done = (code: number) => { if (!ended) rl.resume(); resolve(code); };
         const formatting = presentation && argv[1] === "recovery" ? recoveryFormatting(argv[0]!, presentation) : [];
-        const child = spawn(process.execPath, [argv[0]!, ...liveTestArgs, ...argv.slice(1), ...formatting], { cwd, stdio: "inherit" });
+        // A capable screen child updates the receipt; its parent owns the human view after the action.
+        // Older coordinators keep their existing terminal contract and receive no unsupported JSON flag.
+        const quiet = formatting.length > 0;
+        const child = spawn(process.execPath, [argv[0]!, ...liveTestArgs, ...argv.slice(1), ...formatting, ...(quiet ? ["--json"] : [])], {
+          cwd, stdio: quiet ? ["inherit", "ignore", "inherit"] : "inherit",
+        });
         child.on("error", () => done(1));
         child.on("close", (code) => done(code ?? 1));
       }),
