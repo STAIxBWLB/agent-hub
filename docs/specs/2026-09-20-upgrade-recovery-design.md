@@ -683,9 +683,10 @@ Resume reuses the ordinary restore path with that accepted conversation, session
 file, backend and model. Before any new terminal effect the marker becomes
 `attempted`. Chosen waiting bindings remain durable and reuse the existing 600 s
 attachment bound; an interruption cannot grant another create. A second detach or
-an exhausted attempt blocks with its recorded cause. These repairs are recorded-
-session only: no automatic fresh/zero-turn replacement or fresh-session choice is
-introduced for a marked repair. Strict session/file checks remain for repairs;
+an exhausted attempt blocks with its recorded cause. These repairs default to
+recorded-session-only continuity: no automatic fresh/zero-turn replacement is
+introduced. Only the explicit missing-history exception below permits a person
+to select a replacement. Strict session/file checks remain for repairs;
 ordinary verified-empty Pi attachments retain their pre-existing id-only rules.
 When `recordRestart` retires a known done or waiting binding from a dead target,
 it clears that binding's repair fence. The normal #225 relaunch preserves its
