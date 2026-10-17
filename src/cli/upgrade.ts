@@ -278,9 +278,13 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
  * resumes its recorded session), not one already chosen, and not a planned fresh start (nothing to lose; resume
  * launches it new again).
  */
+function attachmentReceipt(value: unknown): "pending" | "failed" | undefined {
+  const origin = value && typeof value === "object" ? (value as { attachmentReceipt?: unknown }).attachmentReceipt : undefined;
+  return origin === "pending" || origin === "failed" ? origin : undefined;
+}
 function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
-  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && value === "failed").map(([key]) => key.slice("restored:".length))
+  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && (value === "failed" || attachmentReceipt(value) === "failed")).map(([key]) => key.slice("restored:".length))
     .filter((peer) => peer !== "pi" && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
 }
 
@@ -584,7 +588,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
 export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown", live: Record<string, Inspection | undefined> = {}) {
-  const effect = (value: unknown) => value === "pending" || value === "failed" ? value : "done";
+  const effect = (value: unknown) => attachmentReceipt(value) ? `waiting:${attachmentReceipt(value)}` : value === "pending" || value === "failed" ? value : "done";
   const next = nextActions(op, runnerPid, live);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
     runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },

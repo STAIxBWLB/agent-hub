@@ -13,7 +13,7 @@ const COORD = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 import { VERSION } from "../src/version.ts";
 import { packageDigest } from "../src/cli/recovery-package.ts";
 import { drainCliAudits } from "../src/cli/identity-audit.ts";
-import { liveProjects, nextActions, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
+import { liveProjects, nextActions, publicOperation, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 
 test("delegated staging refuses an older target before protocol probes or runtime effects, including cached targets", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-old-live-test-target-"));
@@ -1452,7 +1452,7 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
 function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed") {
-  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity };
+  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity, unavailableAtMs: Infinity, pulseAtMs: Infinity };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
   mkdirSync(stateDir);
@@ -1461,9 +1461,10 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
   writeFileSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`), "{}\n");
   mkdirSync(join(codeHome, "sessions"), { recursive: true });
   writeFileSync(join(codeHome, "sessions", `${session}.jsonl`), "{}\n");
-  let created = !!pending, attached = false, creates = 0, postCreateReads = 0;
+  let created = !!pending, attached = false, creates = 0, postCreateReads = 0, pulseReads = 0;
   const server = fakeHub(root, stateDir, "i-target", () => {
-    const state = attached ? "idle" : "offline";
+    const visible = elapsed >= control.pulseAtMs ? ++pulseReads >= 4 || pulseReads % 2 === 0 : attached;
+    const state = visible ? "idle" : "offline";
     if (created && ++postCreateReads && control.attachAfterRead && elapsed >= control.attachAfterMs) queueMicrotask(() => {
       if (control.persistOriginalBeforeAttach) writeFileSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`), "{}\n");
       attached = true;
@@ -1500,7 +1501,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
     recordLauncher();
   }
   return { root, stateDir, planned, progress, op, control, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
-    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.exitAtMs) { recordLauncher(false); control.exitAtMs = Infinity; } if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
+    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.unavailableAtMs) { server.stop(true); control.unavailableAtMs = Infinity; } if (elapsed >= control.exitAtMs) { recordLauncher(false); control.exitAtMs = Infinity; } if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
     endLauncher: () => recordLauncher(false),
     replaceTerminal: () => { shown.handle = "term-replacement"; shown.incarnationId = "inc-replacement"; },
     cleanup: () => { server.stop(true); rmSync(root, { recursive: true, force: true }); } };
@@ -1698,5 +1699,44 @@ for (const evidence of ["unknown", "replacement"] as const) test(`#433 interrupt
     expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new", attachmentReceipt: "pending" });
     expect(f.creates()).toBe(0); expect(f.elapsed()).toBe(1000);
     expect(nextActions(f.op).some(choice => choice.includes("--fresh-session"))).toBe(false);
+  } finally { f.cleanup(); }
+});
+for (const changed of [false, true]) test(`#433 resumed chosen ${changed ? "new session writes waiver" : "planned session clears fresh continuity loss"}`, async () => {
+  const f = delayedManagedFixture("codex", "failed"); f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  f.progress.fresh = { codex: { lost: "session-414", reason: "operator choice", at: 0 } };
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ attachmentReceipt: "failed" });
+    f.control.interruptAtMs = Infinity; f.control.wrongSession = changed; f.setAttached(true);
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(readRecoveryWaivers(f.stateDir, "op-414")).toEqual(changed ? { codex: "fresh-session" } : {});
+    if (changed) expect(f.progress.fresh?.codex.lost).toBe("session-414");
+    else { expect(f.progress.fresh).toBeUndefined(); expect(publicOperation(f.op).projects[0]).not.toHaveProperty("lostContinuity"); }
+    expect(f.progress.terminals["restored:codex"]).not.toHaveProperty("attachmentReceipt"); expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+test("#433 interrupted failed-origin wait retains fresh choice and reports waiting rather than done", async () => {
+  const f = delayedManagedFixture("codex", "failed"); f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
+    expect(nextActions(f.op)).toContain(`${COORD} dispose op-414 --fresh-session codex --reason <text>`);
+    expect(publicOperation(f.op).projects[0]?.effects?.["restored:codex"]).toBe("waiting:failed");
+  } finally { f.cleanup(); }
+});
+test("#433 target unavailable during attachment wait blocks immediately with saved binding", async () => {
+  const f = delayedManagedFixture("codex", "pending"); f.control.attachAfterRead = false; f.control.unavailableAtMs = 1000; f.control.interruptAtMs = 2000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("target hub reads as unavailable while awaiting attachment");
+    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toMatchObject({ attachmentReceipt: "pending", handle: "term-new" });
+    expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+test("#433 flapping launcher-gone and attached-session reads still yield between bounded polls", async () => {
+  const f = delayedManagedFixture("codex", "pending"); f.control.attachAfterRead = false;
+  f.control.exitAtMs = 1000; f.control.pulseAtMs = 1000; f.control.interruptAtMs = 2000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
+    expect(f.elapsed()).toBe(2000); expect(f.creates()).toBe(0);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ attachmentReceipt: "pending" });
   } finally { f.cleanup(); }
 });
