@@ -201,6 +201,8 @@ Claude channel/pull sessions, Codex and Pi may call `hub_delivery_retry { delive
 kinds and age, never message bodies or task text (up to 32 rows/4 KiB, with an
 explicit truncation notice). The redelivery starts with a fixed warning that
 the earlier attempt is uncertain and its effects must be checked before acting.
+The warning fits within the existing journal body limit. If needed, only the rendered copy is clipped at a Unicode character boundary and ends with an explicit cut marker; the original message is retained. Consumed-retry proof follows every coalesced original atomically with a successful checkpoint, surviving safe failure, stale removal, pruning and restart.
+
 Any earlier explicit retry in the same recipient's lineage, including a person's
 retry, leaves a later hold for the person. A busy peer's request only requeues
 the originals; delivery waits for idle and retains all pauses and recovery holds.
@@ -208,7 +210,7 @@ The tool cannot complete or discard a row. If a recovery snapshot lacks retry
 history, or older pruned retry records cannot be mapped, the affected message
 lineages require a person; unrelated new messages retain the one-retry option.
 
-The local worker and headless ACP peers receive tools only inside a delivered turn. A hold prevents that turn, so these delivery-only transports do not offer recipient retry; their held hints ask the person to resolve the row. Ordinary messages stay queued. This restriction follows the current transport, not the vendor name: Kimi TUI remains pull-only and can request its one retry.
+The local worker and headless ACP peers, including Jcode, receive tools only inside a delivered turn. A hold prevents that turn, so these delivery-only transports do not offer recipient retry; their held hints ask the person to resolve the row. Ordinary messages stay queued. This restriction follows the current transport, not the vendor name: Kimi TUI remains pull-only and can request its one retry.
 
 Every console resolution needs a reason. Queue `discard` removes queued originals or
 settles a needs_review receipt; it never cancels a task or native turn.

@@ -16,6 +16,7 @@ export type JournalDeliveryState =
   | "failed"
   | "discarded";
 export type JournalResolution = "completed" | "retry" | "discard";
+export const MAX_ENVELOPE_BODY = 1_000_000;
 const SCHEMA_VERSION = 1,
   TERMINAL_CAP = 2048,
   MAX_ROWS = 100_000,
@@ -109,7 +110,7 @@ function validateEnvelope(value: unknown, name: string, seen = false): Envelope 
   text(e.trace, `${name}.trace`, 256);
   text(e.from, `${name}.from`, 256);
   integer(e.hop, `${name}.hop`, 0, seen ? Number.MAX_SAFE_INTEGER : 3);
-  if (typeof e.body !== "string" || e.body.length > 1_000_000) fail(`${name}.body is invalid`);
+  if (typeof e.body !== "string" || e.body.length > MAX_ENVELOPE_BODY) fail(`${name}.body is invalid`);
   integer(e.ts, `${name}.ts`);
   if (
     !new Set(["chat", "task", "review", "status", "budget", "presence"]).has(
@@ -275,6 +276,7 @@ export class DeliveryJournal {
         // A new daemon cannot infer completion of an old process's handoffs, including
         // controlled restarts with silent native/bridge receipts still outstanding.
         this.recoverRetryHistory(meta);
+        this.recoverRetryEvidence();
         this.recoverInterrupted();
       })();
     }
@@ -315,6 +317,7 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS resolution_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, delivery_id TEXT NOT NULL, observed_revision INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, result_revision INTEGER NOT NULL, result_state TEXT NOT NULL, UNIQUE(project_id, delivery_id, observed_revision, action, reason))`,
     );
+    this.db.run("CREATE TABLE IF NOT EXISTS delivery_retry_evidence (project_id TEXT NOT NULL, peer TEXT NOT NULL, original_id TEXT NOT NULL, proof_id TEXT NOT NULL, warning INTEGER NOT NULL CHECK(warning IN (0,1)), PRIMARY KEY(project_id, peer, original_id))");
     this.db.transaction(() => {
       const resolutionColumns = this.db.query("PRAGMA table_info(resolution_history)").all() as { name: string }[];
       if (!resolutionColumns.some((column) => column.name === "actor")) this.db.run("ALTER TABLE resolution_history ADD COLUMN actor TEXT NOT NULL DEFAULT 'user'");
@@ -334,6 +337,29 @@ export class DeliveryJournal {
         this.markRetryUnknown(this.list(), JSON.parse(String(meta.bus_snapshot || '{}')));
       }
       this.db.query("UPDATE delivery_meta SET retry_history_cursor = ? WHERE project_id = ?").run(latest, this.projectId);
+    }
+  }
+  private validateRetryProof(row: Record<string, unknown>): void {
+    text(row.peer, "retry proof peer", 256); text(row.original_id, "retry proof original", 256); text(row.proof_id, "retry proof id", 256);
+    integer(row.warning, "retry proof warning", 0, 1);
+  }
+  private retryProof(peer: string, originals: readonly Envelope[]): { proof: string; warning: boolean } | undefined {
+    const rows = this.db.query("SELECT peer,original_id,proof_id,warning FROM delivery_retry_evidence WHERE project_id = ? AND peer = ? AND original_id IN (SELECT value FROM json_each(?))").all(this.projectId, peer, JSON.stringify(originals.map(env => env.id))) as Record<string, unknown>[];
+    for (const row of rows) this.validateRetryProof(row);
+    return rows.length ? { proof: String(rows[0]!.proof_id), warning: rows.some(row => row.warning === 1) } : undefined;
+  }
+  private recordRetryEvidence(peer: string, originals: readonly Envelope[], proof: string, warning: boolean): void {
+    const put = this.db.query("INSERT INTO delivery_retry_evidence (project_id,peer,original_id,proof_id,warning) VALUES (?,?,?,?,?) ON CONFLICT(project_id,peer,original_id) DO UPDATE SET warning = MAX(warning,excluded.warning)");
+    for (const id of new Set(originals.map(env => env.id))) put.run(this.projectId, peer, id, proof, warning ? 1 : 0);
+  }
+  private recoverRetryEvidence(): void {
+    for (const row of this.db.query("SELECT peer,original_id,proof_id,warning FROM delivery_retry_evidence WHERE project_id = ?").all(this.projectId) as Record<string, unknown>[]) this.validateRetryProof(row);
+    // An older writer can append attempt-bearing rows while this writer is absent.
+    const rows = this.db.query("SELECT d.id,d.peer,d.originals FROM deliveries d WHERE d.project_id = ? AND d.attempt > 0 AND EXISTS (SELECT 1 FROM json_each(d.originals) env WHERE NOT EXISTS (SELECT 1 FROM delivery_retry_evidence e WHERE e.project_id = d.project_id AND e.peer = d.peer AND e.original_id = json_extract(env.value,'$.id')))").all(this.projectId) as { id: string; peer: string; originals: string }[];
+    for (const row of rows) {
+      const originals = JSON.parse(row.originals) as Envelope[];
+      const known = this.retryProof(row.peer, originals) || this.db.query("SELECT 1 FROM resolution_history r, json_each(r.original_ids) old, json_each(?) current WHERE r.project_id = ? AND r.peer = ? AND r.action = 'retry' AND old.value = current.value LIMIT 1").get(JSON.stringify(originals.map(env => env.id)), this.projectId, row.peer);
+      this.recordRetryEvidence(row.peer, originals, row.id, this.retryWarning(row.peer, originals) || !known);
     }
   }
   private readMeta(): Record<string, unknown> | null {
@@ -560,7 +586,12 @@ export class DeliveryJournal {
       updatedAt: delivery.createdAt,
     });
     return this.db.transaction(() => {
-      if (this.retryEvidence(delivery.peer, delivery.originals) === "used") delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
+      const evidence = this.retryEvidence(delivery.peer, delivery.originals);
+      if (evidence === "used") {
+        // Inheritance commits with the handoff, before safe failure or pruning can erase a grouped parent.
+        this.recordRetryEvidence(delivery.peer, delivery.originals, delivery.id, this.retryWarning(delivery.peer, delivery.originals));
+        delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
+      } else if (evidence === "unknown") this.markRetryUnknown([{ ...delivery, revision: 0, updatedAt: delivery.createdAt }], {});
       const ids = new Set(delivery.originals.map((env) => env.id));
       for (const row of this.list(delivery.peer)) {
         if (row.state !== "queued" || !row.originals.some((env) => ids.has(env.id))) continue;
@@ -699,6 +730,9 @@ export class DeliveryJournal {
   retryEvidence(peer: string, originals: readonly Envelope[]): "unused" | "used" | "unknown" {
     this.ensureOpen();
     const ids = JSON.stringify([...new Set(originals.map(env => env.id))]);
+    const proof = this.retryProof(peer, originals);
+    if (this.retryUnknown(peer, new Set(originals.map(env => env.id)))) return "unknown";
+    if (proof) return "used";
     if (this.db.query("SELECT 1 FROM resolution_history r, json_each(r.original_ids) old, json_each(?) current WHERE r.project_id = ? AND r.peer = ? AND r.action = 'retry' AND old.value = current.value LIMIT 1").get(ids, this.projectId, peer)) return "used";
     const wanted = new Set(originals.map(env => env.id));
     type Ancestor = { id: string; peer: string; attempt: number | null; previous_id: string | null };
@@ -728,6 +762,7 @@ export class DeliveryJournal {
     this.ensureOpen();
     const wanted = new Set(originals.map(env => env.id));
     const ids = JSON.stringify([...wanted]);
+    if (this.retryProof(peer, originals)?.warning) return true;
     if (this.db.query("SELECT 1 FROM resolution_history r, json_each(r.original_ids) old, json_each(?) current WHERE r.project_id = ? AND r.peer = ? AND r.action = 'retry' AND r.actor = ? AND old.value = current.value LIMIT 1").get(ids, this.projectId, peer, `peer:${peer}`)) return true;
     return this.retryUnknown(peer, wanted) || this.retryEvidence(peer, originals) === "unknown";
   }
@@ -821,6 +856,7 @@ export class DeliveryJournal {
           current.peer,
           JSON.stringify(current.originals.map(env => env.id)),
         );
+      if (action === "retry") this.recordRetryEvidence(current.peer, current.originals, id, actor === `peer:${current.peer}`);
       this.pruneTerminal();
       return result;
     })();

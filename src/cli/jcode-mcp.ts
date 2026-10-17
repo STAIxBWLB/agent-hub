@@ -21,7 +21,7 @@ const map = (doc: Document): Document => (doc.mcpServers ?? doc.servers ?? {}) a
 const owned = (entry: unknown, cwd: string): entry is Document => object(entry) && object(entry.env) && entry.env.AGENTHUB_MODE === "tools" && entry.env.AGENTHUB_PEER_ID === "jcode" && entry.env.AGENTHUB_PROJECT_DIR === cwd;
 
 export function jcodeMcpEntry(cwd: string, stateDir: string, bundle: string) {
-  return { command: "bun", args: ["run", bundle], shared: false, env: { AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "jcode", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } };
+  return { command: "bun", args: ["run", bundle], shared: false, env: { AGENTHUB_MODE: "tools", AGENTHUB_DELIVERY_ONLY: "true", AGENTHUB_PEER_ID: "jcode", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } };
 }
 /** The native loader reads later project files last. Never shadow a foreign definition. */
 function inspect(cwd: string): Document {

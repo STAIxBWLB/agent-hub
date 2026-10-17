@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../src/hub/bus.ts";
-import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
+import { DeliveryJournal, MAX_ENVELOPE_BODY } from "../src/hub/delivery-journal.ts";
 import { newEnvelope, noteLine, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
@@ -247,4 +247,114 @@ test("recipient warning survives a snapshot import that omits resolution history
     expect(target.resolution("held")).toBeUndefined();
     expect(bus.pull("codex")![0]!.body).toStartWith("Hub redelivery warning:");
   } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const pruneReopen of [false, true]) test(`coalesced retry evidence survives safe failure and original withdrawal${pruneReopen ? " with pruning and reopen" : ""} (#434)`, async () => {
+  const f = rig(), b = newEnvelope("user", "coalesced B", { to: ["codex"] });
+  class SafeThenUncertain extends Peer {
+    async deliver(envs: Envelope[], id?: string) {
+      this.got.push(envs); if (!id) return;
+      this.ids.push(id);
+      if (this.got.length === 1) { this.setBusy(); this.delivery({ id, state: "failed_safe" }); }
+      else this.delivery({ id, state: "needs_review" });
+    }
+  }
+  const peer = new SafeThenUncertain("codex"); f.bus.add(peer); await peer.start();
+  f.bus.retryDelivery("codex", "held"); f.bus.publish(b);
+  peer.setBusy(); peer.pullOnly = false; peer.idle(); await until(() => peer.got.length === 1);
+  const coalescedId = peer.ids[0]!;
+  expect(f.journal.get(coalescedId)?.originals.map(env => env.id)).toEqual([f.original.id, b.id]);
+  expect(f.journal.get(coalescedId)?.attempt).toBe(1);
+  expect(f.journal.get(coalescedId)?.state).toBe("failed");
+  f.bus.withdraw(f.original.id);
+  let bus = f.bus, journal = f.journal;
+  if (pruneReopen) {
+    const { Database } = await import("bun:sqlite"); const db = new Database(join(f.dir, "hub.db"));
+    db.query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<2050) INSERT INTO deliveries (id,project_id,peer,state,revision,created_at,updated_at,originals,out_json) SELECT 'terminal-'||i,'p','codex','completed',1,1,?, '[]','[]' FROM n").run(Date.now() + 1000); db.close();
+    journal.createDelivery({ id: "prune-trigger", peer: "codex", state: "completed", createdAt: Date.now(), originals: [], out: [] });
+    expect(journal.get(coalescedId)).toBeUndefined();
+    ({ bus, journal } = f.reopen());
+    const next = new Peer("codex"); next.pullOnly = false; bus.add(next); await next.start();
+    await until(() => next.got.length === 1);
+    expect(next.got[0]![0]!.body).toStartWith("Hub redelivery warning:");
+    expect(() => bus.retryDelivery("codex", next.ids[0]!)).toThrow("recipient retry unavailable");
+  } else {
+    peer.idle(); await until(() => peer.got.length === 2);
+    expect(peer.got[1]![0]!.body).toStartWith("Hub redelivery warning:");
+    expect(() => bus.retryDelivery("codex", peer.ids[1]!)).toThrow("recipient retry unavailable");
+  }
+  expect(journal.retryEvidence("codex", [b])).toBe("used");
+  expect(journal.retryEvidence("pi", [b])).toBe("unused");
+  expect(journal.retryEvidence("codex", [newEnvelope("user", "unrelated fresh")])).toBe("unused");
+});
+
+for (const mode of ["push", "pull", "steer"] as const) test(`maximum valid body recipient retry fits journal validation through actual ${mode} (#434)`, async () => {
+  const f = rig(); f.journal.transition("held", "completed");
+  const prefix = "Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.\n\n";
+  const marker = "\n[cut: rendered body exceeds delivery limit]";
+  const boundary = MAX_ENVELOPE_BODY - prefix.length - marker.length;
+  const body = "x".repeat(boundary - 1) + "🙂" + "x".repeat(MAX_ENVELOPE_BODY - boundary - 1);
+  const original = newEnvelope("user", body, { to: ["codex"], priority: mode === "steer" ? "important" : "status" });
+  const held = f.journal.createDelivery({ id: "max-held", peer: "codex", state: "needs_review", createdAt: original.ts, originals: [original], out: [original] });
+  class Steering extends Peer { async steer(envs: Envelope[], id?: string) { await this.deliver(envs, id); } }
+  const peer = new Steering("codex"); f.bus.add(peer); await peer.start();
+  let out: Envelope[];
+  if (mode === "steer") {
+    f.journal.resolve(held.id, held.revision, "retry", "recipient requested retry", held.revision, "peer:codex");
+    peer.pullOnly = false; peer.setBusy(); f.bus.publish(original);
+    await until(() => peer.got.length === 1 || !!f.bus.storageError); out = peer.got[0] ?? [];
+  } else {
+    f.bus.retryDelivery("codex", held.id);
+    if (mode === "pull") out = f.bus.pull("codex")!;
+    else { peer.setBusy(); peer.pullOnly = false; peer.idle(); await until(() => peer.got.length === 1 || !!f.bus.storageError); out = peer.got[0] ?? []; }
+  }
+  expect(f.bus.storageError).toBeUndefined(); expect(out).toHaveLength(1);
+  expect(out[0]!.body).toStartWith(prefix);
+  expect(out[0]!.body.length).toBeLessThanOrEqual(MAX_ENVELOPE_BODY);
+  expect(out[0]!.body).toEndWith(marker);
+  expect(out[0]!.body.slice(prefix.length, -marker.length)).toBe("x".repeat(boundary - 1));
+  expect(original.body).toBe(body); expect(f.journal.get(held.id)!.originals[0]!.body).toBe(body);
+  peer.idle();
+});
+
+test("a failed coalesced checkpoint cannot consume a fresh original's retry right (#434)", async () => {
+  const f = rig(), b = newEnvelope("user", "fresh B", { to: ["codex"] }); f.bus.retryDelivery("codex", "held");
+  const { Database } = await import("bun:sqlite"); const db = new Database(join(f.dir, "hub.db"));
+  db.run("CREATE TRIGGER reject_fixture_handoff BEFORE INSERT ON deliveries WHEN NEW.id = 'rejected-handoff' BEGIN SELECT RAISE(ABORT, 'fixture checkpoint rejected'); END"); db.close();
+  expect(() => f.journal.checkpointDelivery(f.bus.snapshot(false), { id: "rejected-handoff", peer: "codex", state: "dispatching", createdAt: Date.now(), originals: [f.original, b], out: [f.original, b] })).toThrow("fixture checkpoint rejected");
+  expect(f.journal.retryEvidence("codex", [b])).toBe("unused"); expect(f.journal.retryWarning("codex", [b])).toBe(false);
+  expect(f.journal.retryEvidence("codex", [f.original])).toBe("used");
+});
+
+test("old-writer terminal coalescing backfills consumed proof on return without touching resolution audit (#434)", async () => {
+  const f = rig(), b = newEnvelope("user", "legacy B", { to: ["codex"] }); f.bus.retryDelivery("codex", "held");
+  f.bus.closeJournal();
+  const { Database } = await import("bun:sqlite"); const db = new Database(join(f.dir, "hub.db"));
+  db.query("INSERT INTO deliveries (id,project_id,peer,state,revision,created_at,updated_at,originals,out_json,attempt) VALUES ('legacy-coalesced','p','codex','failed',1,1,1,?,?,1)").run(JSON.stringify([f.original, b]), JSON.stringify([f.original, b]));
+  const audit = db.query("SELECT * FROM resolution_history ORDER BY id").all(); db.close();
+  const reopened = f.reopen();
+  expect(reopened.journal.retryEvidence("codex", [b])).toBe("used"); expect(reopened.journal.retryWarning("codex", [b])).toBe(true);
+  const check = new Database(join(f.dir, "hub.db")); expect(check.query("SELECT * FROM resolution_history ORDER BY id").all()).toEqual(audit);
+  check.run("DELETE FROM resolution_history"); check.run("DELETE FROM deliveries WHERE id = 'legacy-coalesced'"); check.close();
+  expect(reopened.journal.retryEvidence("codex", [b])).toBe("used"); expect(reopened.journal.retryWarning("codex", [b])).toBe(true);
+  expect(reopened.journal.retryEvidence("codex", [newEnvelope("user", "fresh unrelated")])).toBe("unused");
+});
+
+test("persisted consumed proof validates peer, original, proof id and warning before reuse (#434)", async () => {
+  const { Database } = await import("bun:sqlite");
+  for (const [field, value] of [["peer", ""], ["original_id", ""], ["proof_id", ""], ["warning", 2]] as const) {
+    const f = rig(); f.bus.retryDelivery("codex", "held"); f.bus.closeJournal();
+    const db = new Database(join(f.dir, "hub.db")); db.run("PRAGMA ignore_check_constraints = ON");
+    db.query(`UPDATE delivery_retry_evidence SET ${field} = ? WHERE project_id = 'p'`).run(value); db.close();
+    expect(() => f.reopen()).toThrow("invalid delivery journal: retry proof");
+  }
+});
+
+test("an old-writer attempt with unknown provenance is never backfilled without a warning (#434)", async () => {
+  const f = rig(), legacy = newEnvelope("user", "unknown old attempt"); f.bus.closeJournal();
+  const { Database } = await import("bun:sqlite"); const db = new Database(join(f.dir, "hub.db"));
+  db.query("INSERT INTO deliveries (id,project_id,peer,state,revision,created_at,updated_at,originals,out_json,attempt) VALUES ('unknown-attempt','p','codex','failed',1,1,1,?,?,1)").run(JSON.stringify([legacy]), JSON.stringify([legacy])); db.close();
+  const reopened = f.reopen();
+  expect(reopened.journal.retryEvidence("codex", [legacy])).toBe("used"); expect(reopened.journal.retryWarning("codex", [legacy])).toBe(true);
+  expect(reopened.journal.retryEvidence("codex", [newEnvelope("user", "unrelated")])).toBe("unused");
 });

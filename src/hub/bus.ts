@@ -1,6 +1,6 @@
 import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
-import { DeliveryJournal, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
+import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 
@@ -376,7 +376,15 @@ export class Bus {
 
   private retryOut(peer: string, originals: Envelope[], out: Envelope[]): Envelope[] {
     if (!out.length || !this.journal || !this.journal.retryWarning(peer, originals)) return out;
-    return out.map((env, index) => index === 0 ? { ...env, body: `${DELIVERY_RETRY_WARNING}\n\n${env.body}` } : env);
+    return out.map((env, index) => {
+      if (index !== 0) return env;
+      const prefix = `${DELIVERY_RETRY_WARNING}\n\n`, marker = "\n[cut: rendered body exceeds delivery limit]";
+      if (prefix.length + env.body.length <= MAX_ENVELOPE_BODY) return { ...env, body: prefix + env.body };
+      let end = MAX_ENVELOPE_BODY - prefix.length - marker.length;
+      // The journal cap uses UTF-16 length; never cut between a Unicode surrogate pair.
+      if (Array.from(env.body.slice(end - 1, end + 1))[0]?.length === 2) end--;
+      return { ...env, body: prefix + env.body.slice(0, end) + marker };
+    });
   }
 
   resolveDelivery(id: string, revision: number, action: "completed" | "retry" | "discard", reason: string, actor: string = "user"): void {
