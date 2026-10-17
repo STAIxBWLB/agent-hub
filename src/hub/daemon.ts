@@ -19,7 +19,7 @@ import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from
 import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
-import { loadSdlc } from "./sdlc.ts";
+import { loadSdlc, sdlcGh } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
@@ -1186,7 +1186,7 @@ export async function startDaemon(opts: DaemonOptions) {
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     projectedReview: task => reviewProjection(task),
-    sdlc: { config: () => lifecycleConfig },
+    sdlc: { config: () => lifecycleConfig, gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound) },
     board,
     bus,
     executionBudget,

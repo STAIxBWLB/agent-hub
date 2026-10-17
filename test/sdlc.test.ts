@@ -1,13 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { realPath } from "../src/hub/project.ts";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { parsePrEvidence, readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, touchingPrs, type SdlcGh, type SdlcMode } from "../src/hub/sdlc.ts";
+import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcConfig, sdlcReceipt, sdlcStatus, touchingPrs, type SdlcGh, type SdlcMode } from "../src/hub/sdlc.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -131,4 +132,42 @@ test("the owner relinks a PR after a reviewed head was recorded; only the review
   carried.tasks.recordLifecycle(USER, carried.id, { reviewedHead: A });
   expect(() => carried.tasks.recordLifecycle("codex", carried.id, { pr: 2, reviewedHead: A })).toThrow("reviewer");
   expect(carried.board.get(carried.id)?.sdlc?.pr).toBe(1);
+});
+
+
+test("#449 SDLC gh refuses project PATH shims and external symlinks into the project before execution", async () => {
+  const project = mkdtempSync(join(tmpdir(), "ahub-sdlc-shim-")), outside = mkdtempSync(join(tmpdir(), "ahub-sdlc-link-"));
+  cleanups.push(() => { rmSync(project, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); });
+  const marker = join(project, "executed"), binary = join(project, "gh"), path = process.env.PATH;
+  writeFileSync(binary, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed'); process.stdout.write('untrusted');`); chmodSync(binary, 0o755);
+  symlinkSync(binary, join(outside, "gh"));
+  try {
+    for (const entry of [project, outside]) {
+      process.env.PATH = `${entry}:${path ?? ""}`;
+      expect(await sdlcGh(["pr", "view", "1", "--repo", "owner/repo"], 1000, project)).toEqual({ code: 1, stdout: "" });
+      expect(existsSync(marker)).toBe(false);
+    }
+  } finally { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; }
+});
+
+test("#449 SDLC gh preserves trusted host argv, cwd and stdout while ignoring stderr", async () => {
+  const project = mkdtempSync(join(tmpdir(), "ahub-sdlc-project-")), host = mkdtempSync(join(tmpdir(), "ahub-sdlc-host-"));
+  cleanups.push(() => { rmSync(project, { recursive: true, force: true }); rmSync(host, { recursive: true, force: true }); });
+  const record = join(host, "record.json"), binary = join(host, "gh"), path = process.env.PATH;
+  writeFileSync(binary, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(record)},JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd()})); process.stdout.write('trusted result'); process.stderr.write('private diagnostic');`); chmodSync(binary, 0o755);
+  const argv = ["pr", "view", "1", "--repo", "owner/repo", "--json", "headRefOid"];
+  try {
+    process.env.PATH = `${host}:${path ?? ""}`;
+    expect(await sdlcGh(argv, 1000, project)).toEqual({ code: 0, stdout: "trusted result" });
+    expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ argv, cwd: realPath(project) });
+  } finally { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; }
+});
+
+test("#449 SDLC gh missing executable remains a neutral unavailable readback", async () => {
+  const project = mkdtempSync(join(tmpdir(), "ahub-sdlc-missing-")), path = process.env.PATH;
+  cleanups.push(() => rmSync(project, { recursive: true, force: true }));
+  try {
+    process.env.PATH = project;
+    expect(await sdlcGh(["pr", "view", "1"], 1000, project)).toEqual({ code: 1, stdout: "" });
+  } finally { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; }
 });

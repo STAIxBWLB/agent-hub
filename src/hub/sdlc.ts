@@ -3,6 +3,7 @@ import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
+import { hostExecutable } from "./host-executable.ts";
 
 export const SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"] as const;
 export type SdlcBaseStage = typeof SDLC_STAGES[number];
@@ -219,7 +220,10 @@ export type SdlcGh = (args: string[], timeoutMs?: number, cwd?: string, maxOutpu
 /** Read-only, fixed argv. Output and time are bounded; diagnostics never expose credentials or remote text. */
 export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 256 * 1024) => new Promise((resolve) => {
   const outputLimit = Number.isSafeInteger(maxOutputBytes) ? Math.min(2 * 1024 * 1024, Math.max(1, maxOutputBytes)) : 256 * 1024;
-  const child = spawn("gh", args, { ...(cwd ? { cwd } : {}), env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(hostExecutable("gh", cwd ?? process.cwd()), args, { ...(cwd ? { cwd } : {}), env: childEnv(), detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  } catch { resolve({ code: 1, stdout: "" }); return; }
   let stdout = "", failed = false;
   const stop = () => { failed = true; void stopOwnedProcess(child, { group: true }).catch(() => {}); };
   const timer = setTimeout(stop, Math.max(1, Math.min(10_000, timeoutMs)));
