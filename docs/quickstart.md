@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.30
+bun add -g github:STAIxBWLB/agent-hub#v0.12.31
 ahub setup
 ```
 
@@ -29,6 +29,19 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.12.31
+
+Existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
+
+```bash
+ahub jcode --mode headless
+ahub init
+```
+
+The first command starts Jcode and rewrites only the hub-owned `agent-hub-jcode` entry in `.jcode/mcp.json`, adding its delivery-only marker. Foreign or overriding entries refuse instead of being overwritten. `ahub init` keeps an untracked machine-path file out of git; review a tracked file deliberately. Daemon readiness checks never rewrite this entry. See [Jcode operations](operations.md#optional-jcode-peer).
+
+Task owners running as Pi or `local` need the isolated test capability for non-PII `implement`, `test` and `bulk_edit` work. A person sets `checks.runner` to `"container"` in untracked `.agenthub/config.local.json`; the Apple container service and pinned image must also be available. Issue-backed owners additionally need spec access. Manual messages remain available, and PII work retains its local-only routing. See [bounded check requirements](security.md#bounded-task-specs-and-isolated-checks-418) before enabling the runner.
 
 ## First session
 
@@ -68,6 +81,8 @@ or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local]
 | `ahub say [@peer] <text>` | talk; start with `[STATUS]` to let it batch, `[FYI]` for the record only |
 | `ahub task propose [--class <c>] <title>` | put work on the board; the hub picks an owner and a reviewer, and the class if you name none |
 | `ahub board` | who has what; `ahub task show <id>` for one task |
+| `ahub task cancel <id> --reason <text>` | close obsolete work without approving it or stopping a native turn |
+| `ahub settings set planner <peer>` | pin the planner; status reports whether it came from settings, roles or the automatic choice |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
 | `ahub memory profile-check` | a person's read-only check of running memory bindings in the current registry |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
@@ -80,7 +95,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 The hub exact-pins the first-party `@staix/agent-mem` 0.3.0 core. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Generation candidate acceptance is still refused.
 
-Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
+Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
 ## Browser dashboard
 
