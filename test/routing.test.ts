@@ -280,3 +280,15 @@ test("#418 imported GitHub tasks require spec capability without textual referen
   expect(refused.trace.join("\n")).toContain("gh unauthenticated");
   expect(assign(imported, { pi: "idle" }, routing, { ...opts, capabilities: { pi: { tests: true, spec: true } } }).owner).toBe("pi");
 });
+
+test("#418 bare detail hub task numbers do not require spec while qualified and URL contracts do", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-qualified-spec-")));
+  const work = { ...task("implement"), title: "ordinary implementation", detail: "after #80/#81/#83", refs: { paths: ["#418"] } };
+  const opts = { repository: "owner/project", candidates: ["pi"], capabilities: { pi: { tests: true, spec: false, specReason: "gh unauthenticated" } } };
+  expect(assign(work, { pi: "idle" }, routing, opts).owner).toBe("pi");
+  for (const detail of ["owner/project#418", "https://github.com/owner/project/issues/418", "foreign/repo#418", "https://github.com/foreign/repo/issues/418"]) {
+    const result = assign({ ...work, detail }, { pi: "idle" }, routing, opts);
+    expect(result.owner).toBeUndefined();
+    expect(result.trace.join("\n")).toContain("missing spec");
+  }
+});

@@ -16,8 +16,8 @@ const row = (patch: Record<string, unknown> = {}) => ({ number: 418, title: "A w
 const response = (value: unknown) => fake(`process.stdout.write(${JSON.stringify(JSON.stringify(value))});`);
 const screen = () => true;
 
-test("spec references are task-bound, deduplicated and capped, including refs (#418)", () => {
-  expect(specRefs({ title: "#418 owner/project#418", detail: "#2", refs: { paths: ["#3"] } }, repo)).toEqual([418, 2, 3]);
+test("spec references are task-bound, deduplicated and capped (#418)", () => {
+  expect(specRefs({ title: "#418 owner/project#418 #2 #3", detail: "#80", refs: { paths: ["#99"] } }, repo)).toEqual([418, 2, 3]);
   expect(specRefs({ title: "no contract", detail: "", refs: {} }, repo)).toEqual([]);
   for (const title of ["foreign/repo#418", "#1 #2 #3 #4"]) expect(() => specRefs({ title, detail: "", refs: {} }, repo)).toThrow();
   expect(() => specRefs({ title: "#418", detail: "", refs: { repo: "foreign/repo" } }, repo)).toThrow("other repository");
@@ -108,4 +108,16 @@ test("imported GitHub task identity supplies its full spec without textual refer
     { ...imported.external, issue: 0 }, { ...imported.external, issue: Number.MAX_SAFE_INTEGER + 1 },
     { ...imported.external, url: "https://github.com/foreign/repo/issues/418" },
   ]) expect(() => specRefs({ ...imported, external }, repo)).toThrow();
+});
+
+test("bare hub task references in detail and paths do not expand a title issue (#418)", () => {
+  expect(specRefs({ title: "#418 implement bounded Pi capabilities", detail: "after #80/#81/#83", refs: { paths: ["#99"] } }, repo)).toEqual([418]);
+  expect(specRefs({ title: "ordinary work", detail: "after #80/#81/#83", refs: { paths: ["#418"] } }, repo)).toEqual([]);
+});
+
+test("qualified and canonical URL issue references in detail use the same origin guard and cap (#418)", () => {
+  const base = { title: "work", detail: `owner/project#418 https://github.com/owner/project/issues/2 owner/project#3`, refs: {} };
+  expect(specRefs(base, repo)).toEqual([418, 2, 3]);
+  for (const detail of ["foreign/repo#418", "https://github.com/foreign/repo/issues/418"]) expect(() => specRefs({ ...base, detail }, repo)).toThrow("other repository");
+  expect(() => specRefs({ ...base, detail: base.detail + " https://github.com/owner/project/issues/4" }, repo)).toThrow("too many spec references");
 });

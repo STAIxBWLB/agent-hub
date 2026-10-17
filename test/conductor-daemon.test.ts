@@ -1,3 +1,4 @@
+import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,7 +30,7 @@ async function fixture(conductor: "claude" | "codex" = "claude", feed: "off" | "
   // #269: a TUI peer's start opens its fixed command through the terminal provider; this one records and opens nothing.
   const opened: string[][] = [];
   const terminal = () => ({ available: () => ({ ok: true as const, via: "fake" }), open: async (_title: string, argv: readonly string[]) => { opened.push([...argv]); return { ok: true as const, via: "fake" }; } });
-  const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 300, terminal, config: {
+  const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 300, terminal, config: {
     ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, roles: { ...DEFAULT_CONFIG.roles, [conductor]: ["conductor"] }, conductor: { feed, approval_wait_s: 0 }, batch_ms: 0,
     memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
     kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")],

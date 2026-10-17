@@ -14,9 +14,18 @@ function validRepo(repo: string): void { if (!REPO.test(repo)) throw new Error("
 
 /** Resolve only task-bound issue references; foreign references never fall through to local #N. */
 export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial<Pick<Task, "external">>, repo: string): number[] {
+  const references: { repo?: string; number: number }[] = [];
+  // Bare detail numbers name hub tasks. File paths are not issue references.
+  for (const section of [{ text: task.title, bare: true }, { text: task.detail, bare: false }]) {
+    for (const match of section.text.matchAll(/https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]*)\b|([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\b|#([1-9][0-9]*)\b/g)) {
+      const qualified = match[1] ?? match[3];
+      if (!qualified && !section.bare) continue;
+      references.push({ repo: qualified, number: Number(match[2] ?? match[4] ?? match[5]) });
+    }
+  }
+  if (!references.length && task.external === undefined && !task.refs.repo) return [];
   validRepo(repo);
   if (task.refs.repo && task.refs.repo.toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
-  const text = `${task.title}\n${task.detail}\n${JSON.stringify(task.refs)}`;
   const issues = new Set<number>();
   if (task.external !== undefined) {
     const source = task.external;
@@ -27,11 +36,10 @@ export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial
       || source.url.toLowerCase() !== `https://github.com/${repo}/issues/${source.issue}`.toLowerCase()) throw new Error("not found");
     issues.add(source.issue);
   }
-  for (const match of text.matchAll(/(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)\b/g)) {
-    if (match[1] && match[1].toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
-    const n = Number(match[2]);
-    if (!Number.isSafeInteger(n)) throw new Error("not found");
-    issues.add(n);
+  for (const reference of references) {
+    if (reference.repo && reference.repo.toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
+    if (!Number.isSafeInteger(reference.number)) throw new Error("not found");
+    issues.add(reference.number);
     if (issues.size > 3) throw new Error("too many spec references");
   }
   return [...issues];
