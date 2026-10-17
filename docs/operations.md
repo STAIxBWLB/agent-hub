@@ -200,8 +200,8 @@ Any earlier explicit retry in the same recipient's lineage, including a person's
 retry, leaves a later hold for the person. A busy peer's request only requeues
 the originals; delivery waits for idle and retains all pauses and recovery holds.
 The tool cannot complete or discard a row. If a recovery snapshot lacks retry
-history, its imported message lineages require a person; unrelated new messages
-retain the one-retry option.
+history, or older pruned retry records cannot be mapped, the affected message
+lineages require a person; unrelated new messages retain the one-retry option.
 
 Every console resolution needs a reason. Queue `discard` removes queued originals or
 settles a needs_review receipt; it never cancels a task or native turn.
