@@ -102,6 +102,7 @@ test("#463 a proven mismatching archived-session header is retired without falli
   expect(archive).toBeDefined();
   expect(JSON.parse(readFileSync(join(f.stateDir, archive!), "utf8")).pi.sessionId).toBe("different-recorded-session");
   expect(f.log()).toContain("bookmark does not match the preserved session");
+  expect(f.log()).toContain("no fresh session was started.");
   expect(f.log()).not.toContain("recorded Pi session is unresumable");
   expect(f.log()).not.toContain("started a fresh session");
 });
