@@ -820,3 +820,10 @@ test("human status preserves unknown-owner isolated-check warnings at every widt
   expect(text(hostile)).not.toContain("\x1b");
   expect(text(hostile)).toContain("owner unknown");
 });
+
+test("AC4: status renders every held row with ids, senders, kinds and age (#434)", () => {
+  const heldRows = ["first-held", "second-held"].map(id => ({ id, senders: ["pi"], kinds: ["chat"], createdAt: now - 5000 }));
+  const text = renderStatus({ peers: { codex: { state: "idle", heldBy: "first-held", heldRows } } }, undefined, now, true).map(line => line.map(span => span.text).join("")).join("\n");
+  for (const row of heldRows) expect(text).toContain(row.id);
+  expect(text).toContain("from pi"); expect(text).toContain("kind chat"); expect(text).toContain("age");
+});

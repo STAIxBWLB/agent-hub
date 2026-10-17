@@ -323,11 +323,11 @@ export class Tasks {
         this.d.board.update(task.id, HUB, "idle sweep", {}, undefined, { sweep: finding });
         recorded.push({ task: task.id, finding });
         if (finding.step === 1) {
-          this.sweepNotice(task, responsible, `${message} Check its current state with hub_task_list and accept, complete or review your assigned work.`);
+          this.sweepNotice(task, responsible, `${message} Check its current state with hub_task_list and accept, complete or review your assigned work.`, finding.kind === "review-pending" ? "reviewer" : "owner");
         } else if (finding.step === 2) {
           this.d.notify(message);
           for (const [peer, roles] of Object.entries(this.d.roles ?? {})) {
-            if (peer !== responsible && roles.includes("planner") && this.sweepAvailable(peer)) this.sweepNotice(task, peer, `${message} The assigned ${finding.kind === "review-pending" ? "reviewer" : "owner"} has not recorded fresh task activity; check the board before coordinating.`);
+            if (peer !== responsible && roles.includes("planner") && this.sweepAvailable(peer)) this.sweepNotice(task, peer, `${message} The assigned ${finding.kind === "review-pending" ? "reviewer" : "owner"} has not recorded fresh task activity; check the board before coordinating.`, "planner");
           }
         } else {
           const reviewer = finding.kind === "review-pending";
@@ -355,9 +355,9 @@ export class Tasks {
     return bus.stateOf(peer) === "idle" && (this.d.idle?.(peer) ?? true) && !peerEntry(this.d.held?.(), peer) && !bus.queueSummary(peer).heldBy && !bus.queued(peer) && !bus.hasInFlight(peer);
   }
 
-  private sweepNotice(task: Task, peer: PeerId, body: string): void {
+  private sweepNotice(task: Task, peer: PeerId, body: string, taskRecipient: "owner" | "reviewer" | "planner"): void {
     if (peer === USER) this.d.notify(body);
-    else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", refs: { task: String(task.id) } }));
+    else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", refs: { task: String(task.id), taskRecipient } }));
   }
 
   configureExecutionBudget = (config: ExecutionBudgetConfig): ExecutionBudgetStatus | undefined => {
@@ -1182,7 +1182,7 @@ export class Tasks {
    * #106): open work by default; the conflict notices of #91 count a task in review too.
    */
   whileOpen(to: PeerId, task: number, body: string, states: Task["state"][] = OPEN): void {
-    const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task) } });
+    const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task), taskRecipient: "owner" } });
     this.conditional.set(env.id, { peer: to, task, states });
     if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
     this.d.bus.publish(env);
@@ -1342,7 +1342,10 @@ export class Tasks {
 
   /** Public read path: every generated line is screened, including profile/config-derived trace fields. */
   publicExplain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }, routing?: Routing): string[] {
-    return this.explain(target, routing).map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
+    const trace = this.explain(target, routing);
+    const holds = Object.entries(this.d.held?.() ?? {}).flatMap(([peer, hold]) =>
+      trace.some(line => line.startsWith(`  hold: ${peer}'s queue is held:`)) ? [] : [`${peer} queue: ${hold}`]);
+    return [...trace, ...holds].map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
   }
 
   /**
@@ -1495,7 +1498,7 @@ export class Tasks {
       if (!peer || peer === USER) continue;
       this.releaseNotice(`task ${this.publicTitle(next)}: catalog role update delivery unconfirmed`, () => this.d.bus.publish(newEnvelope(HUB,
         `Task #${next.id}: catalog role changed by the person. ${next.role ? this.roleGuidance(next, peer, peer === next.reviewer) : "Catalog guidance cleared; follow the task's existing plan and requirements."}`,
-        { to: [peer], kind: "task", refs: { task: String(next.id) }, ...(this.isPii(next) ? { private: true } : {}) })));
+        { to: [peer], kind: "task", refs: { task: String(next.id), taskRecipient: peer === next.reviewer ? "reviewer" : "owner" }, ...(this.isPii(next) ? { private: true } : {}) })));
     }
     return next;
   }
@@ -1550,7 +1553,7 @@ export class Tasks {
     // (Codex, Pi); held, it starts no turn yet: neither is taking it.
     const owner = task.owner!;
     const idle = this.d.bus.stateOf(owner) === "idle";
-    const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) });
+    const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id), taskRecipient: "owner" }, ...(pii ? { private: true } : {}) });
     this.d.bus.publish(env);
     if (idle && this.d.bus.stateOf(owner) === "busy" && !this.d.bus.queueIds(owner).includes(env.id)) this.sent.set(handOver(task, owner), owner);
   }
@@ -2221,7 +2224,7 @@ export class Tasks {
     if (from && task.reviewer && task.reviewer !== USER && this.requestedChanges(task).has(task.reviewer)) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
     const stopFormerOwner = (moved: Task) => {
       if (from && moved.owner && moved.owner !== from) this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${from} it moved to ${moved.owner}`, () =>
-        this.tell({ ...moved, owner: from }, `Task #${moved.id} moved to ${moved.owner} (${why}). Stop working on it.`, this.isPii(moved)));
+        this.tell({ ...moved, owner: from }, `Task #${moved.id} moved to ${moved.owner} (${why}). Stop working on it.`, this.isPii(moved), "withdrawal"));
     };
     // Only our landed move authorizes a success notice and decision note. The former owner's stop
     // message still names the current owner when a later assignment superseded this move.
@@ -2266,7 +2269,8 @@ export class Tasks {
         ? `Task ${this.publicTitle(next)} is no longer assigned to you${next.owner ? `; its owner is now ${next.owner}` : "; it is unassigned"}. Do not accept or complete it; late calls under your former assignment are refused.`
         : `Review request for task #${previous.id} ${this.publicTitle(next)} is withdrawn: ${next.reviewer ? `its reviewer is now ${next.reviewer}` : "the task has no reviewer"}. Do not review this task; a late verdict from the previous reviewer is refused.`;
       if (peer === USER) this.d.notify(body);
-      else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "status", priority: "important", refs: { task: String(previous.id) }, ...(this.isPii(next) ? { private: true } : {}) }));
+      // An untagged task notice remains needed by a former role until approval; kind review would look moved already.
+      else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", priority: "important", refs: { task: String(previous.id) }, ...(this.isPii(next) ? { private: true } : {}) }));
     });
   }
 
@@ -2577,9 +2581,9 @@ export class Tasks {
     }
   }
 
-  private tell(task: Task, body: string, pii: boolean): void {
+  private tell(task: Task, body: string, pii: boolean, audience: "owner" | "withdrawal" = "owner"): void {
     if (!task.owner || task.owner === USER) return;
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: "task", priority: "important", refs: { task: String(task.id) }, ...(pii ? { private: true } : {}) }));
+    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: "task", priority: "important", refs: { task: String(task.id), ...(audience === "owner" ? { taskRecipient: "owner" as const } : {}) }, ...(pii ? { private: true } : {}) }));
   }
 }
 

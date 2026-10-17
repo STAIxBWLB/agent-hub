@@ -16546,10 +16546,14 @@ async function connectLoop() {
           return void push(msg.envs ?? [msg.env], msg.deliveryId, msg.generation);
         if (!msg.deliveryId)
           return log("hub push without a delivery id dropped: this session cannot show channel pushes");
-        client.request({ t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, state: "needs_review", reason: "this session cannot show channel pushes" }).then((receipt) => {
-          if (!receipt.ok)
-            log(`needs_review receipt for delivery ${msg.deliveryId} rejected by hub: ${receipt.error}`);
-        });
+        const receipt = { t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, reason: "this session cannot show channel pushes" };
+        client.request({ ...receipt, state: "failed_safe" }).then(async (result) => {
+          if (result.ok)
+            return;
+          const fallback = await client.request({ ...receipt, state: "needs_review" });
+          if (!fallback.ok)
+            log(`delivery receipt for ${msg.deliveryId} remains unconfirmed by hub`);
+        }).catch(() => log(`delivery receipt for ${msg.deliveryId} remains unconfirmed by hub`));
       };
       hub = client;
       attempt = -1;

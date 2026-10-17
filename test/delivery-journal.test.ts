@@ -45,3 +45,14 @@ test("terminal history is bounded without pruning an unresolved receipt", () => 
   journal.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("AC2: automatic settlement records the hub actor and conflicts with person resolution (#434)", () => {
+  const { dir, journal } = open();
+  try {
+    const env = newEnvelope("hub", "memory", { kind: "presence" });
+    const row = journal.createDelivery({ id: "hub-settle", peer: "claude", state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+    journal.resolve(row.id, row.revision, "completed", "superseded: presence", row.revision, "hub");
+    expect(journal.resolution(row.id)).toMatchObject({ actor: "hub", action: "completed", reason: "superseded: presence" });
+    expect(() => journal.resolve(row.id, row.revision, "completed", "superseded: presence")).toThrow();
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});

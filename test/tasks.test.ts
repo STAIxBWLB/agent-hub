@@ -1,3 +1,4 @@
+import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -3226,7 +3227,7 @@ test("owner and reviewer unassignment withdraw only their queued requests and re
   await f.tasks.unassign(task.id);
   const ownerRead = f.bus.pull("kimi") ?? [];
   expect(ownerRead.filter(env => env.kind === "task" && env.refs?.task === String(task.id))).toEqual([]);
-  expect(ownerRead.some(env => env.kind === "status" && env.body.includes("no longer assigned"))).toBe(false);
+  expect(ownerRead.some(env => env.kind === "task" && env.body.includes("no longer assigned"))).toBe(false);
   expect(() => f.tasks.accept("kimi", task.id)).toThrow(/only its owner/);
 
   const review = await f.tasks.propose(USER, { title: "watched reviewer removal", class: "implement", owner: "codex" });
@@ -3236,7 +3237,7 @@ test("owner and reviewer unassignment withdraw only their queued requests and re
   await f.tasks.unassign(review.id, USER, true, "reviewer");
   const reviewerRead = f.bus.pull("kimi") ?? [];
   expect(reviewerRead.filter(env => env.kind === "review" && env.refs?.task === String(review.id))).toEqual([]);
-  expect(reviewerRead.some(env => env.kind === "status" && env.body.includes("is withdrawn"))).toBe(false);
+  expect(reviewerRead.some(env => env.kind === "task" && env.body.includes("is withdrawn"))).toBe(false);
   await expect(f.tasks.review("kimi", review.id, "approved")).rejects.toThrow(/reviewer/);
 });
 
@@ -3331,7 +3332,7 @@ test("a delivered former owner is notified of unassignment (#424)", async () => 
   const { tasks, peers } = await setup();
   const task = await tasks.propose("claude", { title: "delivered owner", class: "implement", owner: "codex" });
   await tasks.unassign(task.id);
-  expect(peers.codex!.got.some(env => env.kind === "status" && env.body.includes("no longer assigned"))).toBe(true);
+  expect(peers.codex!.got.some(env => env.kind === "task" && env.body.includes("no longer assigned"))).toBe(true);
 });
 
 test("a self-claimed owner is notified of unassignment without an assignment envelope (#424)", async () => {
@@ -3340,7 +3341,7 @@ test("a self-claimed owner is notified of unassignment without an assignment env
   expect(task.state).toBe("in_progress");
   expect(bus.lastDeliveredTo("codex").filter(env => env.refs?.task === String(task.id))).toEqual([]);
   await tasks.unassign(task.id);
-  await until(() => peers.codex!.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")));
+  await until(() => peers.codex!.got.some(env => env.kind === "task" && env.body.includes("no longer assigned")));
 });
 
 test("unread reassigned owner does not inherit another peer's in-progress acceptance evidence (#424)", async () => {
@@ -3392,7 +3393,7 @@ test("an accepted owner is notified of unassignment after a restart without deli
   cleanup.push(() => bus.closeJournal());
   const tasks = new Tasks({ board: base.board, bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: () => {} });
   await tasks.unassign(task.id);
-  await until(() => peer.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")));
+  await until(() => peer.got.some(env => env.kind === "task" && env.body.includes("no longer assigned")));
 });
 
 test("an accepted owner is notified of unassignment after its terminal delivery row is pruned (#424)", async () => {
@@ -3411,7 +3412,7 @@ test("an accepted owner is notified of unassignment after its terminal delivery 
   for (let i = 0; i < 2048; i++) durable.createDelivery({ id: `filler-${i}`, peer: "codex", state: "completed", createdAt: i + 2, updatedAt: i + 2, originals: [], out: [] });
   expect(durable.list("codex").some(row => row.id === "original")).toBe(false);
   await tasks.unassign(task.id);
-  await until(() => peer.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")));
+  await until(() => peer.got.some(env => env.kind === "task" && env.body.includes("no longer assigned")));
 });
 
 test("a person reassignment suppresses a superseded budget relay result (#424)", async () => {
@@ -3490,4 +3491,48 @@ test("#418 PII proposal and manual assignment retain local-only work without run
     const staged = f.board.propose(USER, { title: `${PII} #418 manual`, class: cls, signals: ["pii"] });
     await expect(f.tasks.assignTo(staged.id, "local", USER)).resolves.toMatchObject({ owner: "local", reviewer: "user" });
   }
+});
+
+test("escalation withdrawal is still needed by the former owner until approval (#434 follow-up)", async () => {
+  const base = await setup(["codex", "kimi", "claude"]);
+  const task = await base.tasks.propose(USER, { title: "withdrawal contract", class: "implement", owner: "codex" });
+  const published: Envelope[] = [], publish = base.bus.publish.bind(base.bus);
+  base.bus.publish = envelope => { published.push(envelope); return publish(envelope); };
+  await base.tasks.escalate(USER, task.id, "manual handoff");
+  const withdrawal = published.find(envelope => envelope.to?.includes("codex") && envelope.body.includes("Stop working on it."))!;
+  expect(withdrawal).toBeDefined();
+  expect(withdrawal.refs?.taskRecipient).not.toBe("owner");
+  expect(supersededDeliveryReason([withdrawal], base.board, "codex")).toBeUndefined();
+  base.board.update(task.id, USER, "accepted", { state: "in_progress" });
+  base.board.update(task.id, USER, "approved", { state: "approved" });
+  expect(supersededDeliveryReason([withdrawal], base.board, "codex")).toBe(`superseded: task #${task.id} approved`);
+});
+for (const role of ["owner", "reviewer"] as const) test(`#434 former ${role} withdrawal stays held while open and settles only after approval`, async () => {
+  const base = await setup(["codex", "kimi", "claude"]);
+  const task = await base.tasks.propose(USER, { title: "former role withdrawal", class: "implement", owner: "codex" });
+  base.tasks.accept("codex", task.id);
+  if (role === "reviewer") {
+    await base.tasks.done("codex", task.id, "ready");
+    await until(() => base.peers.claude!.got.some(env => env.kind === "review" && env.refs?.task === String(task.id)));
+  }
+  const former = role === "owner" ? "codex" : "claude";
+  const published: Envelope[] = [], publish = base.bus.publish.bind(base.bus);
+  base.bus.publish = env => { published.push(env); return publish(env); };
+  await base.tasks.assignTo(task.id, "kimi", USER, true, role);
+  const withdrawal = published.find(env => env.to?.includes(former) && env.body.includes(role === "owner" ? "no longer assigned" : "is withdrawn"))!;
+  expect(withdrawal).toBeDefined(); expect(withdrawal.refs?.taskRecipient).toBeUndefined();
+  expect(supersededDeliveryReason([withdrawal], base.board, former)).toBeUndefined();
+  if (role === "owner") base.board.update(task.id, "kimi", "accepted", { state: "in_progress" });
+  base.board.update(task.id, USER, "approved", { state: "approved" });
+  expect(supersededDeliveryReason([withdrawal], base.board, former)).toBe(`superseded: task #${task.id} approved`);
+});
+test("#434 public route explanation lists all held peers once and screens appended hold lines", async () => {
+  const base = await setup(["codex", "claude"]);
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: () => {},
+    held: () => ({ codex: "needs_review selected-hold", detached: "needs_review detached-hold", private: PII }) });
+  const task = await tasks.propose(USER, { title: "hold listing", class: "implement", owner: "codex" });
+  const explanation = tasks.publicExplain(task.id).join("\n");
+  expect(explanation.split("\n").filter(line => line.includes("selected-hold"))).toHaveLength(1);
+  expect(explanation).toContain("detached queue: needs_review detached-hold");
+  expect(explanation).not.toContain("900101"); expect(explanation).toContain("[routing explanation withheld: it matches a PII pattern]");
 });

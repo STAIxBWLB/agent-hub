@@ -1087,3 +1087,42 @@ test("a removed native sender cannot publish a late answer or spend admission li
     expect(bus.queued(sender.id)).toBe(0); // no undeliverable decision notice queued to the removed sender
   } finally { bus.closeJournal(); await sender.stop(); await receiver.stop(); }
 });
+
+
+test("hub completion restores presence shared notes without altering person completion (#434 follow-up)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hub-presence-resolution-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "presence", instanceId: "fixture" });
+  const bus = new Bus({ journal, batchMs: 0 });
+  try {
+    const presence = newEnvelope(HUB, "note from hub [decision]: task #42 moved while you were offline", { kind: "presence", to: ["codex"] });
+    const row = journal.createDelivery({ id: "presence-restore", peer: "codex", state: "needs_review", createdAt: Date.now(), originals: [presence], out: [presence] });
+    bus.note("codex", "note from hub [contract]: newer shared note");
+    bus.resolveDelivery(row.id, row.revision, "completed", "superseded: presence", "hub");
+    const restored = bus.snapshot(false).prefaces.codex!;
+    expect(restored.body).toContain("moved while you were offline");
+    expect(restored.body).toContain("newer shared note");
+    const userPresence = newEnvelope(HUB, "person handled this note", { kind: "presence", to: ["pi"] });
+    const userRow = journal.createDelivery({ id: "person-completed", peer: "pi", state: "needs_review", createdAt: Date.now(), originals: [userPresence], out: [userPresence] });
+    bus.resolveDelivery(userRow.id, userRow.revision, "completed", "person handled context");
+    expect(bus.snapshot(false).prefaces.pi).toBeUndefined();
+  } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("failed hub presence completion restores its preface and preserves pauses transactionally (#434 follow-up)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hub-presence-rollback-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "presence", instanceId: "fixture" });
+  const bus = new Bus({ journal, batchMs: 0 });
+  try {
+    bus.pause("codex"); bus.note("codex", "new shared note");
+    const presence = newEnvelope(HUB, "old shared note", { kind: "presence" });
+    const row = journal.createDelivery({ id: "failed-completion", peer: "codex", state: "needs_review", createdAt: Date.now(), originals: [presence], out: [presence] });
+    const before = bus.snapshot(false), persist = journal.persistBus;
+    journal.persistBus = () => { throw new Error("injected failure"); };
+    try { expect(() => bus.resolveDelivery(row.id, row.revision, "completed", "superseded: presence", "hub")).toThrow("delivery journal unavailable"); }
+    finally { journal.persistBus = persist; }
+    expect(bus.snapshot(false)).toEqual(before);
+    expect(bus.isPaused("codex")).toBe(true);
+    expect(journal.get(row.id)?.state).toBe("needs_review");
+    expect(journal.resolution(row.id)).toBeUndefined();
+  } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
+});
