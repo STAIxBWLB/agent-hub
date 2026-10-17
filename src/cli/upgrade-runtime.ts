@@ -453,6 +453,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     if (existing) throw new ReattachmentRequired(planned.project.id, binding.peer, `${why}; the one reattachment was already attempted; no second terminal will be created`);
     if (!save) throw new Error(`${why}; a durable coordinator save is required before reattachment`);
     (progress.reattachments ??= {})[binding.peer] = { state: "ready", at: now(), cause: "detached after restore", binding };
+    (progress.repairedSessions ??= {})[binding.peer] = true;
     progress.terminals[`restored:${binding.peer}`] = decision.next;
     progress.phase = "started";
     save();
@@ -494,7 +495,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const changed = !!session && expectedSession !== null && session !== expectedSession;
       // #64: only the original zero-turn Claude may change identity without an operator choice. Re-read persistence
       // at attachment, not at the plan or wait start; an already accepted replacement is bound to its own id.
-      const zeroTurn = changed && !progress.reattachments?.[binding.peer] && binding.peer === "claude" && (planned.terminals as TerminalBinding[]).some((p) => p.peer === "claude" && p.sessionId === binding.sessionId) && !claudeTranscriptExists(binding);
+      const zeroTurn = changed && !progress.reattachments?.[binding.peer] && !progress.repairedSessions?.[binding.peer] && binding.peer === "claude" && (planned.terminals as TerminalBinding[]).some((p) => p.peer === "claude" && p.sessionId === binding.sessionId) && !claudeTranscriptExists(binding);
       if (changed && !zeroTurn) throw new Error(`${binding.peer}: a different conversation attached while awaiting ${binding.sessionId}`);
       if (now() > deadline) break;
       const launcher = await launcherOf(binding.peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
@@ -696,15 +697,18 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           const retired = progress.terminals[`retired:${plannedBinding.peer}`] as TerminalBinding | undefined;
           const accepted = retired && typeof retired === "object" && retired.sessionId !== plannedBinding.sessionId ? retired.sessionId : undefined;
           const repair = progress.reattachments?.[plannedBinding.peer];
-          const original = repair?.binding ?? (accepted ? { ...plannedBinding, sessionId: accepted } : plannedBinding);
+          const recordedOnly = !!repair || progress.repairedSessions?.[plannedBinding.peer] === true;
+          const retiredReceipt = recordedOnly && retired !== undefined ? decodeRestoreReceipt({ state: "done", binding: retired }) : undefined;
+          const recordedBinding = retiredReceipt?.state === "done" && retiredReceipt.binding.peer === plannedBinding.peer && retiredReceipt.binding.projectRoot === planned.project.root ? retiredReceipt.binding : undefined;
+          const original = repair?.binding ?? recordedBinding ?? (accepted ? { ...plannedBinding, sessionId: accepted } : plannedBinding);
           // A new session is accepted only by the operator's choice (#215 dispose --fresh-session) or a planned fresh
           // start of a Codex thread with nothing to lose that still has no rollout; an unreadable store is neither.
-          const chosen = !repair && !!progress.fresh?.[original.peer];
+          const chosen = !recordedOnly && !!progress.fresh?.[original.peer];
           let read: ReturnType<typeof codexTranscript> | undefined;
           const transcript = () => original.peer !== "codex" || (chosen && !accepted) ? "found" : (read ??= codexTranscript(original));
           // An accepted session starts new again only when it has nothing to resume: a Codex thread that never got a
           // rollout, or a Claude session with no transcript (`--resume` could never succeed, #21).
-          const fresh = () => repair ? false : accepted
+          const fresh = () => recordedOnly ? false : accepted
             ? (original.peer === "codex" ? (chosen || !!planned.freshStart?.includes("codex")) && transcript() === "missing" : original.peer === "claude" && !claudeTranscriptExists(original))
             : chosen || (!!planned.freshStart?.includes(original.peer) && transcript() === "missing");
           // The runner ends this with the choices `status` shows (nextActions); resume comes first and launches a failed
@@ -723,7 +727,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           const decide = (receipt: RestoreReceipt, evidence: Awaited<ReturnType<typeof peerEvidence>>) => restoreTransition(receipt, {
             target: "running", launcher: evidence.state === "unknown" ? "unknown" : evidence.state === "gone" ? "gone" : evidence.terminal ? "live" : "older-instance",
             session: evidence.state === "live" && evidence.session ? evidence.session === original.sessionId ? "planned" : "other" : "none",
-            allowOther: fresh() || (!repair && original.peer === "claude" && !claudeTranscriptExists(original)),
+            allowOther: fresh() || (!recordedOnly && original.peer === "claude" && !claudeTranscriptExists(original)),
             binding: evidence.state === "live" && evidence.terminal ? { ...original, ...evidence.terminal } : original,
           });
           const receipt = decodeRestoreReceipt(progress.terminals[key]);
@@ -744,7 +748,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
             // #21: a Claude session that never got a first turn has no transcript, so `claude --resume S` can never
             // succeed and accepting its fresh attach loses nothing. Otherwise only the planned id, or a new session
             // the operator or the plan accepted, counts as restored.
-            if (attached !== original.sessionId && !fresh() && !(!repair && original.peer === "claude" && !claudeTranscriptExists(original))) {
+            if (attached !== original.sessionId && !fresh() && !(!recordedOnly && original.peer === "claude" && !claudeTranscriptExists(original))) {
               throw new Error(`${original.peer}: terminal creation outcome is uncertain: session ${attached} is attached instead of ${original.sessionId}; end that ${original.peer} session and close its terminal first`);
             }
             // Validate the proposed transition before committing continuity/waiver effects or a done receipt.
@@ -941,24 +945,25 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         }
         const accepted = decodeRestoreReceipt(progress.terminals[`restored:${old.id}`]);
         const repair = progress.reattachments?.[old.id as "codex" | "pi" | "claude"];
+        const recordedOnly = !!repair || progress.repairedSessions?.[old.id as keyof NonNullable<ProjectProgress["repairedSessions"]>] === true;
         const retiredValue = progress.terminals[`retired:${old.id}`];
         const retired = retiredValue === undefined ? undefined : decodeRestoreReceipt({ state: "done", binding: retiredValue });
         // A #225 restart clears the old target's repair fence, never its accepted conversation.
         const retained = retired?.state === "done" && accepted?.state === "done" && retired.binding.peer === old.id && retired.binding.projectRoot === planned.project.root && retired.binding.sessionId === accepted.binding.sessionId;
-        if ((repair || retained) && accepted?.state === "done") {
+        if ((recordedOnly || retained) && accepted?.state === "done") {
           const session = old.id === "codex" ? peer.threadId : peer.sessionId;
           if (session !== accepted.binding.sessionId || repair && accepted.binding.sessionId !== repair.binding.sessionId ||
-              old.id === "pi" && (repair || old.sessionFile) && accepted.binding.sessionFile && peer.sessionFile !== accepted.binding.sessionFile) throw new Error(`${old.id}: reattached a different recorded conversation`);
+              old.id === "pi" && (recordedOnly || old.sessionFile) && accepted.binding.sessionFile && peer.sessionFile !== accepted.binding.sessionFile) throw new Error(`${old.id}: reattached a different recorded conversation`);
           continue;
         }
-        if (progress.fresh?.[old.id] || planned.freshStart?.includes(old.id)) continue; // #215: a new session was accepted (recorded)
+        if (!recordedOnly && (progress.fresh?.[old.id] || planned.freshStart?.includes(old.id))) continue; // #215: a new session was accepted (recorded)
         if (old.id === "codex" && peer.threadId !== old.threadId) throw new Error("Codex resumed a different conversation");
         if (old.id === "claude" && peer.sessionId !== old.sessionId) {
           // #64: the restore gate already accepted a fresh session when the original never
           // persisted a transcript. Re-derive persistence from the binding exactly like that
           // gate did, so a first turn landing after the plan was made keeps the check strict.
           const binding = (planned.terminals as TerminalBinding[]).find((t) => t.peer === "claude");
-          if (!binding || binding.sessionId !== old.sessionId || claudeTranscriptExists(binding)) throw new Error("Claude resumed a different conversation");
+          if (recordedOnly || !binding || binding.sessionId !== old.sessionId || claudeTranscriptExists(binding)) throw new Error("Claude resumed a different conversation");
         }
         if (old.id === "pi" && (peer.sessionId !== old.sessionId || (old.sessionFile && peer.sessionFile !== old.sessionFile))) throw new Error("Pi resumed a different conversation");
       }

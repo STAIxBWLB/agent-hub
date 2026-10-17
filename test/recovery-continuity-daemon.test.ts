@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -8,7 +8,8 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { readSessions, writeSessions } from "../src/hub/crash.ts";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
-import { readRecoveryContinuity, writeRecoveryContinuity, type RecoveryContinuityBookmark } from "../src/hub/recovery-continuity.ts";
+import { readRecoveryContinuity, retireRecoveryContinuity, writeRecoveryContinuity, type RecoveryContinuityBookmark } from "../src/hub/recovery-continuity.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 import type { TerminalOpener } from "../src/hub/terminal-open.ts";
 
 const OP = "00000000-0000-4000-8000-000000000463";
@@ -100,7 +101,148 @@ test("#463 a proven mismatching archived-session header is retired without falli
   const archive = readdirSync(f.stateDir).find(name => name.startsWith("recovery-continuity.retired.resume_unavailable."));
   expect(archive).toBeDefined();
   expect(JSON.parse(readFileSync(join(f.stateDir, archive!), "utf8")).pi.sessionId).toBe("different-recorded-session");
+  expect(f.log()).toContain("bookmark does not match the preserved session");
+  expect(f.log()).not.toContain("recorded Pi session is unresumable");
   expect(f.log()).not.toContain("started a fresh session");
+});
+
+function continuityRecorder() {
+  // These are the daemon's actual nested closures, with deterministic storage/owner ports.
+  // The real fake-Pi tests above separately establish authenticated adapter integration.
+  const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("daemon.ts", source, ts.ScriptTarget.Latest, true);
+  const daemon = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "startDaemon");
+  if (!daemon || !ts.isFunctionDeclaration(daemon) || !daemon.body) throw new Error("startDaemon body missing");
+  const declaration = (node: ts.Statement, name: string) => ts.isVariableStatement(node) && node.declarationList.declarations.some(item => ts.isIdentifier(item.name) && item.name.text === name);
+  let owner: ts.Block | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isBlock(node) && node.statements.some(item => declaration(item, "sessionsWritten"))) owner = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(daemon.body);
+  if (!owner) throw new Error("session recorder scope missing");
+  const statements = owner.statements;
+  const first = statements.findIndex(node => declaration(node, "sessionsWritten"));
+  const last = statements.findIndex(node => declaration(node, "recordSessions"));
+  if (first < 0 || last < first) throw new Error("session recorder source missing");
+  const js = ts.transpileModule(statements.slice(first, last + 1).map(node => node.getText(ast)).join("\n"), { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
+  const bookmark = { schema: 1, operationId: OP, projectId: "fixture", projectRoot: "/fixture", at: 1, pi: { sessionId: "recorded" } };
+  const ready = { state: "ready", bookmark, digest: "a".repeat(64) };
+  class Owner {
+    id = "pi"; state = "idle"; sessionGeneration = 1; recoveryReady = true;
+    recoveryMetadata() { return { sessionId: "recorded" }; }
+  }
+  const peers = new Map<string, Owner>();
+  const writes: unknown[] = [], calls: unknown[] = [], logs: string[] = [];
+  const state: { disk: unknown; writeFails: boolean } = { disk: ready, writeFails: false };
+  const context = { piContinuity: ready, stopping: false, recoveryActive: () => false,
+    bus: { peers }, PiPeer: Owner, opts: { cwd: "/fixture", stateDir: "/fixture/state" }, projectId: "fixture", instanceId: "current",
+    readRecoveryContinuity: () => state.disk,
+    writeSessions: (_directory: string, value: unknown) => { if (state.writeFails) throw new Error("write failed"); writes.push(value); },
+    consumeRecoveryContinuity: (_directory: string, expected: unknown) => { calls.push(expected); return false; },
+    retireRecoveryContinuity: (_directory: string, expected: unknown) => { calls.push(expected); return { retired: false }; },
+    log: (line: string) => logs.push(line),
+  };
+  const recorder = runInNewContext(`${js}\n({ record: recordSessions, reading: () => piContinuity });`, context) as { record(): void; reading(): { state: string; reason?: string } };
+  return { ...recorder, ready, state, peers, Owner, writes, calls, logs };
+}
+
+test("#166 an unclaimed ready bookmark does not rewrite an unchanged crash-session record", () => {
+  const f = continuityRecorder();
+  f.record(); f.record(); f.record();
+  expect(f.writes).toHaveLength(1);
+  expect(f.calls).toHaveLength(0);
+});
+
+test("#166 a coordinator-removed bookmark clears local readiness even with no Pi owner", () => {
+  const f = continuityRecorder(); f.record();
+  f.state.disk = { state: "absent" }; f.record();
+  expect(f.reading()).toEqual({ state: "absent" });
+  expect(f.calls).toHaveLength(0);
+  expect(f.writes).toHaveLength(1);
+});
+
+test("#166 coordinator retirement clears stale readiness after the attachment CAS misses", () => {
+  const f = continuityRecorder(); f.peers.set("pi", new f.Owner()); f.state.disk = { state: "absent" };
+  f.record(); f.record();
+  expect(f.reading()).toEqual({ state: "absent" });
+  expect(f.calls).toHaveLength(1);
+  expect(f.writes).toHaveLength(1);
+  expect(f.logs.length).toBeLessThanOrEqual(1);
+});
+
+test("#166 unreadable continuity never becomes absence after a failed settlement", () => {
+  const f = continuityRecorder(); f.peers.set("pi", new f.Owner()); f.state.disk = { state: "invalid", reason: "unavailable" };
+  f.record(); f.record();
+  expect(f.reading()).toEqual({ state: "invalid", reason: "unavailable" });
+  expect(f.calls).toHaveLength(1);
+  expect(f.writes).toHaveLength(1);
+});
+
+test("#166 a failed old-bookmark CAS rereads newer evidence without retrying it in the same call", () => {
+  const f = continuityRecorder(); f.peers.set("pi", new f.Owner());
+  const newer = { ...f.ready, digest: "b".repeat(64), bookmark: { ...f.ready.bookmark, operationId: "00000000-0000-4000-8000-000000000464", pi: { sessionId: "newer-session" } } };
+  f.state.disk = newer;
+  f.record();
+  expect(f.calls).toHaveLength(1);
+  expect(f.calls[0]).toMatchObject({ operationId: OP, digest: f.ready.digest });
+  expect(f.state.disk).toBe(newer);
+  expect(f.reading()).toEqual(newer);
+  expect(f.writes).toHaveLength(1);
+});
+
+test("#166 continuity settlement requires a successfully saved crash-session snapshot", () => {
+  const f = continuityRecorder(); f.peers.set("pi", new f.Owner()); f.state.writeFails = true;
+  f.record();
+  expect(f.calls).toHaveLength(0);
+  f.state.writeFails = false; f.state.disk = { state: "absent" };
+  f.record();
+  expect(f.writes).toHaveLength(1);
+  expect(f.calls).toHaveLength(1);
+});
+
+test("#166 authenticated readiness can settle an already durable identical snapshot without rewriting it", () => {
+  const f = continuityRecorder(), peer = new f.Owner(); peer.recoveryReady = false; f.peers.set("pi", peer);
+  f.record();
+  expect(f.writes).toHaveLength(1); expect(f.calls).toHaveLength(0);
+  peer.recoveryReady = true; f.state.disk = { state: "absent" }; f.record();
+  expect(f.writes).toHaveLength(1); expect(f.calls).toHaveLength(1);
+});
+
+class SessionEventPeer extends BasePeer {
+  constructor() { super("claude"); }
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  async deliver() {}
+  busy() { this.setState("busy"); }
+  idle() { this.setState("idle"); }
+  recoveryMetadata() { return { sessionId: "fixture-claude" }; }
+}
+
+test("#166 the actual daemon leaves an unchanged crash record alone while Pi continuity is unclaimed", async () => {
+  const f = rig(); writeRecoveryContinuity(f.stateDir, f.bookmark);
+  const { daemon } = await f.start("tui", { pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false } });
+  const peer = new SessionEventPeer(); daemon.bus.add(peer); await peer.start();
+  const file = join(f.stateDir, "sessions.json"), bytes = readFileSync(file, "utf8"), inode = statSync(file).ino;
+  peer.busy(); peer.idle();
+  expect(readFileSync(file, "utf8")).toBe(bytes);
+  expect(statSync(file).ino).toBe(inode);
+  expect(existsSync(f.file)).toBe(true);
+});
+
+test("#166 coordinator retirement is observed before later authenticated Pi session events", async () => {
+  const f = rig(); const { digest } = writeRecoveryContinuity(f.stateDir, f.bookmark);
+  const { daemon, client } = await f.start("headless", { pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false, backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] } });
+  expect(retireRecoveryContinuity(f.stateDir, { projectId: f.bookmark.projectId, projectRoot: f.cwd, operationId: OP, digest }, "recovery_released").retired).toBe(true);
+  const started = await client.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx", sessionId: f.bookmark.pi.sessionId, sessionFile: f.bookmark.pi.sessionFile } });
+  expect(started.ok).toBe(true);
+  await until(() => daemon.bus.peers.get("pi")?.state === "idle", "recorded Pi authenticated after coordinator retirement");
+  const file = join(f.stateDir, "sessions.json"), inode = statSync(file).ino;
+  daemon.bus.pause("pi", "fixture pause"); daemon.bus.resume("pi");
+  expect(statSync(file).ino).toBe(inode);
+  expect(readSessions(f.stateDir)?.peers.find(row => row.peer === "pi")?.meta.sessionId).toBe(f.bookmark.pi.sessionId);
+  expect((f.log().match(/bookmark changed before attachment settlement/g) ?? []).length).toBeLessThanOrEqual(1);
+  expect(readRecoveryContinuity(f.stateDir, { projectId: f.bookmark.projectId, projectRoot: f.cwd })).toEqual({ state: "absent" });
 });
 
 test("#463 pending continuity prevents crash recovery from replacing the archived session with a fresh Pi", async () => {

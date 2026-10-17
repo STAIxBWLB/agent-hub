@@ -689,7 +689,11 @@ introduced for a marked repair. Strict session/file checks remain for repairs;
 ordinary verified-empty Pi attachments retain their pre-existing id-only rules.
 When `recordRestart` retires a known done or waiting binding from a dead target,
 it clears that binding's repair fence. The normal #225 relaunch preserves its
-accepted conversation and a new target gets its own repair allowance. An uncertain
+accepted conversation and a new target gets its own repair allowance. The additive
+per-peer `repairedSessions: true` provenance survives this fence reset and repeated
+restarts. It authorizes no creation: accepted done/retired bindings remain the
+session source, and fresh-session choices and zero-turn substitutions remain
+excluded for that repaired conversation. An uncertain
 creation with no durable selected binding does not gain a second creation by
 merely losing the target. Database contention retains its typed retryable outcome.
 
@@ -726,3 +730,16 @@ session is proven unresumable, or a later recovery successfully releases the
 project. Unknown I/O or provider failures do not prove an unresumable session.
 Malformed or unverifiable bookmark evidence remains fail-closed. The TUI resume
 argv carries `--session-file` when available, otherwise `--session-id`, never both.
+
+### Continuity retirement follow-up (#463)
+
+An externally retired or replaced bookmark invalidates the daemon's cached copy.
+A failed compare-and-swap re-reads the private bookmark; absence drops the old
+in-memory selection, while newer or unreadable evidence remains distinct from
+absence. Session recording writes `sessions.json` only when its serialized peers
+change. Settlement may use an already durable unchanged crash record but may not
+retire continuity before that record was successfully written. No offline-Pi event
+forces a redundant write. A header whose session id disagrees with the selected
+bookmark is `bookmark_mismatch` (bookmark inconsistent), not evidence that the
+session itself cannot resume. Archival remains non-destructive and never starts
+a fresh session.

@@ -58,6 +58,8 @@ export interface ProjectProgress {
   terminals: Record<string, unknown>;
   /** One durable repair allowance per peer, retained after an attempt to prevent a second relaunch. */
   reattachments?: Partial<Record<RecoveryNativePeer, ReattachmentMarker>>;
+  /** Recorded-session-only continuity, independent of a target incarnation's repair attempt allowance. */
+  repairedSessions?: Partial<Record<RecoveryNativePeer, true>>;
   /** #414: last bounded native-attachment timeout, metadata only; never terminal output or task text. */
   attachmentTimeouts?: Record<string, {
     at: number;
@@ -161,6 +163,8 @@ export function recordRestart(progress: ProjectProgress, at: number): void {
     progress.terminals[`retired:${peer}`] = receipt.binding;
     delete progress.terminals[`closedRetired:${peer}`]; // a newer binding to close: its own receipt starts over
     delete progress.terminals[key];
+    // Older receipts may have only the attempt marker. Retiring that binding must not retire its continuity rule.
+    if (Object.hasOwn(progress.reattachments ?? {}, peer)) (progress.repairedSessions ??= {})[peer as RecoveryNativePeer] = true;
     // The allowance belongs to the target whose exact binding was retired, not every later #225 restart.
     if (progress.reattachments) delete progress.reattachments[peer as RecoveryNativePeer];
   }
@@ -309,7 +313,7 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
 function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
   return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && canChooseFresh(value)).map(([key]) => key.slice("restored:".length))
-    .filter((peer) => peer !== "pi" && !Object.hasOwn(progress.reattachments ?? {}, peer) && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
+    .filter((peer) => peer !== "pi" && !Object.hasOwn(progress.reattachments ?? {}, peer) && !Object.hasOwn(progress.repairedSessions ?? {}, peer) && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
 }
 
 function repairWaiting(op: RecoveryOperation, projectId: string, peer: RecoveryNativePeer): boolean {
@@ -380,6 +384,19 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
       op.projects.some((p, i) => p.id !== op.plan.projects[i]?.project.id)) throw new Error("reviewed operation plan or project scope changed");
   const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
   for (const [index, progress] of op.projects.entries()) {
+    if (progress.repairedSessions !== undefined) {
+      if (!object(progress.repairedSessions)) throw new Error("invalid repaired session provenance");
+      for (const [peer, protectedSession] of Object.entries(progress.repairedSessions)) {
+        const restored = decodeRestoreReceipt(progress.terminals[`restored:${peer}`]);
+        const bindings = [progress.reattachments?.[peer as RecoveryNativePeer]?.binding,
+          restored?.state === "done" || restored?.state === "waiting" ? restored.binding : undefined,
+          progress.terminals[`retired:${peer}`]];
+        if (protectedSession !== true || !bindings.some(binding => {
+          const receipt = decodeRestoreReceipt({ state: "done", binding });
+          return receipt?.state === "done" && receipt.binding.peer === peer && receipt.binding.projectRoot === op.plan.projects[index]?.project.root;
+        })) throw new Error("repaired session provenance does not match its retained peer and project");
+      }
+    }
     if (progress.reattachments === undefined) continue;
     if (!object(progress.reattachments)) throw new Error("invalid reattachment markers");
     for (const [peer, marker] of Object.entries(progress.reattachments)) {
