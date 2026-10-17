@@ -6,7 +6,7 @@ import { Board, type TaskState } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { HUB, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { loadRouting } from "../src/hub/routing.ts";
+import { assign, loadRouting } from "../src/hub/routing.ts";
 import { DEFAULT_TASK_SWEEP, nextSweep, taskSweepConfig } from "../src/hub/task-sweep.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 
@@ -271,4 +271,20 @@ test("ready-unassigned sweep continues after a saved assignment delivery failure
     expect(f.board.get(first.id)?.owner).not.toBeNull(); expect(f.board.get(second.id)?.owner).not.toBeNull();
     expect(f.notices.filter(line => line.includes("delivery is not confirmed"))).toHaveLength(1);
   } finally { f.bus.publish = publish; }
+});
+
+
+test("ordinary ready-unassigned auto-assignment retains quota preference ranking", async () => {
+  const now = Date.now();
+  const quota = { codex: { headroom: 0.8, resetsAt: now + 240 * 60_000 }, kimi: { headroom: 0.4, resetsAt: now + 30 * 60_000 } };
+  const f = await fixture({ quota: () => quota, sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
+  f.peers.local!.set("offline"); f.peers.claude!.set("offline");
+  const task = f.board.propose("user", { title: "ordinary ownerless work", class: "implement" });
+  const states = { codex: "idle", kimi: "idle", local: "offline", claude: "offline" } as const;
+  expect(assign(task, states, f.deps.routing()).owner).toBe("codex");
+  expect(assign(task, states, f.deps.routing(), { quota, now }).owner).toBe("kimi");
+  const at = task.created;
+  for (const delay of [61_000, 122_000, 183_000]) await f.tasks.sweep(at + delay);
+  expect(f.board.get(task.id)?.owner).toBe("kimi");
+  expect(f.notices.join("\n")).toContain("Owner reassignment suggestion: kimi.");
 });

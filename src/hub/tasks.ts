@@ -327,7 +327,7 @@ export class Tasks {
             if (finding.step === 2 || !planners.length) this.releaseNotice(text);
             for (const peer of planners) this.releaseNotice(`task #${task.id}: sweep notice unavailable`, () => this.sweepNotice(task, peer, `${text} Check the board and assign, re-plan or cancel it.`, "planner"));
           } else {
-            const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() });
+            const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class) });
             this.releaseNotice(`${text} Owner reassignment suggestion: ${admission.owner ?? "no eligible peer"}.`);
             if (admission.owner && this.sweepConfig.auto_reassign && this.sweepAvailable(admission.owner)) {
               try { await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [admission.owner], event: "reassigned", reason: "idle", note: "ready-unassigned idle sweep" }); }
