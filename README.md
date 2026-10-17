@@ -74,7 +74,7 @@ cd <your project> && ahub init && ahub up
 `ahub upgrade` moves them to the latest release.
 
 After upgrading to 0.12.31, run `ahub jcode --mode headless` once in each project
-that uses Jcode to refresh its owned MCP entry before daemon/conductor starts.
+that uses Jcode to refresh its owned MCP entry before conductor or dashboard starts of Jcode.
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. For local/Pi implementation, opt in to an
 available `checks.runner = "container"`; issue-backed owners also need authenticated
