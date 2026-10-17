@@ -3188,3 +3188,10 @@ boundary, while the CLI enforces interactive TTY, explicit y and the deadline.
 The roster exact-key mutation guard observes admission while teardown is held,
 before reload can repair a wrong whole-roster assignment. The roster authority seed
 covers the dashboard authority boundary; its separate leaf check is defence in depth.
+
+Console undo binds its confirmation to the previewed setting key and the SHA-256
+of the exact undo record. A changed or missing record refuses without writing;
+same-key replacement also invalidates the preview. These optional request fields
+preserve protocol 16 for older direct CLI clients. The Settings panel never forces
+a busy roster removal: it names `ahub roster remove <peer> --now` and the active-turn
+stop/detach consequence so the person can make that choice explicitly in the CLI.

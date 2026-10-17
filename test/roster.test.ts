@@ -209,6 +209,9 @@ test("busy owned ACP removal is refused until --now stops it, and a conductor ho
     hub.daemon.bus.publish(newEnvelope(USER, "ACK_SLOW removal fixture", { to: ["kimi"] }));
     for (let n = 0; n < 100 && owner.state !== "busy"; n++) await hub.client.request({ t: "status" });
     expect(owner.state).toBe("busy");
+    const preview = await hub.client.request({ t: "settings_preview", key: "roster.kimi", value: false });
+    expect(preview.lines.join("\n")).toContain("ahub roster remove kimi --now");
+    expect(preview.lines.join("\n")).toContain("during the active turn");
     expect(await hub.client.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi" })).toMatchObject({ ok: false, error: "kimi is in a turn; retry when it is idle, or pass --now" });
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);
     expect(await hub.client.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi", now: true })).toMatchObject({ ok: true });

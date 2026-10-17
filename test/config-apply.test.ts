@@ -14,6 +14,15 @@ const authorize = (input: Record<string, unknown>): LeafDecision => (configAutho
 }).authorizeConfigLeaf(input);
 const ordinary = { source: "config", tracked: true, authority: "ordinary" };
 
+test("#439 delegated catalog and profile maps reject reserved names before confirmation", () => {
+  for (const name of ["constructor", "prototype", "__proto__"]) {
+    const catalog = JSON.parse(JSON.stringify({ catalog_roles: { [name]: [] } }));
+    expect(() => validateRawConfig(catalog)).toThrow("unknown key");
+    const profile = JSON.parse(JSON.stringify({ profile_overrides: { classes: { [name]: "implement" } } }));
+    expect(() => validateRawConfig(profile)).toThrow("unknown key");
+  }
+});
+
 test("#439 leaf authorization automatically admits privacy tightening and role removal from tracked or untracked sources", () => {
   for (const tracked of [true, false, undefined]) {
     for (const change of [

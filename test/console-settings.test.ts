@@ -3,6 +3,7 @@ import { initialConsoleState, reduceConsole, renderConsole } from "../src/cli/co
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
 
 const row = { key: "approvals.notify", group: "Switches", label: "Desktop notice", type: "boolean", file: "config.local.json", applies: "restart", restartReason: "Notifier is created at startup", risk: "safe", value: false, fileValue: true, source: "config.local.json", pending: true };
+const undoDigest = "d".repeat(64);
 const tick = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 function fixture(preview?: (msg: any) => Promise<any>, selectedRow: Record<string, unknown> = row) {
   let data = (_text: string) => {};
@@ -11,7 +12,7 @@ function fixture(preview?: (msg: any) => Promise<any>, selectedRow: Record<strin
   const client = { onPush: (_msg: any) => {}, onClose: (_code: number, _reason: string) => {}, send: (_msg: any) => {}, close: () => {}, request: async (msg: any) => {
     requests.push(msg);
     if (msg.t === "settings_get") return { ok: true, rows: [selectedRow], undo: selectedRow.key, pendingRestart: [{ key: row.key, reason: row.restartReason }] };
-    if (msg.t === "settings_preview") return preview ? preview(msg) : { ok: true, key: row.key, lines: ["preview only, notifier restarts"], confirm: "approved-setting-token" };
+    if (msg.t === "settings_preview") return preview ? preview(msg) : { ok: true, key: row.key, ...(msg.undo ? { undoDigest } : {}), lines: ["preview only, notifier restarts"], confirm: "approved-setting-token" };
     if (msg.t === "settings_set" || msg.t === "settings_undo") return { ok: true, text: "saved" };
     return { ok: true, status: { peers: {}, pendingRestart: [{ key: row.key, reason: row.restartReason }] }, budget: {}, text: "[]", deliveries: [] };
   } };
@@ -42,7 +43,7 @@ test("#439 Settings set uses preview, a reason and explicit y through the existi
 
 test("#439 Settings undo previews and requires its own reason and explicit y", async () => {
   const f = fixture();
-  try { f.input("6"); await tick(); f.input("u"); await tick(); expect(f.requests.find(msg => msg.t === "settings_preview")).toEqual({ t: "settings_preview", undo: true }); reason(f); expect(writes(f)).toEqual([]); f.input("y"); await tick(); expect(writes(f)).toEqual([{ t: "settings_undo", reason: "test reason", confirm: "approved-setting-token" }]); }
+  try { f.input("6"); await tick(); f.input("u"); await tick(); expect(f.requests.find(msg => msg.t === "settings_preview")).toEqual({ t: "settings_preview", undo: true }); reason(f); expect(writes(f)).toEqual([]); f.input("y"); await tick(); expect(writes(f)).toEqual([{ t: "settings_undo", key: row.key, undoDigest, reason: "test reason", confirm: "approved-setting-token" }]); }
   finally { await f.stop(); }
 });
 
@@ -69,4 +70,29 @@ test("#439 console submits a fractional sweep duration as a number", async () =>
   const f = fixture(undefined, { ...row, key: "task_sweep.interval_s", type: "number", value: 300, fileValue: 300, applies: "live" });
   try { await edit(f, "1.5"); expect(f.requests.find(msg => msg.t === "settings_preview")?.value).toBe(1.5); reason(f); f.input("y"); await tick(); expect(writes(f)[0]?.value).toBe(1.5); }
   finally { await f.stop(); }
+});
+
+for (const [name, binding] of [
+  ["legacy undo preview", {}],
+  ["missing key", { undoDigest }],
+  ["invalid digest", { key: row.key, undoDigest: "not-a-digest" }],
+  ["empty key", { key: "", undoDigest }],
+] as const) test(`#439 console refuses an unbound undo preview: ${name}`, async () => {
+  const f = fixture(async () => ({ ok: true, ...binding, lines: ["old undo preview"], confirm: "old-token" }));
+  try {
+    f.input("6"); await tick(); f.input("u"); await tick();
+    expect(f.output.join("")).toContain("undo preview");
+    reason(f); f.input("y"); await tick();
+    expect(writes(f)).toEqual([]);
+  } finally { await f.stop(); }
+});
+
+test("#439 busy roster preview explains the manual --now choice without forcing a console write", async () => {
+  const command = "ahub roster remove kimi --now";
+  const f = fixture(async () => ({ ok: true, lines: [`Busy peer: ${command} stops its active turn before removal; queued and uncertain deliveries are retained.`], confirm: "kimi" }), { ...row, key: "roster.kimi", group: "Roster", value: true, fileValue: true, applies: "live" });
+  try {
+    await edit(f, "false"); expect(f.output.join("")).toContain(command); expect(f.output.join("")).toContain("stops its active turn");
+    reason(f); f.input("y"); await tick();
+    expect(writes(f)).toEqual([{ t: "settings_set", key: "roster.kimi", value: false, reason: "test reason", confirm: "kimi" }]);
+  } finally { await f.stop(); }
 });

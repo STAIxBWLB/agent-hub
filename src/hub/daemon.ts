@@ -77,7 +77,7 @@ import { AssignmentUndeliveredError, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
-import { SETTINGS, checkSettingValue, ignoredLine, pendingUndo, readOverlay, restoredValue, routingCandidate, storedLocally, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue } from "./settings.ts";
+import { SETTINGS, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -4039,7 +4039,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ? `Stop ${peer}'s existing work in its retained terminal; removal detaches the hub connection and does not stop that terminal's work.`
       : undefined;
   }
-  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: "dashboard" | "terminal", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = "ordinary", reason?: string): Promise<Record<string, unknown>> {
+  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: "dashboard" | "terminal", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = "ordinary", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const peer = def.path[1]!;
     let saved = false;
@@ -4054,7 +4054,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roster changes" };
       rosterChanging = peer;
-      if (undo) undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), (_routing, overlay) => routingWriteCheck(authority, overlay));
+      if (undo) undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), (_routing, overlay) => routingWriteCheck(authority, overlay), undoIdentity);
       else writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, `roster.${peer}`));
       // Apply exactly the authorized key. Other file edits stay pending until the next hub start.
       config.roster = next;
@@ -4158,22 +4158,27 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
 
-  async function settingsUndo(authority: SettingAuthority, confirm?: unknown, now?: unknown, rawReason?: unknown): Promise<Record<string, unknown>> {
+  async function settingsUndo(authority: SettingAuthority, confirm?: unknown, now?: unknown, rawReason?: unknown, expectedKey?: unknown, expectedDigest?: unknown): Promise<Record<string, unknown>> {
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding settings" };
     let reason: string | undefined;
     try { reason = settingReason(rawReason); } catch (error) { return { ok: false, error: (error as Error).message }; }
     // The previous version can hold a wider value than the one in force, so undo is never an ordinary session's.
     if (authority === "ordinary") return { ok: false, error: "undo can put back a value that widens what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings undo in a terminal" };
-    const def = settingDef(pendingUndo(opts.stateDir));
-    if (typeof def === "string") return { ok: false, error: "nothing to undo" };
-    if (def.group === "Roster") return changeRosterSetting(def, null, settingSource(authority), confirm, now === true, true, authority, reason);
+    const identity = pendingUndoIdentity(opts.stateDir);
+    if (expectedKey !== undefined || expectedDigest !== undefined) {
+      if (typeof expectedKey !== "string" || !expectedKey || typeof expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(expectedDigest)) return { ok: false, error: "invalid undo preview identity; preview again; nothing was undone" };
+      if (!identity || identity.key !== expectedKey || identity.undoDigest !== expectedDigest) return { ok: false, error: "undo record changed since preview; preview again; nothing was undone" };
+    }
+    const def = settingDef(identity?.key);
+    if (typeof def === "string" || !identity) return { ok: false, error: "nothing to undo" };
+    if (def.group === "Roster") return changeRosterSetting(def, null, settingSource(authority), confirm, now === true, true, authority, reason, identity);
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const read = (): SettingValue => def.store === "routing" ? routingValue(activeRouting(), def) : settingScalar(valueAt(storedConfig(), def.path));
     // never-ask is set with its confirmation, never put back by an undo that carries none.
     if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} again (never-ask, or inherit where the shared file holds it) with the confirmation instead; nothing was undone` };
     try {
       const from = read();
-      undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, def.path.join(".")), (_routing, overlay) => routingWriteCheck(authority, overlay, def.key));
+      undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, def.path.join(".")), (_routing, overlay) => routingWriteCheck(authority, overlay, def.key), identity);
       const result = await reloadConfig(authority, def.store === "routing" ? def.key : def.path.join("."));
       if (result.ok !== true) return { ...result, saved: true };
       recordSetting(def.key, from, read(), settingSource(authority), true, reason);
@@ -4191,7 +4196,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (def.group === "Roster") {
       try {
         const peer = def.path[1]!, next = rosterCandidate(def, value), on = rosterAllows(next, peer, config.pi.enabled);
-        return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
+        return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", `For a busy peer, use ahub roster remove ${peer} --now explicitly; this stops its owned runtime or detaches its native session during the active turn.`, ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
     if (def.key === "scoped_grants.protect_instructions") return { ok: true, lines: ["Applies now to scoped writes and edits of AGENTS.md, CLAUDE.md and QWEN.md, including symlinks and folded spellings.", "true asks a person; false keeps these documents grantable (the default). Explicit approval and never-ask keep their meaning."] };
@@ -4214,10 +4219,11 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   function settingsUndoPreview(): Record<string, unknown> {
-    const def = settingDef(pendingUndo(opts.stateDir));
-    if (typeof def === "string") return { ok: false, error: "nothing to undo" };
-    const value = restoredValue(opts.cwd, opts.stateDir, def);
-    return { ...settingsPreview(def.key, value ?? null), key: def.key, lines: [`Undo ${def.key}: put back ${settingText(value)}`, "The saved previous machine-local file is revalidated before writing."] };
+    const identity = pendingUndoIdentity(opts.stateDir), def = settingDef(identity?.key);
+    if (typeof def === "string" || !identity) return { ok: false, error: "nothing to undo" };
+    const value = restoredValue(opts.cwd, opts.stateDir, def), preview = settingsPreview(def.key, value ?? null);
+    if (pendingUndoIdentity(opts.stateDir)?.undoDigest !== identity.undoDigest) return { ok: false, error: "undo record changed during preview; preview again" };
+    return { ...preview, ...identity, lines: [`Undo ${def.key}: put back ${settingText(value)}`, ...(Array.isArray(preview.lines) ? preview.lines : []), "The saved previous machine-local file is revalidated before writing."] };
   }
 
   async function uiAction(a: Record<string, unknown>, session?: DashboardSession): Promise<unknown> {
@@ -4300,7 +4306,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "setting":
         return settingsSet(a.key, a.value, authority, a.confirm, a.now, a.reason);
       case "setting_undo":
-        return settingsUndo(authority, a.confirm, a.now, a.reason);
+        return settingsUndo(authority, a.confirm, a.now, a.reason, a.key, a.undoDigest);
       case "setting_preview":
         return a.undo === true ? settingsUndoPreview() : settingsPreview(a.key, a.value);
       case "setting_reload":
@@ -4980,7 +4986,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       case "settings_undo":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
-        return void settingsUndo("terminal", msg.confirm, msg.now, msg.reason).then(reply, () => reply({ ok: false, error: "the setting could not be undone; inspect hub.log" }));
+        return void settingsUndo("terminal", msg.confirm, msg.now, msg.reason, msg.key, msg.undoDigest).then(reply, () => reply({ ok: false, error: "the setting could not be undone; inspect hub.log" }));
       case "kimi_launch_end": {
         if (c.role !== "console") return void reply({ ok: false, error: "Kimi launch cleanup is console only" });
         if (typeof msg.admissionId === "string" && msg.admissionId === kimiAdmissionId) clearKimiAdmission();

@@ -1439,7 +1439,11 @@ override them.
 In `ahub console`, press `6` for Settings. Existing operational-tab arrow cycling
 is unchanged; from Settings, Left returns to Events and Right to Peers. Select a
 row and press `e` to edit: value, daemon preview, nonempty reason, then `y`. Press
-`u` to preview and confirm undo. Esc cancels, and pasted confirmation text cannot
+`u` to preview and confirm undo. Undo binds the key and exact undo-record digest;
+if another write replaces that record, preview again. For busy roster removal,
+the panel names `ahub roster remove <peer> --now`, which explicitly stops an owned
+runtime or detaches a native session during its active turn; the panel does not force it.
+Esc cancels, and pasted confirmation text cannot
 write. This panel uses the current authenticated daemon connection.
 
 The dashboard's Settings section and `ahub settings` show and change the same

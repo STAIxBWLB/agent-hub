@@ -247,11 +247,13 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const edit = state.settingsEdit;
       if (!active || state.mode !== "panels" || state.panel !== 6 || !edit || edit.phase !== "preview" || edit.token !== action.token || edit.undo !== action.undo || edit.key !== action.key || (!action.undo && JSON.stringify(edit.value) !== JSON.stringify(action.value))) return;
       if (response.ok === false) { state.settingsEdit = undefined; notice(String(response.error ?? "setting preview refused")); }
-      else state.settingsEdit = { ...edit, phase: "reason", text: "", lines: [...(Array.isArray(response.lines) ? response.lines.map(String) : []), ...(Array.isArray(response.tasks) ? response.tasks.flatMap((task: any) => [String(task.before?.join("\n") ?? ""), String(task.after?.join("\n") ?? "")]) : []), ...(response.hidden ? [`${response.hidden} more open tasks are not shown`] : [])], ...(typeof response.confirm === "string" ? { confirm: response.confirm } : {}) };
+      else if (action.undo && (typeof response.key !== "string" || !response.key || response.key.trim() !== response.key || response.key.length > 160 || typeof response.undoDigest !== "string" || !/^[a-f0-9]{64}$/i.test(response.undoDigest))) {
+        state.settingsEdit = undefined; notice("undo preview is unavailable or changed; reload settings and review it again");
+      } else state.settingsEdit = { ...edit, ...(action.undo ? { key: response.key, undoDigest: response.undoDigest } : {}), phase: "reason", text: "", lines: [...(Array.isArray(response.lines) ? response.lines.map(String) : []), ...(Array.isArray(response.tasks) ? response.tasks.flatMap((task: any) => [String(task.before?.join("\n") ?? ""), String(task.after?.join("\n") ?? "")]) : []), ...(response.hidden ? [`${response.hidden} more open tasks are not shown`] : [])], ...(typeof response.confirm === "string" ? { confirm: response.confirm } : {}) };
       draw(); return;
     }
     if (action.type === "settings_write") {
-      const result = await client.request({ t: action.undo ? "settings_undo" : "settings_set", ...(!action.undo ? { key: action.key, value: action.value } : {}), reason: action.reason, ...(action.confirm ? { confirm: action.confirm } : {}) }, 35_000);
+      const result = await client.request({ t: action.undo ? "settings_undo" : "settings_set", key: action.key, ...(!action.undo ? { value: action.value } : { undoDigest: action.undoDigest }), reason: action.reason, ...(action.confirm ? { confirm: action.confirm } : {}) }, 35_000);
       if (!active) return;
       if (result.ok === false) notice(String(result.error ?? "setting write refused"));
       else stream({ text: String(result.text ?? "setting saved"), kind: "settings" });

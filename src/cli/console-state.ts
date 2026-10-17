@@ -16,7 +16,7 @@ export interface PermissionDefault { peer: string; mode: "never-ask"; source: st
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface SettingsEdit {
   token: number; key?: string; undo: boolean; phase: "value" | "preview" | "reason" | "confirm";
-  text: string; value?: SettingValue; reason?: string; lines?: string[]; confirm?: string;
+  text: string; value?: SettingValue; reason?: string; lines?: string[]; confirm?: string; undoDigest?: string;
 }
 export interface ConsoleState {
   settingsRows?: SettingRow[]; settingsKnown?: boolean; settingsUndo?: string; settingsProblem?: string;
@@ -51,7 +51,7 @@ export interface ConsoleState {
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
   { type: "settings_preview"; token: number; key?: string; value?: SettingValue; undo: boolean } |
-  { type: "settings_write"; key?: string; value?: SettingValue; undo: boolean; reason: string; confirm?: string } |
+  { type: "settings_write"; key?: string; value?: SettingValue; undo: boolean; reason: string; confirm?: string; undoDigest?: string } |
   { type: "permission_default"; peer: string; confirmed: boolean } | { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
@@ -459,7 +459,10 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (edit.phase === "preview") return done();
     if (edit.phase === "confirm") {
       s.settingsEdit = undefined;
-      if (key === "y") effects.push({ type: "settings_write", undo: edit.undo, ...(edit.key ? { key: edit.key } : {}), ...(!edit.undo ? { value: edit.value } : {}), reason: edit.reason!, ...(edit.confirm ? { confirm: edit.confirm } : {}) });
+      if (key === "y") {
+        if (edit.undo && (!edit.key || !edit.undoDigest)) { notify(s, "undo preview changed; reload settings and review it again", now); return done(); }
+        effects.push({ type: "settings_write", undo: edit.undo, ...(edit.key ? { key: edit.key } : {}), ...(!edit.undo ? { value: edit.value } : { undoDigest: edit.undoDigest }), reason: edit.reason!, ...(edit.confirm ? { confirm: edit.confirm } : {}) });
+      }
       return done();
     }
     if (key === "\x7f" || key === "\b") edit.text = Array.from(edit.text).slice(0, -1).join("");

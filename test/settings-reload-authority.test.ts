@@ -7,6 +7,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { createHash } from "node:crypto";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -359,4 +360,77 @@ test("#439 confirmed routing dictionaries preserve quoted route names containing
   expect((await f.row("routing.classes.implement.route")).values).not.toContain("sy/model.v1");
   expect((await f.reload(preview.confirmation.token)).ok).toBe(true);
   expect((await f.row("routing.classes.implement.route")).values).toContain("sy/model.v1");
+}, 15_000);
+
+test("#439 undo preview cannot undo a different key written by another console", async () => {
+  const f = await fixture();
+  expect((await f.set("research.enabled", true)).ok).toBe(true);
+  const preview = await f.client.request({ t: "settings_preview", undo: true });
+  expect(preview.ok).toBe(true);
+  const oldRecord = readFileSync(join(f.state, "settings-undo.json"), "utf8");
+  // The fallback reaches the actual stale-undo effect on the pre-fix daemon rather than failing only on
+  // missing reply metadata. The reply's identity contract is asserted separately below.
+  const oldDigest = preview.undoDigest ?? createHash("sha256").update(oldRecord).digest("hex");
+  const other = await ControlClient.connect(f.state, { role: "console" }); cleanup.push(() => other.close());
+  expect((await other.request({ t: "settings_set", key: "snapshots.enabled", value: true, reason: "another person's console" })).ok).toBe(true);
+  const localBefore = readFileSync(f.file("config.local.json"), "utf8");
+  const undoBefore = readFileSync(join(f.state, "settings-undo.json"), "utf8");
+  const stale = await f.client.request({ t: "settings_undo", key: preview.key ?? "research.enabled", undoDigest: oldDigest });
+  expect(stale.ok).toBe(false);
+  expect(String(stale.error)).toContain("changed");
+  expect((await f.row("research.enabled")).value).toBe(true);
+  expect((await f.row("snapshots.enabled")).value).toBe(true);
+  expect(readFileSync(f.file("config.local.json"), "utf8")).toBe(localBefore);
+  expect(readFileSync(join(f.state, "settings-undo.json"), "utf8")).toBe(undoBefore);
+  expect(preview.key).toBe("research.enabled");
+  expect(preview.undoDigest).toMatch(/^[a-f0-9]{64}$/);
+}, 15_000);
+
+test("#439 undo identity distinguishes replacement records for the same key and keeps legacy clients working", async () => {
+  const f = await fixture();
+  expect((await f.set("research.enabled", true)).ok).toBe(true);
+  const oldPreview = await f.client.request({ t: "settings_preview", undo: true });
+  expect(oldPreview.ok).toBe(true);
+  const oldDigest = oldPreview.undoDigest ?? createHash("sha256").update(readFileSync(join(f.state, "settings-undo.json"))).digest("hex");
+  const other = await ControlClient.connect(f.state, { role: "console" }); cleanup.push(() => other.close());
+  expect((await other.request({ t: "settings_set", key: "research.enabled", value: false, reason: "replace this key's undo record" })).ok).toBe(true);
+  const localBefore = readFileSync(f.file("config.local.json"), "utf8");
+  const undoBefore = readFileSync(join(f.state, "settings-undo.json"), "utf8");
+  const stale = await f.client.request({ t: "settings_undo", key: "research.enabled", undoDigest: oldDigest });
+  expect(stale.ok).toBe(false);
+  expect(String(stale.error)).toContain("changed");
+  expect((await f.row("research.enabled")).value).toBe(false);
+  expect(readFileSync(f.file("config.local.json"), "utf8")).toBe(localBefore);
+  expect(readFileSync(join(f.state, "settings-undo.json"), "utf8")).toBe(undoBefore);
+  expect(oldPreview.undoDigest).toMatch(/^[a-f0-9]{64}$/);
+  const fresh = await f.client.request({ t: "settings_preview", undo: true });
+  expect(fresh.ok).toBe(true); expect(fresh.key).toBe("research.enabled");
+  expect(fresh.undoDigest).toMatch(/^[a-f0-9]{64}$/);
+  expect(fresh.undoDigest).not.toBe(oldDigest);
+  expect((await f.client.request({ t: "settings_undo", key: fresh.key, undoDigest: fresh.undoDigest })).ok).toBe(true);
+  expect((await f.row("research.enabled")).value).toBe(true);
+  // Protocol 16 clients that supplied neither identity field retain their existing immediate-undo operation.
+  expect((await f.set("research.enabled", false)).ok).toBe(true);
+  expect((await f.client.request({ t: "settings_undo" })).ok).toBe(true);
+  expect((await f.row("research.enabled")).value).toBe(true);
+}, 15_000);
+
+test("#439 partial or malformed undo identity refuses without consuming the current record", async () => {
+  const f = await fixture();
+  expect((await f.set("research.enabled", true)).ok).toBe(true);
+  const localBefore = readFileSync(f.file("config.local.json"), "utf8");
+  const undoBefore = readFileSync(join(f.state, "settings-undo.json"), "utf8");
+  const digest = createHash("sha256").update(undoBefore).digest("hex");
+  for (const identity of [
+    { key: "research.enabled" }, { undoDigest: digest },
+    { key: 3, undoDigest: digest }, { key: "", undoDigest: digest },
+    { key: "research.enabled", undoDigest: "not-a-digest" }, { key: "research.enabled", undoDigest: null },
+  ]) {
+    expect((await f.client.request({ t: "settings_undo", ...identity })).ok).toBe(false);
+    expect((await f.row("research.enabled")).value).toBe(true);
+    expect(readFileSync(f.file("config.local.json"), "utf8")).toBe(localBefore);
+    expect(readFileSync(join(f.state, "settings-undo.json"), "utf8")).toBe(undoBefore);
+  }
+  expect((await f.client.request({ t: "settings_undo" })).ok).toBe(true);
+  expect((await f.row("research.enabled")).value).toBe(false);
 }, 15_000);

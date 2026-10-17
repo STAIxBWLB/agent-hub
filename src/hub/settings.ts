@@ -299,11 +299,13 @@ export function readOverlay(cwd: string): RoutingOverlay {
  * Puts back the one previous version of the file the last settings write changed. Refused when the file changed since
  * that write (a hand edit would be lost), when the loaders no longer accept that version, or when there is nothing to undo.
  */
-export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown, checkRouting?: (routing: Routing, overlay?: RoutingOverlay) => void): { key: string; file: StoredFile } {
+export interface UndoIdentity { key: string; undoDigest: string }
+export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown, checkRouting?: (routing: Routing, overlay?: RoutingOverlay) => void, expected?: UndoIdentity): { key: string; file: StoredFile } {
   const raw = readText(undoFile(stateDir));
   if (raw === null) throw new Error("nothing to undo");
   let record: UndoRecord;
   try { record = JSON.parse(raw) as UndoRecord; } catch { throw new Error("nothing to undo"); }
+  if (expected && (record.key !== expected.key || digest(raw) !== expected.undoDigest)) throw new Error("undo record changed since preview; preview again; nothing was undone");
   if (record.file !== CONFIG_LOCAL && record.file !== OVERLAY_FILE) throw new Error("nothing to undo");
   const path = join(cwd, ".agenthub", record.file);
   if (digest(readText(path)) !== record.written) throw new Error(`.agenthub/${record.file} changed since the last settings write; nothing was undone`);
@@ -316,6 +318,7 @@ export function undoSetting(cwd: string, stateDir: string, validate: (scratch: s
     checkRouting?.(restored, overlay);
   }
   else checkConfigText(cwd, record.previous, validate);
+  if (expected && readText(undoFile(stateDir)) !== raw) throw new Error("undo record changed since preview; preview again; nothing was undone");
   replaceFile(path, record.file, record.previous);
   rmSync(undoFile(stateDir), { force: true });
   return { key: String(record.key), file: record.file };
@@ -342,7 +345,14 @@ export function restoredValue(cwd: string, stateDir: string, def: SettingDef, in
 }
 /** The key the next undo would put back, if any. */
 export function pendingUndo(stateDir: string): string | undefined {
-  try { const record = JSON.parse(readFileSync(undoFile(stateDir), "utf8")) as UndoRecord; return typeof record.key === "string" ? record.key : undefined; } catch { return undefined; }
+  return pendingUndoIdentity(stateDir)?.key;
+}
+/** Snapshot identity of the exact record, including its previous bytes, file and write time. */
+export function pendingUndoIdentity(stateDir: string): UndoIdentity | undefined {
+  try {
+    const raw = readFileSync(undoFile(stateDir), "utf8"), record = JSON.parse(raw) as UndoRecord;
+    return typeof record.key === "string" && record.key.length > 0 ? { key: record.key, undoDigest: digest(raw)! } : undefined;
+  } catch { return undefined; }
 }
 
 /** The loader's line saying it ignored this setting's field in the machine-local file, if it did (config trust, #17). */
