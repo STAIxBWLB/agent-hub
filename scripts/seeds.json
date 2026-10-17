@@ -116,8 +116,8 @@
     {
       "id": "roster-d-exact-key",
       "file": "src/hub/daemon.ts",
-      "search": "      config.roster = next;",
-      "replacement": "      config.roster = storedConfig()!.roster;",
+      "search": "      const reloaded = await reloadConfig(authority, `roster.${peer}`);",
+      "replacement": "      const reloaded = await reloadConfig(authority, `roster.${peer}`);\n      config.roster = storedConfig()!.roster;",
       "testFile": "test/roster.test.ts",
       "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
     },

@@ -204,7 +204,7 @@ test("queued completion screens raw tail again after the privacy policy changes 
   await f.complete(run, { tail: "newly-private content" });
   mkdirSync(join(f.root, ".agenthub"), { recursive: true });
   const basePolicy = readFileSync(join(import.meta.dir, "..", "templates", "routing.toml"), "utf8");
-  const policy = basePolicy.replace(/^pii_patterns =.*$/m, `pii_patterns = ${JSON.stringify([...(Bun.TOML.parse(basePolicy).signals as { pii_patterns: string[] }).pii_patterns, "(^|\\n)newly-private"])}`);
+  const policy = basePolicy.replace(/^pii_patterns =.*$/m, `pii_patterns = ${JSON.stringify([...(Bun.TOML.parse(basePolicy) as { signals: { pii_patterns: string[] } }).signals.pii_patterns, "(^|\\n)newly-private"])}`);
   writeFileSync(join(f.root, ".agenthub", "routing.toml"), policy);
   const console_ = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => console_.close());
   // A harmless reload barrier carries ordinary dashboard authority, never person approval of tightening.
