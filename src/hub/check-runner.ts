@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, readlink, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { hubGitEnv, hubGitSync } from "./git.ts";
 import { hostExecutable } from "./host-executable.ts";
@@ -506,18 +506,8 @@ export class ContainerRunner {
     }
     // A crash before a receipt rename must not retain an unindexed staging directory forever.
     for (const name of await readdir(this.root).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; })) {
-      if (!/^[a-f0-9-]{36}$/.test(name) || this.entries.has(name)) continue;
+      if (!/^[a-f0-9-]{36}$/.test(name) || this.entries.has(name) || this.unknownReceiptIds.has(name)) continue;
       const path = join(this.root, name); const st = await lstat(path);
-      if (this.unknownReceiptIds.has(name)) {
-        // Unknown ownership never authorizes source/container deletion. Bound only regular output, without following links.
-        if (!st.isDirectory()) continue;
-        const output = join(path, "output.log");
-        try {
-          const file = await lstat(output);
-          if (file.isFile() && this.now() - file.mtimeMs >= DAY) await unlink(output);
-        } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        continue;
-      }
       if (this.now() - st.mtimeMs >= DAY) await rm(path, { recursive: true, force: true });
     }
   }
