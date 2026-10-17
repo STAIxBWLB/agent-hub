@@ -61,7 +61,7 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
     const launch = (meta.launch && typeof meta.launch === "object" ? meta.launch : {}) as Record<string, unknown>;
     const model = str(launch.model);
     const adapter = definitionOf(peer);
-    if (adapter?.transport === "acp" && adapter.start.create) {
+    if (adapter?.session.resumeById) {
       const sessionId = adapter.session.crashIdentity?.(meta).sessionId;
       if (!sessionId) return { peer, how: `${peer}: saved ACP session identity unavailable; start it deliberately with ahub ${peer}` };
       return { peer, resume: { sessionId, ...(model ? { model } : {}) }, how: `${peer}: the recorded conversation can be loaded again (ACP session/load)` };

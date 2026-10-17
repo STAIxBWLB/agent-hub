@@ -155,7 +155,10 @@ export interface AdapterDefinition {
     transcriptExists?(binding: TerminalBinding): boolean | "unknown";
     zeroTurnFresh?: boolean;
     freshOnRestore?: boolean;
+    /** The daemon restores recorded startup options before auto-starting this kind. */
     restoreOnStart?: boolean;
+    /** Recovery passes the verified native session id to this kind's start command. */
+    resumeById?: boolean;
     launchKind?: string;
     launchRecord?: boolean;
     crashIdentity?(row: unknown): { sessionId?: string; sessionFile?: string };

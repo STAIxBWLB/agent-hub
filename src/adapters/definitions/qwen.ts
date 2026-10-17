@@ -56,7 +56,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
       return typeof sessionId === "string" ? sessionId : undefined;
     },
     launchKind: "acp",
-    restoreOnStart: true,
+    resumeById: true,
     crashIdentity: row => {
       const sessionId = row && typeof row === "object" ? (row as { sessionId?: unknown }).sessionId : undefined;
       return qwenSessionId(sessionId) ? { sessionId } : {};

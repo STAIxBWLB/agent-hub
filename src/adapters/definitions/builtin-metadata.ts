@@ -92,7 +92,7 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
     identity: { mcp: "env" },
     // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
     permission: { modes: {}, grants: { ...hubGrants } },
-    session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "pi", launchRecord: true },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true },
     turnEnd: "adapter", budget: { account: "pi" },
     cli: { command: "pi", startWords: form => ["pi", "--mode", form] }, display: palette("#c79936"),
   },

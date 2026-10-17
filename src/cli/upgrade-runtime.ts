@@ -286,7 +286,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         const session = peer.id === "codex" ? peer.threadId : peer.sessionId;
         if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required; next action: reconnect the original native session and make a new recovery plan`);
         else sessions[peer.id] = session;
-      } else if (adapter?.session.restoreOnStart || peer.id === "jcode") {
+      } else if (adapter?.session.resumeById || peer.id === "jcode") {
         const session = adapter?.session.crashIdentity ? adapter.session.crashIdentity(peer).sessionId : qwenSessionId(peer.sessionId);
         if (!session) blockers.push(`${peer.id}: saved ACP session identity unavailable; end the peer and make a new recovery plan`);
       } else if (peer.id === "pi" && peer.args?.mode === "tui") {
@@ -606,7 +606,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const verified = { ...target, targetFeatures };
       // Existing peer/waiver compatibility checks remain properties of the already verified bytes.
       if (op.targetDigest && op.targetDigest === target.digest && op.targetRoot === target.root) return verified;
-      if (op.plan.projects.some(p => p.source.peers.some(peer => definitionOf(peer.id)?.session.restoreOnStart && peer.state !== "offline"))) {
+      if (op.plan.projects.some(p => p.source.peers.some(peer => definitionOf(peer.id)?.session.resumeById && peer.state !== "offline"))) {
         const catalog = join(target.root, "src/hub/peer-catalog.ts");
         const peers = existsSync(catalog) ? /export const OPTIONAL_PEERS\s*=\s*\[([^\]]*)\]/.exec(readFileSync(catalog, "utf8"))?.[1] : undefined;
         if (!peers || !/["']qwen["']/.test(peers)) throw new FinalRefusal("target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged");
@@ -703,7 +703,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           // #269: `ahub pi` without a mode now takes Pi's start mode (tui by default). This Pi ran headless (a terminal
           // one is filtered out above), so a snapshot that recorded no mode still restores it headless.
           if (peer.id === "pi" && typeof peer.args?.mode !== "string") args.push("--mode", "headless");
-          if (definitionOf(peer.id)?.session.restoreOnStart && peer.sessionId) args.push("--session-id", peer.sessionId);
+          if (definitionOf(peer.id)?.session.resumeById && peer.sessionId) args.push("--session-id", peer.sessionId);
           if (peer.id === "jcode" && peer.sessionId) args.push("--session-id", peer.sessionId);
           if (peer.id === "jcode" && peer.args?.providerProfile) args.push("--provider-profile", peer.args.providerProfile);
           if (peer.id === "pi") {

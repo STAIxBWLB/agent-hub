@@ -10,7 +10,7 @@ export interface InventorySite {
   file: string;
   symbol: string;
   line: number;
-  pattern: "comparison" | "closed-list-import" | "vendor-literal";
+  pattern: "comparison" | "kind-aware-comparison" | "closed-list-import" | "vendor-literal";
   text: string;
 }
 export interface BaselineEntry { file: string; symbol: string; count: number }
@@ -132,10 +132,10 @@ function scanScript(file: string, source: string, prefix: string, lineOffset: nu
   const visit = (node: ts.Node): void => {
     if (ts.isBinaryExpression(node) && equality.has(node.operatorToken.kind)) {
       const left = literal(node.left), right = literal(node.right);
-      if (left !== undefined && VENDORS.has(left) && !kindAware(node.right, resolver) || right !== undefined && VENDORS.has(right) && !kindAware(node.left, resolver)) add(node, "comparison");
+      if (left !== undefined && VENDORS.has(left) || right !== undefined && VENDORS.has(right)) add(node, kindAware(left !== undefined && VENDORS.has(left) ? node.right : node.left, resolver) ? "kind-aware-comparison" : "comparison");
     } else if (ts.isCaseClause(node) && VENDORS.has(literal(node.expression) ?? "")) {
       const owner = node.parent.parent;
-      if (!ts.isSwitchStatement(owner) || !kindAware(owner.expression, resolver)) add(node, "comparison");
+      add(node, ts.isSwitchStatement(owner) && kindAware(owner.expression, resolver) ? "kind-aware-comparison" : "comparison");
     } else if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && CLOSED_MODULE.test(node.moduleSpecifier.text)) {
       const bindings = node.importClause?.namedBindings;
       if (bindings && ts.isNamespaceImport(bindings)) add(node, "closed-list-import");

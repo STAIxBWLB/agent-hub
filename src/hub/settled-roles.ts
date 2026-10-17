@@ -1,5 +1,5 @@
 import { conductorPeer } from "./conductor.ts";
-import { PLANNER_PEERS } from "./peer-catalog.ts";
+import { PLANNER_PEERS } from "../adapters/registry.ts";
 
 export interface SettledRoles {
   roles: Record<string, string[]>;

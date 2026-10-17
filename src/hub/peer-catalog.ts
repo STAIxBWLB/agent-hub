@@ -15,14 +15,5 @@ export const isKnownPeer = (value: unknown): value is KnownPeer =>
 export const isSupportedPeer = (value: unknown): value is KnownPeer =>
   typeof value === "string" && !!definitionOf(value);
 
-// Policy metadata, not a membership list. Preserve DEFAULT_ROLES' existing key order.
-const ROLE_ORDER: readonly KnownPeer[] = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode"];
-
-/** Each caller owns its role arrays; changing a project's defaults cannot change another's. */
-export function defaultPeerRoles(includeOptional = false): Record<string, string[]> {
-  return Object.fromEntries(ROLE_ORDER.filter(peer => includeOptional || !definitionOf(peer)!.optional)
-    .map(peer => [peer, [...definitionOf(peer)!.roles]]));
-}
-
-/** #455: who may hold the planner role, in the order automatic assignment tries them; the hub-sandboxed pi and local never plan. */
-export const PLANNER_PEERS = ["claude", "codex", "kimi", "qwen", "jcode"] as const;
+// Policy and historical projection order belong to the registry; public compatibility exports remain intact.
+export { defaultPeerRoles, PLANNER_PEERS } from "../adapters/registry.ts";

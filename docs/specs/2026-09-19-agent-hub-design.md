@@ -3260,3 +3260,22 @@ same scanner reports 428/172 on that main and 415/171 on the combined A1 source.
 Every added or increased baseline entry matches that main-only delta; A1 still
 removes thirteen sites and one group. This explicit reconciliation precedes the
 first shipped baseline and does not permit later phases to grow it.
+
+## Adapter registry A2 amendment (#451)
+
+A2 counts native-name comparisons even when a trusted registry resolver supplies
+its left or right operand. These sites use the `kind-aware-comparison` inventory
+pattern and the same lexical file/symbol group as a raw comparison, including
+switch cases. Replacing a raw comparison with `kindOf` or `definitionOf(...).kind`
+therefore does not shrink a baseline group. Alias and shadowing checks remain in
+force. The pre-existing kind-aware preview site is counted explicitly; the A1
+source has 415 other sites plus that one site. A2 removes the transitional
+baseline by migrating policy, rather than by adding resolver exemptions.
+
+Session metadata distinguishes native resume arguments from daemon startup
+restoration. `session.resumeById` means that recovery passes the verified native
+session id to the start command (Qwen). `session.restoreOnStart` means that the
+daemon restores recorded startup options before automatic startup (Pi). Neither
+flag proves that a conversation can be resumed or permits a fresh replacement.
+Crash recovery tests `resumeById` and uses `crashIdentity`; transport choice or the
+presence of a factory does not establish that capability.
