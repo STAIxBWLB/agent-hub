@@ -72,3 +72,25 @@ test("memory dedupe listing and apply are console-only and audit-labeled without
 test("explicit Pi history replacement is a person-only CLI command", () => {
   expect(classifyPeerCommand("pi", ["--replace-session", "--session-file", "preserved.jsonl"])).toBe("console");
 });
+
+test("AC6: console refusal explains inherited markers and bang commands (#434)", () => {
+  const refusal = peerCommandRefusal("claude", "queue");
+  expect(refusal).toContain("inherited agent markers");
+  expect(refusal).toContain("! command");
+  expect(refusal).toContain("separate terminal");
+  expect(refusal).toContain("ahub console");
+});
+
+
+test("console refusal names only identity markers actually present, never their values (#434 follow-up)", () => {
+  const markerOnly = peerCommandRefusal("codex", "queue", { CODEX_THREAD_ID: "private-thread-marker" });
+  expect(markerOnly).toContain("CODEX_THREAD_ID");
+  expect(markerOnly).not.toContain("CLAUDECODE");
+  expect(markerOnly).not.toContain("AGENTHUB_PEER_ID");
+  expect(markerOnly).not.toContain("private-thread-marker");
+  const combined = peerCommandRefusal("claude", "queue", { CLAUDECODE: "1", AGENTHUB_PEER_ID: "private-peer-marker" });
+  expect(combined).toContain("CLAUDECODE"); expect(combined).toContain("AGENTHUB_PEER_ID");
+  expect(combined).not.toContain("CODEX_THREAD_ID"); expect(combined).not.toContain("private-peer-marker");
+  const empty = peerCommandRefusal("claude", "queue", {});
+  for (const marker of ["CLAUDECODE", "AGENTHUB_PEER_ID", "CODEX_THREAD_ID"]) expect(empty).not.toContain(marker);
+});

@@ -72,8 +72,8 @@ test("a PII owner withdrawal notice uses the public title and a private delivery
   const shown = JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
   expect(shown.owner).toBe("local");
   expect((await console_.request({ t: "task", op: "task_unassign", args: { id: 1, revision: shown.flowRevision } })).ok).toBe(true);
-  await until(() => local.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")), "PII withdrawal notice");
-  const notice = local.got.find(env => env.kind === "status" && env.body.includes("no longer assigned"));
+  await until(() => local.got.some(env => env.kind === "task" && env.body.includes("no longer assigned")), "PII withdrawal notice");
+  const notice = local.got.find(env => env.kind === "task" && env.body.includes("no longer assigned"));
   expect(notice).toMatchObject({ private: true });
   expect(notice.body).toContain("[pii]");
   expect(notice.body).not.toContain("900101");
@@ -2198,4 +2198,57 @@ test("office turn task privacy is revalidated after a live routing policy change
   expect(shot.tasks.find((task: any)=>task.id===1).title).toBe("[pii]");
   expect(shot.status.peers.slow.turn.task).toBeUndefined();
   expect(shot.status.peers.slow.turn.attribution).toBe("delivery");
+});
+
+
+test("AC1: an unseen push safely requeues originals for hub_inbox (#434)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const plain = await fakeClaude(stateDir, null);
+  await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true);
+  const peer = daemon.bus.peers.get("claude") as any;
+  const deliver = peer.deliver.bind(peer);
+  peer.deliver = (...args: any[]) => { peer.pullOnly = true; return deliver(...args); };
+  peer.pullOnly = false; // exercise an older hub/racing push to a non-channel session
+  await console_.request({ t: "send", body: "unseen original", to: ["claude"] });
+  await until(() => daemon.bus.queueList("claude").some(row => row.state === "failed"), "failed-safe receipt");
+  expect(daemon.bus.queueList("claude").some(row => row.state === "needs_review")).toBe(false);
+  const result = await plain.client.callTool({ name: "hub_inbox", arguments: {} });
+  expect(JSON.stringify(result)).toContain("unseen original");
+  expect(daemon.bus.queued("claude")).toBe(0);
+});
+
+test("AC1: a thrown notification keeps needs_review because a write may already have left (#434)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const wrapper = join(stateDir, "throw-notification.ts");
+  writeFileSync(wrapper, `import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))};
+const notification = Server.prototype.notification;
+Server.prototype.notification = async function (message, options) {
+  if (message.method === "notifications/claude/channel") throw new Error("fixture notification write threw");
+  return notification.call(this, message, options);
+};
+await import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});
+`);
+  const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
+  const transport = new StdioClientTransport({ command: "bun", args: [wrapper], env: { ...process.env as Record<string,string>, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "" }, stderr: "pipe" });
+  let diagnostics = "";
+  transport.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
+  await client.connect(transport); cleanup.push(() => client.close());
+  await until(() => diagnostics.includes('connected to hub as "claude"'), "throw fixture connected");
+  await console_.request({ t: "send", body: "uncertain write", to: ["claude"] });
+  await until(() => daemon.bus.queueList("claude").some(row => row.state === "needs_review"), "uncertain receipt");
+  expect(daemon.bus.queueList("claude").find(row => row.state === "needs_review")?.reason).toContain("fixture notification write threw");
+  expect(daemon.bus.queueList("claude").some(row => row.state === "failed")).toBe(false);
+});
+
+test("AC1: a push-capable session cannot return a possibly visible push as failed_safe (#434)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", channel: true });
+  cleanup.push(() => peer.close());
+  const pushes: any[] = []; peer.onPush = message => pushes.push(message);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle");
+  await console_.request({ t: "send", body: "possibly visible", to: ["claude"] });
+  await until(() => pushes.some(message => message.t === "deliver"));
+  const delivery = pushes.find(message => message.t === "deliver");
+  expect((await peer.request({ t: "delivery_receipt", deliveryId: delivery.deliveryId, generation: delivery.generation, state: "failed_safe" })).ok).toBe(false);
+  expect(daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("dispatching");
 });
