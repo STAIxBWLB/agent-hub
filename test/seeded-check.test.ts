@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { applySeed, classifyRun, copyTracked, readSeeds } from "../scripts/seeded-check.ts";
+import { applySeed, classifyRun, copyTracked, readSeeds, shardSeeds } from "../scripts/seeded-check.ts";
 
 test("seed manifest and exact source replacement reject rot and ambiguous matches", () => {
   expect(applySeed("a guard b", { search: "guard", replacement: "$& weakened" })).toBe("a $& weakened b");
@@ -82,4 +82,14 @@ test("seed diagnostic exclusion applies only to Bun's numbered source excerpts (
   expect(() => classifyRun(excerpts + "[hub] error: actual setup failure\n" + assertion, 1, "roster guard", true)).toThrow("invalid detection: setup, compiler or timeout failure");
   // An echoed assertion cannot stand in for the actual assertion diagnostic.
   expect(() => classifyRun("190 | error: expect(received).toBe(expected)\n(fail) roster guard [1ms]\n 0 pass\n 1 fail\n", 1, "roster guard", true)).toThrow("failure is not the named assertion");
+});
+
+test("shards cover every seed exactly once and refuse malformed specs (#457)", () => {
+  const seeds = readSeeds(readFileSync(join(import.meta.dir, "../scripts/seeds.json"), "utf8"));
+  expect(shardSeeds(seeds, undefined)).toBe(seeds);
+  const parts = [1, 2, 3, 4].map(i => shardSeeds(seeds, `${i}/4`));
+  expect(parts.flat().map(seed => seed.id).sort()).toEqual(seeds.map(seed => seed.id).sort());
+  expect(new Set(parts.flat().map(seed => seed.id)).size).toBe(seeds.length);
+  expect(Math.max(...parts.map(p => p.length)) - Math.min(...parts.map(p => p.length))).toBeLessThanOrEqual(1);
+  for (const bad of ["0/4", "5/4", "1/0", "a/4", "1/4/2", "1/65"]) expect(() => shardSeeds(seeds, bad)).toThrow("invalid shard");
 });
