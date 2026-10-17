@@ -2668,7 +2668,7 @@ export class Tasks {
     let n = 0;
     for (const t of this.d.board.list("approved")) {
       if (this.isPii(t)) continue;
-      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key)) { this.settleMemory(t); n++; } }
+      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key, { includeLegacy: true })) { this.settleMemory(t); n++; } }
       catch { /* fail-open: tried again at the next start */ }
     }
     return n;

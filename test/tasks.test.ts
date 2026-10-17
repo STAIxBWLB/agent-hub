@@ -1,7 +1,8 @@
 import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { Database } from "bun:sqlite";
+import { MemoryStore, migrate, taskKey } from "@staix/agent-mem";
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
@@ -3590,4 +3591,35 @@ test("#146 capability admission keeps eligible offline reservations and same-val
   const task = await f.tasks.propose(USER, { title: "reserved #418", class: "implement", owner: "pi", backlog: true });
   expect(task).toMatchObject({ reserved: "pi", owner: null });
   expect(await f.tasks.planBacklog(USER, { id: task.id, revision: 0, fields: { reserved: "pi" }, reason: "retain reservation" })).toMatchObject({ reserved: "pi" });
+});
+
+test("start reconciliation preserves migrated legacy settlements without authoring generation rows (#432)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-migrated-settle-")), home = join(dir, "home"), project = "synthetic/migration";
+  const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
+  let store: MemoryStore | undefined;
+  try {
+    const task = board.propose(USER, { title: "approved before migration", class: "implement" });
+    board.update(task.id, "codex", "accepted", { owner: "codex", state: "in_progress" });
+    board.update(task.id, "codex", "done", { state: "approved" });
+    const key = taskKey(project, task);
+    const old = new MemoryStore({ home, deferPromotions: true });
+    old.note({ op: "note", project, scope: "project", tier: "short", kind: "finding", peer: "codex", source: "hub", task: key,
+      text: "finding settled by the legacy hub", about: [`task:${key}`] });
+    old.settle(key, "claude"); old.close();
+    await migrate({ memoryDir: join(home, "memory"), mode: "apply", generation: "c".repeat(32), authorizedPerson: true, tty: true });
+    store = new MemoryStore({ home, deferPromotions: true });
+    const authored = () => Object.fromEntries(["log", "local"].flatMap(folder => readdirSync(join(store!.dir, folder))
+      .filter(name => name.endsWith(".jsonl")).map(name => [`${folder}/${name}`, readFileSync(join(store!.dir, folder, name), "utf8")])));
+    const before = authored();
+    const tasks = new Tasks({ board, bus, cwd: dir, project, routing: () => loadRouting(dir), store: { store, project, repo: project } });
+    expect(store.hasTask(key)).toBe(true);
+    expect(store.settled(key)).toBe(false);
+    expect(store.settled(key, { includeLegacy: true })).toBe(true);
+    expect(tasks.reconcileMemory()).toBe(0);
+    expect(tasks.reconcileMemory()).toBe(0);
+    expect(authored()).toEqual(before);
+    expect(store.settled(key)).toBe(false);
+  } finally {
+    store?.close(); bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true });
+  }
 });
