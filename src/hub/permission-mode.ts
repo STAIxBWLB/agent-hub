@@ -6,7 +6,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 export const PERMISSION_MODES = ["ask", "ask-when-needed", "never-ask"] as const;
 export type PermissionMode = typeof PERMISSION_MODES[number];
 export const KIMI_MODE_IDS: Readonly<Record<PermissionMode, string>> = { ask: "default", "ask-when-needed": "yolo", "never-ask": "auto" };
-export const QWEN_MODE_IDS: Readonly<Record<PermissionMode, string>> = { ask: "default", "ask-when-needed": "auto-edit", "never-ask": "yolo" };
+export { QWEN_MODE_IDS } from "../adapters/definitions/qwen-native.ts";
 export const isPermissionMode = (value: unknown): value is PermissionMode => typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value);
 export function permissionDefaults(value: unknown): Record<string, PermissionMode> {
   if (value === undefined) return {};

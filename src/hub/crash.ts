@@ -1,3 +1,4 @@
+import { qwenSessionId } from "../adapters/definitions/qwen-native.ts";
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { JournalDelivery } from "./delivery-journal.ts";
@@ -47,7 +48,7 @@ export function removeSessions(stateDir: string, instanceId?: string): void {
   if (instanceId === undefined || readSessions(stateDir)?.instanceId === instanceId) rmSync(fileOf(stateDir), { force: true });
 }
 
-export const qwenSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value);
+export { qwenSessionId };
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 

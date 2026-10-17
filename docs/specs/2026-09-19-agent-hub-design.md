@@ -3195,3 +3195,40 @@ same-key replacement also invalidates the preview. These optional request fields
 preserve protocol 16 for older direct CLI clients. The Settings panel never forces
 a busy roster removal: it names `ahub roster remove <peer> --now` and the active-turn
 stop/detach consequence so the person can make that choice explicitly in the CLI.
+
+
+### Adapter registry A1 (#451)
+
+A1 introduces API 1 definitions for the seven existing kinds and separates a peer
+id from its adapter kind through `kindOf`, `definitionOf` and `familyOf`. With no
+instance declarations, only builtin ids resolve. A suffix is never guessed. This
+phase does not enable instance configuration, account changes or new native modes.
+Existing external-client admission and lazy roster behaviour remain unchanged.
+
+Qwen is the first migrated ACP kind. Its definition owns the existing headless
+launch/factory, exact 0.25.0 identity, permission-mode mapping and session rules.
+The direct `AcpPeer` `qwen025` option and public helper exports remain compatible;
+legacy benchmark ACP without that flag stays unmanaged. Other kinds retain their
+existing runtime paths until A2; their registry metadata is not proof of a running
+or authenticated native client.
+
+Two additive fields complete source inputs omitted from the A0 type sketch:
+
+- `LaunchContext.nativeCommand?: readonly string[]` carries the already-validated
+  native argv, including wrapper arguments. Only core config or the existing
+  redacted preview supplies it; definitions never load daemon config or recover
+  commands from environment text. Model tool schemas do not expose this field.
+- `permission.grants?: Partial<Record<PermissionMode, string>>` carries existing
+  operator explanations as static data. It changes no approval decision, scope or
+  native mode. The frozen `CreateContext` and transport-specific options stay intact.
+
+The guard inventories AST comparisons, closed-list imports and vendor literals,
+including inline dashboard scripts, under stable file/symbol scopes. Its reviewed
+A1 baseline records the current source, rather than claiming the old A0 grep's
+265 line matches equal AST node counts. A new group, count growth or stale entry
+fails; later phases may only shrink this baseline. Only real, unshadowed registry
+resolver imports exempt kind-aware comparisons. Native adapter implementations and
+explicit non-peer config semantics remain the narrow exceptions. Existing literal
+catalog exports used by older recovery source probes are retained until their
+replacement compatibility proof is available; a refactor must not silently make a
+Qwen-capable target appear unsupported.
