@@ -1846,8 +1846,12 @@ export async function startDaemon(opts: DaemonOptions) {
       let receipt = await checkRunner.result(a.run);
       const task = receipt ? board.get(receipt.task) : undefined;
       if (!receipt || by !== USER && (receipt.owner !== by || !task || tasks.isPii(task))) throw new PreEffectToolRefusal("check unavailable");
-      if (!currentCheck(receipt)) { await checkRunner.markStale(receipt.run); receipt = { ...receipt, status: "stale" }; }
       if (receipt.status === "stale" && by !== USER) throw new PreEffectToolRefusal("check unavailable: stale binding");
+      if (!currentCheck(receipt)) {
+        await checkRunner.markStale(receipt.run); receipt = { ...receipt, status: "stale" };
+        // markStale persists and can abort a run: a refusal after it is never proof of absent effects.
+        if (by !== USER) throw new Error("check unavailable: stale binding");
+      }
       if (op === "hub_check_cancel") {
         await checkRunner.cancel(receipt.run);
         return JSON.stringify({ run: receipt.run, cancelled: true });

@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
+import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
 import { fetchSpec, specAvailable, specRefs } from "../src/hub/spec-read.ts";
 
 const repo = "owner/project", dirs: string[] = [];
@@ -129,4 +131,30 @@ test("file paths with issue-like suffixes are not qualified references (#418 rew
   }
   expect(specRefs({ title: "#418 contract", detail: "owner/project#12", refs: {} }, repo)).toEqual([418, 12]);
   expect(() => specRefs({ title: "work", detail: "foreign/repo#12", refs: {} }, repo)).toThrow("other repository");
+});
+
+
+test("deterministic spec withholding settles Pi receipts, while transport failures stay uncertain (#141)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-spec-refusal-")); dirs.push(dir);
+  let ledger = new PiToolReceipts(join(dir, "hub.db"));
+  try {
+    for (const [id, perform, message] of [
+      ["foreign", async () => { specRefs({ title: "foreign/repo#418", detail: "", refs: {} }, repo); return "unexpected"; }, "other repository"],
+      ["cap", async () => { specRefs({ title: "#1 #2 #3 #4", detail: "", refs: {} }, repo); return "unexpected"; }, "too many spec references"],
+      ["size", () => fetchSpec(repo, 418, { ...response(row({ body: "x".repeat(65537) })), screen }).then(JSON.stringify), "spec too large (65537 > 65536); ask the reviewer to put the contract in the repo"],
+      ["policy", () => fetchSpec(repo, 418, { ...response(row()), screen: () => false }).then(JSON.stringify), "spec withheld by privacy policy"],
+    ] as const) {
+      const result = await ledger.execute("spec-session", id, "hub_task_spec", {}, perform);
+      expect(result).toBe(`error: ${message}`);
+      expect(await ledger.execute("spec-session", id, "hub_task_spec", {}, async () => { throw new Error("must not replay"); })).toBe(result);
+    }
+    await ledger.close(); ledger = new PiToolReceipts(join(dir, "hub.db"));
+    expect(await ledger.execute("spec-session", "foreign", "hub_task_spec", {}, async () => { throw new Error("must not replay after restart"); })).toBe("error: other repository");
+    await expect(fetchSpec(repo, 0, { screen })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    const malformed = fake("process.stdout.write('malformed');");
+    await expect(fetchSpec(repo, 418, { ...malformed, screen })).rejects.not.toBeInstanceOf(PreEffectToolRefusal);
+    const result = await ledger.execute("spec-session", "transport", "hub_task_spec", {}, () => fetchSpec(repo, 418, { path: "/missing-gh-fixture", screen }).then(JSON.stringify));
+    expect(result).toContain("outcome is uncertain");
+    expect(ledger.unsettled).toBe(true);
+  } finally { await ledger.close(); }
 });

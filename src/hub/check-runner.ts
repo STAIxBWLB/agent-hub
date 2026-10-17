@@ -30,7 +30,7 @@ export interface RunReceipt extends CheckRequest {
 export interface RunHandle { run: string; done: Promise<RunReceipt> }
 export interface CommandResult { code: number | null; stdout: string }
 /** Fixed-argv transport seam. The production implementation below is the only container spawner. */
-export type ContainerCommand = (args: string[], options?: { signal?: AbortSignal; output?: (data: Buffer) => void }) => Promise<CommandResult>;
+export type ContainerCommand = (args: string[], options?: { signal?: AbortSignal; timeoutMs?: number; output?: (data: Buffer) => void }) => Promise<CommandResult>;
 export interface RunnerOptions {
   projectDir: string; stateDir: string; storageDir: string; projectKey: string;
   enabled: boolean | (() => boolean); isDenied: (path: string) => boolean;
@@ -39,6 +39,7 @@ export interface RunnerOptions {
   isCurrent?: (request: CheckRequest) => boolean;
   /** Test seams; never supplied from a tool request or config. */
   command?: ContainerCommand; timeoutMs?: number; lockWaitMs?: number; lockPollMs?: number;
+  schedule?: (callback: () => void, ms: number) => () => void;
   now?: () => number; liveness?: typeof processLiveness; signature?: typeof processSignature;
 }
 interface Entry { receipt: RunReceipt; resolve: (receipt: RunReceipt) => void; abort: AbortController }
@@ -59,13 +60,13 @@ function tail(text: string, truncated = false): string {
   while (Buffer.byteLength(result) > (cut ? 4090 : 4096)) result = result.slice(1);
   return cut ? `[cut]\n${result}` : result;
 }
-function runContainer(executable: string, args: string[], options: { signal?: AbortSignal; output?: (data: Buffer) => void } = {}): Promise<CommandResult> {
+function runContainer(executable: string, args: string[], options: { signal?: AbortSignal; timeoutMs?: number; output?: (data: Buffer) => void } = {}): Promise<CommandResult> {
   return new Promise((resolveResult, reject) => {
     // No host shell or inherited agent credentials. Only the container client connects to its service.
     const env = { PATH: dirname(executable), HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
     const child = spawn(executable, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), options.output ? 610_000 : 15_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), Math.max(1, Math.min(600_000, options.timeoutMs ?? 15_000)));
     const abort = () => child.kill("SIGKILL");
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();
@@ -109,7 +110,7 @@ export class ContainerRunner {
     return result.stdout;
   }
   private enabled(): boolean { return typeof this.options.enabled === "function" ? this.options.enabled() : this.options.enabled; }
-  async available(): Promise<RunnerState> {
+  async available(signal?: AbortSignal): Promise<RunnerState> {
     if (!this.enabled()) return { available: false, reason: "not enabled" };
     if (!this.signature) return { available: false, reason: "hub identity unavailable" };
     if (!this.common) {
@@ -118,10 +119,16 @@ export class ContainerRunner {
     if (this.availableCache && this.now() - this.availableCache.at < 60_000) return this.availableCache.value;
     let value: RunnerState;
     try {
-      const version = await this.command(["--version"]);
-      const service = await this.command(["system", "status"]);
-      const image = await this.command(["image", "inspect", CHECK_IMAGE]);
-      const network = await this.command(["network", "inspect", NETWORK]);
+      const probe = async (args: string[]) => {
+        if (signal?.aborted) throw new Error("check stopped");
+        const result = await this.command(args, { signal, timeoutMs: 15_000 });
+        if (signal?.aborted) throw new Error("check stopped");
+        return result;
+      };
+      const version = await probe(["--version"]);
+      const service = await probe(["system", "status"]);
+      const image = await probe(["image", "inspect", CHECK_IMAGE]);
+      const network = await probe(["network", "inspect", NETWORK]);
       value = version.code !== 0 || service.code !== 0 || image.code !== 0
         ? { available: false, reason: "service or pinned image unavailable" }
         : network.code !== 0 && network.code !== 1
@@ -129,7 +136,7 @@ export class ContainerRunner {
           : network.code === 0 && !isolatedNetwork(network.stdout)
           ? { available: false, reason: "network isolation unverified" }
           : { available: true, platform: `linux/arm64 (apple-container ${version.stdout.trim().slice(0, 80)})` };
-    } catch { value = { available: false, reason: "container unavailable" }; }
+    } catch { if (signal?.aborted) throw new Error("check stopped"); value = { available: false, reason: "container unavailable" }; }
     const checkedAt = this.now();
     value.checkedAt = checkedAt;
     this.availableCache = { at: checkedAt, value };
@@ -280,41 +287,56 @@ export class ContainerRunner {
   }
   private async execute(entry: Entry): Promise<void> {
     const r = entry.receipt, begun = this.now(), dir = join(this.root, r.run), src = join(dir, "src");
-    let release: (() => Promise<void>) | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+    let release: (() => Promise<void>) | undefined, cancelDeadline: (() => void) | undefined;
     let output = Buffer.alloc(0), outputTail = Buffer.alloc(0), attemptedContainer = false;
     try {
       this.ensureCurrent(entry);
       await this.save(r); this.ensureCurrent(entry);
-      const state = await this.available(); this.ensureCurrent(entry); if (!state.available) throw new Error(`runner unavailable: ${state.reason}`);
+      const state = await this.available(entry.abort.signal); this.ensureCurrent(entry); if (!state.available) throw new Error(`runner unavailable: ${state.reason}`);
       r.platform = state.platform!;
       release = await this.heavy(entry); this.ensureCurrent(entry);
       if (entry.abort.signal.aborted) throw new Error("cancelled");
-      timer = setTimeout(() => { r.timed_out = true; entry.abort.abort(); void this.cleanup(r.container); }, this.options.timeoutMs ?? 600_000);
-      await this.snapshot(r, src, entry.abort.signal, () => this.ensureCurrent(entry));
+      const timeout = Math.max(1, Math.min(600_000, this.options.timeoutMs ?? 600_000)), deadline = this.now() + timeout;
+      const expire = () => { r.timed_out = true; entry.abort.abort(); void this.cleanup(r.container); };
+      const schedule = this.options.schedule ?? ((callback: () => void, ms: number) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); });
+      cancelDeadline = schedule(expire, timeout);
+      const checkRunning = () => {
+        this.ensureCurrent(entry);
+        if (!entry.abort.signal.aborted && this.now() >= deadline) expire();
+        if (entry.abort.signal.aborted) throw new Error("check stopped");
+      };
+      const command = async (args: string[], limit = 15_000, output?: (data: Buffer) => void) => {
+        checkRunning();
+        const result = await this.command(args, { signal: entry.abort.signal, timeoutMs: Math.min(limit, deadline - this.now()), ...(output ? { output } : {}) });
+        checkRunning(); // A transport may return success after cancellation; it cannot authorize another stage.
+        return result;
+      };
+      await this.snapshot(r, src, entry.abort.signal, checkRunning);
       this.ensureCurrent(entry);
       if (entry.abort.signal.aborted) throw new Error("cancelled");
-      const network = await this.command(["network", "inspect", NETWORK]); this.ensureCurrent(entry);
-      if (network.code !== 0 && (await this.command(["network", "create", "--internal", NETWORK])).code !== 0) throw new Error("runner unavailable: internal network unavailable");
+      const network = await command(["network", "inspect", NETWORK]); this.ensureCurrent(entry);
+      if (network.code !== 0 && (await command(["network", "create", "--internal", NETWORK])).code !== 0) throw new Error("runner unavailable: internal network unavailable");
       this.ensureCurrent(entry);
       // Refuse an existing non-internal network rather than trusting its name.
-      const info = await this.command(["network", "inspect", NETWORK]); this.ensureCurrent(entry);
+      const info = await command(["network", "inspect", NETWORK]); this.ensureCurrent(entry);
       if (info.code !== 0 || !isolatedNetwork(info.stdout)) throw new Error("runner unavailable: network isolation unverified");
       r.status = "running"; await this.save(r); this.ensureCurrent(entry);
       attemptedContainer = true;
-      const run = await this.command(["run", "--detach", "--rm", "--name", r.container, "--label", `agenthub.project=${this.options.projectKey}`, "--label", `agenthub.hub=${process.pid}:${this.signature}`, "--label", `agenthub.run=${r.run}`, "--network", NETWORK, "--no-dns", "--cpus", "2", "--memory", "4g", "--workdir", "/work", CHECK_IMAGE, "sleep", "600"], { signal: entry.abort.signal });
+      // Cold VM startup and a <=1.5 GiB source/dependency transfer need their own bounded allowances.
+      const run = await command(["run", "--detach", "--rm", "--name", r.container, "--label", `agenthub.project=${this.options.projectKey}`, "--label", `agenthub.hub=${process.pid}:${this.signature}`, "--label", `agenthub.run=${r.run}`, "--network", NETWORK, "--no-dns", "--cpus", "2", "--memory", "4g", "--workdir", "/work", CHECK_IMAGE, "sleep", "600"], 120_000);
       this.ensureCurrent(entry);
       if (run.code !== 0) throw new Error("runner unavailable: container start failed");
-      const copy = await this.command(["cp", `${src}/.`, `${r.container}:/work`], { signal: entry.abort.signal });
+      const copy = await command(["cp", `${src}/.`, `${r.container}:/work`], 180_000);
       this.ensureCurrent(entry);
       if (copy.code !== 0) throw new Error("container source transfer failed");
       if (entry.abort.signal.aborted) throw new Error("cancelled");
       const words = r.check === "test" ? ["bun", "test", ...r.files!] : ["bun", "x", "--no-install", "tsc", "--noEmit"];
-      const result = await this.command(["exec", "--workdir", "/work", r.container, ...words], { signal: entry.abort.signal, output: data => {
+      const result = await command(["exec", "--workdir", "/work", r.container, ...words], 600_000, data => {
         r.output_bytes += data.length;
         if (output.length < MAX_OUTPUT) output = Buffer.concat([output, data.subarray(0, MAX_OUTPUT - output.length)]);
         outputTail = Buffer.concat([outputTail, data]).subarray(-16_384);
         r.truncated = r.output_bytes > MAX_OUTPUT;
-      } });
+      });
       this.ensureCurrent(entry);
       r.exit = entry.abort.signal.aborted ? null : result.code;
     } catch (error) {
@@ -322,7 +344,8 @@ export class ContainerRunner {
       r.error = entry.abort.signal.aborted ? "check stopped" : code ? "check filesystem or runtime unavailable" : error instanceof Error ? error.message : "check unavailable";
     }
     finally {
-      if (timer) clearTimeout(timer);
+      cancelDeadline?.();
+      // Teardown has separate bounded commands so an expired check can still prove container removal.
       const removed = !attemptedContainer || await this.cleanup(r.container);
       if (!removed) { r.error = "container cleanup unconfirmed; heavy slot retained"; r.exit = null; }
       await rm(src, { recursive: true, force: true }).catch(() => {});

@@ -1,3 +1,4 @@
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { spawn } from "node:child_process";
 import { hostExecutable } from "./host-executable.ts";
 import type { Task } from "./board.ts";
@@ -10,7 +11,7 @@ export interface SpecResult { number: number; title: string; state: string; upda
 /** PATH/shorter timeout are host-owned fixture seams, never tool inputs. */
 export interface SpecOptions { path?: string; timeoutMs?: number; projectDir?: string; }
 export interface FetchSpecOptions extends SpecOptions { screen: (whole: string) => boolean | Promise<boolean>; }
-function validRepo(repo: string): void { if (!REPO.test(repo)) throw new Error("other repository"); }
+function validRepo(repo: string): void { if (!REPO.test(repo)) throw new PreEffectToolRefusal("other repository"); }
 
 /** Resolve only task-bound issue references; foreign references never fall through to local #N. */
 export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial<Pick<Task, "external">>, repo: string): number[] {
@@ -25,22 +26,22 @@ export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial
   }
   if (!references.length && task.external === undefined && !task.refs.repo) return [];
   validRepo(repo);
-  if (task.refs.repo && task.refs.repo.toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
+  if (task.refs.repo && task.refs.repo.toLowerCase() !== repo.toLowerCase()) throw new PreEffectToolRefusal("other repository");
   const issues = new Set<number>();
   if (task.external !== undefined) {
     const source = task.external;
-    if (!source || source.provider !== "github" || typeof source.repo !== "string") throw new Error("not found");
+    if (!source || source.provider !== "github" || typeof source.repo !== "string") throw new PreEffectToolRefusal("not found");
     validRepo(source.repo);
-    if (source.repo.toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
+    if (source.repo.toLowerCase() !== repo.toLowerCase()) throw new PreEffectToolRefusal("other repository");
     if (!Number.isSafeInteger(source.issue) || source.issue < 1 || typeof source.url !== "string"
-      || source.url.toLowerCase() !== `https://github.com/${repo}/issues/${source.issue}`.toLowerCase()) throw new Error("not found");
+      || source.url.toLowerCase() !== `https://github.com/${repo}/issues/${source.issue}`.toLowerCase()) throw new PreEffectToolRefusal("not found");
     issues.add(source.issue);
   }
   for (const reference of references) {
-    if (reference.repo && reference.repo.toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
-    if (!Number.isSafeInteger(reference.number)) throw new Error("not found");
+    if (reference.repo && reference.repo.toLowerCase() !== repo.toLowerCase()) throw new PreEffectToolRefusal("other repository");
+    if (!Number.isSafeInteger(reference.number)) throw new PreEffectToolRefusal("not found");
     issues.add(reference.number);
-    if (issues.size > 3) throw new Error("too many spec references");
+    if (issues.size > 3) throw new PreEffectToolRefusal("too many spec references");
   }
   return [...issues];
 }
@@ -92,7 +93,7 @@ export async function specAvailable(opts: SpecOptions = {}): Promise<{ available
 
 export async function fetchSpec(repo: string, n: number, opts: FetchSpecOptions): Promise<SpecResult> {
   validRepo(repo);
-  if (!Number.isSafeInteger(n) || n < 1) throw new Error("not found");
+  if (!Number.isSafeInteger(n) || n < 1) throw new PreEffectToolRefusal("not found");
   const raw = await gh(["api", "-X", "GET", `repos/${repo}/issues/${n}`], opts);
   let value: unknown;
   try { value = JSON.parse(raw.stdout); } catch { throw new Error(raw.code === 4 ? "unauthenticated" : "not found"); }
@@ -103,14 +104,15 @@ export async function fetchSpec(repo: string, n: number, opts: FetchSpecOptions)
   if (!value || typeof value !== "object") throw new Error("not found");
   const row = value as Record<string, unknown>;
   if (typeof row.repository_url !== "string" || row.repository_url.toLowerCase() !== `https://api.github.com/repos/${repo}`.toLowerCase()
-    || typeof row.html_url !== "string" || ![`https://github.com/${repo}/issues/${n}`, `https://github.com/${repo}/pull/${n}`].some(url => row.html_url!.toString().toLowerCase() === url.toLowerCase())) throw new Error("other repository");
+    || typeof row.html_url !== "string" || ![`https://github.com/${repo}/issues/${n}`, `https://github.com/${repo}/pull/${n}`].some(url => row.html_url!.toString().toLowerCase() === url.toLowerCase())) throw new PreEffectToolRefusal("other repository");
   if (row.number !== n || typeof row.title !== "string" || typeof row.state !== "string" || typeof row.updated_at !== "string" || (row.body !== null && typeof row.body !== "string")) throw new Error("not found");
   const result: SpecResult = { number: n, title: row.title, state: row.state, updated_at: row.updated_at, html_url: row.html_url, body: row.body ?? "" };
+  // GET completed without task/check mutations; these explicit complete-contract refusals withhold only its result.
   const length = bytes(result.body);
-  if (length > BODY_LIMIT) throw new Error(`spec too large (${length} > 65536); ask the reviewer to put the contract in the repo`);
-  if (bytes(JSON.stringify(result)) > RESULT_LIMIT) throw new Error("too large");
+  if (length > BODY_LIMIT) throw new PreEffectToolRefusal(`spec too large (${length} > 65536); ask the reviewer to put the contract in the repo`);
+  if (bytes(JSON.stringify(result)) > RESULT_LIMIT) throw new PreEffectToolRefusal("too large");
   let allowed = false;
   try { allowed = await opts.screen(`${result.title}\n${result.body}`); } catch { /* policy unavailable withholds the entire spec */ }
-  if (allowed !== true) throw new Error("spec withheld by privacy policy");
+  if (allowed !== true) throw new PreEffectToolRefusal("spec withheld by privacy policy");
   return result;
 }

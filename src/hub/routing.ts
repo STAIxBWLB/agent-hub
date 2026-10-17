@@ -302,7 +302,7 @@ export function assign(
   catch { needsSpec = true; } // an invalid/foreign reference never grants a sandboxed peer spec access
   const needsTests = ["implement", "test", "bulk_edit"].includes(task.class);
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
-    if (opts.capabilities && !pii) {
+    if (role === "owner" && opts.capabilities && !pii) {
       const caps = peerEntry(opts.capabilities, peer);
       if (needsTests && !caps?.tests) return `missing tests: ${caps?.testsReason ?? "capability unavailable"}`;
       if (needsSpec && !caps?.spec) return `missing spec: ${caps?.specReason ?? "capability unavailable"}`;

@@ -269,3 +269,107 @@ test("cancelling queued work settles immediately and frees capacity while active
   await f.runner.cancel(cancelled.run); expect(notices.filter(run => run === cancelled.run)).toHaveLength(1);
   await f.runner.cancel(retained.run); await f.runner.cancel(replacement.run); await f.runner.cancel(active.run); await active.done;
 });
+
+function manualClock() {
+  let now = 1000, id = 0;
+  const timers = new Map<number, { at: number; callback: () => void }>();
+  const schedule = (callback: () => void, ms: number) => {
+    const key = ++id; timers.set(key, { at: now + ms, callback });
+    return () => { timers.delete(key); };
+  };
+  return { now: () => now, schedule, advance(ms: number) {
+    const end = now + ms;
+    while (true) {
+      const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      now = next[1].at; timers.delete(next[0]); next[1].callback();
+    }
+    now = end;
+  } };
+}
+
+test.each(["run", "cp"])("silent slow %s gets its own bounded allowance beyond the old 15s limit", async stage => {
+  const clock = manualClock(); let original!: ContainerCommand, allowance = 0;
+  const f = await fixture({ now: clock.now, schedule: clock.schedule, command: async (args, options) => {
+    if (args[0] === stage) {
+      allowance = options?.timeoutMs ?? 15_000;
+      let killed = false;
+      const cancel = clock.schedule(() => { killed = true; }, allowance);
+      clock.advance(20_000); cancel();
+      return { code: killed ? null : 0, stdout: "" };
+    }
+    return original(args, options);
+  } }); original = f.command;
+  expect(await f.runner.start(f.request).done).toMatchObject({ exit: 0, timed_out: false });
+  expect(allowance).toBe(stage === "run" ? 120_000 : 180_000);
+});
+
+test("start and transfer share one cumulative deadline, even when transport returns late success after abort", async () => {
+  const clock = manualClock(); let original!: ContainerCommand;
+  const allowances: number[] = [];
+  const f = await fixture({ now: clock.now, schedule: clock.schedule, timeoutMs: 30_000, command: async (args, options) => {
+    if (args[0] === "run" || args[0] === "cp") {
+      allowances.push(options?.timeoutMs ?? 15_000);
+      clock.advance(20_000); // Deliberately ignore abort and return success; the runner must fence the next stage.
+      return { code: 0, stdout: "" };
+    }
+    return original(args, options);
+  } }); original = f.command;
+  const receipt = await f.runner.start(f.request).done;
+  expect(receipt).toMatchObject({ timed_out: true, exit: null });
+  expect(allowances).toEqual([30_000, 10_000]);
+  expect(f.calls.some(args => args[0] === "exec")).toBe(false);
+  expect(f.calls.some(args => args[0] === "kill")).toBe(true);
+  expect(await Bun.file(join(f.project, ".git/ahub-heavy.lock/owner")).exists()).toBe(false);
+});
+
+test("exec gets only the deadline remaining after cold start and copy", async () => {
+  const clock = manualClock(); let original!: ContainerCommand, allowance = 0;
+  const f = await fixture({ now: clock.now, schedule: clock.schedule, command: async (args, options) => {
+    if (args[0] === "run") clock.advance(100_000);
+    if (args[0] === "cp") clock.advance(160_000);
+    if (args[0] === "exec") allowance = options?.timeoutMs ?? 0;
+    return original(args, options);
+  } }); original = f.command;
+  expect(await f.runner.start(f.request).done).toMatchObject({ exit: 0, timed_out: false });
+  expect(allowance).toBe(340_000);
+});
+
+test.each(["run", "cp"])("cancellation during silent %s fences late success and cleans the container", async stage => {
+  let original!: ContainerCommand, entered!: () => void, finish!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let signal: AbortSignal | undefined;
+  const f = await fixture({ command: async (args, options) => {
+    if (args[0] === stage) {
+      signal = options?.signal; entered();
+      await new Promise<void>(resolve => { finish = resolve; });
+      return { code: 0, stdout: "" };
+    }
+    return original(args, options);
+  } }); original = f.command;
+  const handle = f.runner.start(f.request); await started;
+  await f.runner.cancel(handle.run); expect(signal?.aborted).toBe(true); finish();
+  expect(await handle.done).toMatchObject({ cancelled: true, exit: null });
+  expect(f.calls.some(args => args[0] === "exec")).toBe(false);
+  expect(f.calls.some(args => args[0] === "kill")).toBe(true);
+  expect(await Bun.file(join(f.project, ".git/ahub-heavy.lock/owner")).exists()).toBe(false);
+});
+
+test.each(["run", "cp"])("silent %s remains bounded by its own command cap", async stage => {
+  const clock = manualClock(); let original!: ContainerCommand;
+  const f = await fixture({ now: clock.now, schedule: clock.schedule, command: async (args, options) => {
+    if (args[0] === stage) {
+      const timeout = options?.timeoutMs ?? 15_000;
+      let killed = false;
+      const cancel = clock.schedule(() => { killed = true; }, timeout);
+      clock.advance(timeout); cancel();
+      return { code: killed ? null : 0, stdout: "" };
+    }
+    return original(args, options);
+  } }); original = f.command;
+  const receipt = await f.runner.start(f.request).done;
+  expect(receipt.exit).toBeNull(); expect(receipt.timed_out).toBe(false);
+  expect(receipt.duration_ms).toBe(stage === "run" ? 120_000 : 180_000);
+  expect(receipt.error).toContain(stage === "run" ? "container start failed" : "container source transfer failed");
+  expect(f.calls.some(args => args[0] === "exec")).toBe(false);
+});

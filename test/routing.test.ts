@@ -309,3 +309,16 @@ test("#418 a source file suffix does not require a spec capability", () => {
   const work = { ...task("implement"), title: "Edit src/hub/tasks.ts#12", detail: "See src/hub/tasks.ts#12", refs: {} };
   expect(assign(work, { pi: "idle" }, routing, { repository: "owner/project", capabilities: { pi: { tests: true, spec: false } } }).owner).toBe("pi");
 });
+
+test("#418 reviewers do not need owner-only bounded tests or spec capabilities", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-reviewer-caps-")));
+  const capabilities = { codex: { tests: true, spec: true }, pi: { tests: false, spec: false }, local: { tests: false, spec: false } };
+  for (const peer of ["pi", "local"] as const) for (const cls of ["implement", "test", "bulk_edit"] as const) {
+    const work = { ...task(cls), title: "Implement #418", detail: "", refs: {} };
+    const opts = { capabilities, repository: "STAIxBWLB/agent-hub", candidates: ["codex"], roles: { [peer]: ["reviewer"] } };
+    const states = { codex: "idle", [peer]: "idle" } as const;
+    expect(assign(work, states, routing, opts).reviewer).toBe(peer);
+    expect(assign(work, states, routing, { ...opts, namedReviewer: peer }).reviewer).toBe(peer);
+    expect(assign(work, states, routing, { ...opts, namedReviewer: peer, offRoster: [peer] }).reviewer).not.toBe(peer);
+  }
+});

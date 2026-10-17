@@ -9,7 +9,10 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { processSignature as ownerSignature } from "../src/pi/process-signature.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
-import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import type { CheckRequest, RunReceipt } from "../src/hub/check-runner.ts";
+import { randomUUID } from "node:crypto";
+import { hubGitSync } from "../src/hub/git.ts";
+import { DEFAULT_CONFIG, startDaemon, type DaemonOptions } from "../src/hub/daemon.ts";
 
 // Emulated native peers probe no real account; isolated runner availability remains real and disabled.
 const fakeSpecTools = () => ({
@@ -38,9 +41,14 @@ createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.
   return file;
 }
 
-async function hub(config = DEFAULT_CONFIG, unattended = false) {
+async function hub(config = DEFAULT_CONFIG, unattended = false, extra: { repo?: string; boundedTools?: DaemonOptions["boundedTools"] } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
-  const daemon = await startDaemon({ boundedTools: fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: 20, unattended, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
+  if (extra.repo) {
+    for (const args of [["init", "-q"], ["remote", "add", "origin", `https://github.com/${extra.repo}.git`]]) {
+      if (hubGitSync(["-C", stateDir, ...args], { encoding: "utf8" }).status) throw new Error("fixture git failed");
+    }
+  }
+  const daemon = await startDaemon({ boundedTools: extra.boundedTools ?? fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: 20, unattended, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => console_.close());
@@ -1266,4 +1274,91 @@ test("Pi replacement refuses missing owner, peer authorization and unsettled too
   expect(h.daemon.bus.peers.get("pi")).toBe(h.previous);
   const empty = await hub({ ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true } });
   expect((await empty.console_.request({ t: "start", peer: "pi", args: { replaceSession: true, sessionFile: h.selected } })).error).toContain("existing offline");
+});
+
+
+test("Pi bounded guard refusals persist exact done receipts through its real tool bridge (#141)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-bounded-refusal-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config, false, { repo: "owner/project" });
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const foreign = board.propose("user", { title: "foreign/repo#418", class: "review" });
+  const capped = board.propose("user", { title: "#1 #2 #3 #4", class: "review" });
+  for (const task of [foreign, capped]) board.update(task.id, "user", "accepted", { owner: "pi", state: "in_progress" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  const db = new Database(join(stateDir, "hub.db"));
+  try {
+    for (const [name, args, message] of [
+      ["hub_task_spec", { id: foreign.id }, "other repository"],
+      ["hub_task_spec", { id: capped.id }, "too many spec references"],
+      ["hub_check_start", { id: 0, check: "typecheck" }, "invalid bounded task request"],
+      ["hub_check_result", { run: "invalid" }, "invalid bounded task request"],
+      ["hub_check_cancel", { run: "invalid" }, "invalid bounded task request"],
+    ] as const) {
+      const id = `${name}-${JSON.stringify(args)}`;
+      const result = await piToolCall(peer, name, args, id);
+      expect(result).toEqual({ text: `error: ${message}`, failed: true });
+      expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id=?").get(id)).toEqual({ state: "done", result: result.text });
+      expect(await piToolCall(peer, name, args, id)).toEqual(result);
+    }
+  } finally { db.close(); }
+});
+
+
+test("Pi check refusals after stale/output effects remain pending and never replay (#141)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-check-posteffect-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const records = new Map<string, RunReceipt>(); let staleWrites = 0, consumes = 0;
+  let afterConsume: (() => void) | undefined;
+  const boundedTools: NonNullable<DaemonOptions["boundedTools"]> = {
+    ...fakeSpecTools(),
+    runner: () => ({
+      available: async () => ({ available: true }), sweep: async () => [], stopAll: async () => {},
+      start: (request: CheckRequest) => {
+        const run = randomUUID();
+        const receipt: RunReceipt = { ...request, run, status: "finished", sha: "a".repeat(40), tree: "b".repeat(40), lockfile: "c".repeat(64), excluded: 0, dependency_files: 0,
+          runner: "container", image: "fixture", platform: "fixture", container: `agenthub-check-${run}`, hub_pid: process.pid, hub_signature: "fixture", created: Date.now(),
+          exit: 0, timed_out: false, cancelled: false, interrupted: false, duration_ms: 1, tail: "", output_bytes: 0, truncated: false, output_withheld: false };
+        records.set(run, receipt); return { run, done: Promise.resolve(receipt) };
+      },
+      result: async run => { const receipt = records.get(run); return receipt && { ...receipt }; },
+      markStale: async run => { staleWrites++; records.get(run)!.status = "stale"; },
+      consumeOutput: async () => { consumes++; if (afterConsume) afterConsume(); else throw new Error("output cleanup failed after deletion"); },
+      cancel: async () => { throw new Error("unexpected cancellation"); },
+    }),
+  };
+  const { stateDir, daemon, console_ } = await hub(config, false, { repo: "owner/project", boundedTools });
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const task = board.propose("user", { title: "Check current work", class: "implement", refs: { branch: "main" } });
+  board.update(task.id, "user", "accepted", { owner: "pi", state: "in_progress" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  const start = async (id: string) => JSON.parse((await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, id)).text).run as string;
+  const db = new Database(join(stateDir, "hub.db"));
+  try {
+    const run = await start("start-stale");
+    board.update(task.id, "user", "metadata", { refs: { branch: "changed-after-admission" } });
+    const result = await piToolCall(peer, "hub_check_result", { run }, "stale-effect");
+    expect(result.text).toContain("outcome is uncertain"); expect(staleWrites).toBe(1);
+    expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id='stale-effect'").get()).toEqual({ state: "pending", result: null });
+    expect((await piToolCall(peer, "hub_check_result", { run }, "stale-effect")).text).toContain("previous tool outcome is uncertain");
+    expect(staleWrites).toBe(1);
+    // A different call observes the already stale receipt before any write and can safely settle its refusal.
+    expect(await piToolCall(peer, "hub_check_result", { run }, "already-stale")).toEqual({ text: "error: check unavailable: stale binding", failed: true });
+    expect(staleWrites).toBe(1);
+    const outputRun = await start("start-output");
+    expect((await piToolCall(peer, "hub_check_result", { run: outputRun }, "output-effect")).text).toContain("outcome is uncertain");
+    expect(consumes).toBe(1);
+    expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id='output-effect'").get()).toEqual({ state: "pending", result: null });
+    expect((await piToolCall(peer, "hub_check_result", { run: outputRun }, "output-effect")).text).toContain("previous tool outcome is uncertain");
+    expect(consumes).toBe(1);
+    const changedRun = await start("start-changed-output");
+    afterConsume = () => { board.update(task.id, "user", "metadata", { refs: { branch: "changed-during-output-cleanup" } }); };
+    expect((await piToolCall(peer, "hub_check_result", { run: changedRun }, "changed-output")).text).toContain("outcome is uncertain");
+    expect(consumes).toBe(2);
+    expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id='changed-output'").get()).toEqual({ state: "pending", result: null });
+    expect((await piToolCall(peer, "hub_check_result", { run: changedRun }, "changed-output")).text).toContain("previous tool outcome is uncertain");
+    expect(consumes).toBe(2);
+  } finally { db.close(); }
 });
