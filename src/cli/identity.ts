@@ -10,6 +10,7 @@ export function liveTestRefusal(command: string, args: readonly string[]): boole
   return ["task", "role", "goal"].includes(command)
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
+    || (command === "recovery" && sub === "reattach")
     || (command === "board" && args[0] === "import") || (command === "sdlc" && args[0] === "record")
     || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet";
 }
@@ -42,6 +43,7 @@ export type PeerCommandAccess = "allowed" | "conductor" | "console";
 
 /** A closed list: unknown commands cannot acquire console authority through an agent shell. */
 export function classifyPeerCommand(command: string, args: readonly string[]): PeerCommandAccess {
+  if (command === "recovery" && args[0] === "reattach") return "console";
   if (command === "pi" && args.includes("--replace-session")) return "console";
   if (command === "pet" && args.includes("--window")) return "console";
   if (command === "permission" || command === "stop" || command === "watch") return "console";
@@ -77,7 +79,7 @@ export function cliCommandLabel(command: string, args: readonly string[]): strin
   if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "qwen", "jcode", "pi", "local", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
-    if (sub && ["propose", "show", "assign", "unassign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "setup", "start", "stop", "remove", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take"].includes(sub)) return `${command} ${sub}`;
+    if (sub && ["propose", "show", "assign", "unassign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take"].includes(sub)) return `${command} ${sub}`;
   }
   return (/^[a-z][a-z0-9-]*$/.test(command) && !/\s/.test(command)) || ["--help", "--version"].includes(command) ? command : "unknown";
 }

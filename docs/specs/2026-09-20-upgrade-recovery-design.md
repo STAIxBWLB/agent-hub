@@ -514,6 +514,7 @@ Cells show action -> next receipt status. Fresh-session eligibility is marked fr
 | Target stopped or changed | block -> unchanged |
 | Running target, other session not allowed | block -> unchanged |
 | Absent receipt | unstarted; initial launch is handled by the runtime outside this receipt table |
+| Done, running target, no attached session, gone launchers and positively gone saved terminal (#463 supplemental evidence) | reattach -> failed; one recorded-session repair, no fresh-session choice |
 
 Running target, no attached session (either allowOther value):
 
@@ -658,3 +659,70 @@ front end to the commands above, never a second coordinator.
 - Out of scope: a hub-side interrupt of a running turn (the running source may
   be older and would not know the request), and answering approvals from the
   screens.
+
+
+### Post-restore detachment and recorded-session reattachment (#463)
+
+A done restore receipt remains done for an offline peer unless both independent
+proofs hold on the same running target instance: every relevant launcher is gone,
+including older target instances, and the exact saved terminal is positively
+orphaned or missing. Disconnection alone, an unreadable or truncated inventory,
+unknown launch records, changed terminal identity and a different attached session
+never authorize a replacement.
+
+The pure restore table has one additional rule: done + running target + no attached
+session + gone launchers + positively gone saved terminal proposes reattach ->
+failed. The original 540 cells with no new evidence remain unchanged. Before
+returning the block, the runtime saves a per-project, per-peer reattachment marker
+with the accepted done binding, detection time, fixed cause `detached after restore`
+and state `ready`, plus the failed restore receipt and `started` project phase.
+The blocked operation identifies that project and peer structurally, never by
+parsing error text.
+
+Resume reuses the ordinary restore path with that accepted conversation, session
+file, backend and model. Before any new terminal effect the marker becomes
+`attempted`. Chosen waiting bindings remain durable and reuse the existing 600 s
+attachment bound; an interruption cannot grant another create. A second detach or
+an exhausted attempt blocks with its recorded cause. These repairs are recorded-
+session only: no automatic fresh/zero-turn replacement or fresh-session choice is
+introduced for a marked repair. Strict session/file checks remain for repairs;
+ordinary verified-empty Pi attachments retain their pre-existing id-only rules.
+When `recordRestart` retires a known done or waiting binding from a dead target,
+it clears that binding's repair fence. The normal #225 relaunch preserves its
+accepted conversation and a new target gets its own repair allowance. An uncertain
+creation with no durable selected binding does not gain a second creation by
+merely losing the target. Database contention retains its typed retryable outcome.
+
+The person-only `ahub recovery reattach <operation> <peer>` is admitted only for
+that operation's current structured reattachment block. It claims the existing
+runner fence, rechecks the held target and restores only the selected peer. It
+accepts no session override, performs no release or installation, and leaves the
+remaining operation for resume. Agent shells and live-test delegation cannot
+invoke this person decision. Person status and block guidance list the recorded
+Codex thread, Pi session file and Claude session with quoted commands from the
+operation's coordinator.
+
+Stop and archive retains the operation's accepted session identities. After a
+confirmed owned target stop and snapshot archive, it may write one private,
+project-bound Pi continuity bookmark. The next normal `pi.auto_start` passes that
+recorded identity through the existing start-mode and lifecycle path; it never
+falls back fresh because a bookmark is invalid or unreadable. The bookmark is
+consumed only after authenticated attachment proves the same session and file,
+not merely after opening a terminal. Atomic compare/consume cannot remove a newer
+operation's bookmark. No global operation-directory scan or native probe is used
+to discover sessions. The person summary distinguishes historical target startup,
+plugin installation and the remaining global CLI installation, and continues to
+say abandoned, not completed or rolled back.
+
+A missing, expired, unreadable or foreign snapshot prevents a continuity bookmark,
+not stop-and-archive itself. Disposal records a per-project continuity warning and
+still releases its machine lock. An actual rename failure of this operation's own
+snapshot retains the existing failure and retry path. Optional bookmark storage
+failure is recorded as unavailable rather than blocking this last-resort exit.
+
+A valid bookmark is archived with a structured reason under its exact CAS when a
+different authenticated Pi session becomes the saved crash record, its recorded
+session is proven unresumable, or a later recovery successfully releases the
+project. Unknown I/O or provider failures do not prove an unresumable session.
+Malformed or unverifiable bookmark evidence remains fail-closed. The TUI resume
+argv carries `--session-file` when available, otherwise `--session-id`, never both.

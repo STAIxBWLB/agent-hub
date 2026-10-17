@@ -2004,6 +2004,7 @@ ahub upgrade --to 0.12.31 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
+ahub recovery reattach <operation-id> codex|claude|pi
 ahub recovery dispose [<operation-id>] --fresh-session <peer> --reason <text>
 ahub recovery dispose [<operation-id>] --stop-and-archive --reason <text>
 ```
@@ -2315,6 +2316,10 @@ next actions").
   unpinned signature too, so it counts as running when this command runs in
   the same time zone and locale as the launcher did. `resume` is refused while a stop-and-archive is partway. A lifecycle command refused by the lock names
   the operation's own `status` command, which lists what to do next.
+- `ahub recovery reattach <operation-id> codex|claude|pi` is person-only, including during live verification: an agent shell cannot delegate it. Name the operation and exactly one peer; session, backend, model and terminal overrides are not accepted. Use the exact operation-coordinator command printed by status or its blocked guidance. It repairs only that peer and leaves the operation blocked; run the offered `recovery resume` command to continue the remaining steps.
+  The CLI delegates only when the retained coordinator supports reattach. An existing older coordinator without that action uses this release's implementation instead; a missing receipt, retained coordinator path or coordinator file prints inspection/recovery guidance and starts no session.
+  A peer that attached and later went offline can be re-restored once when its saved terminal is positively orphaned or missing and no current or older operation launcher may still run. The recorded session id and Pi session file stay fixed; the new terminal binding is saved before waiting for authenticated attachment. A second detach blocks. An unreadable terminal, changed incarnation or worktree, disconnected-only evidence, truncated inventory or live/unknown launcher does not authorize another terminal.
+  Recovery status names the saved Codex thread, Pi session file and Claude session, the terminal evidence, and the applicable reattach command. A different attached conversation remains a strict refusal.
 - `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
   applies to a Codex or Claude peer whose restoration failed (Pi is refused: a
   restored hub resumes Pi's recorded session). It records the lost session or
@@ -2366,7 +2371,7 @@ next actions").
   again.
   Start a project whose target ran with that release's CLI (`bunx --package
   @staix/agent-hub@<version> ahub up`), since it may have changed the task
-  database. The global CLI was not promoted.
+  database. The global CLI was not promoted. The archive summary distinguishes completed target startup and plugin installation from remaining global CLI installation, and prints recorded-session commands: `ahub codex resume <thread-id>`, `ahub pi --session-file <path>`, and the Claude reconnect command. On the next `ahub up`, `pi.auto_start` resumes the archived operation's recorded Pi session rather than choosing a fresh conversation. Unknown or conflicting archived identity refuses that automatic resume.
 - Both choices are for a person in a terminal; an agent shell is refused, and
   the reason is kept in the operation's audit. Run each with the command
   `next` or the error prints: the operation's own coordinator, or the release
