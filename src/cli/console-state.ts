@@ -2,6 +2,7 @@ import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attent
 import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
+import { PLANNER_PEERS } from "../hub/peer-catalog.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
@@ -323,7 +324,7 @@ const KEYS: [string, string[]][] = [
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
   ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI", "o pet window"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
-  ["Peers", ["p pause", "r resume", "m permission mode"]],
+  ["Peers", ["p pause", "r resume", "m permission mode", "l make planner (then y)"]],
   ["Tasks", ["a assign/reviewer (then y)", "u unassign (then y)", "r review (in review)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry"]],
   ["Events", ["f peer filter", "g kind filter"]],
@@ -620,6 +621,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       else s.modeChoice = peer;
       return done();
     }
+    // #455: the planner is a setting; the command runs only after y, as a person's terminal command.
+    if (s.panel === 1 && key === "l") {
+      const peer = String(item);
+      if (!(PLANNER_PEERS as readonly string[]).includes(peer)) notify(s, `${peer} cannot plan: the planner is one of ${PLANNER_PEERS.join(", ")}`, now);
+      else if (s.peers[peer]?.planner) notify(s, `${peer} is already the planner`, now, "attention");
+      else s.confirm = { type: "command", args: ["settings", "set", "planner", peer], prompt: `make ${peer} the planner` };
+      return done();
+    }
     const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` :
       s.panel === 3 && key === "r" && selected.state === "in_review" ? `review ${item} ` : undefined;
     if (prefill) { s.input = prefill; s.editing = true; return done(); }
@@ -677,7 +686,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
     const paused = b?.paused ? `budget ${relative(b.paused.resetsAt, now)}` : row.paused && typeof row.paused === "object"
       ? `${row.paused.by ?? "paused"}${typeof row.paused.at === "number" ? ` ${duration(now - row.paused.at)}` : ""}`
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
-    return [id(row.id, row.state === "offline" ? undefined : "info"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),
+    return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === "offline" ? undefined : "info"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),
       ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
       span(row.pullOnly && row.id === "kimi" ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),

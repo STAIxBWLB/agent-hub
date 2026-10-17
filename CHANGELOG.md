@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Model restoration receipts as explicit pending/waiting/done/failed states; wait within the managed TUI bound even before a launch record exists, preserve completed conversations, and retain strict session/terminal fences without duplicate launches (#433).
+- Designate the planner with a live `planner` setting (exclusive), assign one automatically when no rostered peer plans, and show and change it in `ahub status`, the console (`l`) and the dashboard (#455).
 - Safely return unseen Claude pushes, settle superseded hub-only holds with hub audit identity, list every hold and explain inherited agent command markers (#434).
 
 ## 0.12.30

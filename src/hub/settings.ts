@@ -1,4 +1,4 @@
-import { SUPPORTED_PEERS } from "./peer-catalog.ts";
+import { PLANNER_PEERS, SUPPORTED_PEERS } from "./peer-catalog.ts";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,6 +46,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
 ];
 export const SETTINGS: readonly SettingDef[] = [
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "hub start", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
+  { key: "planner", group: "Roles", label: "Planner (the one peer that plans)", type: "enum", values: PLANNER_PEERS, store: "config", applies: "live", risk: "raises", path: ["planner"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "peer start", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),

@@ -756,6 +756,7 @@ function render(snapshot) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
       head.append(name, badge(peer.rostered === false ? peer.state + ' off roster' : peer.state, peerDot[peer.state] || ''));
+      if (peer.planner) name.append(badge('Planner' + (peer.planner === 'setting' ? '' : ' (' + peer.planner + ')'), ''));
       row.append(head, el('p', peer.queued + ' queued' + (peer.queuedImportant ? ' (' + peer.queuedImportant + ' important)' : ''), 'meta'));
       if (peer.flowRoles) row.append(el('p', 'Flow roles: ' + (peer.flowRoles.join(', ') || 'none'), 'meta'));
       if (peer.catalogRoles) { row.append(el('p', 'Catalog guidance: ' + (Array.isArray(peer.catalogRoles.value) ? peer.catalogRoles.value.join(', ') || 'none' : 'unconfirmed'), 'meta')); if (peer.catalogRoles.pending !== undefined) row.append(el('p', 'Pending at next start: ' + (peer.catalogRoles.pending.join(', ') || 'none'), 'meta')); }
