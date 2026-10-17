@@ -30,6 +30,14 @@ await import(${JSON.stringify(CLI)});
 }
 
 describe("ahub help (#212)", () => {
+  test("#437 help lists person-only task cancellation and its complete syntax", () => {
+    const usage = "ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]";
+    const entry = HELP.find(entry => entry.usage === usage);
+    expect(entry?.section).toBe("Tasks and review");
+    expect(entry?.description).toContain("person only");
+    expect(renderHelp(80, false, "task").replace(/\s+/g, " ")).toContain(usage);
+  });
+
   test("every command in the dispatch table has a help entry", () => {
     // ponytail: the keys are read from main.ts's source (the commands literal, keys at two spaces); export the
     // command names instead once main.ts is importable without running the CLI.

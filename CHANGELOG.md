@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- List the person-only task cancel command and its reason, supersession and revision arguments in help (#437).
 - Resolve SDLC GitHub readbacks through the trusted host executable boundary, refusing project PATH shims without executing them (#449).
 - Preserve bridged legacy settlements during start-time approval reconciliation without adding generation settle rows (#432).
 
