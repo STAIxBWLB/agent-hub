@@ -126,7 +126,9 @@ confirmation an arrow dismisses it like any key but y, without moving a tab. A p
 chunk can only edit the command line, but a read that holds nothing but arrow or
 Home/End sequences is that many key presses, so a held key repeats its move. Home
 or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
-follows new events while the last row is selected and stays on a row you moved to. In the Events
+follows new events while the last row is selected and stays on a row you moved to.
+`w` opens the dashboard and `o` the pet window; `:ui --all` and `:pet --window --close`
+work on the command line too. In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; only the header is tab-flattened before tokenizing. Body lines retain
 the previous rendering and stay plain, as does command output; colour never changes
@@ -1980,7 +1982,9 @@ A lost commit or start reply is reconciled against the actual daemon identity,
 package digest, terminal binding, and phase receipt. An uncertain terminal
 creation is never repeated blindly. Recovery retains the exact-pinned first-party memory package with the preserved runtime, includes its identity and bytes in the digest, and refuses missing, symlinked or changed retained dependencies instead of resolving a mutable ancestor/global installation. It does not copy the full dependency tree.
 
-After creating a managed terminal, the coordinator saves its binding before waiting up to 90 seconds for authenticated attachment to the expected target hub and conversation. An idle terminal alone is not attachment proof. Timeout retains the terminal and its diagnostic receipt; resume waits on that same binding rather than opening a duplicate. The zero-turn Claude exception still applies only when no original transcript exists. If Claude shows its development-channel confirmation screen, confirm it in
+After creating a managed terminal, the coordinator saves its exact handle, incarnation and worktree before waiting up to 600 seconds (10 minutes) for authenticated attachment to the expected target hub and conversation. A pending or failed creation receipt also waits when the current target has a verified live launcher; its saved binding retains the pending/failed origin across interruption. An idle terminal alone is not attachment proof. Timeout retains the binding and diagnostic receipt; resume waits on that same binding rather than opening a duplicate.
+
+The wait checks the selected launcher's signed identity on each poll. When that exact launcher exits and the target confirms no session or other live launcher, a pending-origin wait (including a new terminal) records failure and offers the failed-restoration choices, including fresh-session for Codex or Claude. A failed-origin wait returns to its existing retry path. A replacement terminal, missing or unreadable launcher identity, unreadable target or different attached conversation blocks without treating unknown as gone. Success clears the waiting origin and preserves exact terminal/session revalidation. A launcher from an older target instance still blocks without another terminal. The 10-minute limit matches terminal creation readiness; terminal idle can precede native resume and MCP handshake completion. The zero-turn Claude exception still applies only when no original transcript exists. If Claude shows its development-channel confirmation screen, confirm it in
 the captured terminal, then run `ahub recovery resume <operation-id>`; resume must not open a duplicate terminal.
 Kimi and local sessions may start fresh with preserved routing and task context.
 A Claude session that never persisted a transcript (zero turns) also starts fresh:

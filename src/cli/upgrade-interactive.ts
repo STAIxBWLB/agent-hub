@@ -1,3 +1,4 @@
+import { restoreReceiptStatus } from "./upgrade-restore-state.ts";
 import { recoveryArgv } from "../hub/recovery-store.ts";
 import { cancellableWait, nextChoices, publicOperation, type Inspection, type PlannedProject, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 
@@ -108,7 +109,7 @@ export function operationLines(op: RecoveryOperation, runner: number | "unknown"
   const held = runner === "unknown" ? "; whether a runner holds it cannot be read" : runner ? `; runner ${runner} is working` : op.phase === "running" ? "; no runner holds it (the last one stopped mid-step)" : "";
   const lines = [`${op.plan.kind} to ${op.plan.version}: operation ${op.id}`, `  ${op.phase} at "${stepLabel(op.step)}", updated ${ago(now - op.updatedAt)} ago${held}`];
   for (const p of op.projects) {
-    const effects = Object.entries(p.terminals).map(([key, value]) => value === "pending" || value === "failed" ? `${key} ${value}` : key);
+    const effects = Object.entries(p.terminals).map(([key, value]) => key.startsWith("restored:") ? `${key} ${restoreReceiptStatus(value)}` : value === "pending" || value === "failed" ? `${key} ${value}` : key);
     lines.push(`  ${p.id}  ${p.phase}${effects.length ? `  (${effects.join(", ")})` : ""}${p.restarts?.length ? `  restarts ${p.restarts.length}` : ""}`);
   }
   // The error ends with the commands status would print; the menu below offers them instead.
