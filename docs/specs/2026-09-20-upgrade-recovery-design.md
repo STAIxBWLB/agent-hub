@@ -743,3 +743,64 @@ forces a redundant write. A header whose session id disagrees with the selected
 bookmark is `bookmark_mismatch` (bookmark inconsistent), not evidence that the
 session itself cannot resume. Archival remains non-destructive and never starts
 a fresh session.
+
+## Recovery presentation (#466)
+
+Interactive upgrade and recovery screens reuse the console's Span tones, paint,
+measured wrapping and resolveColor precedence. Auto uses TTY and environment
+rules; explicit always has exactly the console's behaviour, including on a pipe.
+Default and never retain existing piped, dry-run, status and dispose JSON bytes.
+Raw JSON, including [j] and --json, bypasses paint and width handling. Human plan,
+progress, error, menu and summary lines fit the measured terminal width.
+The #272 simulated-TTY golden moves to this #466 presentation contract; its
+restart identity, board and non-TTY byte assertions remain unchanged.
+
+Only nextChoices supplies operation actions. Presentation may annotate a choice
+as recommended or disabled, but cannot create an action, bypass a refusal or run
+a driver. Enter defaults only to a read-only action; applying, resuming or
+reattaching requires the explicit action key. Preserve the full human wait
+condition from nextChoices, replacing only its retained status command in normal
+output. Existing commands through io.run remain the only mutation path. A
+destructive choice names its stop/abandon consequence before confirmation. Resume
+really runs stage again, labelled "checking retained release"; the screen reports
+only work observed on that attempt and keeps internal coordinator paths verbose.
+
+Operation receipts may add read-only wait timing metadata with ISO waitStartedAt,
+deadlineAt and waitEndedAt values. The coordinator records them at the actual
+prepare and awaitAttachment wait boundaries. They do not set or extend any
+deadline, change controls, alter the 540-cell transition oracle or its supplemental
+matrix, or turn unknown evidence into a decision. Older receipts say "timing
+unknown"; updatedAt is never substituted for the actual wait start.
+Each new runner attempt clears the previous timing projection before observing
+its own waits, so a resumed step cannot display a previous wait as current.
+
+Preservation errors carry a typed cause from the exact queue, manual-pause,
+task-board and budget integrity comparisons. What/Why/What-to-do is rendered from
+that cause and recorded recovery guidance, never inferred by parsing a combined
+error string. A read-only end-inspection port may supply current runtime state to
+the human summary; a failed readback is unknown. Summary rendering performs no
+lifecycle action and distinguishes recorded installation effects from current
+runtime observations. Older readers ignore the optional presentation metadata.
+
+Current native terminal, session, launcher, target and attachment-timeout guards
+may record a closed presentation cause containing only the actual IDs, states
+and wait window observed at that guard. A repair wrapper retains only a proven
+inner presentation error. Generic errors and lookalike objects remain untyped;
+their messages are never classification input. This metadata changes no guard,
+error message, restoration receipt transition or permission to create a terminal.
+
+Presentation timing writes are best-effort observations: retain their in-memory
+values, log a fixed warning on a metadata write failure and continue. Ordinary
+receipt/effect writes remain authoritative and fail normally. A newly observed
+blocked or completed step with no measured start has unknown elapsed time, never
+an invented zero. Waiting prints on a changed condition plus at most one elapsed
+tick per minute. Screen-owned recovery children keep stdout quiet on capable
+coordinators so the parent alone renders progress and outcome. All external
+renderer values containing line breaks or controls are visibly quoted before
+wrapping; they cannot become new column-zero guidance. Colour flags follow the
+console grammar exactly: a single `--color=<mode>`, never a bare or repeated flag.
+
+Recovery authorization identifies the action after skipping the accepted one-shot
+presentation flags (`--json`, `--verbose`, `--color=<mode>`). Such flags never hide
+person-only reattachment from agent or live-test refusal checks; normalization
+confers no authority and unknown flags still fail the command parser.

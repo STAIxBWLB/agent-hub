@@ -2105,6 +2105,16 @@ through a pipe, the JSON plan, the `ahub: blocker:` lines and the exit codes are
 unchanged. The screens add no way to change an operation: every choice runs one
 of the commands in this section for you, so that command's refusals decide.
 
+The screens use the console palette and `--color=auto|always|never`, with the
+same `NO_COLOR` and `TERM=dumb` precedence. Auto colours a suitable TTY; explicit
+always has the console's override behaviour. Raw JSON bypasses colour and width
+handling. Default and never preserve the existing pipe, dry-run, status and
+dispose output byte for byte. Presentation flags go after the command, for
+example `ahub recovery --color=never` or
+`ahub recovery status <operation-id> --json`. An explicit `--json` returns only
+the raw document, without a human suffix. `upgrade --json` reviews a JSON plan;
+`--yes` is still needed to apply it without the interactive review.
+
 The plan screen lists each project with its hub version and, per attached peer,
 its state, how it runs (`TUI` in a terminal the plan bound to its session,
 `headless` as the hub's own process, `own` for a session the hub did not
@@ -2137,23 +2147,35 @@ plan shows the ended agents as offline.
 
 After apply the command stays attached and prints each step as the receipt
 records it, and while a source is being prepared, what it still waits for.
+Each reported step has a status mark and elapsed observation time. Resume lists
+only steps observed on that attempt and says `resuming from ...` once. Its stage
+step really runs again and is labelled `checking retained release`. Waits use
+the coordinator's actual recorded start and deadline, for example
+`[waiting] alpha: restoring Codex and Pi sessions (waiting 2m10s of 10m)`.
+Older receipts without timing metadata say `timing unknown`; updatedAt is never
+used as a substitute. Timing-only save failures log a warning and do not fail
+the operation. Stable waits print only on change and at most once per minute.
+Approval waits point to `ahub console`; native attachment waits point to the
+recorded launch and conversation. Korean text and
+long paths wrap to the measured width on plan, progress and menu screens.
 Enter opens the operation's screen while the runner works on. Ctrl+C leaves the
 command, at any prompt and while following, and never stops the runner: the
-`left:` line names the command that comes back to the screen, with the
-operation's own coordinator, because the installed `ahub` is the older release
-until the upgrade ends. A Ctrl+C between `a` and the start of the operation
+`left:` line names `ahub recovery status <operation-id>`. Use `--verbose` for
+the internal command with the operation's retained coordinator, because the
+installed `ahub` may still be the older release until the upgrade ends. A Ctrl+C between `a` and the start of the operation
 starts nothing. A prompt for a reason that is answered with
 Ctrl+C or the end of input ends nothing.
 
 The operation's screen also opens first whenever an operation holds the lock,
 and for bare `ahub recovery`. It shows the phase and step, each project's phase
-and effect receipts and the error, then the choices that `status` lists under
+and human outcome labels, then What happened / Why / What to do and the choices that `status` lists under
 `next` for the same receipt and live state:
 
 | Key | Runs | Offered when |
 | --- | --- | --- |
 | `r` | `recovery resume`, then follows | resume can get past what is live |
 | `c` | `recovery abort` | no runtime was stopped and no terminal effect or commit request is recorded |
+| `a` | `recovery reattach <id> <peer>` | the recorded detached session is eligible for reattachment |
 | `f` | `recovery dispose --fresh-session <peer>`, after a reason | a Codex or Claude restoration failed |
 | `e` | `recovery dispose --stop-and-archive`, after a confirmation and a reason | every unverified project reads as running, stopped or missing |
 | `x` | `e`, then the reset below | as `e` |
@@ -2162,6 +2184,26 @@ and effect receipts and the error, then the choices that `status` lists under
 When more than one restoration failed, the second and later peers get
 `f-<peer>`. `s` refreshes the screen, `j` prints the receipt as JSON and `q`
 leaves the operation as it is.
+
+The marked recommendation is a read-only Enter default: refresh the plan, follow
+an active runner, read the receipt or refresh the operation. Apply, resume and
+reattach require their explicit keys; buffered Enter never starts them. Unknown failures recommend
+reading `j` before retrying effects. A wait whose runner cannot be verified is
+shown disabled with its reason, and cannot run a command. Stop, archive, reset
+and fresh-session choices carry a warning and name the consequence before the
+person confirms. Raw receipt keys and the original recorded error are available
+with `j` or `--verbose`. The four preservation failures name the actual failed
+queue, manual-pause, board or budget comparison; an older untyped cause remains
+unknown rather than being guessed from its text.
+
+Completion and stop-and-archive use a human summary on a TTY. It separates the
+outcome, recorded plugin/global installation effects, remaining work and the
+per-peer session commands. An optional fresh read-only inspection names the
+current hub version; a failed reading says `runtime unknown`, never a guessed
+version from the plan. The summary performs no lifecycle action. Use `j` or
+`--json` for the full receipt; JSON is intentionally exempt from human wrapping.
+For a long command, copy the exact single-line value from `j` or the status JSON;
+the width-wrapped human preview is for reading.
 
 While a runner is only waiting for its source to get quiet (step `prepare`, no
 effect recorded), `c` stops that runner and then aborts. It is offered only for

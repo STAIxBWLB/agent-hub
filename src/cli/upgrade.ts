@@ -9,6 +9,7 @@ import { hubHome } from "../hub/project.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 import { recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
+import { RecoveryPresentationError, type RecoveryPresentationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
 
 export interface RecoveryPeer {
   id: string;
@@ -106,6 +107,9 @@ export interface RecoveryOperation {
   pluginInstalled?: boolean;
   globalInstalled?: boolean;
   error?: string;
+  /** Presentation observations only: old receipts without these fields have unknown timings and cause. */
+  waits?: Record<string, RecoveryWaitTiming>;
+  presentationCause?: RecoveryPresentationCause;
   failure?: { code: "database_busy"; retryable: true; site?: string[] };
   /** A typed verify outcome, never inferred from an error message or a peer's current state. */
   blockedReattachment?: { projectId: string; peer: RecoveryNativePeer };
@@ -120,7 +124,7 @@ export interface RecoveryOperation {
 export class FinalRefusal extends Error {}
 
 export class ReattachmentRequired extends Error {
-  constructor(public readonly projectId: string, public readonly peer: RecoveryNativePeer, message: string) { super(message); }
+  constructor(public readonly projectId: string, public readonly peer: RecoveryNativePeer, message: string, public readonly presentationError?: RecoveryPresentationError) { super(message); }
 }
 
 export { recoveryCommand };
@@ -489,9 +493,20 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   };
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
   const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
+    const saveTiming = () => {
+      try { save(); }
+      catch { console.warn("Recovery timing observation could not be saved; recovery continues"); }
+    };
     const project = planned.project, instance = planned.source.instanceId!;
     await driver.prepare(project, id, instance, targetFeatures);
-    const deadline = driver.now() + idleTimeoutMs;
+    const startedAt = driver.now(), deadline = startedAt + idleTimeoutMs;
+    const waitStep = op.step;
+    if (waitStep) {
+      (op.waits ??= {})[waitStep] = { waitStartedAt: new Date(startedAt).toISOString(), deadlineAt: new Date(deadline).toISOString() };
+      saveTiming();
+    }
+    let waitFailed = false;
+    try {
     for (;;) {
       const live = await driver.inspect(project);
       if (live.instanceId !== instance) throw new Error(`${project.id}: source daemon changed during preparation`);
@@ -507,16 +522,30 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       }
       await driver.sleep(250);
     }
+    } catch (error) { waitFailed = true; throw error; }
+    finally {
+      const finish = () => {
+        if (!waitStep) return;
+        op.waits![waitStep] = { ...op.waits![waitStep]!, waitEndedAt: new Date(driver.now()).toISOString() };
+        saveTiming();
+      };
+      // A best-effort end observation must not replace the error that stopped the actual wait.
+      if (waitFailed) { try { finish(); } catch { /* original wait failure remains authoritative */ } }
+      else finish();
+    }
   };
   try {
     if (op.disposition) {
       // The stop-and-archive in progress keeps its own cause; resume never runs an operation being abandoned.
       op.error ??= `a stop-and-archive of this operation is partway; ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
       delete op.failure;
+      delete op.presentationCause;
       op.phase = "blocked"; save();
       return op;
     }
-    op.phase = "running"; delete op.error; delete op.failure; delete op.blockedReattachment; save();
+    op.phase = "running"; delete op.error; delete op.failure; delete op.blockedReattachment; delete op.presentationCause;
+    delete op.waits; // Timing is the current attempt's observation, never a prior attempt's countdown.
+    save();
     step("stage");
     const target = await driver.stage(op);
     if (op.targetDigest && (target.root !== op.targetRoot || target.digest !== op.targetDigest)) throw new FinalRefusal("staged target changed since operation started");
@@ -660,6 +689,10 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     releaseRecoveryLock(id, home); op.phase = "completed"; step("completed");
   } catch (error) {
     // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
+    const presentationError = error instanceof RecoveryPresentationError ? error
+      : error instanceof ReattachmentRequired && error.presentationError instanceof RecoveryPresentationError ? error.presentationError : undefined;
+    if (presentationError) op.presentationCause = presentationError.presentationCause;
+    else delete op.presentationCause;
     if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
     else delete op.blockedReattachment;
     if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
@@ -689,7 +722,8 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
       ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
     pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
     ...(!targetReadsWaivers(op) && op.projects.some((p) => failedPeers(op, p).length) ? { freshSession: `not offered: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session` } : {}),
-    ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.blockedReattachment ? { blockedReattachment: op.blockedReattachment } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), next };
+    ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.blockedReattachment ? { blockedReattachment: op.blockedReattachment } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}),
+    ...(op.waits ? { waits: op.waits } : {}), ...(op.presentationCause ? { presentationCause: op.presentationCause } : {}), next };
 }
 
 /**
@@ -733,13 +767,17 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
     if (restored?.state !== "done" || restored.binding.peer !== native || restored.binding.projectRoot !== expected.projectRoot ||
         restored.binding.sessionId !== expected.sessionId || restored.binding.sessionFile !== expected.sessionFile) throw new Error(`${native}: recorded session reattachment was not settled with its exact identity`);
     await target();
-    delete op.blockedReattachment; delete op.failure;
+    delete op.blockedReattachment; delete op.failure; delete op.presentationCause;
     op.phase = "blocked";
     op.error = `${native}: recorded session reattached; resume to finish verification, release and any remaining installation; ${recoveryCommand(op, "resume")}`;
     save();
     return op;
   } catch (error) {
     if (attempted) {
+      const presentationError = error instanceof RecoveryPresentationError ? error
+        : error instanceof ReattachmentRequired && error.presentationError instanceof RecoveryPresentationError ? error.presentationError : undefined;
+      if (presentationError) op.presentationCause = presentationError.presentationCause;
+      else delete op.presentationCause;
       if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
       else delete op.blockedReattachment;
       if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
@@ -778,7 +816,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       const state = live[planned.project.id];
       if (state?.recovery?.operationId === id && state.recovery.phase !== "released") await driver.abort(planned.project, id, planned.source.instanceId!);
     }
-    delete op.error; delete op.failure; delete op.blockedReattachment;
+    delete op.error; delete op.failure; delete op.blockedReattachment; delete op.presentationCause;
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
   } catch (error) {
@@ -835,7 +873,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
       }
       (op.audit ??= []).push({ at, action: "fresh-session", reason, peer, projects: failed.map((p) => p.id) });
-      delete op.error; delete op.failure; delete op.blockedReattachment;
+      delete op.error; delete op.failure; delete op.blockedReattachment; delete op.presentationCause;
       op.updatedAt = at; writeOperation(id, op, home);
       return op;
     }
@@ -863,6 +901,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     // Each outcome is recorded as it happens, so a disposition that stops partway stays true and resume refuses it.
     const disposition: NonNullable<RecoveryOperation["disposition"]> = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
     delete op.blockedReattachment;
+    delete op.presentationCause;
     abandoned(op); // #227: in the same write as the disposition
     (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
     // Recorded before the first act: a crash inside a stop leaves a disposition that resume refuses to override.

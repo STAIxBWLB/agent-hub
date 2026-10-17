@@ -4,9 +4,14 @@ import { isSupportedPeer } from "../hub/peer-catalog.ts";
 export const LIVE_TEST_SUPPORTED = true;
 
 /** Person verdicts and user-authored workflow content are never delegated. */
+/** Presentation prefixes cannot hide a person's recovery action from authorization. */
+function recoveryAction(args: readonly string[]): string | undefined {
+  return args.find(arg => arg !== "--json" && arg !== "--verbose" && !arg.startsWith("--color="));
+}
+
 export function liveTestRefusal(command: string, args: readonly string[]): boolean {
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
-  const sub = args.find(arg => arg !== "--json");
+  const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
   return ["task", "role", "goal"].includes(command)
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
@@ -43,7 +48,7 @@ export type PeerCommandAccess = "allowed" | "conductor" | "console";
 
 /** A closed list: unknown commands cannot acquire console authority through an agent shell. */
 export function classifyPeerCommand(command: string, args: readonly string[]): PeerCommandAccess {
-  if (command === "recovery" && args[0] === "reattach") return "console";
+  if (command === "recovery" && recoveryAction(args) === "reattach") return "console";
   if (command === "pi" && args.includes("--replace-session")) return "console";
   if (command === "pet" && args.includes("--window")) return "console";
   if (command === "permission" || command === "stop" || command === "watch") return "console";

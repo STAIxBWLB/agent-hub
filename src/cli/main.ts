@@ -46,10 +46,12 @@ import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, reattachRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
+import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
+import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
 import { recordTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
 import { stopAndArchiveSummary } from "./recovery-guidance.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -401,21 +403,50 @@ async function hold(t: "pause" | "resume"): Promise<void> {
   console.log(`${args[0]} is ${res.state}`);
 }
 
-function spawnRecovery(operation: RecoveryOperation, quiet = false): void {
+function recoveryDisplay() {
+  return readRecoveryPresentationFlags(args, { isTTY: !!process.stdout.isTTY, columns: process.stdout.columns ?? 80, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
+}
+const humanRecovery = (json: boolean) => !json && !!process.stdin.isTTY && !!process.stdout.isTTY;
+const printRecovery = (lines: readonly string[]) => { for (const line of lines) console.log(line); };
+function recoveryFormatting(entry: string, presentation: RecoveryPresentationOptions): string[] {
+  // ponytail: old retained coordinators have no presentation parser; capability metadata can replace this display-only module-presence check.
+  return existsSync(join(dirname(entry), "upgrade-presentation-flags.ts"))
+    ? [`--color=${presentation.color ? "always" : "never"}`, ...(presentation.verbose ? ["--verbose"] : [])] : [];
+}
+function printRecoveryStatus(op: RecoveryOperation, message: string, presentation: RecoveryPresentationOptions): void {
+  printRecovery(wrap(message, presentation.columns));
+  printRecovery(wrap(`ahub recovery status ${op.id}`, presentation.columns));
+  if (presentation.verbose) {
+    printRecovery(wrap("Retained bun coordinator (main.js), wrapped command:", presentation.columns));
+    printRecovery(wrap(recoveryCommand(op, "status"), presentation.columns));
+  }
+}
+async function recoveryEndInspection(op: RecoveryOperation): Promise<Record<string, Inspection | undefined>> {
+  const driver = makeRecoveryDriver(undefined, delegatedPeer);
+  return Object.fromEntries(await Promise.all(op.plan.projects.map(async planned => [planned.project.id, await driver.inspect(planned.project).catch(() => undefined)] as const)));
+}
+
+function spawnRecovery(operation: RecoveryOperation, quiet = false, presentation?: RecoveryPresentationOptions): void {
   const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), ...liveTestArgs, "recovery-run", operation.id], {
     cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id },
   });
   child.on("error", () => console.error(`runner launch failed; use ${recoveryCommand(operation, "resume")}`));
   child.unref();
   // #215: the operation's own coordinator, which has every recovery command; the global ahub may be older mid-upgrade.
-  if (!quiet) console.log(`Recovery operation ${operation.id} scheduled.\n${recoveryCommand(operation, "status")}`);
+  if (!quiet) {
+    if (presentation) {
+      printRecovery(wrap(`Recovery operation ${operation.id} scheduled.`, presentation.columns));
+      printRecovery(wrap(`ahub recovery status ${operation.id}`, presentation.columns));
+      if (presentation.verbose) printRecovery(wrap(recoveryCommand(operation, "status"), presentation.columns));
+    } else console.log(`Recovery operation ${operation.id} scheduled.\n${recoveryCommand(operation, "status")}`);
+  }
 }
 
 /** #272: a terminal session for the interactive screens. One line reader for the whole session, in the terminal's own
  *  line mode, so Ctrl+C stays a signal: from then on every question answers null and the screens leave. The terminal
  *  is not read again after it (a parent that died on the same Ctrl+C may have handed it back to the shell), and no
  *  runner is ever stopped by it. */
-async function onTerminal(screens: (io: ScreenIO) => Promise<void>): Promise<void> {
+async function onTerminal(screens: (io: ScreenIO) => Promise<void>, presentation?: RecoveryPresentationOptions): Promise<void> {
   const rl = lineReader({ input: process.stdin, terminal: false });
   const lines: string[] = [], waiters: ((line: string | null) => void)[] = [];
   let ended = false, interrupted = false;
@@ -425,6 +456,7 @@ async function onTerminal(screens: (io: ScreenIO) => Promise<void>): Promise<voi
   process.on("SIGINT", onInterrupt);
   try {
     await screens({
+      ...(presentation ? { presentation: { ...presentation, get columns() { return process.stdout.columns ?? presentation.columns; } } } : {}),
       ask: (question) => {
         if (interrupted) return Promise.resolve(null);
         process.stdout.write(question);
@@ -436,7 +468,13 @@ async function onTerminal(screens: (io: ScreenIO) => Promise<void>): Promise<voi
         // The command owns the terminal while it runs; a reader whose input already ended has nothing to pause.
         if (!ended) rl.pause();
         const done = (code: number) => { if (!ended) rl.resume(); resolve(code); };
-        const child = spawn(process.execPath, [argv[0]!, ...liveTestArgs, ...argv.slice(1)], { cwd, stdio: "inherit" });
+        const formatting = presentation && argv[1] === "recovery" ? recoveryFormatting(argv[0]!, presentation) : [];
+        // A capable screen child updates the receipt; its parent owns the human view after the action.
+        // Older coordinators keep their existing terminal contract and receive no unsupported JSON flag.
+        const quiet = formatting.length > 0;
+        const child = spawn(process.execPath, [argv[0]!, ...liveTestArgs, ...argv.slice(1), ...formatting, ...(quiet ? ["--json"] : [])], {
+          cwd, stdio: quiet ? ["inherit", "ignore", "inherit"] : "inherit",
+        });
         child.on("error", () => done(1));
         child.on("close", (code) => done(code ?? 1));
       }),
@@ -466,6 +504,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     read: (id) => readOperation<RecoveryOperation>(id),
     runner: recoveryRunner,
     live: (op) => liveProjects(op, makeRecoveryDriver(undefined, delegatedPeer).inspect),
+    endInspection: recoveryEndInspection,
     endPeer: (planned, peer) => endPlannedPeer(planned, peer),
     runnerStoppable: (id) => signedRunner(id) !== undefined,
     stopRunner: (id) => stopSignedRunner(id),
@@ -475,12 +514,13 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
 }
 
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
-  const { one, rest } = takeFlags(args, ["--to"], []);
+  const display = recoveryDisplay();
+  const { one, rest } = takeFlags(display.args, ["--to"], []);
   if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade [--to <version>] [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
   if (kind === "upgrade" && selector) fail("upgrade changes the shared package/plugin; omit --project to review all affected running projects");
-  const dry = rest.includes("--dry-run"), yes = rest.includes("--yes");
+  const yes = rest.includes("--yes"), dry = rest.includes("--dry-run") || (display.json && !yes);
   // #272: on a terminal, with neither flag, the plan is reviewed, applied and followed in one session.
-  const interactive = !dry && !yes && !!process.stdin.isTTY && !!process.stdout.isTTY;
+  const interactive = !dry && !yes && humanRecovery(display.json);
   let to = one["--to"];
   if (kind === "upgrade" && !to) {
     if (yes || (!dry && !interactive)) fail("upgrade requires --to <exact-version>");
@@ -491,7 +531,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (to !== undefined) { try { exactVersion(to); } catch (error) { fail((error as Error).message); } }
   // An older CLI must not coordinate a newer target (docs/operations.md): the target's own coordinator takes over.
   if (kind === "upgrade" && newerVersion(to!, VERSION) && process.env.AGENTHUB_UPGRADE_HANDOVER !== "1") {
-    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", ...liveTestArgs, "upgrade", "--to", to!, ...rest];
+    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", ...liveTestArgs, "upgrade", "--to", to!, ...rest, ...display.flags, ...(dry && !rest.includes("--dry-run") ? ["--dry-run"] : [])];
     console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(" ")}`);
     if (interactive) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -508,16 +548,17 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     process.exit(code);
   }
   if (kind === "upgrade") console.error("ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless");
-  if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io));
+  if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
   const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined);
-  console.log(JSON.stringify(plan, null, 2));
+  const jsonApply = display.json && yes && !dry;
+  if (!jsonApply) console.log(JSON.stringify(plan, null, 2));
   // #206: name every blocker and reconnect-only session on stderr, not only inside the JSON above.
   for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
   for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
   const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
   for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (dry) return;
-  if (blockers.length) fail("plan has blockers; no runtime was changed");
+  if (blockers.length) { if (jsonApply) console.log(JSON.stringify(plan, null, 2)); fail("plan has blockers; no runtime was changed"); }
   assertLifecycleAvailable();
   if (!yes) {
     if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");
@@ -530,7 +571,8 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
   const sourceRoot = preserveSource(plan);
   const operation = createOperation(plan, sourceRoot);
-  spawnRecovery(operation);
+  if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
+  else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
 }
 
 /** Strict person command: recorded identity only, no session or terminal overrides. */
@@ -543,10 +585,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
   recovery: async () => {
-    const [action, given, ...more] = args;
+    const display = recoveryDisplay();
+    const [action, given, ...more] = display.args;
     const usage = "usage: ahub recovery [status|resume|abort] [<operation-id>] | ahub recovery dispose [<operation-id>] --fresh-session <peer>|--stop-and-archive --reason <text>";
     if (action === "reattach") {
-      const selected = parseRecoveryReattach(args);
+      const selected = parseRecoveryReattach(display.args);
       if (!selected) fail("usage: ahub recovery reattach <operation-id> codex|claude|pi");
       let operation: RecoveryOperation;
       try { operation = readOperation<RecoveryOperation>(selected.id); }
@@ -558,26 +601,38 @@ const commands: Record<string, () => Promise<void> | void> = {
       try { coordinatorIsCurrent = realPath(coordinator) === realPath(join(import.meta.dir, "main.js")); }
       catch { fail(`the retained coordinator for ${selected.id} cannot be resolved; inspect ahub recovery status ${selected.id} before retrying; no session was started`); }
       if (supportsAction(operation.sourceRoot, "reattach") && !coordinatorIsCurrent) {
-        console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, "reattach", selected.peer)}`);
+        if (humanRecovery(display.json)) {
+          for (const line of wrap("ahub: using the operation's retained coordinator for reattachment", display.options.columns)) console.error(line);
+          if (display.options.verbose) for (const line of wrap(recoveryCommand(operation, "reattach", selected.peer), display.options.columns)) console.error(line);
+        } else console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, "reattach", selected.peer)}`);
+        const formatting = recoveryFormatting(coordinator, display.options);
         const code = await new Promise<number>(resolve => {
-          const child = spawn(process.execPath, [coordinator, "recovery", "reattach", selected.id, selected.peer], { cwd, stdio: "inherit", env: process.env });
+          const child = spawn(process.execPath, [coordinator, "recovery", "reattach", selected.id, selected.peer, ...formatting], { cwd, stdio: display.json ? ["inherit", "ignore", "inherit"] : "inherit", env: process.env });
           child.on("error", () => { console.error(`ahub: coordinator could not start; ${recoveryCommand(operation, "status")}`); resolve(1); });
           child.on("close", status => resolve(status ?? 1));
         });
-        process.exitCode = code; return;
+        process.exitCode = code;
+        if (display.json && code === 0) console.log(JSON.stringify(publicOperation(readOperation<RecoveryOperation>(selected.id)), null, 2));
+        return;
       }
       const result = await reattachRecovery(selected.id, selected.peer, makeRecoveryDriver());
-      console.log(JSON.stringify(publicOperation(result), null, 2));
-      console.log(nextActionsText(result));
+      if (humanRecovery(display.json)) {
+        printRecovery(renderOperation(result, undefined, display.options));
+        const live = await liveProjects(result, makeRecoveryDriver(undefined, delegatedPeer).inspect);
+        printRecovery(renderBlocked(result, nextChoices(result, undefined, live), display.options));
+      } else {
+        console.log(JSON.stringify(publicOperation(result), null, 2));
+        if (!display.json) console.log(nextActionsText(result));
+      }
       return;
     }
     // #272: without an id, the operation that holds the machine's lock; bare on a terminal, its screen.
     const named = !!given && operationIdPattern.test(given);
     const id = named ? given : recoveryLock();
     const rest = named || given === undefined ? more : [given, ...more];
-    if (action === undefined && process.stdin.isTTY && process.stdout.isTTY) {
+    if (action === undefined && humanRecovery(display.json)) {
       if (!id) return console.log("no recovery operation is open");
-      return onTerminal(async (io) => { await operationScreen(upgradeHost("restart", VERSION), io, id); });
+      return onTerminal(async (io) => { await operationScreen(upgradeHost("restart", VERSION), io, id); }, display.options);
     }
     if (!["status", "resume", "abort", "dispose"].includes(action ?? "") || (action !== "dispose" && rest.length)) fail(usage);
     if (!id) fail("no recovery operation holds the lock; name one by its id");
@@ -588,7 +643,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect);
       console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
     }
-    else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver(undefined, delegatedPeer)); console.log("preflight cancelled; no committed transition was rolled back"); }
+    else if (action === "abort") {
+      await abortRecovery(id, makeRecoveryDriver(undefined, delegatedPeer));
+      if (display.json) console.log(JSON.stringify(publicOperation(readOperation<RecoveryOperation>(id)), null, 2));
+      else console.log("preflight cancelled; no committed transition was rolled back");
+    }
     else if (action === "dispose") {
       // Console authority (including explicit --live-test delegation); the reason is kept in the operation's audit.
       const { one, rest: flags } = takeFlags(rest, ["--fresh-session", "--reason"], []);
@@ -596,16 +655,32 @@ const commands: Record<string, () => Promise<void> | void> = {
       const reason = one["--reason"]?.trim() ?? "";
       if (!reason || reason.length > 500 || (flags.length && !stop) || stop === !!one["--fresh-session"]) fail(usage);
       const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver(undefined, delegatedPeer));
-      if (!stop) { console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`); return spawnRecovery(result); }
-      console.log(JSON.stringify(publicOperation(result), null, 2));
-      for (const line of stopAndArchiveSummary(result)) console.log(line);
+      if (!stop) {
+        if (display.json) { console.log(JSON.stringify(publicOperation(result), null, 2)); return spawnRecovery(result, true); }
+        console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`);
+        return spawnRecovery(result, false, humanRecovery(false) ? display.options : undefined);
+      }
+      if (humanRecovery(display.json)) printRecovery(renderSummary(result, await recoveryEndInspection(result), display.options));
+      else {
+        console.log(JSON.stringify(publicOperation(result), null, 2));
+        if (!display.json) for (const line of stopAndArchiveSummary(result)) console.log(line);
+      }
     }
-    else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
+    else if (["completed", "cancelled"].includes(operation.phase)) console.log(display.json ? JSON.stringify(publicOperation(operation, runner), null, 2) : `recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
     else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect))}`);
-    else if (runner === "unknown") console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
-    else if (runner) console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
-    else spawnRecovery(operation);
+    else if (runner === "unknown") {
+      if (display.json) console.log(JSON.stringify(publicOperation(operation, runner), null, 2));
+      else if (humanRecovery(false)) printRecoveryStatus(operation, "Runner ownership is unknown; nothing was started.", display.options);
+      else console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
+    }
+    else if (runner) {
+      if (display.json) console.log(JSON.stringify(publicOperation(operation, runner), null, 2));
+      else if (humanRecovery(false)) printRecoveryStatus(operation, `runner ${runner} is still working on this operation`, display.options);
+      else console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
+    }
+    else if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
+    else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
   },
   "recovery-run": async () => {
     if (args.length !== 1 || process.env.AGENTHUB_RECOVERY_OPERATION !== args[0]) fail("recovery-run is an internal command");
