@@ -21,7 +21,7 @@ class Peer extends BasePeer {
   async stop() { this.setState("offline"); }
   async deliver(envelopes: Envelope[]) { this.received.push(...envelopes); }
 }
-async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; available?: boolean; availability?: (signal?: AbortSignal) => Promise<RunnerState>; staleDeliver?: boolean } = {}) {
+async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; available?: boolean; availability?: (signal?: AbortSignal) => Promise<RunnerState>; stopRunner?: () => Promise<void>; staleDeliver?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-capability-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/owner/project.git"]]) {
     const r = hubGitSync(["-C", root, ...args], { encoding: "utf8" }); if (r.status) throw new Error("fixture git failed");
@@ -38,7 +38,7 @@ async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNull
       runner: options => {
         runnerOptions = options;
         return {
-          available: extra.availability ?? (async () => ({ available: extra.available ?? true, reason: "fake unavailable" })), sweep: async () => [], stopAll: async () => {},
+          available: extra.availability ?? (async () => ({ available: extra.available ?? true, reason: "fake unavailable" })), sweep: async () => [], stopAll: extra.stopRunner ?? (async () => {}),
           start: (request: CheckRequest) => {
             const run = randomUUID();
             records.set(run, { ...request, run, status: "running", sha: "a".repeat(40), tree: "b".repeat(40), lockfile: "c".repeat(64), excluded: 0, dependency_files: 10,
@@ -309,4 +309,40 @@ test("daemon stop aborts and awaits background runner refresh before resolving",
     await client.request({ t: "status" }); expect(calls).toBe(2);
   } finally { Date.now = originalNow; finish?.(); await stopping; }
   await Bun.sleep(0); expect(calls).toBe(2);
+});
+
+
+test("cancel of an already finished check reports its actual finished receipt", async () => {
+  const f = await fixture(), task = f.task();
+  const { run } = JSON.parse((await f.call("codex", "hub_check_start", { id: task.id, check: "typecheck" })).text);
+  await f.complete(run, { exit: 7, cancelled: false });
+  const reply = await f.call("codex", "hub_check_cancel", { run });
+  expect(reply.ok).toBe(true); expect(JSON.parse(reply.text)).toMatchObject({ run, status: "finished", cancelled: false });
+  expect(f.records.get(run)).toMatchObject({ exit: 7, cancelled: false, status: "finished" });
+});
+
+test("daemon stops native peers promptly while slow runner cleanup remains owned and awaited", async () => {
+  let finish!: () => void, runnerStarted = false, peerStopped = false;
+  const cleanup = new Promise<void>(resolve => { finish = resolve; });
+  const f = await fixture({ stopRunner: async () => { runnerStarted = true; await cleanup; } });
+  const original = f.peers.codex!.stop.bind(f.peers.codex!);
+  f.peers.codex!.stop = async () => { peerStopped = true; await original(); };
+  let stopped = false; const stopping = f.daemon.stop().then(() => { stopped = true; });
+  try {
+    await Bun.sleep(0);
+    expect(runnerStarted).toBe(true); expect(peerStopped).toBe(true); expect(stopped).toBe(false);
+  } finally { finish(); await stopping; }
+});
+
+test("runner-off daemon starts with malformed receipt and exposes only its id as storage uncertainty", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-malformed-start-")), stateDir = join(root, "state"), bad = "11111111-1111-1111-1111-111111111111";
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(stateDir, "checks"), { recursive: true }); writeFileSync(join(stateDir, "checks", `${bad}.json`), "private malformed payload");
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { enabled: false, keep: 1 } } }); cleanups.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
+  const status = (await client.request({ t: "status" })).status;
+  expect(status.isolatedChecks.unknownReceipts).toEqual([bad]); expect(status.isolatedChecks.orphans).toEqual([]);
+  expect(JSON.stringify(status.isolatedChecks)).not.toContain("private malformed payload");
+  expect(readFileSync(join(stateDir, "checks", `${bad}.json`), "utf8")).toBe("private malformed payload");
 });

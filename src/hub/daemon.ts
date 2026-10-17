@@ -439,7 +439,7 @@ export interface DaemonOptions {
   boundedTools?: {
     specAvailable?: typeof specAvailable;
     fetchSpec?: typeof fetchSpec;
-    runner?: (options: RunnerOptions) => Pick<ContainerRunner, "available" | "start" | "result" | "consumeOutput" | "cancel" | "sweep" | "stopAll" | "markStale">;
+    runner?: (options: RunnerOptions) => Pick<ContainerRunner, "available" | "start" | "result" | "consumeOutput" | "cancel" | "sweep" | "stopAll" | "markStale"> & Partial<Pick<ContainerRunner, "unknownReceipts" | "maintenanceUnavailable">>;
   };
 }
 
@@ -1905,7 +1905,9 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (op === "hub_check_cancel") {
         await checkRunner.cancel(receipt.run);
-        return JSON.stringify({ run: receipt.run, cancelled: true });
+        const actual = await checkRunner.result(receipt.run);
+        if (!actual) throw new Error("check receipt unavailable after cancellation");
+        return JSON.stringify({ run: actual.run, status: actual.status, cancelled: actual.cancelled });
       }
       if (by !== USER && !currentCheck(receipt)) throw new PreEffectToolRefusal("check unavailable: stale binding");
       if (by === receipt.owner) await checkRunner.consumeOutput(receipt.run);
@@ -2328,7 +2330,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
-    isolatedChecks: { pending: checkPending.size, orphans: orphanChecks },
+    isolatedChecks: { pending: checkPending.size, orphans: orphanChecks, unknownReceipts: checkRunner.unknownReceipts ?? [], maintenanceUnavailable: checkRunner.maintenanceUnavailable === true },
     taskCapabilities: peerCapabilities(),
     tasks: board.counts(),
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
@@ -4788,8 +4790,8 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
-      try { await checkRunner.stopAll(); }
-      finally { await refreshingRunner; }
+      // Fence/abort the runner now, but slow container teardown must not consume the peer-stop deadline.
+      const runnerStopped = Promise.allSettled([checkRunner.stopAll(), refreshingRunner ?? Promise.resolve()]);
       await Promise.allSettled([...starting.values()]);
       // A fingerprint still being detected belongs in the research records written below; its peer must still be
       // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).
@@ -4798,6 +4800,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // A peer whose stop rejects must not strand the daemon (issue #56): its failure is
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
       for (const exit of exits) if (exit.status === "rejected") log(`peer stop failed during shutdown: ${(exit.reason as Error)?.message ?? exit.reason}`);
+      for (const exit of await runnerStopped) if (exit.status === "rejected") log("isolated check teardown unconfirmed; inspect its retained heavy slot and receipt");
       await modelRelay?.close();
       await egress?.close();
       await piReceipts?.close();

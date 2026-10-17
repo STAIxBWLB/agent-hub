@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
@@ -536,4 +536,59 @@ test("arbitrary start-policy callback failure remains uncertain instead of becom
     expect(await ledger.execute("session", "policy", "hub_check_start", {}, async () => { f.runner.start(f.request); return "unexpected"; })).toContain("outcome is uncertain");
     expect(ledger.unsettled).toBe(true); expect(f.runner.activeRun).toBeUndefined(); expect(f.runner.queuedRuns).toEqual([]);
   } finally { await ledger.close(); }
+});
+
+test("malformed receipt maintenance preserves bad bytes and continues valid expiry with runner disabled", async () => {
+  const f = await fixture(), receipt = await f.runner.start(f.request).done;
+  const bad = "11111111-1111-1111-1111-111111111111", old = "22222222-2222-2222-2222-222222222222";
+  const badPath = join(f.root, "state/checks", `${bad}.json`);
+  await writeFile(badPath, "{truncated private payload");
+  await writeFile(join(f.root, "state/checks", `${old}.json`), JSON.stringify({ ...receipt, run: old, container: `agenthub-check-${old}`, created: Date.now() - 86_400_001 }));
+  const oldDir = join(f.root, "storage/fixture", old); await mkdir(oldDir); await writeFile(join(oldDir, "output.log"), "expired output");
+  const runner = new ContainerRunner({ projectDir: f.project, stateDir: join(f.root, "state"), storageDir: join(f.root, "storage"), projectKey: "fixture", enabled: false, isDenied: () => false }); runners.push(runner);
+  expect(await runner.sweep()).toEqual([]);
+  expect(runner.unknownReceipts).toEqual([bad]); expect(await readFile(badPath, "utf8")).toBe("{truncated private payload");
+  expect(await Bun.file(join(oldDir, "output.log")).exists()).toBe(false);
+  await expect(runner.result(bad)).rejects.toThrow("check receipt unavailable");
+});
+
+test("an unrelated malformed receipt never changes a newly saved successful outcome", async () => {
+  const f = await fixture(), bad = "11111111-1111-1111-1111-111111111111";
+  await mkdir(join(f.root, "state/checks"), { recursive: true }); await writeFile(join(f.root, "state/checks", `${bad}.json`), "");
+  const receipt = await f.runner.start(f.request).done;
+  expect(receipt).toMatchObject({ exit: 0, tail: "fixture passed", output_withheld: false });
+  expect(receipt.error).toBeUndefined(); expect(f.runner.unknownReceipts).toEqual([bad]);
+  expect(await f.runner.result(receipt.run)).toEqual(receipt);
+});
+
+test("unrelated retention failure cannot rewrite a receipt saved successfully", async () => {
+  const f = await fixture();
+  (f.runner as unknown as { retain: () => Promise<void> }).retain = async () => { throw new Error("injected maintenance failure"); };
+  const receipt = await f.runner.start(f.request).done;
+  expect(receipt).toMatchObject({ exit: 0, tail: "fixture passed", output_withheld: false }); expect(receipt.error).toBeUndefined();
+  expect(await f.runner.result(receipt.run)).toEqual(receipt); expect(f.runner.maintenanceUnavailable).toBe(true);
+});
+
+test("sweep treats a malformed labelled receipt as unknown and never removes its container", async () => {
+  const f = await fixture(), bad = "11111111-1111-1111-1111-111111111111", calls: string[] = [];
+  await mkdir(join(f.root, "state/checks"), { recursive: true }); await writeFile(join(f.root, "state/checks", `${bad}.json`), "{}");
+  const runner = new ContainerRunner({ projectDir: f.project, stateDir: join(f.root, "state"), storageDir: join(f.root, "storage"), projectKey: "fixture", enabled: true, isDenied: () => false,
+    command: async args => { calls.push(args[0]!); return { code: 0, stdout: JSON.stringify([{ id: `agenthub-check-${bad}`, labels: { "agenthub.project": "fixture", "agenthub.run": bad, "agenthub.hub": "42:unknown" } }]) }; } }); runners.push(runner);
+  expect(await runner.sweep()).toEqual([`orphan check agenthub-check-${bad}: unknown owner`]);
+  expect(runner.unknownReceipts).toEqual([bad]); expect(calls).toEqual(["list"]);
+});
+
+
+test("removing an unknown receipt clears its warning on the next successful scan", async () => {
+  const f = await fixture(), id = "11111111-1111-1111-1111-111111111111";
+  await mkdir(join(f.root, "state/checks"), { recursive: true });
+  const records = join(f.root, "state/checks"), path = join(records, `${id}.json`); await writeFile(path, "{malformed");
+  const staging = join(f.root, "storage/fixture", id); await mkdir(staging, { recursive: true });
+  const old = new Date(Date.now() - 86_400_001); await utimes(staging, old, old);
+  await f.runner.sweep(); expect(f.runner.unknownReceipts).toEqual([id]); expect(existsSync(staging)).toBe(true);
+  await rename(records, `${records}-paused`); await writeFile(records, "unreadable directory stand-in");
+  await f.runner.sweep(); expect(f.runner.unknownReceipts).toEqual([id]); expect(f.runner.maintenanceUnavailable).toBe(true);
+  await rm(records); await rename(`${records}-paused`, records);
+  await rm(path); await f.runner.sweep(); expect(f.runner.unknownReceipts).toEqual([]);
+  expect(existsSync(staging)).toBe(false); expect(f.runner.maintenanceUnavailable).toBe(false);
 });

@@ -11,7 +11,9 @@ export interface SpecResult { number: number; title: string; state: string; upda
 /** PATH/shorter timeout are host-owned fixture seams, never tool inputs. */
 export interface SpecOptions { path?: string; timeoutMs?: number; projectDir?: string; }
 export interface FetchSpecOptions extends SpecOptions { screen: (whole: string) => boolean | Promise<boolean>; }
-function validRepo(repo: string): void { if (!REPO.test(repo)) throw new PreEffectToolRefusal("other repository"); }
+/** Canonical owner/repo identity accepted by the fixed github.com fetch boundary. */
+export const isGitHubRepository = (repo: unknown): repo is string => typeof repo === "string" && REPO.test(repo);
+function validRepo(repo: string): void { if (!isGitHubRepository(repo)) throw new PreEffectToolRefusal("other repository"); }
 
 /** Resolve only task-bound issue references; foreign references never fall through to local #N. */
 export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial<Pick<Task, "external">>, repo: string): number[] {

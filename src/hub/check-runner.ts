@@ -96,6 +96,10 @@ export class ContainerRunner {
   private readonly queue: Entry[] = [];
   private active?: Entry;
   private closing = false;
+  private readonly unknownReceiptIds = new Set<string>();
+  private maintenanceFailed = false;
+  get unknownReceipts(): readonly string[] { return [...this.unknownReceiptIds].sort(); }
+  get maintenanceUnavailable(): boolean { return this.maintenanceFailed; }
   private readonly probes = new Map<AbortController, Promise<RunnerState>>();
   private availableCache?: { at: number; value: RunnerState };
   private readonly now: () => number;
@@ -111,7 +115,7 @@ export class ContainerRunner {
     this.signature = (options.signature ?? processSignature)(process.pid) ?? "";
     this.records = join(options.stateDir, "checks");
     this.root = join(options.storageDir, options.projectKey);
-    this.retentionTimer = setInterval(() => { void this.retain().catch(() => {}); }, 60_000);
+    this.retentionTimer = setInterval(() => { void this.maintain(); }, 60_000);
     this.retentionTimer.unref();
   }
   private gitEnv(): NodeJS.ProcessEnv {
@@ -389,7 +393,8 @@ export class ContainerRunner {
       if (release && removed) await release().catch(() => {});
       r.duration_ms = Math.max(0, this.now() - begun); r.tail = tail(outputTail.toString("utf8"), r.output_bytes > outputTail.length); if (r.status !== "stale") r.status = "finished";
       if (!this.current(r)) { r.status = "stale"; }
-      try { await mkdir(dir, { recursive: true, mode: 0o700 }); await writeFile(join(dir, "output.log"), r.truncated ? Buffer.concat([output.subarray(0, MAX_OUTPUT - 7), Buffer.from("\n[cut]\n")]) : output, { mode: 0o600 }); await this.save(r); await this.retain(); } catch { r.error = "check receipt storage unavailable"; r.tail = ""; r.output_withheld = true; }
+      try { await mkdir(dir, { recursive: true, mode: 0o700 }); await writeFile(join(dir, "output.log"), r.truncated ? Buffer.concat([output.subarray(0, MAX_OUTPUT - 7), Buffer.from("\n[cut]\n")]) : output, { mode: 0o600 }); await this.save(r); } catch { r.error = "check receipt storage unavailable"; r.tail = ""; r.output_withheld = true; }
+      await this.maintain(); // Maintenance never changes an outcome already saved for this run.
       if (!this.current(r)) { r.status = "stale"; await this.save(r).catch(() => {}); }
       try { if (r.status !== "stale") await this.options.onResult?.({ ...r }); } catch { /* A notice cannot retry a completed check. */ }
     }
@@ -450,32 +455,50 @@ export class ContainerRunner {
   }
   async sweep(): Promise<string[]> {
     const unknown: string[] = [];
-    if (!this.enabled()) { await this.retain(); return unknown; }
-    let containers: unknown;
-    try { const list = await this.command(["list", "--all", "--format", "json"]); if (list.code !== 0) return unknown; containers = JSON.parse(list.stdout); } catch { return unknown; }
-    if (!Array.isArray(containers)) return unknown;
-    for (const container of containers) {
-      const c = container as { id?: string; configuration?: { id?: string; labels?: Record<string, string> }; labels?: Record<string, string> };
-      const labels = c.configuration?.labels ?? c.labels;
-      if (labels?.["agenthub.project"] !== this.options.projectKey) continue;
-      const name = c.configuration?.id ?? c.id;
-      const run = labels["agenthub.run"];
-      if (!name || !run || name !== `agenthub-check-${run}`) { unknown.push("orphan check: unknown owner"); continue; }
-      const r = await this.result(run);
-      if (!r || r.container !== name || !r.hub_signature || labels["agenthub.hub"] !== `${r.hub_pid}:${r.hub_signature}`) { unknown.push(`orphan check ${name}: unknown owner`); continue; }
-      const liveness = (this.options.liveness ?? processLiveness)(r.hub_pid, r.hub_signature);
-      if (liveness === "live") continue;
-      if (liveness !== "gone") { unknown.push(`orphan check ${name}: unknown owner`); continue; }
-      if (!await this.cleanup(name)) { unknown.push(`orphan check ${name}: cleanup unconfirmed`); continue; }
-      r.interrupted = true; if (r.status !== "stale") r.status = "finished"; r.exit = null; r.tail = "";
-      await rm(join(this.root, run, "src"), { recursive: true, force: true }); await this.save(r);
-    }
-    await this.retain(); return unknown;
+    if (!this.enabled()) { await this.maintain(); return unknown; }
+    try {
+      let containers: unknown;
+      try { const list = await this.command(["list", "--all", "--format", "json"]); if (list.code !== 0) return unknown; containers = JSON.parse(list.stdout); } catch { return unknown; }
+      if (!Array.isArray(containers)) return unknown;
+      for (const container of containers) {
+        const c = container as { id?: string; configuration?: { id?: string; labels?: Record<string, string> }; labels?: Record<string, string> };
+        const labels = c.configuration?.labels ?? c.labels;
+        if (labels?.["agenthub.project"] !== this.options.projectKey) continue;
+        const name = c.configuration?.id ?? c.id;
+        const run = labels["agenthub.run"];
+        if (!name || !run || name !== `agenthub-check-${run}`) { unknown.push("orphan check: unknown owner"); continue; }
+        let r: RunReceipt | undefined;
+        try { r = await this.result(run); }
+        catch { this.unknownReceiptIds.add(/^[a-f0-9-]{36}$/.test(run) ? run : "unidentified"); }
+        if (!r || r.container !== name || !r.hub_signature || labels["agenthub.hub"] !== `${r.hub_pid}:${r.hub_signature}`) { unknown.push(`orphan check ${name}: unknown owner`); continue; }
+        const liveness = (this.options.liveness ?? processLiveness)(r.hub_pid, r.hub_signature);
+        if (liveness === "live") continue;
+        if (liveness !== "gone") { unknown.push(`orphan check ${name}: unknown owner`); continue; }
+        if (!await this.cleanup(name)) { unknown.push(`orphan check ${name}: cleanup unconfirmed`); continue; }
+        r.interrupted = true; if (r.status !== "stale") r.status = "finished"; r.exit = null; r.tail = "";
+        await rm(join(this.root, run, "src"), { recursive: true, force: true }); await this.save(r);
+      }
+      return unknown;
+    } finally { await this.maintain(); }
+  }
+  private async maintain(): Promise<void> {
+    try { await this.retain(); this.maintenanceFailed = false; }
+    catch { this.maintenanceFailed = true; }
   }
   private async retain(): Promise<void> {
-    const names = await readdir(this.records).catch(() => []);
+    const names = await readdir(this.records).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; });
+    if (names) {
+      const present = new Set(names.filter(name => name.endsWith(".json")).map(name => name.slice(0, -5)));
+      for (const id of this.unknownReceiptIds) if (id === "unidentified" || !present.has(id)) this.unknownReceiptIds.delete(id);
+    }
     const receipts: RunReceipt[] = [];
-    for (const name of names) { if (!name.endsWith(".json")) continue; const r = await this.result(name.slice(0, -5)); if (r) receipts.push(r); }
+    for (const name of names ?? []) {
+      if (!name.endsWith(".json")) continue;
+      const id = name.slice(0, -5), safeId = /^[a-f0-9-]{36}$/.test(id) ? id : "unidentified";
+      if (safeId === "unidentified") { this.unknownReceiptIds.add(safeId); continue; }
+      try { const r = await this.result(id); if (r) receipts.push(r); this.unknownReceiptIds.delete(id); }
+      catch { this.unknownReceiptIds.add(id); }
+    }
     receipts.sort((a, b) => b.created - a.created);
     for (const [index, r] of receipts.entries()) {
       if (this.entries.has(r.run)) continue;
@@ -484,8 +507,8 @@ export class ContainerRunner {
       else if (index >= 20) await this.consumeOutput(r.run);
     }
     // A crash before a receipt rename must not retain an unindexed staging directory forever.
-    for (const name of await readdir(this.root).catch(() => [])) {
-      if (!/^[a-f0-9-]{36}$/.test(name) || this.entries.has(name)) continue;
+    for (const name of await readdir(this.root).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; })) {
+      if (!/^[a-f0-9-]{36}$/.test(name) || this.entries.has(name) || this.unknownReceiptIds.has(name)) continue;
       const path = join(this.root, name); const st = await lstat(path);
       if (this.now() - st.mtimeMs >= DAY) await rm(path, { recursive: true, force: true });
     }

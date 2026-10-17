@@ -827,3 +827,13 @@ test("AC4: status renders every held row with ids, senders, kinds and age (#434)
   for (const row of heldRows) expect(text).toContain(row.id);
   expect(text).toContain("from pi"); expect(text).toContain("kind chat"); expect(text).toContain("age");
 });
+
+test("unknown receipt IDs and maintenance are distinct from orphan container warnings", () => {
+  const id = "11111111-1111-1111-1111-111111111111";
+  for (const columns of [undefined, 80]) {
+    const rendered = text(renderStatus({ peers: {}, isolatedChecks: { orphans: ["orphan check container-42: unknown owner"], unknownReceipts: [id], maintenanceUnavailable: true } }, columns));
+    expect(rendered.replace(/\s/g, "")).toContain(`checkreceipt${id}:unknown;receiptstorageunavailable`.replace(/\s/g, ""));
+    expect(rendered).toContain("orphan check container-42"); expect(rendered).toContain("check maintenance");
+    if (columns) for (const line of rendered.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+  }
+});
