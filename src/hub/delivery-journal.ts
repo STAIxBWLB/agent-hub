@@ -683,12 +683,10 @@ export class DeliveryJournal {
     return this.db.transaction((): JournalDelivery => {
       const row = this.get(deliveryId);
       if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state)) throw new Error("delivery is not active for this peer");
-      const revision = this.bump(), updatedAt = Date.now();
-      this.db.query("UPDATE deliveries SET state = 'completed', revision = ?, updated_at = ?, reason = ? WHERE project_id = ? AND id = ?").run(revision, updatedAt, reason ?? null, this.projectId, deliveryId);
+      const completed = this.transition(deliveryId, "completed", reason, row.revision);
       const put = this.db.query("INSERT OR IGNORE INTO task_offer_reads (project_id,peer,envelope_id,delivery_id,source,offer_revision) VALUES (?,?,?,?,?,?)");
       for (const env of row.originals) if (env.from === HUB && env.kind === "task" && Number.isSafeInteger(env.refs?.taskOffer) && env.refs!.taskOffer! >= 1) put.run(this.projectId, peer, env.id, deliveryId, source, env.refs!.taskOffer!);
-      this.pruneTerminal();
-      return { ...row, state: "completed", revision, updatedAt, ...(reason === undefined ? { reason: undefined } : { reason }) };
+      return completed;
     })();
   }
   /** Exact immutable offer id, independent of queue snapshots or generic completed rows. */

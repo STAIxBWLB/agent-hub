@@ -132,3 +132,14 @@ test("persisted offer proof refuses malformed provenance on query and reopen (#4
   expect(() => f.journal.offerRead("kimi", env.id)).toThrow("offer read source");
   expect(() => f.reopen()).toThrow("offer read source");
 });
+
+test("a central transition failure rolls back the actual pull and leaves its exact offer unread (#438)", async () => {
+  const f = rig(), peer = new Peer("kimi"); peer.pullOnly = true; f.bus.add(peer); await peer.start();
+  const env = offer(); f.bus.preface("kimi", "recall"); f.bus.publish(env);
+  f.journal.transition = () => { throw new Error("central completion rejected"); };
+  const revision = f.journal.snapshot().revision;
+  expect(() => f.bus.pull("kimi")).toThrow("central completion rejected");
+  expect(f.journal.offerRead("kimi", env.id)).toBe(false); expect(f.journal.list("kimi")).toEqual([]);
+  expect(f.journal.snapshot().revision).toBe(revision);
+  expect(f.bus.queueIds("kimi")).toEqual([env.id]); expect(f.bus.snapshot(false).prefaces.kimi).toBeDefined();
+});
