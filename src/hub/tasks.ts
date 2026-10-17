@@ -321,11 +321,11 @@ export class Tasks {
         this.d.board.update(task.id, HUB, "idle sweep", {}, undefined, { sweep: finding });
         recorded.push({ task: task.id, finding });
         if (finding.step === 1) {
-          this.sweepNotice(task, responsible, `${message} Check its current state with hub_task_list and accept, complete or review your assigned work.`);
+          this.sweepNotice(task, responsible, `${message} Check its current state with hub_task_list and accept, complete or review your assigned work.`, finding.kind === "review-pending" ? "reviewer" : "owner");
         } else if (finding.step === 2) {
           this.d.notify(message);
           for (const [peer, roles] of Object.entries(this.d.roles ?? {})) {
-            if (peer !== responsible && roles.includes("planner") && this.sweepAvailable(peer)) this.sweepNotice(task, peer, `${message} The assigned ${finding.kind === "review-pending" ? "reviewer" : "owner"} has not recorded fresh task activity; check the board before coordinating.`);
+            if (peer !== responsible && roles.includes("planner") && this.sweepAvailable(peer)) this.sweepNotice(task, peer, `${message} The assigned ${finding.kind === "review-pending" ? "reviewer" : "owner"} has not recorded fresh task activity; check the board before coordinating.`, "planner");
           }
         } else {
           const reviewer = finding.kind === "review-pending";
@@ -353,9 +353,9 @@ export class Tasks {
     return bus.stateOf(peer) === "idle" && (this.d.idle?.(peer) ?? true) && !peerEntry(this.d.held?.(), peer) && !bus.queueSummary(peer).heldBy && !bus.queued(peer) && !bus.hasInFlight(peer);
   }
 
-  private sweepNotice(task: Task, peer: PeerId, body: string): void {
+  private sweepNotice(task: Task, peer: PeerId, body: string, taskRecipient: "owner" | "reviewer" | "planner"): void {
     if (peer === USER) this.d.notify(body);
-    else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", refs: { task: String(task.id) } }));
+    else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", refs: { task: String(task.id), taskRecipient } }));
   }
 
   configureExecutionBudget = (config: ExecutionBudgetConfig): ExecutionBudgetStatus | undefined => {
@@ -1180,7 +1180,7 @@ export class Tasks {
    * #106): open work by default; the conflict notices of #91 count a task in review too.
    */
   whileOpen(to: PeerId, task: number, body: string, states: Task["state"][] = OPEN): void {
-    const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task) } });
+    const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task), taskRecipient: "owner" } });
     this.conditional.set(env.id, { peer: to, task, states });
     if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
     this.d.bus.publish(env);
@@ -1493,7 +1493,7 @@ export class Tasks {
       if (!peer || peer === USER) continue;
       this.releaseNotice(`task ${this.publicTitle(next)}: catalog role update delivery unconfirmed`, () => this.d.bus.publish(newEnvelope(HUB,
         `Task #${next.id}: catalog role changed by the person. ${next.role ? this.roleGuidance(next, peer, peer === next.reviewer) : "Catalog guidance cleared; follow the task's existing plan and requirements."}`,
-        { to: [peer], kind: "task", refs: { task: String(next.id) }, ...(this.isPii(next) ? { private: true } : {}) })));
+        { to: [peer], kind: "task", refs: { task: String(next.id), taskRecipient: peer === next.reviewer ? "reviewer" : "owner" }, ...(this.isPii(next) ? { private: true } : {}) })));
     }
     return next;
   }
@@ -1548,7 +1548,7 @@ export class Tasks {
     // (Codex, Pi); held, it starts no turn yet: neither is taking it.
     const owner = task.owner!;
     const idle = this.d.bus.stateOf(owner) === "idle";
-    const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) });
+    const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id), taskRecipient: "owner" }, ...(pii ? { private: true } : {}) });
     this.d.bus.publish(env);
     if (idle && this.d.bus.stateOf(owner) === "busy" && !this.d.bus.queueIds(owner).includes(env.id)) this.sent.set(handOver(task, owner), owner);
   }
@@ -2572,7 +2572,7 @@ export class Tasks {
 
   private tell(task: Task, body: string, pii: boolean): void {
     if (!task.owner || task.owner === USER) return;
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: "task", priority: "important", refs: { task: String(task.id) }, ...(pii ? { private: true } : {}) }));
+    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: "task", priority: "important", refs: { task: String(task.id), taskRecipient: "owner" }, ...(pii ? { private: true } : {}) }));
   }
 }
 

@@ -15,9 +15,9 @@ async function fixture() {
   board.update(task.id, "user", "assigned", { owner: "codex", reviewer: "claude", state: "in_progress" });
   board.update(task.id, "codex", "done", { state: "in_review" });
   const journal = new DeliveryJournal({ file, projectRoot: dir, projectId: "superseded", instanceId: "old" });
-  const notice = (kind: "task" | "review" = "task") => newEnvelope("hub", "private title", { kind, refs: { task: String(task.id) }, to: ["claude"] });
-  function held(id: string, originals: ReturnType<typeof notice>[]) {
-    journal.createDelivery({ id, peer: "claude", state: "needs_review", createdAt: Date.now(), originals, out: originals });
+  const notice = (kind: "task" | "review" = "task") => newEnvelope("hub", "private title", { kind, refs: { task: String(task.id), ...(kind === "task" ? { taskRecipient: "reviewer" as const } : {}) }, to: ["claude"] });
+  function held(id: string, originals: ReturnType<typeof notice>[], peer = "claude") {
+    journal.createDelivery({ id, peer, state: "needs_review", createdAt: Date.now(), originals, out: originals });
   }
   return { dir, file, board, task, journal, notice, held };
 }
@@ -33,6 +33,9 @@ test("AC2/AC3: restored obsolete notices settle as hub, mixed/live rows stay hel
   f.board.update(approved.id, "user", "done", { state: "approved" });
   f.held("approved-assignment", [newEnvelope("hub", "approved", { kind: "task", refs: { task: String(approved.id) } })]);
   f.held("reviewer-reminder", [f.notice()]); // sweepNotice uses kind task for an active reviewer too
+  f.held("moved-owner", [newEnvelope("hub", "assignment", { kind: "task", refs: { task: String(f.task.id), taskRecipient: "owner" } })]);
+  f.held("planner-coordination", [newEnvelope("hub", "coordinate", { kind: "task", refs: { task: String(f.task.id), taskRecipient: "planner" } })], "pi");
+  f.held("legacy-unknown", [newEnvelope("hub", "unknown audience", { kind: "task", refs: { task: String(f.task.id) } })], "pi");
   f.held("live-review", [f.notice("review")]);
   f.held("mixed", [f.notice(), newEnvelope("pi", "peer chat")]);
   f.journal.close(); f.board.close();
@@ -43,6 +46,9 @@ test("AC2/AC3: restored obsolete notices settle as hub, mixed/live rows stay hel
     expect(notices).not.toContain("private title");
     expect(daemon.bus.queueShow("presence")?.state).toBe("completed");
     expect(daemon.bus.queueShow("approved-assignment")?.state).toBe("completed");
+    expect(daemon.bus.queueShow("moved-owner")?.state).toBe("completed");
+    expect(daemon.bus.queueShow("planner-coordination")?.state).toBe("needs_review");
+    expect(daemon.bus.queueShow("legacy-unknown")?.state).toBe("needs_review");
     expect(daemon.bus.queueShow("live-review")?.state).toBe("needs_review");
     expect(daemon.bus.queueShow("reviewer-reminder")?.state).toBe("needs_review");
     expect(daemon.bus.queueShow("mixed")?.state).toBe("needs_review");
@@ -53,6 +59,8 @@ test("AC2/AC3: restored obsolete notices settle as hub, mixed/live rows stay hel
     expect(reviewed.ok).toBe(true);
     expect(daemon.bus.queueShow("live-review")?.state).toBe("completed");
     expect(daemon.bus.queueShow("reviewer-reminder")?.state).toBe("completed");
+    expect(daemon.bus.queueShow("planner-coordination")?.state).toBe("completed");
+    expect(daemon.bus.queueShow("legacy-unknown")?.state).toBe("completed");
     expect(daemon.bus.queueShow("mixed")?.state).toBe("needs_review");
     const inspection = new DeliveryJournal({ file: f.file, projectRoot: f.dir, projectId: "superseded", instanceId: (await client.request({ t: "status" })).status.instanceId });
     try { expect(inspection.resolution("live-review")).toMatchObject({ actor: "hub", reason: `superseded: task #${f.task.id} approved` }); }

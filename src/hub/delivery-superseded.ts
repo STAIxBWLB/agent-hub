@@ -19,9 +19,9 @@ export function supersededDeliveryReason(
     const task = board.get(id);
     if (!task) return undefined;
     if (task.state === "approved") reasons.add(`task #${task.id} approved`);
-    else if (env.kind === "review" && (task.state !== "in_review" || task.reviewer !== recipient)) reasons.add(`task #${task.id} review moved`);
-    else if (env.kind === "task" && task.owner !== recipient && !(task.state === "in_review" && task.reviewer === recipient)) reasons.add(`task #${task.id} no live recipient role`);
-    else return undefined;
+    else if ((env.kind === "review" || env.refs.taskRecipient === "reviewer") && (task.state !== "in_review" || task.reviewer !== recipient)) reasons.add(`task #${task.id} review moved`);
+    else if (env.kind === "task" && env.refs.taskRecipient === "owner" && task.owner !== recipient) reasons.add(`task #${task.id} owner moved`);
+    else return undefined; // Untagged legacy task notices and planner coordination carry no proof of supersession.
   }
   return `superseded: ${[...reasons].join("; ")}`;
 }

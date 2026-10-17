@@ -53,7 +53,7 @@ for (const [state, kind, minutes] of [["proposed", "unaccepted-assignment", 1], 
     await drain();
     const got = f.peers[state === "in_review" ? "claude" : "codex"]!.got;
     expect(got).toHaveLength(1);
-    expect(got[0]).toMatchObject({ kind: "task", refs: { task: String(task.id) } });
+    expect(got[0]).toMatchObject({ kind: "task", refs: { task: String(task.id), taskRecipient: state === "in_review" ? "reviewer" : "owner" } });
     expect(got[0]!.body).toContain(kind);
   });
 }
@@ -70,6 +70,7 @@ test("sweep: ladder persists through restart, planner escalation and default sug
   expect(await again.sweep(at + 60_000)).toMatchObject([{ finding: { step: 2 } }]);
   await drain();
   expect(f.peers.claude!.got[0]!.body).toContain("idle escalation 2/3");
+  expect(f.peers.claude!.got[0]!.refs?.taskRecipient).toBe("planner");
   expect(await again.sweep(at + 120_000)).toMatchObject([{ finding: { step: 3 } }]);
   expect(await again.sweep(at + 180_000)).toEqual([]);
   expect(f.deps.board.get(task.id)!.owner).toBe("codex");
@@ -207,4 +208,12 @@ test("memory reference bookkeeping preserves sweep thresholds and ladder activit
     expect(await f.tasks.sweep(due + 120_000)).toMatchObject([{ finding: { step: 3, activity } }]);
     expect(await f.tasks.sweep(due + 180_000)).toEqual([]);
   }
+});
+
+
+test("assignment notices identify their authoritative owner audience (#434)", async () => {
+  const f = await fixture();
+  const task = await f.tasks.propose("user", { title: "owner assignment", class: "implement", owner: "codex" });
+  await drain();
+  expect(f.peers.codex!.got.find(env => env.refs?.task === String(task.id))).toMatchObject({ kind: "task", refs: { taskRecipient: "owner" } });
 });
