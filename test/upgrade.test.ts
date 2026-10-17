@@ -929,7 +929,7 @@ test("next offers exactly what the commands accept, and resume only where it can
     const choices = nextChoices(initial, undefined, seen);
     if (JSON.stringify(choices.map((c) => c.text)) !== JSON.stringify(next)) wrong.push("choices differ from next");
     for (const c of choices) {
-      const names = { resume: ` recovery resume ${id}`, abort: ` recovery abort ${id}`, fresh: `--fresh-session ${c.peer} `, stop: "--stop-and-archive", wait: "" }[c.kind];
+      const names = { resume: ` recovery resume ${id}`, abort: ` recovery abort ${id}`, fresh: `--fresh-session ${c.peer} `, reattach: ` recovery reattach ${id} ${c.peer}`, stop: "--stop-and-archive", wait: "" }[c.kind];
       if (c.kind === "wait" ? /recovery (resume|abort|dispose) /.test(c.text) : !c.text.includes(names)) wrong.push(`choice ${c.kind} does not match its text`);
     }
     const twin = () => make(receipt, live);

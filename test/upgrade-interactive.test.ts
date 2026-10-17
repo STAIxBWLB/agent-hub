@@ -39,6 +39,19 @@ function host(over: Partial<UpgradeHost> = {}): UpgradeHost {
     live: async () => ({ alpha: source() }), endPeer: async (_planned, peer) => `${peer.id}: ended`, runnerStoppable: () => true, stopRunner: async () => true, entry: MAIN, version: "0.6.0", ...over };
 }
 
+test("#463 interactive a runs only the selected reattach command and leaves completion for resume", async () => {
+  const launch = { packageEntrypoint: MAIN, command: "fixture only", argv: [], env: {} };
+  const binding = { peer: "pi" as const, handle: "term-pi", incarnationId: "inc-pi", worktreeId: "wt-pi", projectRoot: project.root, sessionId: "saved-pi", sessionFile: "/sessions/saved pi.jsonl", launch, launchMetadata: launch };
+  const op = operation({ step: "restore-claude:alpha", blockedReattachment: { projectId: "alpha", peer: "pi" },
+    projects: [{ id: "alpha", phase: "started", instanceId: "target", terminals: { "restored:pi": { state: "failed" } }, reattachments: { pi: { state: "ready", cause: "detached after restore", at: 1, binding } } }] });
+  const f = screen(["a", "q"]);
+  const end = await operationScreen(host({ read: () => op, live: async () => ({ alpha: source({ instanceId: "target", recovery: { operationId: ID, phase: "restored" } }) }) }), f.io, ID);
+  expect(end).toBe("quit");
+  expect(f.ran).toEqual([[MAIN, "recovery", "reattach", ID, "pi"]]);
+  expect(f.out.some(line => line.includes("reattach pi with its recorded session only"))).toBe(true);
+  expect(op.phase).toBe("blocked"); expect(op.globalInstalled).toBeUndefined();
+});
+
 test("without --to the target is the registry's latest release, and only a newer target changes coordinator", async () => {
   const calls: string[][] = [];
   expect(await latestRelease(async (args) => { calls.push(args); return { code: 0, stdout: '"0.12.22"\n', stderr: "" }; })).toBe("0.12.22");

@@ -76,6 +76,12 @@ export interface RecoveryBlocker {
   nextAction?: string;
 }
 
+/** Read-only evidence for one already recorded terminal, never a session-selection result. */
+export interface SavedTerminalInspection {
+  state: "present" | "orphaned" | "missing" | "changed" | "unknown";
+  blocker?: RecoveryBlocker;
+}
+
 export interface TerminalInspection {
   bindings: TerminalBinding[];
   /** A map is convenient for callers recovering both peers at once. */
@@ -537,6 +543,48 @@ async function showBinding(binding: TerminalBinding, options: Required<TerminalR
   const issue = verifyBindingData(actual, binding);
   if (issue) throw new OrcaCommandError(issue);
   return actual;
+}
+
+/**
+ * Judge only the saved terminal identity. The caller separately fences the peer's current/restarted launchers.
+ * A failed read is unknown; only a typed stale handle plus a complete inventory can prove absence.
+ */
+export async function inspectSavedTerminal(binding: TerminalBinding, options?: CommandRunner | TerminalRecoveryOptions): Promise<SavedTerminalInspection> {
+  const config = normalizeOptions(options);
+  const unknown = (): SavedTerminalInspection => ({ state: "unknown", blocker: blocker("command-error", "saved terminal evidence is unavailable or inconsistent", binding.peer, binding.handle) });
+  const completeIdentity = (value: Record<string, unknown>) =>
+    [nestedString(value, ["handle"]), nestedString(value, ["incarnationId"]), nestedString(value, ["worktreeId"]), nestedString(value, ["worktreePath", "projectRoot"])].every(Boolean);
+  try {
+    const shown = terminalObject(await run(config.runner, ["terminal", "show", "--terminal", binding.handle, "--json"]));
+    if (!completeIdentity(shown)) return unknown();
+    const issue = verifyBindingData(shown, binding);
+    if (issue) return { state: "changed", blocker: issue };
+    if (shown.orphaned === true) return { state: "orphaned", blocker: blocker("terminal-gone", "the saved terminal is orphaned", binding.peer, binding.handle) };
+    if (shown.connected === false) return unknown();
+    return { state: "present" };
+  } catch (error) {
+    if (!(error instanceof OrcaCommandError) || error.blocker.code !== "terminal-gone") return unknown();
+  }
+  try {
+    const result = responseResult(await run(config.runner, ["terminal", "list", "--json"]));
+    const rows = result.terminals ?? result.items;
+    if (result.truncated === true || !Array.isArray(rows)) return unknown();
+    const handles = new Set<string>(), incarnations = new Set<string>();
+    for (const raw of rows) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return unknown();
+      const row = raw as Record<string, unknown>;
+      if (!completeIdentity(row)) return unknown();
+      const handle = nestedString(row, ["handle"])!, incarnation = nestedString(row, ["incarnationId"])!;
+      if (handles.has(handle) || incarnations.has(incarnation)) return unknown();
+      handles.add(handle); incarnations.add(incarnation);
+    }
+    const retained = (rows as Record<string, unknown>[]).find(row => row.handle === binding.handle || row.incarnationId === binding.incarnationId);
+    if (retained) {
+      const issue = verifyBindingData(retained, binding);
+      return issue ? { state: "changed", blocker: issue } : unknown();
+    }
+    return { state: "missing", blocker: blocker("terminal-gone", "the saved terminal handle and incarnation are absent from the complete inventory", binding.peer, binding.handle) };
+  } catch { return unknown(); }
 }
 
 /**

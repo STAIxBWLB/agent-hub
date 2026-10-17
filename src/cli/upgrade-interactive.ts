@@ -216,7 +216,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
     const live = runner ? {} : await host.live(op);
     io.out("");
     for (const line of operationLines(op, runner, Date.now())) io.out(line);
-    const run = async (action: "resume" | "abort" | "dispose", flags: string[] = []) => { acted = true; return (await io.run(recoveryArgv(op, action, flags))) === 0; };
+    const run = async (action: "resume" | "abort" | "dispose" | "reattach", flags: string[] = []) => { acted = true; return (await io.run(recoveryArgv(op, action, flags))) === 0; };
     // A runner scheduled by a command has not written yet: follow from the receipt as that command left it (resume
     // writes nothing, a fresh-session choice records itself first).
     const followed = async (): Promise<boolean> => (await follow(host, io, id, host.read(id).updatedAt)) === "left";
@@ -242,6 +242,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
       if (choice.kind === "wait") { if (typeof runner !== "number") io.out(`  ${choice.text}`); }
       else if (choice.kind === "resume") menu.set("r", { label: `resume${op.error ? " (after the step the error names)" : ""}`, act: async () => (await run("resume")) && followed() });
       else if (choice.kind === "abort") menu.set("c", { label: "cancel (no runtime was stopped; nothing to roll back)", act: async () => { await run("abort"); } });
+      else if (choice.kind === "reattach") menu.set("a", { label: `reattach ${choice.peer} with its recorded session only (then resume to finish)`, act: async () => { await run("reattach", [choice.peer!]); } });
       else if (choice.kind === "fresh") menu.set(menu.has("f") ? `f-${choice.peer}` : "f", { label: `start ${choice.peer} as a new session (its conversation is recorded as lost)`, act: async () => {
         const reason = await io.ask(`Reason for losing ${choice.peer}'s conversation [Enter: go back]: `);
         return !!reason && (await run("dispose", ["--fresh-session", choice.peer!, "--reason", reason.slice(0, 500)])) && followed();

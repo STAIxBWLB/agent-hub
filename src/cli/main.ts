@@ -44,13 +44,14 @@ import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
-import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner } from "../hub/recovery-store.ts";
+import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, reattachRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
-import { recordTerminalLaunch } from "./terminal-recovery.ts";
+import { recordTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
+import { stopAndArchiveSummary } from "./recovery-guidance.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
 
@@ -532,12 +533,44 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   spawnRecovery(operation);
 }
 
+/** Strict person command: recorded identity only, no session or terminal overrides. */
+function parseRecoveryReattach(argv: readonly string[]): { id: string; peer: TerminalPeer } | undefined {
+  if (argv.length !== 3 || argv[0] !== "reattach" || !operationIdPattern.test(argv[1]!) || !["codex", "claude", "pi"].includes(argv[2]!)) return undefined;
+  return { id: argv[1]!, peer: argv[2] as TerminalPeer };
+}
+
 const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
   recovery: async () => {
     const [action, given, ...more] = args;
     const usage = "usage: ahub recovery [status|resume|abort] [<operation-id>] | ahub recovery dispose [<operation-id>] --fresh-session <peer>|--stop-and-archive --reason <text>";
+    if (action === "reattach") {
+      const selected = parseRecoveryReattach(args);
+      if (!selected) fail("usage: ahub recovery reattach <operation-id> codex|claude|pi");
+      let operation: RecoveryOperation;
+      try { operation = readOperation<RecoveryOperation>(selected.id); }
+      catch { fail(`recovery receipt ${selected.id} cannot be read; inspect the retained operation with ahub recovery status ${selected.id}; no session was started`); }
+      if (typeof operation.sourceRoot !== "string" || !operation.sourceRoot.trim()) fail(`recovery receipt ${selected.id} has no retained coordinator path; inspect it with ahub recovery status ${selected.id}; no session was started`);
+      const coordinator = join(operation.sourceRoot, "src/cli/main.js");
+      if (!existsSync(coordinator)) fail(`the retained coordinator for ${selected.id} is unavailable; restore its retained package and inspect ahub recovery status ${selected.id} before retrying; no session was started`);
+      let coordinatorIsCurrent: boolean;
+      try { coordinatorIsCurrent = realPath(coordinator) === realPath(join(import.meta.dir, "main.js")); }
+      catch { fail(`the retained coordinator for ${selected.id} cannot be resolved; inspect ahub recovery status ${selected.id} before retrying; no session was started`); }
+      if (supportsAction(operation.sourceRoot, "reattach") && !coordinatorIsCurrent) {
+        console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, "reattach", selected.peer)}`);
+        const code = await new Promise<number>(resolve => {
+          const child = spawn(process.execPath, [coordinator, "recovery", "reattach", selected.id, selected.peer], { cwd, stdio: "inherit", env: process.env });
+          child.on("error", () => { console.error(`ahub: coordinator could not start; ${recoveryCommand(operation, "status")}`); resolve(1); });
+          child.on("close", status => resolve(status ?? 1));
+        });
+        process.exitCode = code; return;
+      }
+      const result = await reattachRecovery(selected.id, selected.peer, makeRecoveryDriver());
+      console.log(JSON.stringify(publicOperation(result), null, 2));
+      console.log(nextActionsText(result));
+      return;
+    }
     // #272: without an id, the operation that holds the machine's lock; bare on a terminal, its screen.
     const named = !!given && operationIdPattern.test(given);
     const id = named ? given : recoveryLock();
@@ -565,7 +598,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver(undefined, delegatedPeer));
       if (!stop) { console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`); return spawnRecovery(result); }
       console.log(JSON.stringify(publicOperation(result), null, 2));
-      console.log(`${result.plan.kind} abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.`);
+      for (const line of stopAndArchiveSummary(result)) console.log(line);
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).

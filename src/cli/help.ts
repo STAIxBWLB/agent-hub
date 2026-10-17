@@ -33,6 +33,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub restart [--dry-run] [--yes]", "recover this project's runtime; on a terminal without a flag it reviews the plan with you, follows the progress and offers the next steps"],
     ["ahub upgrade [--to <version>] [--dry-run] [--yes]", "review and upgrade running projects; --to defaults to the latest release (--yes needs it), and a newer release's own coordinator takes over; on a terminal without --dry-run or --yes: review, end agents first if you choose, apply, follow, and resume, cancel, end or reset on the spot"],
     ["ahub recovery [status|resume|abort] [<operation-id>]", "inspect, resume or cancel a preflight; status names the next actions; without an id, the operation that holds the lock, and with nothing else on a terminal its screen"],
+    ["ahub recovery reattach <operation-id> codex|claude|pi", "person only: repair that blocked peer with its recorded session; leaves the rest for recovery resume"],
     ["ahub recovery dispose [<operation-id>] --fresh-session codex|claude --reason <text>", "end a partial operation by starting that peer as a new session, recording the lost conversation"],
     ["ahub recovery dispose [<operation-id>] --stop-and-archive --reason <text>", "end a partial operation: stop its own targets, archive its snapshot and release the lock; the upgrade is abandoned, not completed"],
     ["ahub daemon [--unattended]", "internal: the detached hub process that ahub up or the dashboard manager starts"],
