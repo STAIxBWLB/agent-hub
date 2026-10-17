@@ -3611,7 +3611,7 @@ test("start reconciliation preserves migrated legacy settlements without authori
     const authored = () => Object.fromEntries(["log", "local"].flatMap(folder => readdirSync(join(store!.dir, folder))
       .filter(name => name.endsWith(".jsonl")).map(name => [`${folder}/${name}`, readFileSync(join(store!.dir, folder, name), "utf8")])));
     const before = authored();
-    const tasks = new Tasks({ board, bus, cwd: dir, project, routing: () => loadRouting(dir), store: { store, project, repo: project } });
+    const tasks = new Tasks({ board, bus, cwd: dir, project, routing: () => loadRouting(dir), notify: () => {}, store: { store, project, repo: project } });
     expect(store.hasTask(key)).toBe(true);
     expect(store.settled(key)).toBe(false);
     expect(store.settled(key, { includeLegacy: true })).toBe(true);
