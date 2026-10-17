@@ -83,5 +83,5 @@ export function cliCommandLabel(command: string, args: readonly string[]): strin
 }
 
 export function peerCommandRefusal(peer: string, command: string): string {
-  return `${peer} cannot run ahub ${command}; inherited agent markers identify this shell as an agent. A ! command in an agent session runs as that agent; the person runs it in ahub console or a terminal (use a separate terminal outside the agent session)`;
+  return `${peer} cannot run ahub ${command}; the person runs it in ahub console or a terminal. Refused because inherited agent markers identify this shell as an agent. A ! command in an agent session runs as that agent; use a separate terminal outside the agent session`;
 }
