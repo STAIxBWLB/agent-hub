@@ -1,6 +1,6 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow } from "../src/cli/console-state.ts";
-import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
+import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow, appendEvent } from "../src/cli/console-state.ts";
+import { eventTone, navigationPresses, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderBoard, renderStatus } from "../src/cli/output.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -909,6 +909,23 @@ describe("console layout (#213)", () => {
     expect(lastFrame()).toContain("[2 Approvals]"); // the tab did not move for the arrow inside a paste
     f.input("\x1b"); f.input("q"); await running;
   });
+  test("a Home or End sequence is one key press, not a paste (#441)", async () => {
+    const f = fixture();
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false, runCommand: () => () => {} });
+    await Promise.resolve(); await Promise.resolve();
+    const lastFrame = () => f.output.join("").split("\x1b[r\x1b[1;1H").at(-1)!;
+    for (const key of ["\x1b[H", "\x1b[F", "\x1bOH", "\x1bOF", "\x1b[1~", "\x1b[4~"]) {
+      f.input(key);
+      expect(lastFrame()).toContain("? keys"); // the command line stayed closed
+    }
+    // A held key coalesced into one read is that many presses, as arrows are (#309): still no command line.
+    for (const read of ["\x1b[F\x1b[F", "\x1bOF\x1bOF", "\x1b[H\x1b[B\x1b[4~"]) {
+      f.input(read);
+      expect(lastFrame()).toContain("? keys");
+      expect(lastFrame()).not.toContain(": FF");
+    }
+    f.input("\x1b"); f.input("q"); await running;
+  });
   test("errors and refusals take the failure tone; informing notices take attention", () => {
     const tone = (s: any) => renderConsoleLines(s, 80, 24, NOW).at(-2)!.at(-1)!;
     let s = state(); s.editing = true; s.input = "kill";
@@ -1593,4 +1610,54 @@ test("custom lifecycle board rows show base actor and entry exit readiness as te
   s.tasks = [{ ...plain, lifecycle: { ...plain.lifecycle, definition: { base: "implement" }, entry: [], exit: ["local gate missing"] } }];
   const custom = renderConsole(s, 260, 30, NOW).join("\n"); expect(custom).toContain("base implement"); expect(custom).toContain("next: owner"); expect(custom).toContain("entry: ready / exit: blocked");
   for (const width of [40, 80, 120]) for (const line of renderConsole(s, width, 30, NOW)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
+});
+
+test("#441 the Events panel follows new events at the last row and holds a row the person moved to", () => {
+  let s = state(true);
+  s = reduceConsole(s, "5", NOW).state;
+  for (const n of [1, 2, 3]) appendEvent(s, { text: `e${n}` });
+  expect(selectedPanelRow(s)?.text).toBe("e3"); // follows while on the newest row
+  s = reduceConsole(s, "k", NOW).state;
+  expect(selectedPanelRow(s)?.text).toBe("e2");
+  appendEvent(s, { text: "e4" }, 3); // the cap drops e1; the held row stays e2
+  expect(s.events.map(e => e.text)).toEqual(["e2", "e3", "e4"]);
+  expect(selectedPanelRow(s)?.text).toBe("e2");
+  s = reduceConsole(reduceConsole(s, "j", NOW).state, "j", NOW).state;
+  appendEvent(s, { text: "e5" }, 3);
+  expect(selectedPanelRow(s)?.text).toBe("e5"); // back on the last row, following again
+  s = reduceConsole(reduceConsole(s, "1", NOW).state, "5", NOW).state;
+  expect(selectedPanelRow(s)?.text).toBe("e5"); // opening the panel selects the newest row
+});
+
+test("#441 Home/< selects the first row and End/> the last, in any panel, and Home tops an open view", () => {
+  let s = reduceConsole(state(true), "5", NOW).state;
+  for (const n of [1, 2, 3, 4]) appendEvent(s, { text: `e${n}` });
+  for (const [key, want] of [["<", "e1"], [">", "e4"], ["\x1b[H", "e1"], ["\x1b[F", "e4"], ["\x1b[1~", "e1"], ["\x1b[4~", "e4"]] as const) {
+    s = reduceConsole(s, key, NOW).state;
+    expect(selectedPanelRow(s)?.text).toBe(want);
+  }
+  s = reduceConsole(reduceConsole(s, "<", NOW).state, "\r", NOW).state; // open the first event's view
+  s = reduceConsole(reduceConsole(s, "j", NOW).state, "j", NOW).state;
+  expect(s.detailOffset).toBe(2);
+  expect(reduceConsole(s, "<", NOW).state.detailOffset).toBe(0);
+  let t = state(true); t.panel = 3; t.tasks = [1, 2, 3].map(id => ({ id, state: "proposed", title: `t${id}` }));
+  t = reduceConsole(t, ">", NOW).state;
+  expect(selectedPanelRow(t)?.id).toBe(3);
+});
+
+test("#441 navigation reads split into presses only when made of known sequences; filters, tabs and the cap pick rows", () => {
+  expect(navigationPresses("\x1b[F\x1b[F")).toEqual(["\x1b[F", "\x1b[F"]);
+  expect(navigationPresses("\x1b[7~\x1b[8~\x1b[C")).toEqual(["\x1b[7~", "\x1b[8~", "\x1b[C"]);
+  expect(navigationPresses("\x1b[Fy")).toBeUndefined();
+  expect(navigationPresses("<>")).toBeUndefined(); // typed characters stay a paste in one read
+  let s = reduceConsole(state(true), "5", NOW).state;
+  for (const [n, peer] of [[1, "pi"], [2, "kimi"], [3, "pi"], [4, "kimi"]] as const) appendEvent(s, { text: `e${n}`, peer });
+  for (const [key, want] of [["\x1b[7~", "e1"], ["\x1b[8~", "e4"]] as const) { s = reduceConsole(s, key, NOW).state; expect(selectedPanelRow(s)?.text).toBe(want); }
+  s = reduceConsole(s, "f", NOW).state; // the first peer filter selects its newest row
+  expect([s.peerFilter, selectedPanelRow(s)?.text]).toEqual(["pi", "e3"]);
+  s = reduceConsole(reduceConsole(s, "4", NOW).state, "\x1b[C", NOW).state; // Right from Queue into Events
+  expect([s.panel, selectedPanelRow(s)?.text]).toEqual([5, "e3"]);
+  s.peerFilter = undefined; s.selection = 0; // hold the oldest row, then let the cap drop it
+  appendEvent(s, { text: "e5" }, 4);
+  expect([s.events.map(e => e.text), s.selection, selectedPanelRow(s)?.text]).toEqual([["e2", "e3", "e4", "e5"], 0, "e2"]);
 });

@@ -315,10 +315,13 @@ function approvalFields(a: Approval): [string, unknown][] {
 export function permissionText(a: Pick<Approval, "id" | "peer" | "title" | "options">): string {
   return `  ? ${a.peer} asks permission: ${String(a.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${a.id} <${a.options.map(o => `${quoted(o.optionId)} (${quoted(o.name)})`).join(", ")}> | deny`;
 }
+/** #441: Home/End as terminals send them, plus `<` and `>` for keyboards without those keys. */
+export const FIRST_KEYS = ["<", "\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~"];
+export const LAST_KEYS = [">", "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~"];
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
-  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Enter view", "j/k scroll a view"]],
+  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode"]],
   ["Tasks", ["a assign/reviewer (then y)", "u unassign (then y)", "r review (in review)"]],
@@ -386,6 +389,15 @@ export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 4) return s.queue.filter(q => q.state === "needs_review" || q.state === "queued");
   return s.events.filter(e => (!s.peerFilter || e.peer === s.peerFilter) && (!s.kindFilter || e.kind === s.kindFilter));
 }
+/** #441: Events follow the newest row while the selection is on the last one; a row the person moved to stays put. */
+export function appendEvent(s: ConsoleState, event: ConsoleEvent, cap = 1000): void {
+  if (s.panel !== 5) { s.events = [...s.events, event].slice(-cap); return; }
+  const before = panelRows(s), held = before[s.selection], following = !held || s.selection >= before.length - 1;
+  s.events = [...s.events, event].slice(-cap);
+  const rows = panelRows(s);
+  s.selection = following ? Math.max(0, rows.length - 1) : Math.max(0, rows.indexOf(held));
+}
+const newestEvent = (s: ConsoleState) => Math.max(0, panelRows(s).length - 1);
 export const selectedApproval = (s: ConsoleState) => s.approvals.find(a => a.id === s.approvalId);
 /** The selected row: approvals and refreshed Tasks/Queue rows are bound by id, never by a replacement row. */
 const selection = (s: ConsoleState) => {
@@ -530,7 +542,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   }
   if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
-  const switchPanel = (panel: number) => { s.panel = panel; s.selection = 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
+  const switchPanel = (panel: number) => { s.panel = panel; s.selection = panel === 5 ? newestEvent(s) : 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
   if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
   // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
@@ -541,6 +553,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (key === "\x1b") { s.detail = undefined; s.requestDetail = undefined; s.help = false; s.optionChoice = undefined; return done(); }
+  if (s.mode === "panels" && (FIRST_KEYS.includes(key) || LAST_KEYS.includes(key))) {
+    const first = FIRST_KEYS.includes(key);
+    if (s.detail !== undefined || s.requestDetail) { if (first) s.detailOffset = 0; return done(); }
+    s.selection = first ? 0 : Math.max(0, panelRows(s).length - 1);
+    if (s.panel === 2) s.approvalId = s.approvals[s.selection]?.id;
+    captureConsoleSelection(s, true);
+    return done();
+  }
   if (s.mode === "panels" && ["j", "k", "\x1b[A", "\x1b[B"].includes(key)) {
     if (s.detail !== undefined || s.requestDetail) { s.detailOffset = Math.max(0, s.detailOffset + (["j", "\x1b[B"].includes(key) ? 1 : -1)); return done(); }
     s.selection = Math.max(0, Math.min(panelRows(s).length - 1, selection(s) + (["j", "\x1b[B"].includes(key) ? 1 : -1)));
@@ -624,7 +644,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     const values = [...new Set(s.events.map(e => e[field]).filter((x): x is string => !!x))];
     const next = values[values.indexOf(current ?? "") + 1];
     if (key === "f") s.peerFilter = next; else s.kindFilter = next;
-    s.selection = 0; return done();
+    s.selection = newestEvent(s); return done();
   }
   if (s.mode === "stream" && !key.startsWith("\x1b")) { s.editing = true; s.input = terminalText(key).replace(/\n/g, ""); }
   return done();
