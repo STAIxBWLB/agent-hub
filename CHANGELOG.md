@@ -6,6 +6,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Add task-bound complete spec reads and opt-in isolated container checks for sandboxed peers, with current capability routing and screened exact-head receipts (#418).
 - On upgrade, non-PII implement, test and bulk_edit owners need an enabled, available `checks.runner = "container"`; local/Pi owners of issue-backed tasks in every class (including review) also need authenticated spec access. These capability gates do not restrict designated reviewers; PII work remains local-only without the opt-in (#418).
+- Model restoration receipts as explicit pending/waiting/done/failed states; wait within the managed TUI bound even before a launch record exists, preserve completed conversations, and retain strict session/terminal fences without duplicate launches (#433).
 - Safely return unseen Claude pushes, settle superseded hub-only holds with hub audit identity, list every hold and explain inherited agent command markers (#434).
 
 ## 0.12.30

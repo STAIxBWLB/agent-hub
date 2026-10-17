@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, abortRefusal, createOperation, disposeRecovery, FinalRefusal, liveProjects, nextActions, nextChoices, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { abortRecovery, abortRefusal, createOperation, disposeRecovery, FinalRefusal, liveProjects, nextActions, nextChoices, planFingerprint, publicOperation, recordRestart, recoveryCommand, registeredProjects, runRecovery, type Inspection, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, activeOperation, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -1314,4 +1314,31 @@ test("a database-busy reply must be a refused request (#303)", () => {
     expect(isDatabaseBusyReply({ ok: true, ...fields })).toBe(false);
     expect(isDatabaseBusyReply(fields)).toBe(false);
   }
+});
+for (const exclusion of ["plannedAttached", "freshStart"] as const) test(`#433 waiting failed-origin fresh refusal preserves ${exclusion} continuity`, async () => {
+  const f = failedRestore();
+  const binding = structuredClone(f.plan.projects[0]!.terminals[0]) as any;
+  binding.launch.argv = ["bun", "/pkg/main.js"]; binding.launchMetadata.argv = [...binding.launch.argv];
+  f.operation.projects[0]!.terminals["restored:codex"] = { state: "waiting", origin: "failed", binding };
+  if (exclusion === "plannedAttached") f.states.get("alpha")!.peers = [{ id: "codex", state: "idle", threadId: "t1" }];
+  else f.plan.projects[0]!.freshStart = ["codex"];
+  const { fingerprint: _ignored, ...body } = f.plan; f.plan.fingerprint = planFingerprint(body);
+  writeOperation(f.operation.id, f.operation, f.home);
+  const live = await liveProjects(f.operation, f.driver.inspect);
+  expect(nextActions(f.operation, undefined, live).some(line => line.includes("--fresh-session"))).toBe(false);
+  await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "lost", f.driver, f.home)).rejects.toThrow(exclusion === "plannedAttached" ? "its planned session is attached again, so nothing was lost" : "its plan already restarts it as a new session");
+  expect(readOperation<RecoveryOperation>(f.operation.id, f.home).audit).toBeUndefined();
+});
+test("#433 restart retires tagged done and every waiting binding without nesting wrappers", () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: ["bun", "/pkg/main.js"], env: {} };
+  const binding = (peer: "codex" | "claude" | "pi") => ({ peer, handle: `term-${peer}`, incarnationId: `inc-${peer}`, worktreeId: "wt", projectRoot: "/alpha", sessionId: `session-${peer}`, launch, launchMetadata: launch });
+  const codex = binding("codex"), claude = binding("claude"), pi = binding("pi");
+  const progress: ProjectProgress = { id: "alpha", phase: "started", instanceId: "old-target", terminals: { "closed:codex": true,
+    "restored:codex": { state: "done", binding: codex }, "restored:claude": { state: "waiting", origin: "pending", binding: claude }, "restored:pi": { state: "waiting", origin: "failed", binding: pi }, "closedRetired:claude": true } };
+  recordRestart(progress, 42);
+  expect(progress).toMatchObject({ phase: "stopped", restarts: [{ instanceId: "old-target", at: 42 }], terminals: { "closed:codex": true, "retired:codex": codex, "retired:claude": claude, "retired:pi": pi } });
+  for (const peer of ["codex", "claude", "pi"]) {
+    expect(progress.terminals[`restored:${peer}`]).toBeUndefined(); expect(progress.terminals[`retired:${peer}`]).not.toHaveProperty("binding");
+  }
+  expect(progress.terminals["closedRetired:claude"]).toBeUndefined(); expect(progress.instanceId).toBeUndefined();
 });

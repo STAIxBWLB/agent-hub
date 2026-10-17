@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { latestRelease, newerVersion } from "../src/cli/recovery-package.ts";
 import { endAgents, follow, operationLines, operationScreen, peerKind, planLines, planScreen, resetFlow, stepLabel, type ScreenIO, type UpgradeHost } from "../src/cli/upgrade-interactive.ts";
 import { PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
-import { cancellableWait, nextChoices, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { cancellableWait, nextActions, nextChoices, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { operationPath, recoveryRunner, signedRunner, stopSignedRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
@@ -387,4 +387,12 @@ test("agents are ended by kind or by name, only after a confirmation, and only t
   expect(flow.out).toContain("  codex: terminal term_codex closed");
   expect(flow.out).toContain("  codex  offline  -         offline, left as it is");
   expect(flow.out.at(-1)).not.toBe("nothing was changed");
+});
+test("#433 tagged failed-origin wait is shown as waiting and retains its fresh-session action", () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: ["bun", "/pkg/main.js"], env: {} };
+  const binding = { peer: "codex", handle: "term_codex", incarnationId: "inc", worktreeId: "wt", projectRoot: "/alpha", sessionId: "t1", launch, launchMetadata: launch };
+  const op = operation({ targetRoot: PACKAGE_ROOT, plan: plan({ terminals: [binding] }),
+    projects: [{ id: "alpha", instanceId: "new-target", phase: "started", terminals: { "restored:codex": { state: "waiting", origin: "failed", binding } } }] });
+  expect(operationLines(op, undefined, 0)).toContain("  alpha  started  (restored:codex waiting:failed)");
+  expect(nextActions(op)).toContain(`bun ${MAIN} recovery dispose ${ID} --fresh-session codex --reason <text>`);
 });
