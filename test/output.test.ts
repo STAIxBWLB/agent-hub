@@ -805,3 +805,18 @@ test("retained off-roster status and queue rows say why their work is held (#315
     for (const line of rendered) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
   }
 });
+
+
+test("human status preserves unknown-owner isolated-check warnings at every width", () => {
+  const warning = "isolated check orphan: owner unknown for check deadbeef; no process was stopped";
+  for (const columns of [undefined, 80, 120]) {
+    const rendered = renderStatus({ peers: {}, isolatedChecks: { pending: 1, orphans: [warning] } }, columns, now);
+    expect(text(rendered).replace(/\s/g, "")).toContain(warning.replace(/\s/g, ""));
+    expect(rendered.flat().some(cell => cell.tone === "attention" && cell.text.includes("orphan"))).toBe(true);
+    if (columns) for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+  }
+  expect(text(renderStatus({ peers: {}, isolatedChecks: { pending: 0, orphans: [] } }, undefined, now))).not.toContain("isolated check warning");
+  const hostile = renderStatus({ peers: {}, isolatedChecks: { orphans: ["owner unknown\x1b[31m\nfor check"] } }, 80, now);
+  expect(text(hostile)).not.toContain("\x1b");
+  expect(text(hostile)).toContain("owner unknown");
+});

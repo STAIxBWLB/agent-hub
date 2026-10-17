@@ -17,7 +17,7 @@ export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial
   const references: { repo?: string; number: number }[] = [];
   // Bare detail numbers name hub tasks. File paths are not issue references.
   for (const section of [{ text: task.title, bare: true }, { text: task.detail, bare: false }]) {
-    for (const match of section.text.matchAll(/https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]*)\b|([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\b|#([1-9][0-9]*)\b/g)) {
+    for (const match of section.text.matchAll(/(?<![A-Za-z0-9_./-])(?:https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]*)\b|([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\b|#([1-9][0-9]*)\b)/g)) {
       const qualified = match[1] ?? match[3];
       if (!qualified && !section.bare) continue;
       references.push({ repo: qualified, number: Number(match[2] ?? match[4] ?? match[5]) });

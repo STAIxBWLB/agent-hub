@@ -298,11 +298,11 @@ export function assign(
   const pii = task.signals.includes("pii_path") || (task.signals.includes("pii") && routing.constraints.pii === "local_only");
 
   let needsSpec = false;
-  if (opts.repository) try { needsSpec = specRefs({ title: task.title ?? "", detail: task.detail ?? "", refs: task.refs ?? {}, external: task.external }, opts.repository).length > 0; }
+  if (!pii && opts.repository) try { needsSpec = specRefs({ title: task.title ?? "", detail: task.detail ?? "", refs: task.refs ?? {}, external: task.external }, opts.repository).length > 0; }
   catch { needsSpec = true; } // an invalid/foreign reference never grants a sandboxed peer spec access
   const needsTests = ["implement", "test", "bulk_edit"].includes(task.class);
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
-    if (opts.capabilities) {
+    if (opts.capabilities && !pii) {
       const caps = peerEntry(opts.capabilities, peer);
       if (needsTests && !caps?.tests) return `missing tests: ${caps?.testsReason ?? "capability unavailable"}`;
       if (needsSpec && !caps?.spec) return `missing spec: ${caps?.specReason ?? "capability unavailable"}`;

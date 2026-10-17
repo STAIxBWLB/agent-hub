@@ -1046,8 +1046,15 @@ export async function startDaemon(opts: DaemonOptions) {
   // Bounded capabilities (#418): inactive sandboxed peers need no host account probe.
   // A config-file daemon probes configured Pi/runner at startup; embeddings opt in or probe lazily on use.
   let specState: Awaited<ReturnType<typeof specAvailable>> = { available: false, reason: "gh unavailable: not probed" };
-  let specProbe: Promise<void> | undefined;
-  const ensureSpec = () => specProbe ??= (opts.boundedTools?.specAvailable ?? specAvailable)({ projectDir: opts.cwd }).then(value => { specState = value; }, () => { specState = { available: false, reason: "gh unavailable" }; });
+  let specProbe: Promise<void> | undefined, specProbeSettled = false;
+  const ensureSpec = (refresh = false): Promise<void> => {
+    if (specProbe && (!refresh || !specProbeSettled)) return specProbe;
+    specProbeSettled = false;
+    specProbe = Promise.resolve().then(() => (opts.boundedTools?.specAvailable ?? specAvailable)({ projectDir: opts.cwd }))
+      .then(value => { specState = value; }, () => { specState = { available: false, reason: "gh unavailable" }; })
+      .finally(() => { specProbeSettled = true; });
+    return specProbe;
+  };
   const checkPending = new Set<string>();
   const checkConnections = new WeakMap<object, string>();
   const checkBindings = new Map<string, Pick<RunReceipt, "task" | "owner" | "generation" | "updated" | "revision">>();
@@ -1103,12 +1110,11 @@ export async function startDaemon(opts: DaemonOptions) {
   const refreshRunner = (): Promise<void> => {
     if (Date.now() - runnerStateAt < 60_000) return Promise.resolve();
     if (refreshingRunner) return refreshingRunner;
-    runnerState = { available: false, reason: "availability being checked" };
     refreshingRunner = checkRunner.available().then(value => { runnerState = value; runnerStateAt = value.checkedAt ?? Date.now(); }, () => { runnerState = { available: false, reason: "container unavailable" }; runnerStateAt = Date.now(); }).finally(() => { refreshingRunner = undefined; });
     return refreshingRunner;
   };
   const peerCapabilities = () => {
-    // A stale true never widens routing while a new service probe is outstanding.
+    // Keep the last confirmed capability during a bounded, single-flight refresh; replace it only on a result.
     if (Date.now() - runnerStateAt >= 60_000) void refreshRunner();
     return Object.fromEntries([...new Set([...SUPPORTED_PEERS, ...bus.peers.keys()])].map(peer => {
     if (peer !== "pi" && peer !== "local") return [peer, { tests: true, spec: true }];
@@ -1847,7 +1853,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ run: receipt.run, cancelled: true });
       }
       if (by !== USER && !currentCheck(receipt)) throw new PreEffectToolRefusal("check unavailable: stale binding");
-      await checkRunner.consumeOutput(receipt.run);
+      if (by === receipt.owner) await checkRunner.consumeOutput(receipt.run);
       if (by !== USER && (!currentCheck(receipt) || turns.get(by)?.private || contextPii(by))) throw new Error("check unavailable: stale binding");
       // Policy can change during output cleanup, so form the final projection again.
       return JSON.stringify(publicCheck(receipt));
@@ -2756,8 +2762,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
-    if (peer === "pi" || peer === "local") { await ensureSpec(); await refreshRunner(); }
     const mode = startMode(peer);
+    if (mode === "tui" && (peer === "pi" || peer === "local")) { await ensureSpec(true); await refreshRunner(); }
     const owner = bus.peers.get(peer);
     if (mode === "headless") {
       // A Pi a person runs in a terminal is theirs: a start made for them never takes it over as a headless one.
@@ -2840,6 +2846,7 @@ export async function startDaemon(opts: DaemonOptions) {
   async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }): Promise<Record<string, unknown>> {
     let unmute: (() => void) | undefined;
     try {
+      if (peer === "pi" || peer === "local") { await ensureSpec(true); await refreshRunner(); }
       return await startPeerBody(peer, args, (p) => { unmute = muteState(p); });
     } finally {
       unmute?.();

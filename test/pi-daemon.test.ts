@@ -11,6 +11,12 @@ import { processSignature as ownerSignature } from "../src/pi/process-signature.
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 
+// Emulated native peers probe no real account; isolated runner availability remains real and disabled.
+const fakeSpecTools = () => ({
+  specAvailable: async () => ({ available: true }),
+  fetchSpec: async () => { throw new Error("unexpected spec fetch in native Pi fixture"); },
+});
+
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
@@ -34,7 +40,7 @@ createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.
 
 async function hub(config = DEFAULT_CONFIG, unattended = false) {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
-  const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 20, unattended, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
+  const daemon = await startDaemon({ boundedTools: fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: 20, unattended, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => console_.close());
@@ -126,7 +132,7 @@ test("Pi's 'always' answer allows later calls of that tool until Pi restarts, an
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-always-"));
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
-  const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 10_000, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  const daemon = await startDaemon({ boundedTools: fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: 10_000, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => console_.close());
@@ -274,7 +280,7 @@ async function crashedHub(piConfig: Partial<typeof DEFAULT_CONFIG.pi>, session: 
   // What a run that died left behind: a session record of another instance, with Pi on that session file.
   writeFileSync(join(stateDir, "sessions.json"), JSON.stringify({ instanceId: "crashed", at: Date.now(), peers: [...extra, { peer: "pi", meta: { launch: { kind: "pi", ...launch }, ...(sessionFile ? { sessionFile } : {}) } }] }));
   const config = { ...DEFAULT_CONFIG, recovery, peers, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")], ...piConfig }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
-  const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 20, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  const daemon = await startDaemon({ boundedTools: fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: 20, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => console_.close());
@@ -763,7 +769,7 @@ async function approvalPi(timeout = 20, approvalTurnAbort = false) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-approval-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
   const instanceId = `approval-${Math.random()}`;
-  const daemon = await startDaemon({ cwd: dir, stateDir: dir, projectId: "approval-project", instanceId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: timeout, config });
+  const daemon = await startDaemon({ boundedTools: fakeSpecTools(), cwd: dir, stateDir: dir, projectId: "approval-project", instanceId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: timeout, config });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(dir, { role: "console" });
   cleanup.push(() => console_.close());

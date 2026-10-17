@@ -1,5 +1,6 @@
+import { startFakeModelServer } from "./fakes/model-server.ts";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG, type DaemonOptions } from "../src/hub/daemon.ts";
@@ -7,7 +8,7 @@ import { Board, type Task } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
-import type { CheckRequest, RunReceipt, RunnerOptions } from "../src/hub/check-runner.ts";
+import type { CheckRequest, RunReceipt, RunnerOptions, RunnerState } from "../src/hub/check-runner.ts";
 import { CHECK_IMAGE } from "../src/hub/check-runner.ts";
 import { randomUUID } from "node:crypto";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -20,7 +21,7 @@ class Peer extends BasePeer {
   async stop() { this.setState("offline"); }
   async deliver(envelopes: Envelope[]) { this.received.push(...envelopes); }
 }
-async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; available?: boolean; staleDeliver?: boolean } = {}) {
+async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; available?: boolean; availability?: () => Promise<RunnerState>; staleDeliver?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-capability-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/owner/project.git"]]) {
     const r = hubGitSync(["-C", root, ...args], { encoding: "utf8" }); if (r.status) throw new Error("fixture git failed");
@@ -37,7 +38,7 @@ async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNull
       runner: options => {
         runnerOptions = options;
         return {
-          available: async () => ({ available: extra.available ?? true, reason: "fake unavailable" }), sweep: async () => [], stopAll: async () => {},
+          available: extra.availability ?? (async () => ({ available: extra.available ?? true, reason: "fake unavailable" })), sweep: async () => [], stopAll: async () => {},
           start: (request: CheckRequest) => {
             const run = randomUUID();
             records.set(run, { ...request, run, status: "running", sha: "a".repeat(40), tree: "b".repeat(40), lockfile: "c".repeat(64), excluded: 0, dependency_files: 10,
@@ -225,4 +226,64 @@ test("imported GitHub task reads its canonical assigned issue without textual re
   expect(reply.ok).toBe(true);
   expect(requested).toEqual([{ repo: "owner/project", issue: 418 }]);
   expect(JSON.parse(reply.text).specs[0].body).toBe("All acceptance details");
+});
+
+
+test("person inspection keeps owner output until the owner reads its result (#418 rework)", async () => {
+  const f = await fixture(), task = f.task();
+  const { run } = JSON.parse((await f.call("codex", "hub_check_start", { id: task.id, check: "typecheck" })).text);
+  await f.complete(run, { tail: "owner output" });
+  expect((await f.call("user", "hub_check_result", { run })).ok).toBe(true);
+  expect(f.counts().consumed).toBe(0);
+  expect((await f.call("codex", "hub_check_result", { run })).ok).toBe(true);
+  expect(f.counts().consumed).toBe(1);
+});
+
+test("pending availability refresh retains the last confirmed capability until its result (#418 rework)", async () => {
+  const checkedAt = Date.now(); let calls = 0, settle!: (value: RunnerState) => void;
+  const f = await fixture({ availability: async () => ++calls === 1 ? { available: true, checkedAt } : new Promise<RunnerState>(resolve => { settle = resolve; }) });
+  const client = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => client.close());
+  const originalNow = Date.now;
+  try {
+    Date.now = () => checkedAt + 60_001;
+    expect((await client.request({ t: "status" })).status.taskCapabilities.pi.tests).toBe(true);
+    expect(calls).toBe(2);
+    settle({ available: false, reason: "service stopped", checkedAt: Date.now() });
+    await Bun.sleep(0);
+    expect((await client.request({ t: "status" })).status.taskCapabilities.pi.tests).toBe(false);
+  } finally { Date.now = originalNow; }
+});
+
+
+test("direct local control start refreshes failed spec auth without restarting (#418 rework)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-lazy-local-")), project = join(root, "project"), bin = join(root, "bin");
+  mkdirSync(project); mkdirSync(bin); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const authReady = join(root, "auth-ready");
+  writeFileSync(join(bin, "gh"), `#!${process.execPath}\nif (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(['auth','status','--hostname','github.com'])) process.exit(2); if (!require('node:fs').existsSync(${JSON.stringify(authReady)})) process.exit(4);`);
+  chmodSync(join(bin, "gh"), 0o755);
+  const previousPath = process.env.PATH, previousKey = process.env.OMNIROUTE_API_KEY;
+  process.env.PATH = `${bin}:${previousPath ?? ""}`;
+  delete process.env.OMNIROUTE_API_KEY;
+  const apiKeyFile = join(root, "fixture-api-key"); writeFileSync(apiKeyFile, "fixture-only-key");
+  const model = startFakeModelServer({ key: "fixture-only-key" });
+  let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
+  try {
+    daemon = await startDaemon({ cwd: project, stateDir: join(project, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
+        omniroute: { urls: [model.url], access_hosts: [], api_key_file: apiKeyFile }, snapshots: { enabled: false, keep: 1 } } });
+    client = await ControlClient.connect(join(project, "state"), { role: "console" });
+    const before = (await client.request({ t: "status" })).status;
+    expect(before.taskCapabilities.local.spec).toBe(false);
+    expect(await client.request({ t: "start", peer: "local", args: { model: "m" } })).toMatchObject({ ok: true });
+    expect((await client.request({ t: "status" })).status.taskCapabilities.local.spec).toBe(false);
+    writeFileSync(authReady, "ready");
+    expect(await client.request({ t: "start", peer: "local", args: { model: "m" } })).toMatchObject({ ok: true });
+    const after = (await client.request({ t: "status" })).status;
+    expect(after.instanceId).toBe(before.instanceId);
+    expect(after.taskCapabilities.local.spec).toBe(true);
+  } finally {
+    client?.close(); await daemon?.stop(); model.stop();
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    if (previousKey === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = previousKey;
+  }
 });

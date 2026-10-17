@@ -2280,7 +2280,7 @@ export class Tasks {
     const task = this.need(id, role === "owner", preEffect);
     this.checkFlowRevision(task, expectedFlowRevision, preEffect);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
-    if (this.d.capabilities) {
+    if (this.d.capabilities && !this.isPii(task)) {
       const admission = assign(task, this.states(), this.d.routing(), { candidates: role === "owner" ? [peer] : [], ...(role === "owner" ? { namedOwner: peer } : { namedReviewer: peer }), ...this.weights(task.class) });
       const missing = admission.trace.filter(line => line.startsWith(`  ${role} candidate ${peer}: skipped, missing `));
       if (missing.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot assign ${peer}: ${missing.join("; ")}`);

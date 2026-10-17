@@ -3480,3 +3480,14 @@ test("#418 Tasks applies capability refusal to proposal, manual assignment, decl
   await f.tasks.decline("codex", task.id, "cannot continue");
   expect(f.board.get(task.id)?.owner).not.toBe("pi");
 });
+
+
+test("#418 PII proposal and manual assignment retain local-only work without runner or spec capability", async () => {
+  for (const cls of ["implement", "test", "bulk_edit"] as const) {
+    const f = await setup(["local", "codex"], undefined, { local: { tests: false, spec: false }, codex: { tests: true, spec: true } });
+    const proposed = await f.tasks.propose(USER, { title: `${PII} #418`, class: cls });
+    expect(proposed).toMatchObject({ owner: "local", reviewer: "user" });
+    const staged = f.board.propose(USER, { title: `${PII} #418 manual`, class: cls, signals: ["pii"] });
+    await expect(f.tasks.assignTo(staged.id, "local", USER)).resolves.toMatchObject({ owner: "local", reviewer: "user" });
+  }
+});

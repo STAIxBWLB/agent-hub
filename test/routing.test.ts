@@ -292,3 +292,20 @@ test("#418 bare detail hub task numbers do not require spec while qualified and 
     expect(result.trace.join("\n")).toContain("missing spec");
   }
 });
+
+
+test("#418 PII capability exemptions keep implement test and bulk_edit on-prem with runner off", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-pii-cap-exempt-")));
+  const opts = { repository: "owner/project", capabilities: { local: { tests: false, spec: false }, pi: { tests: false, spec: false }, codex: { tests: true, spec: true } } };
+  for (const cls of ["implement", "test", "bulk_edit"] as const) {
+    const pii = { ...task(cls, ["pii"]), title: "private contract #418", detail: "", refs: {} };
+    expect(assign(pii, { local: "idle", codex: "idle", pi: "idle" }, routing, opts)).toMatchObject({ owner: "local", reviewer: "user" });
+    expect(assign(pii, { local: "idle", codex: "idle" }, routing, { ...opts, candidates: ["codex"], namedOwner: "codex" }).owner).toBeUndefined();
+  }
+});
+
+test("#418 a source file suffix does not require a spec capability", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-path-not-spec-")));
+  const work = { ...task("implement"), title: "Edit src/hub/tasks.ts#12", detail: "See src/hub/tasks.ts#12", refs: {} };
+  expect(assign(work, { pi: "idle" }, routing, { repository: "owner/project", capabilities: { pi: { tests: true, spec: false } } }).owner).toBe("pi");
+});

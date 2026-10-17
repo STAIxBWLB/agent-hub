@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Add task-bound complete spec reads and opt-in isolated container checks for sandboxed peers, with current capability routing and screened exact-head receipts (#418).
+- On upgrade, non-PII implement, test and bulk_edit tasks no longer route to local/Pi until the person enables `checks.runner = "container"` and the runner is available; PII work remains local-only without that opt-in (#418).
 
 ## 0.12.30
 

@@ -121,3 +121,12 @@ test("qualified and canonical URL issue references in detail use the same origin
   for (const detail of ["foreign/repo#418", "https://github.com/foreign/repo/issues/418"]) expect(() => specRefs({ ...base, detail }, repo)).toThrow("other repository");
   expect(() => specRefs({ ...base, detail: base.detail + " https://github.com/owner/project/issues/4" }, repo)).toThrow("too many spec references");
 });
+
+
+test("file paths with issue-like suffixes are not qualified references (#418 rework)", () => {
+  for (const text of ["src/hub/tasks.ts#12", "/owner/project#12", "prefix/https://github.com/owner/project/issues/12"]) {
+    expect(specRefs({ title: text, detail: text, refs: {} }, repo)).toEqual([]);
+  }
+  expect(specRefs({ title: "#418 contract", detail: "owner/project#12", refs: {} }, repo)).toEqual([418, 12]);
+  expect(() => specRefs({ title: "work", detail: "foreign/repo#12", refs: {} }, repo)).toThrow("other repository");
+});
