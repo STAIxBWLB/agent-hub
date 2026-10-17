@@ -357,6 +357,21 @@ export class ContainerRunner {
   async cancel(run: string): Promise<void> {
     const entry = this.entries.get(run); if (!entry) return;
     entry.receipt.cancelled = true; entry.abort.abort();
+    const queued = this.queue.indexOf(entry);
+    if (queued >= 0) {
+      // No VM or heavy slot exists for a queued run. Settle it independently of the active run.
+      this.queue.splice(queued, 1); this.entries.delete(run);
+      const receipt = entry.receipt;
+      receipt.status = receipt.status === "stale" || !this.current(receipt) ? "stale" : "finished";
+      receipt.duration_ms = Math.max(0, this.now() - receipt.created);
+      receipt.error = "check cancelled before start";
+      try { await this.save(receipt); }
+      catch { receipt.error = "check receipt storage unavailable"; receipt.output_withheld = true; }
+      if (!this.current(receipt) && receipt.status !== "stale") { receipt.status = "stale"; await this.save(receipt).catch(() => {}); }
+      entry.resolve({ ...receipt });
+      try { if (receipt.status !== "stale") await this.options.onResult?.({ ...receipt }); } catch { /* A saved cancellation is never retried. */ }
+      return;
+    }
     if (entry === this.active) await this.cleanup(entry.receipt.container);
   }
   async stopAll(): Promise<void> {

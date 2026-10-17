@@ -242,3 +242,30 @@ test("marking a completed failing check stale preserves its observed exit status
   await f.runner.markStale(handle.run);
   expect(await f.runner.result(handle.run)).toMatchObject({ status: "stale", exit: 17 });
 });
+test("cancelling queued work settles immediately and frees capacity while active check stays held", async () => {
+  let entered!: () => void;
+  const running = new Promise<void>(r => { entered = r; });
+  const notices: string[] = [], calls: string[][] = [];
+  const f = await fixture({ onResult: receipt => { notices.push(receipt.run); }, command: async (args, options) => {
+    calls.push(args);
+    if (args[0] === "network") return { code: 0, stdout: JSON.stringify([{ id: "agenthub-check", configuration: { name: "agenthub-check", mode: "hostOnly" } }]) };
+    if (args[0] === "exec") { entered(); return new Promise(r => options?.signal?.addEventListener("abort", () => r({ code: null, stdout: "" }), { once: true })); }
+    return { code: 0, stdout: args[0] === "list" ? "[]" : "1.5.0" };
+  } });
+  const active = f.runner.start(f.request); await running;
+  const cancelled = f.runner.start(f.request), retained = f.runner.start(f.request);
+  let settled = false; void cancelled.done.then(() => { settled = true; });
+  const heavyOwner = await readFile(join(f.project, ".git/ahub-heavy.lock/owner"), "utf8");
+  const before = calls.length;
+  await f.runner.cancel(cancelled.run);
+  expect(settled).toBe(true);
+  expect(await cancelled.done).toMatchObject({ cancelled: true, status: "finished", exit: null });
+  expect(await f.runner.result(cancelled.run)).toMatchObject({ cancelled: true, status: "finished", exit: null });
+  expect(f.runner.activeRun).toBe(active.run); expect(f.runner.queuedRuns).toEqual([retained.run]);
+  expect(calls).toHaveLength(before); expect(await readFile(join(f.project, ".git/ahub-heavy.lock/owner"), "utf8")).toBe(heavyOwner);
+  const replacement = f.runner.start(f.request);
+  expect(f.runner.queuedRuns).toEqual([retained.run, replacement.run]);
+  expect(notices.filter(run => run === cancelled.run)).toHaveLength(1);
+  await f.runner.cancel(cancelled.run); expect(notices.filter(run => run === cancelled.run)).toHaveLength(1);
+  await f.runner.cancel(retained.run); await f.runner.cancel(replacement.run); await f.runner.cancel(active.run); await active.done;
+});

@@ -269,3 +269,14 @@ test("#418 a project without GitHub origin does not require spec for unreference
   expect(assign({ ...task("implement"), title: "ordinary change" }, { pi: "idle" }, routing, opts).owner).toBe("pi");
   expect(assign({ ...task("implement"), title: "change #418" }, { pi: "idle" }, routing, opts).owner).toBeUndefined();
 });
+
+test("#418 imported GitHub tasks require spec capability without textual references", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-import-spec-")));
+  const imported = { ...task("implement"), title: "Review workflow", detail: "Read the complete contract", refs: {},
+    external: { provider: "github" as const, repo: "owner/project", issue: 418, url: "https://github.com/owner/project/issues/418" } };
+  const opts = { repository: "owner/project", candidates: ["pi"], capabilities: { pi: { tests: true, spec: false, specReason: "gh unauthenticated" } } };
+  const refused = assign(imported, { pi: "idle" }, routing, opts);
+  expect(refused.owner).toBeUndefined();
+  expect(refused.trace.join("\n")).toContain("gh unauthenticated");
+  expect(assign(imported, { pi: "idle" }, routing, { ...opts, capabilities: { pi: { tests: true, spec: true } } }).owner).toBe("pi");
+});

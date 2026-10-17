@@ -13,11 +13,20 @@ export interface FetchSpecOptions extends SpecOptions { screen: (whole: string) 
 function validRepo(repo: string): void { if (!REPO.test(repo)) throw new Error("other repository"); }
 
 /** Resolve only task-bound issue references; foreign references never fall through to local #N. */
-export function specRefs(task: Pick<Task, "title" | "detail" | "refs">, repo: string): number[] {
+export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial<Pick<Task, "external">>, repo: string): number[] {
   validRepo(repo);
   if (task.refs.repo && task.refs.repo.toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
   const text = `${task.title}\n${task.detail}\n${JSON.stringify(task.refs)}`;
   const issues = new Set<number>();
+  if (task.external !== undefined) {
+    const source = task.external;
+    if (!source || source.provider !== "github" || typeof source.repo !== "string") throw new Error("not found");
+    validRepo(source.repo);
+    if (source.repo.toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
+    if (!Number.isSafeInteger(source.issue) || source.issue < 1 || typeof source.url !== "string"
+      || source.url.toLowerCase() !== `https://github.com/${repo}/issues/${source.issue}`.toLowerCase()) throw new Error("not found");
+    issues.add(source.issue);
+  }
   for (const match of text.matchAll(/(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)\b/g)) {
     if (match[1] && match[1].toLowerCase() !== repo.toLowerCase()) throw new Error("other repository");
     const n = Number(match[2]);

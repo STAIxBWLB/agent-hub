@@ -251,7 +251,7 @@ export interface Assignment {
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
 export function assign(
-  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state" | "title" | "detail" | "refs">>,
+  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state" | "title" | "detail" | "refs" | "external">>,
   states: Record<PeerId, PeerState>,
   routing: Routing,
   opts: {
@@ -298,7 +298,7 @@ export function assign(
   const pii = task.signals.includes("pii_path") || (task.signals.includes("pii") && routing.constraints.pii === "local_only");
 
   let needsSpec = false;
-  if (opts.repository && /#[1-9][0-9]*/.test(`${task.title ?? ""}\n${task.detail ?? ""}\n${JSON.stringify(task.refs ?? {})}`)) try { needsSpec = specRefs({ title: task.title ?? "", detail: task.detail ?? "", refs: task.refs ?? {} }, opts.repository).length > 0; }
+  if (opts.repository && (task.external !== undefined || /#[1-9][0-9]*/.test(`${task.title ?? ""}\n${task.detail ?? ""}\n${JSON.stringify(task.refs ?? {})}`))) try { needsSpec = specRefs({ title: task.title ?? "", detail: task.detail ?? "", refs: task.refs ?? {}, external: task.external }, opts.repository).length > 0; }
   catch { needsSpec = true; } // an invalid/foreign reference never grants a sandboxed peer spec access
   const needsTests = ["implement", "test", "bulk_edit"].includes(task.class);
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {

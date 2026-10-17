@@ -97,3 +97,15 @@ test("fake gh PATH seam receives no host authentication tokens or config directo
     keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; });
   }
 });
+
+test("imported GitHub task identity supplies its full spec without textual references (#418)", () => {
+  const imported = { title: "Fix the workflow", detail: "Implement the contract", refs: {}, external: { provider: "github" as const, repo, issue: 418, url: `https://github.com/${repo}/issues/418` } };
+  expect(specRefs(imported, repo)).toEqual([418]);
+  expect(specRefs({ ...imported, title: "#418 #2 #3" }, repo)).toEqual([418, 2, 3]);
+  expect(() => specRefs({ ...imported, title: "#2 #3 #4" }, repo)).toThrow("too many spec references");
+  expect(() => specRefs({ ...imported, external: { ...imported.external, repo: "foreign/repo" } }, repo)).toThrow("other repository");
+  for (const external of [
+    { ...imported.external, issue: 0 }, { ...imported.external, issue: Number.MAX_SAFE_INTEGER + 1 },
+    { ...imported.external, url: "https://github.com/foreign/repo/issues/418" },
+  ]) expect(() => specRefs({ ...imported, external }, repo)).toThrow();
+});

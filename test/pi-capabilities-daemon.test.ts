@@ -63,7 +63,7 @@ async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNull
     return client.request({ t: "task", op, args });
   };
   const task = (patch: Partial<Task> = {}) => {
-    const t = board.propose("user", { title: patch.title ?? "work #418", class: "implement", detail: patch.detail ?? "complete assigned contract", refs: { branch: "main" } });
+    const t = board.propose("user", { title: patch.title ?? "work #418", class: "implement", detail: patch.detail ?? "complete assigned contract", refs: { branch: "main" }, ...(patch.external ? { external: patch.external } : {}) });
     return board.update(t.id, "user", "accepted", { owner: "codex", reviewer: "kimi", state: "in_progress", ...patch });
   };
   const complete = async (run: string, patch: Partial<RunReceipt> = {}) => {
@@ -209,4 +209,19 @@ test("queued completion screens raw tail again after the privacy policy changes 
   expect(f.daemon.bus.queued("codex")).toBe(0);
   expect(f.records.get(run)?.status).toBe("stale");
   expect(f.peers.codex!.received.some(envelope => envelope.refs?.boundedCheck === run)).toBe(false);
+});
+
+
+test("imported GitHub task reads its canonical assigned issue without textual references (#418)", async () => {
+  const requested: { repo: string; issue: number }[] = [];
+  const f = await fixture({ fetch: async (repo, issue) => {
+    requested.push({ repo, issue });
+    return { number: issue, title: "Complete imported contract", body: "All acceptance details", state: "open", updated_at: "now", html_url: `https://github.com/${repo}/issues/${issue}` };
+  } });
+  const task = f.task({ title: "Fix the workflow", detail: "Implement the full contract", refs: {},
+    external: { provider: "github", repo: "owner/project", issue: 418, url: "https://github.com/owner/project/issues/418" } });
+  const reply = await f.call("codex", "hub_task_spec", { id: task.id });
+  expect(reply.ok).toBe(true);
+  expect(requested).toEqual([{ repo: "owner/project", issue: 418 }]);
+  expect(JSON.parse(reply.text).specs[0].body).toBe("All acceptance details");
 });
