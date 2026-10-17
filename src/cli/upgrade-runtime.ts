@@ -394,7 +394,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
    * expected instance can report "gone"; an unreadable target or launcher is unknown and blocks, never gone.
    */
   const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
-      Promise<{ state: "live"; session?: string; handle?: string; attached?: true; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "gone" } | { state: "unknown"; why: string; step?: string; idless?: true }> => {
+      Promise<{ state: "live"; session?: string; handle?: string; attached?: true; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "gone"; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "unknown"; why: string; step?: string; idless?: true }> => {
     const target = await inspectRecovery(planned.project);
     if (target.state !== "running" || target.instanceId !== progress.instanceId) {
       // Only a hub that may still answer is waited for; a stopped, missing or other one is settled by the runner's list.
@@ -404,6 +404,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     const attached = target.peers.find((p) => p.id === peer && p.state !== "offline");
     const session = peer === "codex" ? attached?.threadId : attached?.sessionId;
     if (session) return { state: "live", session };
+    let endedTerminal: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> | undefined;
     // #225: the launch records of every instance this operation started for the project, the current one first: a
     // launcher a dead instance recorded may still run (read before the check below, so a block names its terminal).
     for (const instanceId of [progress.instanceId, ...(progress.restarts ?? []).map((r) => r.instanceId)]) {
@@ -419,11 +420,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           : launch.invalidRow ? { state: "unknown", why: "a launch record that may be its launcher's cannot be evaluated", step: `inspect ${recordPath(planned.project.stateDir)} and fix that row, or end that launcher and remove its row` }
           : { state: "unknown", why: "the launcher records cannot be read", step: `inspect ${recordPath(planned.project.stateDir)} and move it aside (sessions it recorded then count as unmanaged)` };
       }
+      if (instanceId === progress.instanceId && launch?.state === "gone" && launch.record) {
+        const record = launch.record;
+        endedTerminal = { handle: record.handle, incarnationId: record.incarnationId, worktreeId: record.worktreeId };
+      }
     }
     // #225: attached with no provable session id (a Claude of a dead instance whose plugin reconnected, or one that has
     // not reported its id yet) is a session of unknown identity, never "nothing attached".
     if (attached) return { state: "unknown", idless: true, why: `a ${peer} session is attached to the target without a session id`, step: `wait until it reports one, or end that ${peer} session` };
-    return { state: "gone" };
+    return { state: "gone", ...(endedTerminal ? { terminal: endedTerminal } : {}) };
   };
   /**
    * #225: the terminal of a done restoration of a target instance that died is closed under the close receipt rules
@@ -472,7 +477,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if ((launchState === "gone" || launchState === "no-record-yet") && !session) {
         // An exact exit is not proof while an older launcher or an id-less session may still run.
         const evidence = await peerEvidence(planned, progress, binding.peer);
-        if (evidence.state === "unknown") {
+        if (evidence.state === "gone" && evidence.terminal && matchesTerminal(evidence.terminal)) launchState = "gone";
+        else if (evidence.state === "unknown") {
           if (!(launchState === "no-record-yet" && evidence.idless)) launchState = "unknown";
         } else if (evidence.state === "live" && !evidence.session) {
           if (evidence.terminal) launchState = matchesTerminal(evidence.terminal) ? "live" : "replaced";
