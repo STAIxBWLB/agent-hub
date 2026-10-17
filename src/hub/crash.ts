@@ -1,3 +1,4 @@
+import { definitionOf } from "../adapters/registry.ts";
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { JournalDelivery } from "./delivery-journal.ts";
@@ -47,7 +48,7 @@ export function removeSessions(stateDir: string, instanceId?: string): void {
   if (instanceId === undefined || readSessions(stateDir)?.instanceId === instanceId) rmSync(fileOf(stateDir), { force: true });
 }
 
-export const qwenSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value);
+export { qwenSessionId } from "../adapters/definitions/qwen-native.ts";
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
@@ -59,6 +60,12 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
   return records.map(({ peer, meta }) => {
     const launch = (meta.launch && typeof meta.launch === "object" ? meta.launch : {}) as Record<string, unknown>;
     const model = str(launch.model);
+    const adapter = definitionOf(peer);
+    if (adapter?.transport === "acp" && adapter.start.create) {
+      const sessionId = adapter.session.crashIdentity?.(meta).sessionId;
+      if (!sessionId) return { peer, how: `${peer}: saved ACP session identity unavailable; start it deliberately with ahub ${peer}` };
+      return { peer, resume: { sessionId, ...(model ? { model } : {}) }, how: `${peer}: the recorded conversation can be loaded again (ACP session/load)` };
+    }
     switch (peer) {
       case "claude":
         return { peer, how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
@@ -66,11 +73,6 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
         return { peer, how: `codex: its app-server died with the hub; run ahub codex again${str(meta.threadId) ? ` (its conversation was thread ${meta.threadId})` : ""}` };
       case "jcode":
         return { peer, how: "jcode: native 0.94.0 load does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
-      case "qwen": {
-        const sessionId = meta.sessionId;
-        if (!qwenSessionId(sessionId)) return { peer, how: "qwen: saved ACP session identity unavailable; start it deliberately with ahub qwen" };
-        return { peer, resume: { sessionId, ...(model ? { model } : {}) }, how: "qwen: the recorded conversation can be loaded again (ACP session/load)" };
-      }
       case "kimi": {
         const sessionId = str(meta.sessionId);
         if (!sessionId) return { peer, how: "kimi: no session id was recorded; start it again with ahub kimi" };

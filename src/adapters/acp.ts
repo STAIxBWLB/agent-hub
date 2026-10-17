@@ -3,7 +3,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId, type PeerState } from "../hub/envelope.ts";
 import { acpQuotaRefusal, type ACPQuotaRefusal } from "./acp-quota.ts";
-import { KIMI_MODE_IDS, QWEN_MODE_IDS, type PermissionMode } from "../hub/permission-mode.ts";
+import type { PermissionMode } from "../hub/permission-mode.ts";
+import { KIMI_MODE_IDS } from "./definitions/kimi-native.ts";
+import { QWEN_MODE_IDS, qwenNativeIdentity } from "./definitions/qwen-native.ts";
+export { QwenIdentityError } from "./definitions/qwen-native.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
@@ -115,9 +118,6 @@ export function canonicalMcpToolName(announcedTitle: string | undefined, serverN
 }
 
 class RpcTimeoutError extends Error {}
-export class QwenIdentityError extends Error {
-  constructor() { super("Qwen Code 0.25.0 native identity is not verified; check the executable and its advertised ACP version"); }
-}
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
@@ -241,8 +241,7 @@ export class AcpPeer extends BasePeer {
       // Installed Kimi Code CLI's ACP initialize advertises this exact name.
       this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
       if (this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version)) throw new Error("native ACP identity is not verified for this production adapter");
-      this.qwenAgent = this.opts.qwen025 === true && this.id === "qwen" && init?.agentInfo?.name === "qwen-code" && init?.agentInfo?.version === "0.25.0";
-      if (this.opts.qwen025 && !this.qwenAgent) throw new QwenIdentityError();
+      this.qwenAgent = qwenNativeIdentity(this.id, this.opts.qwen025, init);
       const resume = this.opts.resumeSessionId;
       if (!resume) return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
       // The agent replays the session as updates while it loads; they arrive before the peer is idle, so none of

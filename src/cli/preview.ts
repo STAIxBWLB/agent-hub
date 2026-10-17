@@ -1,3 +1,4 @@
+import { definitionOf, kindOf } from "../adapters/registry.ts";
 import { jcodeCommand } from "../adapters/jcode.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { readFileSync } from "node:fs";
@@ -7,7 +8,7 @@ import { childEnv } from "../hub/child-process.ts";
 import { relayModelIds } from "../models/relay.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
 import { startModeOf } from "../hub/start-mode.ts";
-import { buildLaunch, buildKimiLaunch, buildQwenLaunch, buildKimiTuiLaunch, nativeLaunchEnv, claudeObservationHooks, type Launch } from "./launch.ts";
+import { buildLaunch, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, claudeObservationHooks, type Launch } from "./launch.ts";
 import { kimiMcpPlan } from "./kimi-mcp.ts";
 
 const REDACTED = "[redacted]";
@@ -71,14 +72,16 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen
     launch = { cmd: cmd[0]!, args: cmd.slice(1) };
     unresolved.push({ field: "ownedDaemon", reason: "private daemon/socket and source-pinned native identity verified at start; preview starts nothing" });
     unresolved.push({ field: "hubTools", reason: "project MCP bridge required; native tool-call receipt remains unverified" });
-  } else if (tool === "qwen") {
+  } else if (kindOf(tool) === "qwen") {
     const mode = value("--mode") ?? "headless", model = value("--model");
-    if (mode !== "headless") throw new Error("Qwen TUI is not offered before verification");
+    const adapter = definitionOf(tool)!;
+    if (!(adapter.start.forms as readonly string[]).includes(mode)) throw new Error("Qwen TUI is not offered before verification");
     for (let i = 0; i < args.length; i += 2) if (!["--model", "--mode", "--session-id"].includes(args[i]!) || !args[i + 1]) throw new Error("unknown Qwen option");
     const sessionId = value("--session-id");
-    if (sessionId !== undefined && !qwenSessionId(sessionId)) throw new Error("invalid Qwen session identity");
+    if (sessionId !== undefined && !adapter.session.crashIdentity?.({ sessionId }).sessionId) throw new Error("invalid Qwen session identity");
     if (sessionId) unresolved.push({ field: "sessionId", reason: "requested through ACP session/load at start; preview does not load or expose it" });
-    launch = buildQwenLaunch(nativeCommand(config.qwen_cmd, ["qwen", "--acp"]), model ? REDACTED : undefined);
+    launch = adapter.start.launch({ instance: tool, form: "headless", projectRoot: cwd, stateDir, entrypoint: join(import.meta.dir, "main.js"),
+      userArgs: [], unattended: false, env: {}, preview: true, nativeCommand: nativeCommand(config.qwen_cmd, ["qwen", "--acp"]), model: model ? REDACTED : undefined });
     unresolved.push({ field: "nativeIdentity", reason: "Qwen Code 0.25.0 identity and permission modes are checked at ACP initialization; preview starts nothing" });
   } else if (tool === "kimi") {
     const model = value("--model");

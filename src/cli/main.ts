@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { definitionOf } from "../adapters/registry.ts";
 import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
@@ -884,8 +885,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     assertLifecycleAvailable();
     const { one, rest } = takeFlags(args, ["--mode", "--model", "--session-id"], []);
-    if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"])) fail("invalid Qwen session identity");
-    if (rest.length || (one["--mode"] !== undefined && one["--mode"] !== "headless")) fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
+    const adapter = definitionOf("qwen")!;
+    if (one["--session-id"] !== undefined && !adapter.session.crashIdentity?.({ sessionId: one["--session-id"] }).sessionId) fail("invalid Qwen session identity");
+    if (rest.length || (one["--mode"] !== undefined && !(adapter.start.forms as readonly string[]).includes(one["--mode"]))) fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
     const hub = await connect();
     try {
       const reply = await hub.request({ t: "start", peer: "qwen", args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}), ...(one["--session-id"] ? { sessionId: one["--session-id"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
@@ -1083,7 +1085,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   watch: async () => {
     const peer = args[0];
-    if (peer !== "kimi" && peer !== "qwen") fail("usage: ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]");
+    if (typeof peer !== "string" || !definitionOf(peer)?.capabilities?.watch) fail("usage: ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]");
     if (args.slice(1).some(arg => arg !== "--no-thoughts" && !/^--color=(auto|always|never)$/.test(arg))) fail("unsupported watch option");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice(8), { isTTY: !!process.stdout.isTTY, ...process.env });
     if (color instanceof Error) fail(color.message);
@@ -1960,6 +1962,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         row(verifiedJcodeCommand(config.jcode_cmd, cwd), "jcode", "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged");
       }
       if (config.roster.qwen === true) {
+        // ponytail: keep this bounded CLI-version probe and 0.25.0 pin in the A1 guard baseline; A2 moves every version probe together when VersionContext gains its observed input.
         const v = version(config.qwen_cmd[0]!);
         row(v === "0.25.0", "qwen", v === "0.25.0" ? "CLI reports 0.25.0; native ACP identity/modes and provider access require a separate live check" : "Qwen Code 0.25.0 executable not confirmed; provider and ACP readiness unknown");
       } // issue #83

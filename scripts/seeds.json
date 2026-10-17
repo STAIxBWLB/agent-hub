@@ -515,9 +515,9 @@
     },
     {
       "id": "qwen-native-identity",
-      "file": "src/adapters/acp.ts",
-      "search": "if (this.opts.qwen025 && !this.qwenAgent) throw new QwenIdentityError();",
-      "replacement": "if (false && this.opts.qwen025 && !this.qwenAgent) throw new QwenIdentityError();",
+      "file": "src/adapters/definitions/qwen-native.ts",
+      "search": "if (production && !verified) throw new QwenIdentityError();",
+      "replacement": "if (false && production && !verified) throw new QwenIdentityError();",
       "testFile": "test/qwen-peer.test.ts",
       "testName": "production Qwen refuses wrong native identity/version while legacy benchmark ACP stays unmanaged (#256)"
     },
@@ -532,16 +532,16 @@
     {
       "id": "qwen-controlled-session",
       "file": "src/cli/upgrade-runtime.ts",
-      "search": "if (peer.id === \"qwen\" && peer.sessionId) args.push(\"--session-id\", peer.sessionId);",
-      "replacement": "if (false && peer.id === \"qwen\" && peer.sessionId) args.push(\"--session-id\", peer.sessionId);",
+      "search": "if (definitionOf(peer.id)?.session.restoreOnStart && peer.sessionId) args.push(\"--session-id\", peer.sessionId);",
+      "replacement": "if (false && definitionOf(peer.id)?.session.restoreOnStart && peer.sessionId) args.push(\"--session-id\", peer.sessionId);",
       "testFile": "test/upgrade-runtime.test.ts",
       "testName": "the recovery driver passes the saved Qwen conversation id through its emitted launcher argv (#256)"
     },
     {
       "id": "qwen-crash-resume",
       "file": "src/hub/crash.ts",
-      "search": "case \"qwen\": {",
-      "replacement": "case \"disabled-qwen\": {",
+      "search": "if (adapter?.transport === \"acp\" && adapter.start.create) {",
+      "replacement": "if (false && adapter?.transport === \"acp\" && adapter.start.create) {",
       "testFile": "test/qwen-peer.test.ts",
       "testName": "a crashed owned Qwen resumes its recorded ACP session instead of claiming self-reconnect (#256)"
     },

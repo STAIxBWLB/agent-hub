@@ -23,7 +23,8 @@ import { loadSdlc, sdlcGh } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
-import { buildKimiLaunch, buildQwenLaunch } from "../cli/launch.ts";
+import { buildKimiLaunch } from "../cli/launch.ts";
+import { definitionOf } from "../adapters/registry.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -3063,8 +3064,12 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
+    const adapter = definitionOf(peer);
     if (peer === "jcode" && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Jcode native TUI driving is unverified; use headless" };
-    if (peer === "qwen" && args.mode !== undefined && args.mode !== "headless") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
+    if (adapter?.transport === "acp" && adapter.start.create) {
+      const refusal = adapter.start.preflight?.({ instance: peer, form: args.mode });
+      if (refusal) return { ok: false, error: refusal };
+    }
     if (peer === "kimi") {
       if (args.mode !== undefined && !["headless", "tui"].includes(args.mode)) return { ok: false, error: "invalid Kimi mode" };
       const owner = bus.peers.get(peer);
@@ -3151,32 +3156,36 @@ export async function startDaemon(opts: DaemonOptions) {
       catch { await jcode.stop().catch(() => {}); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
       return { ok: true, policy: "unmanaged" };
     }
-    if (peer === "qwen") {
-      if (args.mode === "tui") return { ok: false, error: "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" };
-      const launch = buildQwenLaunch(config.qwen_cmd, args.model);
-      const qwen = new AcpPeer("qwen", {
-        onActivity: item => activityRings.qwen.append(item),
-        isPrivateTurn: () => !!turns.get("qwen")?.private || contextPii("qwen"),
-        cmd: [launch.cmd, ...launch.args], qwen025: true, permissionMode: permissionMode("qwen"),
+    if (adapter?.transport === "acp" && adapter.start.create) {
+      // ponytail: A1 migrates one ACP factory; A2 generalizes its native config and activity ports before adding another.
+      const launch = adapter.start.launch({ instance: peer, form: "headless", projectRoot: opts.cwd, stateDir: opts.stateDir, entrypoint: CLI_ENTRY,
+        userArgs: [], unattended: false, env: {}, nativeCommand: config.qwen_cmd, model: args.model });
+      const mcpServers = [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv(peer, true)).map(([name, value]) => ({ name, value })) }];
+      const permission = permissionMode(peer);
+      const owner = adapter.start.create({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: undefined, permission, mcpServers, daemon: { acp: {
+        onActivity: item => activityRings[peer as keyof typeof activityRings].append(item),
+        isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
+        cmd: [launch.cmd, ...launch.args], permissionMode: permission,
         ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
         cwd: opts.cwd, watchdogMs: config.watchdog_ms, onPermission,
         autoApprove: title => !stopping && HUB_TOOL_TITLES.has(title),
         log: () => log("Qwen runtime diagnostic: details withheld"),
         onUsageDiagnostic: (observation, sessionId) => {
           if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
-          const current = contextSession("qwen"); if (!current) return;
-          contexts.report("qwen", observation.contextUsed !== undefined && observation.contextCapacity !== undefined
+          const current = contextSession(peer); if (!current) return;
+          contexts.report(peer, observation.contextUsed !== undefined && observation.contextCapacity !== undefined
             ? acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now())
             : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null }, current);
         },
-        onTurnFailure: () => { supervisionTurns.delete("qwen"); },
-        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen", true)).map(([name, value]) => ({ name, value })) }],
-        preamble: sessionRoleContract("qwen"),
-      });
-      recoveryTaskPreface("qwen"); await ensurePreface("qwen");
-      try { await qwen.start(); await reconcileNativeStart(peer, qwen); }
+        onTurnFailure: () => { supervisionTurns.delete(peer); },
+        mcpServers,
+        preamble: sessionRoleContract(peer),
+      } } });
+      if (!(owner instanceof AcpPeer)) throw new Error("ACP factory did not return its native transport");
+      recoveryTaskPreface(peer); await ensurePreface(peer);
+      try { await owner.start(); await reconcileNativeStart(peer, owner); }
       catch (error) {
-        await qwen.stop().catch(() => log("Qwen stop after failed startup was not confirmed"));
+        await owner.stop().catch(() => log("Qwen stop after failed startup was not confirmed"));
         if (error instanceof QwenIdentityError) throw error;
         throw new Error("Qwen could not reach its provider or complete its startup handshake; verify the provider connection and Qwen Code 0.25.0 (details withheld)");
       }
@@ -4953,7 +4962,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "watch": {
         if (c.role !== "console") return void reply({ ok: false, error: "watch is a person-only console command" });
-        if (msg.peer !== "kimi" && msg.peer !== "qwen") return void reply({ ok: false, error: "watch supports headless kimi and qwen only" });
+        if (typeof msg.peer !== "string" || !definitionOf(msg.peer)?.capabilities?.watch) return void reply({ ok: false, error: "watch supports headless kimi and qwen only" });
         const peer = msg.peer as "kimi" | "qwen";
         // Judged by the live owner: a headless Kimi started by --mode headless is watchable under a TUI start mode.
         const kimiOwner = bus.peers.get("kimi");
