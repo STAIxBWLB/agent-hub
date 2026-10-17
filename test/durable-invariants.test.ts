@@ -175,6 +175,26 @@ test("a pull whose journal write fails keeps every pause, the queue and the pref
   expect(bus.storageError).toBe("delivery journal unavailable");
 });
 
+test("a failed retry-warning read after condensation keeps queued work and lets recovery fence settle (#434)", async () => {
+  const { bus, durable } = setupBus({ condense: async (envs) => envs });
+  const peer = new FakePeer("claude"); bus.add(peer);
+  bus.add(new FakePeer("codex"));
+  bus.pause("codex");
+  bus.preface("claude", "recall");
+  durable.retryWarning = () => { throw new Error("warning read unavailable"); };
+  const env = newEnvelope("user", "kept", { to: ["claude"], priority: "status" });
+  bus.publish(env);
+  await waitFor(() => !!bus.storageError, "warning read storage failure");
+  expect(bus.storageError).toBe("delivery journal unavailable");
+  expect(peer.deliveries).toEqual([]);
+  expect(bus.queueIds("claude")).toEqual([env.id]);
+  expect(bus.snapshot(false).prefaces.claude).toBeDefined();
+  expect(bus.isPaused("codex")).toBe(true);
+  await expect(bus.fenceRecovery(30)).resolves.toBeUndefined();
+  expect(bus.storageError).toBe("delivery journal unavailable");
+  durable.close();
+});
+
 test("one pull takes what one push delivery would, and the rest keep waiting (#205)", () => {
   const { bus, durable } = setupBus();
   bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));

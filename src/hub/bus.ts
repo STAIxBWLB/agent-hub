@@ -895,9 +895,11 @@ export class Bus {
         const delivery = preface ? [preface, ...batch] : batch;
         const mayCondense = this.opts.condense && !delivery.some((e) => e.priority === "important");
         this.condensing += mayCondense ? 1 : 0;
-        const condensed = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
-        const out = this.retryOut(id, delivery, condensed);
-        this.condensing -= mayCondense ? 1 : 0;
+        let out: Envelope[];
+        try {
+          const condensed = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
+          out = this.retryOut(id, delivery, condensed);
+        } finally { this.condensing -= mayCondense ? 1 : 0; }
         // A session that cannot show pushes may have taken the peer while this was condensed (issue #205).
         if (!this.deliverable(id)) {
           if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
