@@ -102,7 +102,7 @@ export class Cohorts {
    * in, records owner changes (each bumps the revision and voids that member's intent), and lifts a silent cohort that
    * an owner without verified facts joins. Returns what happened, for the notices.
    */
-  join(task: Task, others: Task[], gen: (t: Task) => number, handed: (t: Task) => number = () => Date.now()): { cohort: Cohort; formed: boolean; lifted: boolean } | undefined {
+  join(task: Task, others: Task[], gen: (t: Task) => number, handed: (t: Task) => number = () => Date.now(), allowSilence = true): { cohort: Cohort; formed: boolean; lifted: boolean } | undefined {
     this.gc();
     const all = [task, ...others].filter((t) => t.owner);
     const found = [...new Set(all.map((t) => this.of(t.id)).filter((c): c is Cohort => !!c))];
@@ -133,7 +133,7 @@ export class Cohorts {
     }
     if (changed) cohort.revision++;
     const owners = [...new Set([...cohort.members.values()].map((m) => m.owner))];
-    if (formed) cohort.silent = this.d.silence(owners);
+    if (formed) cohort.silent = allowSilence && this.d.silence(owners);
     else if (cohort.silent && changed && !this.d.silence(owners)) cohort.silent = false;
     // Lifted: a silent cohort (or a silent one merged into this) is no longer silent, and its members must hear it.
     return { cohort, formed, lifted: wasSilent && !cohort.silent };

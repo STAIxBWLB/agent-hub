@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { taskRecords } from "../src/hub/research.ts";
 import { readEvents } from "../src/hub/events.ts";
+import { realPath } from "../src/hub/project.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
@@ -89,7 +90,7 @@ test("planning events retain saved priority and unknown urgent metadata (#263)",
 
 
 test("redacted release labels retain stable mutation and console lookup identity (#263)", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ahub-release-identity-")), stateDir = join(root, ".agenthub/state");
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-release-identity-"))), stateDir = join(root, ".agenthub/state");
   mkdirSync(join(root, ".agenthub"));
   const routing = readFileSync(new URL("../templates/routing.toml", import.meta.url), "utf8");
   writeFileSync(join(root, ".agenthub/routing.toml"), routing);
@@ -99,11 +100,13 @@ test("redacted release labels retain stable mutation and console lookup identity
     const created = await person.request({ t: "task", op: "release_new", args: { name: "hidden-release", goal: "safe goal", order: 0 } });
     expect(created.ok).toBe(true);const id=JSON.parse(created.text).id;
     writeFileSync(join(root, ".agenthub/routing.toml"), routing.replace(/^pii_patterns = .*$/m, 'pii_patterns = ["hidden-release"]'));
+    expect(await person.request({ t: "settings_reload" })).toMatchObject({ ok: true });
     const listed = await person.request({ t: "task", op: "hub_release_list", args: {} });
     expect(JSON.parse(listed.text)[0]).toMatchObject({ id, name: "[withheld]" });
     expect(await person.request({ t: "task", op: "release_change", args: { id, revision: 0, fields: { state: "active" } } })).toMatchObject({ ok: true });
     const shown = await person.request({ t: "task", op: "release_show", args: { name: "hidden-release" } });
     expect(JSON.parse(shown.text)).toMatchObject({ id, name: "[withheld]", state: "active" });
-    expect((await cli(root, ["release", "show", "hidden-release"])).code).toBe(0);
+    const viaCli = await cli(root, ["release", "show", "hidden-release"]);
+    expect(viaCli.code, viaCli.stderr).toBe(0);
   } finally { person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);

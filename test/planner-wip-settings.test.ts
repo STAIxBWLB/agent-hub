@@ -27,7 +27,7 @@ test("planner WIP settings use bounded integers and the existing local registry 
   const shared=JSON.stringify({memory:{enabled:false},inference:{enabled:false}});
   writeFileSync(join(root,".agenthub/config.json"),shared);
   const def=settingDef("tasks.wip_limits.codex");if(typeof def==="string")throw new Error(def);
-  expect(def).toMatchObject({type:"integer",store:"config",applies:"hub start",min:0,max:32});
+  expect(def).toMatchObject({type:"integer",store:"config",applies:"live",min:0,max:32});
   expect(checkSettingValue(def,parseSettingText(def,"0"))).toBe(0);
   expect(checkSettingValue(def,parseSettingText(def,"32"))).toBe(32);
   expect(checkSettingValue(def,parseSettingText(def,"inherit"))).toBeNull();
@@ -57,7 +57,7 @@ test("dashboard WIP editor saves pending restart values including zero and inher
   constructor(public tag:string,public textContent=""){} append(...nodes:Node[]){this.children.push(...nodes)} setAttribute(key:string,value:string){this.attrs[key]=value} addEventListener(key:string,fn:()=>unknown){this.listeners[key]=fn} all():Node[]{return [this,...this.children.flatMap(node=>node.all())]}
  }
  for(const pending of [2,0,null,undefined]){
-  const sent:unknown[]=[];const row={key:"tasks.wip_limits.codex",group:"Tasks",label:"codex WIP",type:"integer",value:1,pending,file:"config.local.json",source:"config.local.json",applies:"hub start",risk:"raises",min:0,max:32};
+  const sent:unknown[]=[];const row={key:"tasks.wip_limits.codex",group:"Tasks",label:"codex WIP",type:"integer",value:1,pending,file:"config.local.json",source:"config.local.json",applies:"live",risk:"raises",min:0,max:32};
   const node=runInNewContext(`${code}; settingRow(row,true)`,{row,managerMode:false,snapshotValid:true,settingText:String,el:(tag:string,text?:string)=>new Node(tag,text),badge:(text:string)=>new Node("span",text),action:async(payload:unknown)=>{sent.push(payload)}}) as Node;
   const expected=pending===undefined ? 1 : pending;expect(node.all().find(n=>n.tag==="input")?.value).toBe(expected===null ? "" : String(expected));await node.all().find(n=>n.tag==="button")!.listeners.click!();expect(sent).toEqual([{action:"setting",key:row.key,value:expected}]);
  }

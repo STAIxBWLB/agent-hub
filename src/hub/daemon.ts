@@ -568,7 +568,9 @@ export async function startDaemon(opts: DaemonOptions) {
   try {
   const loadedConfig = opts.config ?? loadConfig(opts.cwd);
   const lifecycleConfig = loadSdlc(opts.cwd);
-  const config = structuredClone({ ...loadedConfig, roster: peerRosterConfig(loadedConfig.roster), permission_modes: permissionDefaults(loadedConfig.permission_modes), roles: { ...loadedConfig.roles }, conductor: { ...DEFAULT_CONFIG.conductor, ...loadedConfig.conductor } });
+  // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
+  const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
+  const config = { ...ownedConfig, roster: peerRosterConfig(loadedConfig.roster), permission_modes: permissionDefaults(loadedConfig.permission_modes), roles: { ...loadedConfig.roles }, conductor: { ...DEFAULT_CONFIG.conductor, ...loadedConfig.conductor } };
   let rosterChanging: string | undefined;
   let kimiSessionMode: StartMode | undefined;
   let kimiAdmissionId: string | undefined;

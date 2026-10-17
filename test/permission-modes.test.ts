@@ -621,7 +621,9 @@ for (const peer of ["pi", "local"]) test(`${peer} instruction protection switche
   };
   await call("write", { path: "ordinary.txt", content: "after" }); expect(pending).toHaveLength(0);
   mkdirSync(join(rig.cwd, ".agenthub"), { recursive: true });
-  writeFileSync(join(rig.cwd, ".agenthub", "config.json"), JSON.stringify({ memory: { enabled: false } }));
+  // This permission matrix deliberately emits more replies than the project's per-minute limits.
+  // Live reload now applies those defaults as soon as this first config file appears.
+  writeFileSync(join(rig.cwd, ".agenthub", "config.json"), JSON.stringify({ memory: { enabled: false }, limits: DEFAULT_CONFIG.limits }));
   expect(spawnSync("git", ["-C", rig.cwd, "init", "-q"]).status).toBe(0);
   const setting = "scoped_grants.protect_instructions";
   const targets = ["AGENTS.md", "CLAUDE.md", "QWEN.md", "agents.md", "claude.md", "qwen.md", "ＡＧＥＮＴＳ.md"];

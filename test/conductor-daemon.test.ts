@@ -275,7 +275,7 @@ test("manual assignment persists a structured reason and production task changes
   expect(notices.some(body => body.includes("moved") && body.includes("reason manual"))).toBe(true);
 });
 
-test("startup refuses two conductors and new hello refreshes only roles/feed", async () => {
+test("startup refuses two conductors and invalid reload retains roles/feed until a valid whole candidate", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-conductor-reload-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
   const file = join(dir, ".agenthub", "config.json");
@@ -286,9 +286,25 @@ test("startup refuses two conductors and new hello refreshes only roles/feed", a
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 }); cleanup.push(() => daemon.stop());
   const lead = await ControlClient.connect(dir, { role: "tools", peer: "claude" }); cleanup.push(() => lead.close());
   expect((await lead.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(true);
-  writeFileSync(file, JSON.stringify({ ...initial, roles: { claude: [] }, mlx: "invalid unrelated new value" }));
+  const console_ = await ControlClient.connect(dir, { role: "console" }); cleanup.push(() => console_.close());
+  const next = { ...initial, roles: { claude: [], codex: ["conductor"] }, conductor: { feed: "all" } };
+  const notices: string[] = [];
+  const untap = daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === HUB && event.env.refs?.supervision) notices.push(event.env.body); }); cleanup.push(untap);
+  const peer = new QuietPeer("pi"); daemon.bus.add(peer); await peer.start();
+  writeFileSync(file, JSON.stringify({ ...next, mlx: "invalid unrelated new value" }));
   const reconnected = await ControlClient.connect(dir, { role: "tools", peer: "claude" }); cleanup.push(() => reconnected.close());
+  expect((await reconnected.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(true);
+  const rejected = await console_.request({ t: "settings_reload" });
+  expect(rejected.ok).toBe(false); expect(rejected.error).toContain("mlx");
+  const successor = await ControlClient.connect(dir, { role: "tools", peer: "codex" }); cleanup.push(() => successor.close());
+  expect((await successor.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(false);
+  await peer.stop(); expect(notices).toEqual([]); // the rejected candidate's all-feed did not leak through
+  writeFileSync(file, JSON.stringify(next));
+  expect((await console_.request({ t: "settings_reload" })).ok).toBe(true);
   expect((await reconnected.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(false);
+  expect((await successor.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(true);
+  await peer.start(); await peer.stop();
+  expect(notices.some(body => body.includes("pi") && body.includes("offline"))).toBe(true);
 });
 
 test("permission console answer and expiry close the card with ids-only surface/latency audit", async () => {

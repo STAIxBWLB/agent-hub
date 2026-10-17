@@ -2197,6 +2197,7 @@ test("office turn task privacy is revalidated after a live routing policy change
   expect(shot.status.peers.slow.turn.task).toBe(1);
   writeFileSync(routing, fixtureRouting);
   const changed = new Date(Date.now()+1000);utimesSync(routing,changed,changed);
+  expect((await console_.request({ t: "settings_reload" })).ok).toBe(true);
   shot=await snapshot();
   expect(shot.tasks.find((task: any)=>task.id===1).title).toBe("[pii]");
   expect(shot.status.peers.slow.turn.task).toBeUndefined();

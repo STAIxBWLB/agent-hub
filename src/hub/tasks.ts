@@ -1929,10 +1929,11 @@ export class Tasks {
    * verified context path joins speaks again, and its members hear so.
    */
   private formCohort(task: Task, hits: ReturnType<Tasks["overlapHits"]>): void {
-    if (!task.owner || this.isPii(task) || this.d.coordination && !this.coordinationModes.get(task.id)) return;
-    const coordinated = this.d.coordination ? hits.filter(hit => this.coordinationModes.get(hit.task.id)) : hits;
+    if (!task.owner || this.isPii(task)) return;
+    const coordinate = this.coordinationModes.get(task.id);
+    const coordinated = this.d.coordination ? hits.filter(hit => this.coordinationModes.get(hit.task.id) === coordinate) : hits;
     const before = this.cohorts.of(task.id)?.revision;
-    const joined = this.cohorts.join(task, coordinated.map((h) => h.task), ownerGen, handedAt);
+    const joined = this.cohorts.join(task, coordinated.map((h) => h.task), ownerGen, handedAt, !this.d.coordination || coordinate === true);
     if (!joined) return;
     const c = joined.cohort;
     if (joined.formed || c.revision !== before) {
