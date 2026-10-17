@@ -31,3 +31,14 @@ test("#466 real CLI refuses live-test reattach before reading a receipt regardle
     expect(err).not.toContain("recovery operation unavailable");
   }
 });
+
+
+test("#168 repaired-loss context narrows live-test delegation without changing ordinary recovery grammar", () => {
+  for (const flags of formats) {
+    const args = [...flags, "dispose", "00000000-0000-4000-8000-000000000468", "--fresh-session", "codex", "--reason", "fixture"];
+    expect(liveTestRefusal("recovery", args, { repairedFresh: true })).toBe(true);
+    expect(liveTestRefusal("recovery", args, { repairedFresh: false })).toBe(false);
+    expect(liveTestRefusal("recovery", args)).toBe(false);
+    expect(liveTestRefusal("recovery", [...flags, "resume"], { repairedFresh: true })).toBe(false);
+  }
+});

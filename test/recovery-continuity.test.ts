@@ -156,11 +156,18 @@ test("#463 Pi session validation classifies proven unresumable evidence but keep
   const f = await fixture(), sessions = join(f.stateDir, "pi-sessions"); mkdirSync(sessions);
   const invalid = join(sessions, "invalid.jsonl"), mismatch = join(sessions, "mismatch.jsonl"), io = join(sessions, "directory.jsonl"), outside = join(f.root, "outside.jsonl");
   writeFileSync(invalid, "{"); writeFileSync(mismatch, JSON.stringify({ type: "session", id: "another", cwd: f.expected.projectRoot })); mkdirSync(io); writeFileSync(outside, "{}");
-  for (const [file, reason] of [[join(sessions, "missing.jsonl"), "missing"], [outside, "outside_managed"], [invalid, "invalid_header"], [mismatch, "invalid_header"]] as const) {
+  for (const [file, reason] of [[join(sessions, "missing.jsonl"), "missing"], [outside, "outside_managed"], [invalid, "invalid_header"]] as const) {
     let error: unknown; try { module.validatePiSession(f.stateDir, f.expected.projectRoot, file, "expected"); } catch (caught) { error = caught; }
     expect(error).toBeInstanceOf(module.PiSessionUnresumable);
     expect((error as { reason: string }).reason).toBe(reason);
   }
+  let mismatchError: unknown;
+  try { module.validatePiSession(f.stateDir, f.expected.projectRoot, mismatch, "expected"); } catch (caught) { mismatchError = caught; }
+  expect(mismatchError).toBeInstanceOf(module.PiSessionBookmarkMismatch);
+  expect(mismatchError).not.toBeInstanceOf(module.PiSessionUnresumable);
+  expect((mismatchError as { reason: string }).reason).toBe("bookmark_mismatch");
+  expect((mismatchError as Error).message).toBe("Pi continuity bookmark does not match the preserved session");
+  expect(module.validatePiSession(f.stateDir, f.expected.projectRoot, mismatch, "another")).toEqual({ sessionFile: mismatch, sessionId: "another" });
   let error: unknown; try { module.validatePiSession(f.stateDir, f.expected.projectRoot, io, "expected"); } catch (caught) { error = caught; }
   expect(error).toBeInstanceOf(Error);
   expect(error).not.toBeInstanceOf(module.PiSessionUnresumable);
