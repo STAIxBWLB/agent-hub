@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
-import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { newEnvelope, noteLine, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
 const cleanup: (() => void)[] = [];
@@ -82,7 +82,7 @@ test("coalescing does not lose a retried non-first parent, and condensation cann
   f.journal.transition("held", "completed");
   f.journal.createDelivery({ id: "first-clean", peer: "codex", state: "queued", createdAt: 1, originals: [f.original], out: [f.original] });
   const held = f.journal.createDelivery({ id: "second-held", peer: "codex", state: "needs_review", createdAt: 2, originals: [second], out: [second] });
-  f.journal.resolve(held.id, held.revision, "retry", "console retry");
+  f.journal.resolve(held.id, held.revision, "retry", "recipient requested retry", held.revision, "peer:codex");
   f.journal.persistBus({ ...f.bus.snapshot(false), queues: { codex: [f.original, second] } }, []);
   f.bus.closeJournal();
   const journal = new DeliveryJournal({ file: join(f.dir, "hub.db"), projectRoot: f.dir, projectId: "p", instanceId: "coalesced" });
@@ -152,7 +152,7 @@ test("recipient names that are Object prototype members keep an unused right", (
 
 test("an actual important steer of a retried original carries the same fixed warning", async () => {
   const f = rig("important"), held = f.journal.get("held")!;
-  f.journal.resolve(held.id, held.revision, "retry", "person requested retry");
+  f.journal.resolve(held.id, held.revision, "retry", "recipient requested retry", held.revision, "peer:codex");
   class Steering extends Peer { async steer(envs: Envelope[], id?: string) { await this.deliver(envs, id); } }
   const peer = new Steering("codex"); peer.pullOnly = false; f.bus.add(peer); await peer.start(); peer.setBusy();
   f.bus.publish(f.original); await until(() => peer.got.length === 1);
@@ -210,4 +210,41 @@ test("an old-format explicit retry inserted after migration is recovered on retu
   expect(() => next.bus.retryDelivery("codex", "old-writer-coalesced")).toThrow("recipient retry unavailable");
   expect(next.journal.retryEvidence("codex", [fresh])).toBe("unused");
   next.bus.retryDelivery("codex", "unrelated"); expect(next.journal.resolution("unrelated")?.actor).toBe("peer:codex");
+});
+
+test("recipient retry preserves in-flight and later presence notes once each while adding only its rendered warning", async () => {
+  const f = rig(); f.journal.transition("held", "completed");
+  class InFlight extends Peer {
+    override async deliver(envs: Envelope[], id?: string) {
+      this.got.push(envs); if (!id) return; this.ids.push(id);
+      if (this.got.length === 1) {
+        f.bus.note("codex", noteLine("pi", "fail", "in-flight"));
+        this.delivery({ id, state: "needs_review" });
+      } else this.delivery({ id, state: "completed" });
+    }
+  }
+  const peer = new InFlight("codex"); peer.pullOnly = false; f.bus.add(peer); await peer.start();
+  f.bus.preface("codex", "initial recall");
+  f.bus.publish(newEnvelope("user", "work with presence", { to: ["codex"], priority: "important" }));
+  await until(() => peer.got.length === 1);
+  f.bus.note("codex", noteLine("pi", "finding", "after-failure"));
+  f.bus.retryDelivery("codex", peer.ids[0]!); await until(() => peer.got.length === 2);
+  const presence = peer.got[1]!.find(env => env.from === "hub" && env.kind === "presence")!;
+  expect(presence.body).toStartWith("Hub redelivery warning:");
+  expect(presence.body.match(/note from pi \[fail\]: in-flight/g)).toHaveLength(1);
+  expect(presence.body.match(/note from pi \[finding\]: after-failure/g)).toHaveLength(1);
+  expect(presence.body.match(/initial recall/g)).toHaveLength(1);
+  expect(f.journal.get(peer.ids[0]!)!.originals.find(env => env.kind === "presence")!.body).toBe("initial recall");
+});
+
+test("recipient warning survives a snapshot import that omits resolution history", async () => {
+  const f = rig(); f.bus.retryDelivery("codex", "held");
+  const dir = mkdtempSync(join(tmpdir(), "ahub-retry-warning-import-"));
+  const target = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: f.dir, projectId: "p", instanceId: "imported-warning", operationId: "op" });
+  target.importSnapshot(f.journal.snapshot(), "op"); const bus = new Bus({ journal: target, batchMs: 0 });
+  const peer = new Peer("codex"); bus.add(peer); await peer.start();
+  try {
+    expect(target.resolution("held")).toBeUndefined();
+    expect(bus.pull("codex")![0]!.body).toStartWith("Hub redelivery warning:");
+  } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
 });

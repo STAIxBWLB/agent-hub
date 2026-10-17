@@ -721,14 +721,23 @@ export class DeliveryJournal {
         if (!current || current.peer !== peer) { unknown = true; break; }
       }
     }
+    return unknown || this.retryUnknown(peer, wanted) ? "unknown" : "unused";
+  }
+  /** Console retries consume the allowance too, but only recipient-requested/unknown lineage adds a warning. */
+  retryWarning(peer: string, originals: readonly Envelope[]): boolean {
+    this.ensureOpen();
+    const wanted = new Set(originals.map(env => env.id));
+    const ids = JSON.stringify([...wanted]);
+    if (this.db.query("SELECT 1 FROM resolution_history r, json_each(r.original_ids) old, json_each(?) current WHERE r.project_id = ? AND r.peer = ? AND r.action = 'retry' AND r.actor = ? AND old.value = current.value LIMIT 1").get(ids, this.projectId, peer, `peer:${peer}`)) return true;
+    return this.retryUnknown(peer, wanted) || this.retryEvidence(peer, originals) === "unknown";
+  }
+  private retryUnknown(peer: string, wanted: ReadonlySet<string>): boolean {
     try {
       const map = JSON.parse(String(this.readMeta()?.retry_unknown_ids ?? '{}')) as Record<string, string[]>;
-      if (!map || typeof map !== "object" || Array.isArray(map)) return "unknown";
+      if (!map || typeof map !== "object" || Array.isArray(map)) return true;
       const own = Object.hasOwn(map, peer) ? map[peer] : [];
-      if (!Array.isArray(own)) return "unknown";
-      if (own.some(id => wanted.has(id))) unknown = true;
-    } catch { return "unknown"; }
-    return unknown ? "unknown" : "unused";
+      return !Array.isArray(own) || own.some(id => wanted.has(id));
+    } catch { return true; }
   }
   private markRetryUnknown(deliveries: readonly JournalDelivery[], bus: Partial<BusSnapshot>): void {
     const map: Record<string, Set<string>> = Object.create(null);

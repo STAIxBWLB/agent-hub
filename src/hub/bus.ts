@@ -375,7 +375,7 @@ export class Bus {
   }
 
   private retryOut(peer: string, originals: Envelope[], out: Envelope[]): Envelope[] {
-    if (!out.length || !this.journal || this.journal.retryEvidence(peer, originals) === "unused") return out;
+    if (!out.length || !this.journal || !this.journal.retryWarning(peer, originals)) return out;
     return out.map((env, index) => index === 0 ? { ...env, body: `${DELIVERY_RETRY_WARNING}\n\n${env.body}` } : env);
   }
 
@@ -850,12 +850,13 @@ export class Bus {
     if (!preface && !queue.length) return [];
     const queued = [...queue];
     const batch = [...(preface ? [preface] : []), ...this.take(id, queue)];
-    const out = this.retryOut(id, batch, batch);
-    this.prefaces.delete(id);
-    // Before the checkpoint, as in a drain, so the persisted snapshot carries it; on a failure the bus stops anyway.
-    this.remember(out);
+    let out: Envelope[] = [];
     const deliveryId = crypto.randomUUID();
     try {
+      out = this.retryOut(id, batch, batch);
+      this.prefaces.delete(id);
+      // Before the checkpoint, as in a drain, so the persisted snapshot carries it; a failed policy read rolls back too.
+      this.remember(out);
       this.journal?.transaction(() => {
         this.durableHandoff(id, deliveryId, batch, out, false); // observe only after this outer transaction commits
         this.journal!.transition(deliveryId, "completed", "read through hub_inbox");
