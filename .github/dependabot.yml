@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # #457: keeps the workflow actions current; npm stays manual (zero runtime dependencies, exact first-party pin).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -2588,13 +2588,15 @@ registry directories and a scrubbed environment. The normal 20-second test timeo
 both legs. Successful fixtures are removed; a failed pair prints its preserved
 fixture location with test and leak evidence for inspection.
 
-The required Linux CI job `seeded guards` follows the ordinary checks; it does not
-repeat on macOS or run recursively inside `bun test`. The runner reports every
+CI runs the pairs as four Linux shards (`bun scripts/seeded-check.ts --shard i/4`,
+every fourth pair, still sequential within a shard) beside the ordinary checks; the
+required job `seeded guards` passes only when all four shards passed (#457). The pairs
+do not repeat on macOS or run recursively inside `bun test`. The runner reports every
 pair's elapsed seconds and the total runtime. A green ordinary check alone does
 not prove these pairs.
 
-The full CI gate tests the PR head tree on Linux and macOS, followed by the
-sequential seeded-guard job. Main and release jobs reuse only a successful full
+The full CI gate tests the PR head tree on Linux and macOS, with the seeded-guard
+shards running at the same time. Main and release jobs reuse only a successful full
 PR or push check with the identical Git tree and all three successful jobs. An absent or
 unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
