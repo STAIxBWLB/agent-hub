@@ -139,6 +139,7 @@ test("output is screened whole before result and completion envelope; stale runs
   expect(f.records.get(second)?.status).toBe("stale");
   expect((await f.call("codex", "hub_check_result", { run: second })).ok).toBe(false);
   f.task({ owner: "user", title: "private 900101-1234567", signals: ["pii"] });
+  f.board.update(t.id, "user", "privacy changed", { signals: ["pii"] });
   expect((await f.call("user", "hub_check_result", { run: second })).ok).toBe(true);
 });
 

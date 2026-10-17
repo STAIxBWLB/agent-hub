@@ -1838,7 +1838,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_check_result" || op === "hub_check_cancel") {
       need("check_run", "read or cancel isolated checks");
       let receipt = await checkRunner.result(a.run);
-      if (!receipt || receipt.owner !== by && by !== USER || tasks.isPii(board.get(receipt.task) ?? { title: "", detail: "", refs: {} } as Task)) throw new PreEffectToolRefusal("check unavailable");
+      const task = receipt ? board.get(receipt.task) : undefined;
+      if (!receipt || by !== USER && (receipt.owner !== by || !task || tasks.isPii(task))) throw new PreEffectToolRefusal("check unavailable");
       if (!currentCheck(receipt)) { await checkRunner.markStale(receipt.run); receipt = { ...receipt, status: "stale" }; }
       if (receipt.status === "stale" && by !== USER) throw new PreEffectToolRefusal("check unavailable: stale binding");
       if (op === "hub_check_cancel") {
