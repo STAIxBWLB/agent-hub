@@ -394,7 +394,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
    * expected instance can report "gone"; an unreadable target or launcher is unknown and blocks, never gone.
    */
   const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
-      Promise<{ state: "live"; session?: string; handle?: string; attached?: true; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "gone" } | { state: "unknown"; why: string; step?: string }> => {
+      Promise<{ state: "live"; session?: string; handle?: string; attached?: true; terminal?: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId"> } | { state: "gone" } | { state: "unknown"; why: string; step?: string; idless?: true }> => {
     const target = await inspectRecovery(planned.project);
     if (target.state !== "running" || target.instanceId !== progress.instanceId) {
       // Only a hub that may still answer is waited for; a stopped, missing or other one is settled by the runner's list.
@@ -422,7 +422,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     }
     // #225: attached with no provable session id (a Claude of a dead instance whose plugin reconnected, or one that has
     // not reported its id yet) is a session of unknown identity, never "nothing attached".
-    if (attached) return { state: "unknown", why: `a ${peer} session is attached to the target without a session id`, step: `wait until it reports one, or end that ${peer} session` };
+    if (attached) return { state: "unknown", idless: true, why: `a ${peer} session is attached to the target without a session id`, step: `wait until it reports one, or end that ${peer} session` };
     return { state: "gone" };
   };
   /**
@@ -449,13 +449,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
   /** #414: an idle terminal is not an authenticated peer. Keep its receipt while waiting, including on resume. */
   const awaitAttachment = async (planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, waiting: Extract<RestoreReceipt, { state: "waiting" }>, save: () => void, expectedSession: string | null = waiting.binding.sessionId): Promise<string> => {
     const binding = waiting.binding;
+    const matchesTerminal = (terminal: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId">) => terminal.handle === binding.handle && terminal.incarnationId === binding.incarnationId && terminal.worktreeId === binding.worktreeId;
     const deadline = now() + RECONNECT_WAIT_MS;
     let live: Inspection;
     for (;;) {
       live = await inspectRecovery(planned.project);
       if (live.state !== "running") throw new Error(`${binding.peer}: target hub reads as ${live.state} while awaiting attachment; saved terminal retained`);
       if (live.instanceId !== progress.instanceId || live.version !== op.plan.version || live.recovery?.operationId !== op.id) throw new Error(`${binding.peer}: target identity changed while awaiting attachment`);
-      const peer = live.peers.find((p) => p.id === binding.peer);
+      const peer = live.peers.find((p) => p.id === binding.peer && p.state !== "offline");
       const session = binding.peer === "codex" ? peer?.threadId : peer?.sessionId;
       const changed = !!session && expectedSession !== null && session !== expectedSession;
       // #64: only the original zero-turn Claude may change identity without an operator choice. Re-read persistence
@@ -464,14 +465,19 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (changed && !zeroTurn) throw new Error(`${binding.peer}: a different conversation attached while awaiting ${binding.sessionId}`);
       if (now() > deadline) break;
       const launcher = await launcherOf(binding.peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
+      const sameTerminal = launcher?.record && matchesTerminal(launcher.record);
       let launchState: RestoreEvidence["launcher"] = !launcher ? "no-record-yet" : launcher.state === "unknown" || !launcher.record ? "unknown"
-        : launcher.record.handle !== binding.handle || launcher.record.incarnationId !== binding.incarnationId || launcher.record.worktreeId !== binding.worktreeId ? "replaced" : launcher.state;
+        : sameTerminal ? launcher.state : launcher.state === "gone" ? "no-record-yet" : "replaced";
+      let olderHandle: string | undefined;
       if ((launchState === "gone" || launchState === "no-record-yet") && !session) {
         // An exact exit is not proof while an older launcher or an id-less session may still run.
         const evidence = await peerEvidence(planned, progress, binding.peer);
-        if (evidence.state === "unknown") launchState = "unknown";
-        else if (evidence.state === "live" && !evidence.session) launchState = "older-instance";
-        else if (evidence.state === "live" && evidence.session) {
+        if (evidence.state === "unknown") {
+          if (!(launchState === "no-record-yet" && evidence.idless)) launchState = "unknown";
+        } else if (evidence.state === "live" && !evidence.session) {
+          if (evidence.terminal) launchState = matchesTerminal(evidence.terminal) ? "live" : "replaced";
+          else { launchState = "older-instance"; olderHandle = evidence.handle; }
+        } else if (evidence.state === "live" && evidence.session) {
           if (now() >= deadline) break;
           await sleep(Math.min(1000, deadline - now()));
           continue;
@@ -486,6 +492,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (decision.action === "fail" || decision.action === "create") throw new AttachmentLauncherGone(decision);
       if (decision.action === "block") {
         if (launchState === "replaced") throw new Error(`${binding.peer}: saved terminal identity changed while awaiting attachment`);
+        if (launchState === "older-instance") throw new Error(`${binding.peer}: an older target's launcher in terminal ${olderHandle ?? "unknown"} may still run; saved terminal retained; no terminal was created`);
         throw new Error(`${binding.peer}: the chosen restoration launcher's identity cannot be verified (${launchState}); saved terminal retained; no terminal was created`);
       }
       if (now() >= deadline) break;
@@ -502,7 +509,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       }
     } catch { /* unavailable metadata stays unknown; raw output/errors never enter the receipt */ }
     const peer = live.peers.find((p) => p.id === binding.peer);
-    const session = binding.peer === "codex" ? peer?.threadId : peer?.sessionId;
+    const session = peer?.state === "offline" ? undefined : binding.peer === "codex" ? peer?.threadId : peer?.sessionId;
     (progress.attachmentTimeouts ??= {})[binding.peer] = { at: now(), terminal,
       hub: { state: live.state, ...(live.instanceId ? { instanceId: live.instanceId } : {}), ...(peer ? { peerState: peer.state } : {}), ...(session ? { sessionId: session } : {}) },
       lastHubConnectAttempt: "unknown" };
@@ -668,7 +675,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           binding: evidence.state === "live" && evidence.terminal ? { ...original, ...evidence.terminal } : original,
         });
         const receipt = decodeRestoreReceipt(progress.terminals[key]);
-        const awaitBound = async (waiting: Extract<RestoreReceipt, { state: "waiting" }>, expected: string | null): Promise<string | undefined> => {
+        function awaitBound(waiting: Extract<RestoreReceipt, { state: "waiting" }> & { origin: "pending" }, expected: string | null): Promise<string>;
+        function awaitBound(waiting: Extract<RestoreReceipt, { state: "waiting" }>, expected: string | null): Promise<string | undefined>;
+        async function awaitBound(waiting: Extract<RestoreReceipt, { state: "waiting" }>, expected: string | null): Promise<string | undefined> {
           try { return await awaitAttachment(planned, progress, op, waiting, save, expected); }
           catch (error) {
             if (!(error instanceof AttachmentLauncherGone)) throw error;
@@ -677,7 +686,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
             if (error.transition.action === "create") return undefined;
             throw notRestored(`its launcher no longer runs and no ${original.peer} session attached`);
           }
-        };
+        }
         // #215: the pending row of the receipt table, used wherever a pending launch meets an attached session.
         const settle = async (attached: string, recovered?: TerminalBinding) => {
           // #21: a Claude session that never got a first turn has no transcript, so `claude --resume S` can never
@@ -705,7 +714,12 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           // it cannot erase continuity or create a fresh-session choice (PROBE-B).
           const observed = await peerEvidence(planned, progress, original.peer);
           const decision = restoreTransition(receipt, { target: "running", launcher: "no-record-yet", session: observed.state === "live" && observed.session === receipt.binding.sessionId ? "planned" : observed.state === "live" && observed.session ? "other" : "none", allowOther: false });
-          if (decision.action === "block") throw new Error(`${original.peer}: completed restoration is not attached; saved done receipt retained; resume its recorded conversation`);
+          if (decision.action === "block") {
+            const condition = observed.state === "unknown" ? `cannot be verified (${observed.why})`
+              : observed.state === "live" && observed.session ? `session ${observed.session} is attached instead of ${receipt.binding.sessionId}`
+              : observed.state === "live" ? `is not attached; its launcher in terminal ${observed.handle ?? "unknown"} may still run` : "is not attached";
+            throw new Error(`${original.peer}: completed restoration ${condition}; saved done receipt retained; resume its recorded conversation`);
+          }
           progress.terminals[key] = { state: "done", binding: await revalidateTerminal(planned, progress, receipt.binding, true) } satisfies RestoreReceipt; save();
           continue;
         }
@@ -778,7 +792,6 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
             throw notRestored(exited.message);
           }
           if (after.state !== "gone") throw blocked(after);
-          throw notRestored(exited.message);
         }
         if (restored.manualRequired || !restored.newBinding) {
           const handle = restored.binding?.handle ?? restored.blockers[0]?.handle;
@@ -788,7 +801,6 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         const awaiting = { state: "waiting", origin: "pending", binding: restored.newBinding } satisfies RestoreReceipt;
         progress.terminals[key] = awaiting; save();
         const sessionId = await awaitBound(awaiting, fresh() ? null : restored.newBinding.sessionId);
-        if (sessionId === undefined) throw notRestored(`its launcher no longer runs and no ${original.peer} session attached`);
         await settle(sessionId, awaiting.binding);
       }
       if (group === "claude") for (const id of planned.reconnectOnly ?? []) {

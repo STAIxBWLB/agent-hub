@@ -50,10 +50,8 @@ export function decodeRestoreReceipt(value: unknown): RestoreReceipt | undefined
       default: return malformed();
     }
   }
-  const { attachmentReceipt, ...binding } = value;
-  if (attachmentReceipt !== undefined && attachmentReceipt !== "pending" && attachmentReceipt !== "failed") malformed();
-  const decoded = terminalBinding(binding);
-  return attachmentReceipt === undefined ? { state: "done", binding: decoded } : { state: "waiting", origin: attachmentReceipt, binding: decoded };
+  if (Object.hasOwn(value, "attachmentReceipt")) malformed();
+  return { state: "done", binding: terminalBinding(value) };
 }
 
 export function restoreReceiptStatus(value: unknown): RestoreReceiptStatus {
