@@ -143,7 +143,7 @@ test("#449 SDLC gh refuses project PATH shims and external symlinks into the pro
   symlinkSync(binary, join(outside, "gh"));
   try {
     for (const entry of [project, outside]) {
-      process.env.PATH = entry;
+      process.env.PATH = `${entry}:${path ?? ""}`;
       expect(await sdlcGh(["pr", "view", "1", "--repo", "owner/repo"], 1000, project)).toEqual({ code: 1, stdout: "" });
       expect(existsSync(marker)).toBe(false);
     }
@@ -157,7 +157,7 @@ test("#449 SDLC gh preserves trusted host argv, cwd and stdout while ignoring st
   writeFileSync(binary, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(record)},JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd()})); process.stdout.write('trusted result'); process.stderr.write('private diagnostic');`); chmodSync(binary, 0o755);
   const argv = ["pr", "view", "1", "--repo", "owner/repo", "--json", "headRefOid"];
   try {
-    process.env.PATH = host;
+    process.env.PATH = `${host}:${path ?? ""}`;
     expect(await sdlcGh(argv, 1000, project)).toEqual({ code: 0, stdout: "trusted result" });
     expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ argv, cwd: realPath(project) });
   } finally { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; }

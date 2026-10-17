@@ -186,7 +186,7 @@ test("installed-layout release reader finds the explicitly published checker and
   try {
     mkdirSync(join(target, "src/hub"), { recursive: true });
     // This file list mirrors the import closure of sdlc-release.ts.
-    for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts"]) {
+    for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts", "host-executable.ts", "project.ts"]) {
       copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
     }
     // Copy only the published first-party package, not the workspace dependency tree.
