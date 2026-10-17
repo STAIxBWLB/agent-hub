@@ -1980,7 +1980,7 @@ function detachedAfterRestoreFixture(peer: "pi" | "codex" | "claude" = "pi", acc
   const op = { schema: 1, id: "op-463", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT,
     plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
   const control = { attached: false, sessionId: saved.sessionId, sessionFile, terminal: "orphaned" as "orphaned" | "missing" | "unknown" | "live" | "replacement", attachAfterCreate: true, interruptWait: false, failCreate: false,
-    targetOperation: op.id, targetVersion: VERSION, targetInstance: "i-target", allowStop: false, busyAfterCreate: false, omitSessionFile: false, resumeAttachAfterNextCreate: false };
+    targetOperation: op.id, targetVersion: VERSION, targetInstance: "i-target", allowStop: false, busyAfterCreate: false, omitSessionFile: false, resumeAttachAfterNextCreate: false, expectFence: true };
   let created = 0, elapsed = 0, postCreateReads = 0;
   const snapshots: ProjectProgress[] = [], commands: string[][] = [];
   const save = () => snapshots.push(structuredClone(progress));
@@ -2019,8 +2019,11 @@ function detachedAfterRestoreFixture(peer: "pi" | "codex" | "claude" = "pi", acc
     let result: unknown;
     if (argv[2] === "create") {
       // Intent must be durable before the first create attempt, even if the runner then fails or is interrupted.
-      if (progress.reattachments?.[peer]) expect((snapshots.at(-1) as any)?.reattachments?.[peer]?.state).toBe("attempted");
-      else expect(progress.restarts?.length).toBeGreaterThan(0); // ordinary #225 restart, not another detached repair
+      if (control.expectFence) expect((snapshots.at(-1) as any)?.reattachments?.[peer]?.state).toBe("attempted");
+      else {
+        expect(progress.reattachments?.[peer]).toBeUndefined();
+        expect(progress.restarts?.length).toBeGreaterThan(0); // explicitly selected ordinary #225 restart
+      }
       created++;
       if (control.failCreate) return { code: 1, stdout: "fixture create refused", stderr: "" };
       control.terminal = "live";
@@ -2336,6 +2339,7 @@ test("#463 a target restart after repair permits the ordinary retired-binding re
     recordRestart(f.progress, 100);
     expect(f.progress.terminals["retired:codex"]).toMatchObject({ sessionId: f.saved.sessionId, handle: "term-repair" });
     expect(f.progress.reattachments?.codex).toBeUndefined();
+    f.control.expectFence = false; // This scenario deliberately tests the ordinary #225 relaunch, not repair creation.
     f.progress.phase = "started"; f.progress.instanceId = "i-next-target"; f.control.targetInstance = "i-next-target";
     f.control.attached = false; f.control.terminal = "missing"; f.control.attachAfterCreate = false; f.control.resumeAttachAfterNextCreate = true;
     writeFileSync(join(f.stateDir, "status.json"), JSON.stringify({ controlPort: JSON.parse(readFileSync(join(f.stateDir, "status.json"), "utf8")).controlPort,

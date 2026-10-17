@@ -8,6 +8,10 @@ export class PiSessionUnresumable extends Error {
   readonly code = "pi_session_unresumable";
   constructor(readonly reason: "missing" | "outside_managed" | "invalid_header", message: string, options?: ErrorOptions) { super(message, options); }
 }
+export class PiSessionBookmarkMismatch extends Error {
+  readonly code = "pi_session_bookmark_mismatch";
+  readonly reason = "bookmark_mismatch";
+}
 function sessionReadFailure(error: unknown): never {
   if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new PiSessionUnresumable("missing", (error as Error).message, { cause: error });
   throw error;
@@ -24,7 +28,8 @@ export function validatePiSession(stateDir: string, cwd: string, sessionFile: st
   try { first = readFileSync(file, "utf8").split("\n", 1)[0]!; } catch (error) { return sessionReadFailure(error); }
   let header: { type?: unknown; id?: unknown; cwd?: unknown } | null;
   try { header = JSON.parse(first); } catch (error) { throw new PiSessionUnresumable("invalid_header", (error as Error).message, { cause: error }); }
-  if (!header || header.type !== "session" || typeof header.id !== "string" || !header.id || typeof header.cwd !== "string" || realPath(header.cwd) !== realPath(cwd) || (sessionId && header.id !== sessionId)) throw new PiSessionUnresumable("invalid_header", "Pi session header does not match the requested project/session");
+  if (!header || header.type !== "session" || typeof header.id !== "string" || !header.id || typeof header.cwd !== "string" || realPath(header.cwd) !== realPath(cwd)) throw new PiSessionUnresumable("invalid_header", "Pi session header does not match the requested project/session");
+  if (sessionId && header.id !== sessionId) throw new PiSessionBookmarkMismatch("Pi continuity bookmark does not match the preserved session");
   return { sessionFile: file, sessionId: header.id };
 }
 

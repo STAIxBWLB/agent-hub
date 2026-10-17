@@ -53,3 +53,13 @@ test("#466 every flag consumed by the parser is the same shared prefix recognize
   expect(recoveryPresentationFlag("--color=invalid")).toEqual({ kind: "color", value: "invalid" });
   for (const flag of ["--color", "--full", "--unknown", "reattach"]) expect(recoveryPresentationFlag(flag)).toBeUndefined();
 });
+
+test("#168 repaired-loss context narrows live-test delegation without changing ordinary recovery grammar", () => {
+  for (const flags of formats) {
+    const args = [...flags, "dispose", "00000000-0000-4000-8000-000000000468", "--fresh-session", "codex", "--reason", "fixture"];
+    expect(liveTestRefusal("recovery", args, { repairedFresh: true })).toBe(true);
+    expect(liveTestRefusal("recovery", args, { repairedFresh: false })).toBe(false);
+    expect(liveTestRefusal("recovery", args)).toBe(false);
+    expect(liveTestRefusal("recovery", [...flags, "resume"], { repairedFresh: true })).toBe(false);
+  }
+});

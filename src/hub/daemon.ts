@@ -51,7 +51,7 @@ import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts, packPiShellResult } from "../pi/tool-receipts.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { processSignature } from "../pi/process-signature.ts";
-import { PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
+import { PiSessionBookmarkMismatch, PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
@@ -2610,36 +2610,56 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // Session identities of the attached peers, kept current for crash recovery (issue #37); a clean stop removes them.
   let sessionsWritten = "";
+  // One bounded failure generation: unchanged events neither contend for the writer lock nor repeat its notice.
+  let piSettlementFailure: { key: string; error: string; retryAfter: number } | undefined;
   function settlePiContinuity(): void {
     if (stopping || recoveryActive() || piContinuity.state !== "ready") return;
     const peer = bus.peers.get("pi");
     if (!(peer instanceof PiPeer) || peer.state === "offline" || !peer.sessionGeneration || !peer.recoveryReady) return;
     const saved = piContinuity.bookmark, actual = peer.recoveryMetadata();
     if (typeof actual.sessionId !== "string" || !actual.sessionId) return;
+    const key = JSON.stringify([piContinuity.digest, peer.sessionGeneration, actual]);
+    if (piSettlementFailure?.key === key && Date.now() < piSettlementFailure.retryAfter) return;
     const matches = actual.sessionId === saved.pi.sessionId && (saved.pi.sessionFile === undefined || actual.sessionFile === saved.pi.sessionFile);
     try {
       const expected = { projectId, projectRoot: opts.cwd, operationId: saved.operationId, digest: piContinuity.digest };
       const settled = matches ? consumeRecoveryContinuity(opts.stateDir, expected) : retireRecoveryContinuity(opts.stateDir, expected, "authenticated_session_changed").retired;
+      piSettlementFailure = undefined;
       if (settled) {
         piContinuity = { state: "absent" };
         if (!matches) log("Pi archived continuity retired after recording a different authenticated session");
       }
-      else log("Pi continuity bookmark changed before attachment settlement; retained for inspection");
-    } catch { log("Pi continuity attachment settlement unavailable; bookmark retained"); }
+      else {
+        // Re-read after the failed exact CAS; never settle a newer bookmark in this call.
+        piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
+        if (piContinuity.state !== "absent") log("Pi continuity bookmark changed before attachment settlement; retained for inspection");
+      }
+    } catch (error) {
+      const signature = error instanceof Error ? `${error.name}:${error.message}` : String(error);
+      const report = piSettlementFailure?.key !== key || piSettlementFailure.error !== signature;
+      piSettlementFailure = { key, error: signature, retryAfter: Date.now() + 30_000 };
+      piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
+      if (report) log("Pi continuity attachment settlement unavailable; bookmark retained");
+    }
   }
   const recordSessions = () => {
     if (stopping) return;
+    const pi = bus.peers.get("pi");
+    if (piContinuity.state === "ready" && (!(pi instanceof PiPeer) || pi.state === "offline" || !pi.sessionGeneration || !pi.recoveryReady)) {
+      piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
+    }
     const peers = [...bus.peers.values()].filter((p) => p.state !== "offline").map((p) => {
       let meta: Record<string, unknown> = {};
       try { meta = (p as { recoveryMetadata?: () => Record<string, unknown> }).recoveryMetadata?.() ?? {}; } catch { /* not ready yet: the id alone */ }
       return { peer: p.id, meta };
     });
     const text = JSON.stringify(peers);
-    if (text === sessionsWritten && piContinuity.state !== "ready") return;
     try {
-      writeSessions(opts.stateDir, { instanceId, at: Date.now(), peers });
-      sessionsWritten = text;
-      settlePiContinuity(); // retirement follows the successful crash-record write, never just an attachment event
+      if (text !== sessionsWritten) {
+        writeSessions(opts.stateDir, { instanceId, at: Date.now(), peers });
+        sessionsWritten = text;
+      }
+      settlePiContinuity(); // the identical snapshot may already be durable; never retire after a failed write
     } catch (error) { log(`session record not written: ${(error as Error).message}`); }
   };
   const recoverAfterCrash = async (prev: SessionsFile) => {
@@ -2948,7 +2968,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
-    const continuity = peer === "pi" && by === "pi.auto_start" ? piContinuity : undefined;
+    const continuity = peer === "pi" && by === "pi.auto_start"
+      ? piContinuity.state === "ready" ? (piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd })) : piContinuity
+      : undefined;
     if (continuity?.state === "invalid") return { ok: false, error: `archived Pi continuity evidence is invalid or unreadable; no fresh session was started. ${continuityCleanup()}` };
     const resume = continuity?.state === "ready" ? continuity.bookmark.pi : undefined;
     const mode = startMode(peer);
@@ -2956,14 +2978,16 @@ export async function startDaemon(opts: DaemonOptions) {
       try { validatePiSession(opts.stateDir, opts.cwd, resume.sessionFile, resume.sessionId); }
       catch (error) {
         const retry = `ahub pi --mode ${mode} --session-file ${shellQuote(resume.sessionFile)}`;
-        if (error instanceof PiSessionUnresumable) {
+        if (error instanceof PiSessionUnresumable || error instanceof PiSessionBookmarkMismatch) {
           try {
             const retired = retireRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd, operationId: continuity.bookmark.operationId, digest: continuity.digest }, "resume_unavailable");
             if (retired.retired) {
               piContinuity = { state: "absent" };
-              return { ok: false, error: `recorded Pi session is unresumable; continuity evidence was archived; no fresh session was started. Inspect the preserved session, then select a valid managed file with ahub pi --mode ${mode} --session-file <managed-file>` };
+              const diagnosis = error instanceof PiSessionBookmarkMismatch ? "Pi continuity bookmark does not match the preserved session" : "recorded Pi session is unresumable";
+              return { ok: false, error: `${diagnosis}; continuity evidence was archived; no fresh session was started. Inspect the preserved session, then select a valid managed file with ahub pi --mode ${mode} --session-file <managed-file>` };
             }
           } catch { return { ok: false, error: `Pi continuity retirement could not be confirmed; bookmark retained; no fresh session was started. After inspecting storage, retry ${retry}. ${continuityCleanup()}` }; }
+          piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
           return { ok: false, error: `Pi continuity changed before retirement; inspect recovery-continuity.json; no fresh session was started. Retry the intended session with ${retry}. ${continuityCleanup()}` };
         }
         return { ok: false, error: `Pi continuity session storage could not be verified; bookmark retained; no fresh session was started. After inspecting storage, retry ${retry}. ${continuityCleanup()}` };

@@ -683,15 +683,51 @@ Resume reuses the ordinary restore path with that accepted conversation, session
 file, backend and model. Before any new terminal effect the marker becomes
 `attempted`. Chosen waiting bindings remain durable and reuse the existing 600 s
 attachment bound; an interruption cannot grant another create. A second detach or
-an exhausted attempt blocks with its recorded cause. These repairs are recorded-
-session only: no automatic fresh/zero-turn replacement or fresh-session choice is
-introduced for a marked repair. Strict session/file checks remain for repairs;
+an exhausted attempt blocks with its recorded cause. These repairs default to
+recorded-session-only continuity: no automatic fresh/zero-turn replacement is
+introduced. Only the explicit missing-history exception below permits a person
+to select a replacement. Strict session/file checks remain for repairs;
 ordinary verified-empty Pi attachments retain their pre-existing id-only rules.
 When `recordRestart` retires a known done or waiting binding from a dead target,
 it clears that binding's repair fence. The normal #225 relaunch preserves its
-accepted conversation and a new target gets its own repair allowance. An uncertain
+accepted conversation and a new target gets its own repair allowance. The additive
+per-peer `repairedSessions: true` provenance survives this fence reset and repeated
+restarts. It authorizes no creation: accepted done/retired bindings remain the
+session source, and fresh-session choices and zero-turn substitutions remain
+excluded automatically for that repaired conversation. A person may explicitly
+choose `dispose --fresh-session` for a failed repaired Codex or Claude conversation only after
+the coordinator records a typed positive missing-transcript/rollout observation
+bound to the accepted session, and disposal rechecks that same recorded store as
+missing before writing the loss and audit. Found, unreadable, malformed or absent
+evidence never permits this choice. The choice records the accepted conversation
+as lost; it does not run a terminal. The receipt also records
+`freshOverride {peer, evidence, checked, at}`, exposed in person status and the
+archive summary. New missing observations and overrides include `checkedPath`: the
+exact Claude transcript file or recursively searched Codex sessions directory.
+The lookup and display share the same captured-environment/default-home path
+resolver; this is evidence of that checked location, not proof of every native
+store layout. Refusals name the checked location as well. Resume retains the existing launcher fences,
+close-before-create and waiver rules. An uncertain
 creation with no durable selected binding does not gain a second creation by
 merely losing the target. Database contention retains its typed retryable outcome.
+
+Repaired missing-history disposal is never delegated under `--live-test`.
+Because ordinary #408 fresh disposal uses the same argv and remains delegable,
+the CLI first classifies the already-loaded receipt read-only. An unreadable,
+unparseable or unclassifiable receipt, including a peer absent from its projects,
+refuses delegation. A repaired override is refused before runner/lock acquisition
+or coordinator mutation. Core repeats the trusted per-invocation delegation
+check before the lock and after its under-claim read. No model/request field
+can grant person authority, and no new public waiver flag is introduced.
+
+Pi remains excluded from fresh-session under #215. For a positively missing
+accepted Pi session file, blocked guidance prints the operation's
+`recovery dispose <id> --stop-and-archive --reason <text>` command and then
+`ahub --project <root> pi`. The normal Pi start retires a proven-unresumable
+archived bookmark without falling back fresh in that same start; its notice
+guides a subsequent normal start. The Pi fresh-session refusal itself prints
+the same stop-and-archive and project-scoped start commands. Unreadable or invalid
+evidence stays held.
 
 The person-only `ahub recovery reattach <operation> <peer>` is admitted only for
 that operation's current structured reattachment block. It claims the existing
@@ -701,6 +737,13 @@ remaining operation for resume. Agent shells and live-test delegation cannot
 invoke this person decision. Person status and block guidance list the recorded
 Codex thread, Pi session file and Claude session with quoted commands from the
 operation's coordinator.
+
+Status guidance, the archive summary and the Pi continuity bookmark share one
+accepted-binding resolver: restored done/waiting, then a validated reattachment
+marker, then a decoded retired binding for this peer and project, then the plan.
+A malformed retained binding is unavailable, never permission to fall back to an
+older conversation. This includes the accepted Pi file, backend and model after
+a #225 target restart.
 
 Stop and archive retains the operation's accepted session identities. After a
 confirmed owned target stop and snapshot archive, it may write one private,
@@ -726,6 +769,24 @@ session is proven unresumable, or a later recovery successfully releases the
 project. Unknown I/O or provider failures do not prove an unresumable session.
 Malformed or unverifiable bookmark evidence remains fail-closed. The TUI resume
 argv carries `--session-file` when available, otherwise `--session-id`, never both.
+
+### Continuity retirement follow-up (#463)
+
+An externally retired or replaced bookmark invalidates the daemon's cached copy.
+A failed compare-and-swap re-reads the private bookmark; absence drops the old
+in-memory selection, while newer or unreadable evidence remains distinct from
+absence. Session recording writes `sessions.json` only when its serialized peers
+change. Settlement may use an already durable unchanged crash record but may not
+retire continuity before that record was successfully written. No offline-Pi event
+forces a redundant write. A header whose session id disagrees with the selected
+bookmark is `bookmark_mismatch` (bookmark inconsistent), not evidence that the
+session itself cannot resume. Archival remains non-destructive and never starts
+a fresh session.
+
+Repeated Pi continuity settlement storage failures back off for 30 seconds for
+the same bookmark digest and authenticated peer generation/metadata. A new
+digest or authenticated identity can retry immediately; successful settlement
+clears the failure. An unchanged failure logs once, without session-file churn.
 
 ## Recovery presentation (#466)
 

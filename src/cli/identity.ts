@@ -9,14 +9,16 @@ function recoveryAction(args: readonly string[]): string | undefined {
   return args.find(arg => !recoveryPresentationFlag(arg));
 }
 
+export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attributed content; use peer tools or a person's terminal";
+
 /** Person verdicts and user-authored workflow content are never delegated. */
-export function liveTestRefusal(command: string, args: readonly string[]): boolean {
+export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
   return ["task", "role", "goal"].includes(command)
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
-    || (command === "recovery" && sub === "reattach")
+    || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
     || (command === "board" && args[0] === "import") || (command === "sdlc" && args[0] === "record")
     || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet";
 }
