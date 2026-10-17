@@ -606,7 +606,9 @@ export class Tasks {
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
-    this.planningAuthority(by);
+    // #455: one authority check, made before the screen and again after it (a person may move the planner meanwhile).
+    const authorized = () => this.planningAuthority(by);
+    authorized();
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
     const validate = () => {
       const task = this.d.board.get(input.id);
@@ -631,7 +633,7 @@ export class Tasks {
       return { task, owner: assignment.owner };
     };
     const initial = validate(), withheld = await this.withholds("note", input.reason, initial.task);
-    this.planningAuthority(by); // #455: a person may have moved the planner while the screen ran
+    authorized();
     const current = validate();
     const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld);
     this.planningRecorded({ by, task: pulled.id, fields: ["pull", "reserved"], revision: pulled.planningRevision! });

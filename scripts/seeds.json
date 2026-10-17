@@ -1948,8 +1948,8 @@
     {
       "id": "planner-pull-role-floor",
       "file": "src/hub/tasks.ts",
-      "search": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    this.planningAuthority(by);",
-      "replacement": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    void by;",
+      "search": "    const authorized = () => this.planningAuthority(by);\n    authorized();",
+      "replacement": "    const authorized = () => void by;\n    authorized();",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
     },
