@@ -101,6 +101,11 @@
   },
   {
     "file": "src/cli/main.ts",
+    "symbol": "parseRecoveryReattach",
+    "count": 3
+  },
+  {
+    "file": "src/cli/main.ts",
     "symbol": "runConductorCommand",
     "count": 4
   },
@@ -122,6 +127,36 @@
   {
     "file": "src/cli/preview.ts",
     "symbol": "launcherPreview.pi",
+    "count": 1
+  },
+  {
+    "file": "src/cli/recovery-guidance.ts",
+    "symbol": "peers",
+    "count": 3
+  },
+  {
+    "file": "src/cli/recovery-guidance.ts",
+    "symbol": "recordedPeerGuidance.command",
+    "count": 2
+  },
+  {
+    "file": "src/cli/recovery-guidance.ts",
+    "symbol": "recordedPeerGuidance.note",
+    "count": 2
+  },
+  {
+    "file": "src/cli/recovery-guidance.ts",
+    "symbol": "recordedPeerGuidance.sessionFile",
+    "count": 1
+  },
+  {
+    "file": "src/cli/recovery-guidance.ts",
+    "symbol": "sourceSession.sessionFile",
+    "count": 1
+  },
+  {
+    "file": "src/cli/recovery-guidance.ts",
+    "symbol": "sourceSession.sessionId",
     "count": 1
   },
   {
@@ -241,6 +276,11 @@
   },
   {
     "file": "src/cli/upgrade-runtime.ts",
+    "symbol": "makeRecoveryDriver.revalidateTerminal",
+    "count": 1
+  },
+  {
+    "file": "src/cli/upgrade-runtime.ts",
     "symbol": "makeRecoveryDriver.revalidateTerminal.session",
     "count": 1
   },
@@ -251,12 +291,27 @@
   },
   {
     "file": "src/cli/upgrade-runtime.ts",
+    "symbol": "makeRecoveryDriver.stopAndArchive",
+    "count": 1
+  },
+  {
+    "file": "src/cli/upgrade-runtime.ts",
+    "symbol": "makeRecoveryDriver.stopAndArchive.source",
+    "count": 1
+  },
+  {
+    "file": "src/cli/upgrade-runtime.ts",
     "symbol": "makeRecoveryDriver.verify",
-    "count": 3
+    "count": 4
   },
   {
     "file": "src/cli/upgrade-runtime.ts",
     "symbol": "makeRecoveryDriver.verify.binding",
+    "count": 1
+  },
+  {
+    "file": "src/cli/upgrade-runtime.ts",
+    "symbol": "makeRecoveryDriver.verify.session",
     "count": 1
   },
   {
@@ -288,6 +343,21 @@
     "file": "src/cli/upgrade.ts",
     "symbol": "plannedAttached",
     "count": 1
+  },
+  {
+    "file": "src/cli/upgrade.ts",
+    "symbol": "reattachRecovery",
+    "count": 1
+  },
+  {
+    "file": "src/cli/upgrade.ts",
+    "symbol": "reattachRecovery.selection",
+    "count": 3
+  },
+  {
+    "file": "src/cli/upgrade.ts",
+    "symbol": "validateReceipt",
+    "count": 6
   },
   {
     "file": "src/hub/budget.ts",
@@ -421,6 +491,11 @@
   },
   {
     "file": "src/hub/daemon.ts",
+    "symbol": "startDaemon.hubStart.continuity",
+    "count": 1
+  },
+  {
+    "file": "src/hub/daemon.ts",
     "symbol": "startDaemon.hubStart.headless",
     "count": 1
   },
@@ -482,7 +557,7 @@
   {
     "file": "src/hub/daemon.ts",
     "symbol": "startDaemon.recoverAfterCrash",
-    "count": 1
+    "count": 2
   },
   {
     "file": "src/hub/daemon.ts",
@@ -532,7 +607,7 @@
   {
     "file": "src/hub/daemon.ts",
     "symbol": "startDaemon.startPeer.running",
-    "count": 3
+    "count": 4
   },
   {
     "file": "src/hub/daemon.ts",
@@ -648,6 +723,11 @@
     "file": "src/hub/permission-mode.ts",
     "symbol": "permissionGrant",
     "count": 7
+  },
+  {
+    "file": "src/hub/recovery-continuity.ts",
+    "symbol": "checked",
+    "count": 2
   },
   {
     "file": "src/hub/report.ts",
