@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext, Script } from "node:vm";
+import { hubGitSync } from "../src/hub/git.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
@@ -29,8 +30,9 @@ function project() {
 }
 const text = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : null);
 
-async function hub(config: Partial<HubConfig> = {}, files: { routing?: boolean } = {}) {
+async function hub(config: Partial<HubConfig> = {}, files: { routing?: boolean; git?: boolean } = {}) {
   const p = project();
+  if (files.git) expect(hubGitSync(["init", "-q"], { cwd: p.cwd, encoding: "utf8", timeout: 1000 }).status).toBe(0);
   if (files.routing === false) rmSync(p.file("routing.toml")); // a project that runs on the shipped routing template
   const daemon = await startDaemon({ cwd: p.cwd, stateDir: p.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
     config: { ...loadConfig(p.cwd), peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], ...config } });
@@ -54,7 +56,7 @@ test("AC1: every editable setting has one registry entry with its store, apply t
   expect(new Set(SETTINGS.map((s) => s.key)).size).toBe(SETTINGS.length);
   for (const s of SETTINGS) {
     expect(["runtime", "config", "routing"]).toContain(s.store);
-    expect(["live", "peer start", "hub start"]).toContain(s.applies);
+    expect(["live", "next use", "restart"]).toContain(s.applies);
     expect(["safe", "raises"]).toContain(s.risk);
     expect(s.type === "enum" ? s.values !== undefined || s.key.endsWith(".route") : true).toBe(true);
     expect(settingDef(s.key)).toBe(s);
@@ -313,7 +315,7 @@ test("AC4 and AC8: an agent shell cannot open a settings session or write a sett
 });
 
 test("AC5: a mode set from the dashboard takes the console's own path, with its refusals and its pending never-ask default", async () => {
-  const rig = await hub({ permission_modes: { kimi: "never-ask" }, permission_default_sources: { kimi: { mode: "never-ask", source: ".agenthub/config.local.json" } } });
+  const rig = await hub({ permission_modes: { kimi: "never-ask" }, permission_default_sources: { kimi: { mode: "never-ask", source: ".agenthub/config.local.json" } } }, { git: true });
   const settings = await rig.page(true);
   const set = (key: string, value: unknown, confirm?: string) => settings.act({ action: "setting", key, value, ...(confirm ? { confirm } : {}) });
   const row = async (key: string) => (await settings.rows()).rows.find((r) => r.key === key)!;
@@ -486,22 +488,23 @@ await import(${JSON.stringify(CLI)});
 }
 
 test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a terminal and are refused in an agent shell", async () => {
-  const rig = await hub();
+  const rig = await hub({}, { git: true });
   const local = rig.file("config.local.json");
   const listed = await cli(rig.cwd, ["settings"]);
   expect(listed.code).toBe(0);
   for (const heading of ["Permissions", "Start", "Routing", "Switches"]) expect(listed.stdout).toContain(`${heading}\n`);
-  expect(listed.stdout).toMatch(/ {2}pi\.auto_start +true +from config\.json; read at hub start\n/);
-  expect(listed.stdout).toMatch(/ {2}permission\.kimi +ask +from this hub run; applies at once; not attached: only ask can be set\n/);
+  expect(listed.stdout).toMatch(/ {2}pi\.auto_start +true +from config\.json; file: true; applies at next use\n/);
+  expect(listed.stdout).toMatch(/ {2}permission\.kimi +ask +from this hub run; file: ask; applies at once; not attached: only ask can be set\n/);
   expect(JSON.parse((await cli(rig.cwd, ["settings", "list", "--json"])).stdout).rows).toHaveLength(SETTINGS.length);
 
-  expect(await cli(rig.cwd, ["settings", "set", "research.enabled", "true"])).toEqual({ code: 0, stdout: "research.enabled: true (applies at the next hub start)\n", stderr: "" });
+  expect(await cli(rig.cwd, ["settings", "set", "research.enabled", "true"])).toEqual({ code: 0, stdout: "research.enabled: true (in force now)\n", stderr: "" });
   expect(JSON.parse(text(local)!)).toEqual({ research: { enabled: true } });
   const got = await cli(rig.cwd, ["settings", "get", "research.enabled"]);
-  // The hub in this test was started with the value false: the row shows what runs and what the next start reads.
-  expect(got.stdout).toContain("research.enabled  false  from config.local.json; read at hub start; true at the next hub start\n");
+  // #439 applies the live switch without restarting and shows its matching file value.
+  expect(got.stdout).toContain("research.enabled  true  from config.local.json; file: true; applies at once\n");
   expect(got.stdout).toContain("written to config.local.json; takes true, false, or inherit to remove the machine-local value");
-  expect(JSON.parse((await cli(rig.cwd, ["settings", "get", "research.enabled", "--json"])).stdout)).toMatchObject({ key: "research.enabled", value: false, pending: true, source: "config.local.json" });
+  expect(JSON.parse((await cli(rig.cwd, ["settings", "get", "research.enabled", "--json"])).stdout)).toMatchObject({ key: "research.enabled", value: true, fileValue: true, applies: "live", source: "config.local.json" });
+  expect((await cli(rig.cwd, ["settings", "reload"])).code).toBe(0);
 
   const order = await cli(rig.cwd, ["settings", "set", "routing.classes.implement.peers", "kimi,codex", "--preview"]);
   expect(order.code).toBe(0);
@@ -594,7 +597,7 @@ test("review of #290: a write that changes nothing writes nothing, a failed writ
 }, 20_000);
 
 test("review of #290: never-ask comes back only with its confirmation, never through undo or inherit, and the control ui_action path is an ordinary session", async () => {
-  const rig = await hub();
+  const rig = await hub({}, { git: true });
   const local = rig.file("config.local.json");
   const set = (key: string, value: unknown, confirm?: string) => rig.client.request({ t: "settings_set", key, value, ...(confirm ? { confirm } : {}) });
   // Stored never-ask, lowered, then undo: refused, and the file keeps ask.
@@ -613,12 +616,14 @@ test("review of #290: never-ask comes back only with its confirmation, never thr
   expect((await set("permission_modes.codex", null, "codex")).ok).toBe(true);
   // With no machine-local value left there is nothing to remove: no confirmation is asked for a write that changes nothing.
   expect((await set("permission_modes.codex", null)).text).toContain("already leaves it unset; nothing was written");
-  // This project is no repository, so config trust drops the field at load: the reply and the row say the value will not count.
-  const stored = await set("permission_modes.kimi", "ask-when-needed");
-  expect(stored.ok).toBe(true);
-  expect(stored.text).toContain("permission_modes.kimi: written, but the hub does not read it (permission_modes in .agenthub/config.local.json ignored: git could not confirm");
-  const row = (await rig.client.request({ t: "settings_get" })).rows.find((r: SettingRow) => r.key === "permission_modes.kimi");
-  expect(row.note).toContain("the hub does not read this value: permission_modes in .agenthub/config.local.json ignored");
+  // #439 refuses unknown machine-local provenance before writing, rather than saving an ignored declaration.
+  const untrusted = await hub();
+  const stored = await untrusted.client.request({ t: "settings_set", key: "permission_modes.kimi", value: "ask-when-needed" });
+  expect(stored.ok).toBe(false);
+  expect(stored.error).toContain("guarded source trust is unknown");
+  expect(text(untrusted.file("config.local.json"))).toBeNull();
+  const row = (await untrusted.client.request({ t: "settings_get" })).rows.find((r: SettingRow) => r.key === "permission_modes.kimi");
+  expect(row.value).toBeNull();
   // The control connection's ui_action (the unified dashboard's path) carries no settings session.
   const instanceId = (await rig.client.request({ t: "status" })).status.instanceId;
   const forwarded = (action: Record<string, unknown>) => rig.client.request({ t: "ui_action", instanceId, action });

@@ -148,7 +148,7 @@ test("AC6: a headless start mode is how a person asks for headless: auto-start a
   expect((await ordinary.act({ action: "setting", key: "peers.pi.start_mode", value: "headless" })).error).toContain("ahub ui --settings");
   expect(await settings.act({ action: "setting", key: "peers.pi.start_mode", value: "headless" })).toMatchObject({ ok: true });
   const row = (await settings.snapshot()).settings.rows.find((r: any) => r.key === "peers.pi.start_mode");
-  expect(row).toMatchObject({ value: "headless", source: "config.local.json", applies: "peer start", group: "Start" });
+  expect(row).toMatchObject({ value: "headless", source: "config.local.json", applies: "next use", group: "Start" });
   expect(row.pending).toBeUndefined();
   expect(await settings.act({ action: "start_peer", peer: "pi" })).toEqual({ ok: true, text: "pi started (headless)." });
   expect(rig.daemon.bus.stateOf("pi")).toBe("idle");

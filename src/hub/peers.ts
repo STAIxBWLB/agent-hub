@@ -44,18 +44,28 @@ export abstract class BasePeer implements PeerAdapter {
   onDelivery?: (receipt: DeliveryReceipt) => void;
   private _state: PeerState = "offline";
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private nextWatchdogMs: number | undefined;
 
   constructor(
     readonly id: PeerId,
-    protected readonly watchdogMs = DEFAULT_WATCHDOG_MS,
+    protected watchdogMs = DEFAULT_WATCHDOG_MS,
   ) {}
 
   get state(): PeerState {
     return this._state;
   }
 
+  /** Keep the active turn's inactivity bound; a changed setting belongs to the next busy turn. */
+  configureWatchdog(ms: number): void {
+    if (!Number.isFinite(ms) || ms <= 0 || ms > 2_147_483_647) throw new Error("invalid watchdog interval");
+    this.nextWatchdogMs = ms;
+  }
+
   protected setState(next: PeerState): void {
-    if (next === "busy") this.touch();
+    if (next === "busy") {
+      if (this._state !== "busy" && this.nextWatchdogMs !== undefined) this.watchdogMs = this.nextWatchdogMs;
+      this.touch();
+    }
     else this.clearWatchdog();
     if (next === this._state) return;
     this._state = next;

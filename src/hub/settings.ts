@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameS
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { CLASSES, type TaskClass } from "./board.ts";
-import { configTracked } from "./config-trust.ts";
+import { configTracked, configRepositoryPresent } from "./config-trust.ts";
 import { PERMISSION_MODES, permissionBoundary } from "./permission-mode.ts";
 import { START_MODE_PEERS, START_MODES } from "./start-mode.ts";
 import { OVERLAY_FILE, overlayToml, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "./routing.ts";
@@ -21,14 +21,15 @@ export interface SettingDef {
   key: string;
   group: "Permissions" | "Start" | "Routing" | "Switches" | "Roster" | "Roles";
   label: string;
-  type: "enum" | "boolean" | "peers" | "roles" | "integer";
+  type: "enum" | "boolean" | "peers" | "roles" | "integer" | "number";
   min?: number; max?: number;
   /** The closed values of an enum; a route setting takes the project's own route ids instead. */
   values?: readonly string[];
   /** `runtime` lives in the running hub only; the others are the machine-local file that holds the value. */
   store: "runtime" | "config" | "routing";
-  /** `peer start`: stored, and taken up by the running hub at that peer's next start. */
-  applies: "live" | "peer start" | "hub start";
+  /** `next use` keeps an active turn/session intact; `restart` retains the running value until a new daemon. */
+  applies: "live" | "next use" | "restart";
+  restartReason?: string;
   /** `raises`: only a settings session or a person's terminal may set it, except to `floor`. */
   risk: "safe" | "raises";
   floor?: string | boolean | number;
@@ -45,21 +46,23 @@ const perClass = (name: TaskClass): SettingDef[] => [
   { key: `routing.classes.${name}.pi_backend`, group: "Routing", label: `${name}: Pi backend`, type: "enum", values: ["dgx", "mlx"], store: "routing", applies: "live", risk: "raises", path: ["classes", name, "pi_backend"] },
 ];
 export const SETTINGS: readonly SettingDef[] = [
-  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "hub start", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
+  ...["enabled", "auto_reassign"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["task_sweep", key] })),
+  ...["interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "number", min: 1, max: 2_147_483_647 / (key === "interval_s" ? 1000 : 60_000), store: "config", applies: "live", risk: "raises", path: ["task_sweep", key] })),
+  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "live", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
   { key: "planner", group: "Roles", label: "Planner (the one peer that plans)", type: "enum", values: PLANNER_PEERS, store: "config", applies: "live", risk: "raises", path: ["planner"] },
-  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "peer start", risk: "safe", path: ["catalog_roles", peer] })),
+  ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "next use", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
   ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
-  ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at hub start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "hub start", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
-  ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "peer start", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),
-  { key: "pi.auto_start", group: "Start", label: "Start Pi with the hub", type: "boolean", store: "config", applies: "hub start", risk: "raises", floor: false, path: ["pi", "auto_start"] },
+  ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at next peer start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "next use", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
+  ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "next use", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),
+  { key: "pi.auto_start", group: "Start", label: "Start Pi with the hub", type: "boolean", store: "config", applies: "next use", risk: "raises", floor: false, path: ["pi", "auto_start"] },
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
   ...CLASSES.flatMap(perClass),
-  { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "hub start", risk: "safe", path: ["research", "enabled"] },
-  { key: "approvals.notify", group: "Switches", label: "Desktop notice for a waiting approval", type: "boolean", store: "config", applies: "hub start", risk: "safe", path: ["approvals", "notify"] },
-  { key: "snapshots.enabled", group: "Switches", label: "Per-turn snapshots", type: "boolean", store: "config", applies: "hub start", risk: "safe", path: ["snapshots", "enabled"] },
-  { key: "coordination", group: "Switches", label: "Coordination of overlapping owners", type: "enum", values: ["advisory", "turn-free"], store: "config", applies: "hub start", risk: "safe", path: ["coordination"] },
+  { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["research", "enabled"] },
+  { key: "approvals.notify", group: "Switches", label: "Desktop notice for a waiting approval", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["approvals", "notify"] },
+  { key: "snapshots.enabled", group: "Switches", label: "Per-turn snapshots", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["snapshots", "enabled"] },
+  { key: "coordination", group: "Switches", label: "Coordination of overlapping owners", type: "enum", values: ["advisory", "turn-free"], store: "config", applies: "next use", risk: "safe", path: ["coordination"] },
 ];
 
 /**
@@ -83,8 +86,8 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
     if (def.store === "runtime") throw new Error(`${def.key} has no stored value to remove`);
     return null;
   }
-  if (def.type === "integer") {
-    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)) throw new Error(`${def.key} takes an integer from ${def.min ?? 0} to ${def.max ?? Number.MAX_SAFE_INTEGER}`);
+  if (def.type === "integer" || def.type === "number") {
+    if (typeof raw !== "number" || !(def.type === "integer" ? Number.isSafeInteger(raw) : Number.isFinite(raw)) || raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)) throw new Error(`${def.key} takes ${def.type === "integer" ? "an integer" : "a number"} from ${def.min ?? 0} to ${def.max ?? Number.MAX_SAFE_INTEGER}`);
     return raw;
   }
   if (def.type === "boolean") {
@@ -108,6 +111,7 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
 /** A terminal's text for a value: `inherit` removes the machine-local value, a peers setting takes a comma list. */
 export function parseSettingText(def: SettingDef, text: string): unknown {
   if (text === "inherit") return null;
+  if (def.type === "number") return text.trim() && Number.isFinite(Number(text)) ? Number(text) : text;
   if (def.type === "integer") return /^(0|[1-9]\d*)$/.test(text) ? Number(text) : text;
   if (def.type === "boolean") return text === "true" ? true : text === "false" ? false : text;
   if (def.type === "peers" || def.type === "roles") return text.split(",").map((p) => p.trim()).filter(Boolean);
@@ -163,14 +167,7 @@ function refuseTracked(cwd: string, file: StoredFile): void {
   const tracked = configTracked(cwd, file);
   if (tracked) throw new Error(`.agenthub/${file} is committed to git; settings write only machine-local files. Remove it from the repository (git rm --cached) and ignore it`);
   // Unknown is not untracked where there is a repository to ask; only a project outside git has nothing tracked.
-  if (tracked === undefined && insideRepository(cwd)) throw new Error(`git could not confirm that .agenthub/${file} is untracked; nothing was written`);
-}
-/** Whether this directory or one above it holds a `.git`: a repository git should have been able to answer for. */
-function insideRepository(dir: string): boolean {
-  for (let at = dir; ; at = dirname(at)) {
-    if (existsSync(join(at, ".git"))) return true;
-    if (dirname(at) === at) return false;
-  }
+  if (tracked === undefined && configRepositoryPresent(cwd)) throw new Error(`git could not confirm that .agenthub/${file} is untracked; nothing was written`);
 }
 /** Keeps the one previous version, then replaces (or removes) the file. */
 function store(cwd: string, stateDir: string, file: StoredFile, key: string, previous: string | null, next: string | null): void {
@@ -263,7 +260,7 @@ function checkConfigText(cwd: string, text: string | null, validate: (scratch: s
  * Sets (or with null removes) one key of `.agenthub/routing.local.toml`; the real parser reads the result first, and
  * `check` may refuse the policy it yields. Undefined when the overlay already holds that value: nothing is written.
  */
-export function writeRoutingSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue, check?: (routing: Routing) => void): Routing | undefined {
+export function writeRoutingSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue, check?: (routing: Routing, overlay?: RoutingOverlay) => void): Routing | undefined {
   const file = join(cwd, ".agenthub", OVERLAY_FILE);
   const before = readText(file);
   const current = before === null ? {} : parseOverlay(before);
@@ -271,7 +268,7 @@ export function writeRoutingSetting(cwd: string, stateDir: string, def: SettingD
   if (value === null ? held === undefined : same(held, value)) return undefined;
   const overlay = routingCandidate(current, def, value);
   const routing = parseRouting(routingText(cwd), overlay);
-  check?.(routing);
+  check?.(routing, overlay);
   const empty = !overlay.stay_switch && !Object.keys(overlay.classes ?? {}).length;
   store(cwd, stateDir, OVERLAY_FILE, def.key, before, empty ? null : overlayToml(overlay));
   return routing;
@@ -302,7 +299,7 @@ export function readOverlay(cwd: string): RoutingOverlay {
  * Puts back the one previous version of the file the last settings write changed. Refused when the file changed since
  * that write (a hand edit would be lost), when the loaders no longer accept that version, or when there is nothing to undo.
  */
-export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown, checkRouting?: (routing: Routing) => void): { key: string; file: StoredFile } {
+export function undoSetting(cwd: string, stateDir: string, validate: (scratch: string) => unknown, checkRouting?: (routing: Routing, overlay?: RoutingOverlay) => void): { key: string; file: StoredFile } {
   const raw = readText(undoFile(stateDir));
   if (raw === null) throw new Error("nothing to undo");
   let record: UndoRecord;
@@ -314,8 +311,9 @@ export function undoSetting(cwd: string, stateDir: string, validate: (scratch: s
   refuseTracked(cwd, record.file);
   if (record.file === OVERLAY_FILE) {
     // The parser always reads what is put back; the caller's check is on top of it.
-    const restored = parseRouting(routingText(cwd), record.previous === null ? undefined : parseOverlay(record.previous));
-    checkRouting?.(restored);
+    const overlay = record.previous === null ? undefined : parseOverlay(record.previous);
+    const restored = parseRouting(routingText(cwd), overlay);
+    checkRouting?.(restored, overlay);
   }
   else checkConfigText(cwd, record.previous, validate);
   replaceFile(path, record.file, record.previous);
@@ -335,7 +333,10 @@ export function restoredValue(cwd: string, stateDir: string, def: SettingDef, in
   const parse = (text: string | null): unknown => { try { return text === null ? {} : JSON.parse(text); } catch { return {}; } };
   let local: unknown = {};
   if (!inherit) {
-    try { const record = JSON.parse(readFileSync(undoFile(stateDir), "utf8")) as UndoRecord; if (record.file !== CONFIG_LOCAL) return undefined; local = parse(record.previous); } catch { return undefined; }
+    try { const record = JSON.parse(readFileSync(undoFile(stateDir), "utf8")) as UndoRecord;
+      if (record.file === OVERLAY_FILE && def.store === "routing") return valueAt(parseRouting(routingText(cwd), record.previous === null ? undefined : parseOverlay(record.previous)), def.path);
+      if (record.file !== CONFIG_LOCAL) return undefined; local = parse(record.previous);
+    } catch { return undefined; }
   }
   return valueAt(local, def.path) ?? valueAt(parse(readText(join(cwd, ".agenthub", "config.json"))), def.path);
 }
@@ -355,9 +356,12 @@ export interface SettingRow {
   key: string; group: SettingDef["group"]; label: string; type: SettingDef["type"]; values?: readonly string[]; min?: number; max?: number;
   /** The file a write goes to, or "this hub run". */
   file: string;
-  applies: SettingDef["applies"]; risk: SettingDef["risk"]; floor?: string | boolean | number;
+  applies: SettingDef["applies"] | "peer start" | "hub start"; risk: SettingDef["risk"]; floor?: string | boolean | number;
   /** What is in force now; null when nothing sets it. */
   value: SettingValue;
+  /** Optional for replies from pre-#439 daemons; current projections always supply it. */
+  fileValue?: SettingValue;
+  restartReason?: string;
   /** Which file the value in force comes from. */
   source: string;
   /** The stored value the next hub start reads, when it differs from the one in force. */
@@ -390,23 +394,23 @@ export function settingRows(input: {
   const routes = [...Object.keys(input.routing.routes), ...Object.keys(input.routing.hub_routes ?? {})];
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
   return SETTINGS.map((def): SettingRow => {
-    const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(def.type === "integer" ? { min: def.min, max: def.max } : {}), applies: def.applies, risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
+    const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
       ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!) } : {}) };
     if (def.store === "runtime") {
       const mode = input.mode(def.path[0]!);
-      return { ...base, values: def.values!, file: "this hub run", value: mode.value ?? null, source: "this hub run", ...(mode.note ? { note: mode.note } : {}) };
+      return { ...base, values: def.values!, file: "this hub run", value: mode.value ?? null, fileValue: mode.value ?? null, source: "this hub run", ...(mode.note ? { note: mode.note } : {}) };
     }
     if (def.store === "routing") {
       const value = scalar(def.path[0] === "stay_switch" ? input.routing.stay_switch : (input.routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
-      return { ...base, ...(def.type === "enum" ? { values: def.values ?? routes } : {}), file: OVERLAY_FILE, value, source: input.routing.sources?.[def.key.slice("routing.".length)] ?? (value === null ? "default" : projectRouting ? "routing.toml" : "default"),
+      return { ...base, ...(def.type === "enum" ? { values: def.values ?? routes } : {}), file: OVERLAY_FILE, value, fileValue: value, source: input.routing.sources?.[def.key.slice("routing.".length)] ?? (value === null ? "default" : projectRouting ? "routing.toml" : "default"),
         ...(input.routingProblem ? { note: `the routing files do not load, so the last policy that did stays in force: ${input.routingProblem}` } : {}) };
     }
-    if (def.type === "roles" && input.roles) return { ...base, ...input.roles(def.path[1]!), file: CONFIG_LOCAL, source: valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "profile/default", hint: "Guidance only; grants no tool or permission. At most two roles, applied at the next peer start." };
+    if (def.type === "roles" && input.roles) { const roles = input.roles(def.path[1]!); return { ...base, ...roles, fileValue: roles.pending !== undefined ? roles.pending : roles.value, file: CONFIG_LOCAL, source: valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "profile/default", hint: "Guidance only; grants no tool or permission. At most two roles, applied at the next peer start." }; }
     const value = scalar(input.running(def.path));
     const stored = input.next ? scalar(input.next(def.path)) : value;
     const source = valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "default";
     const dropped = ignoredLine(input.ignored, def);
-    return { ...base, ...(def.values ? { values: def.values } : {}), file: CONFIG_LOCAL, value, source, ...(same(value, stored) ? {} : { pending: stored }),
+    return { ...base, ...(def.values ? { values: def.values } : {}), file: CONFIG_LOCAL, value, fileValue: stored, source, ...(same(value, stored) ? {} : { pending: stored }),
       ...(!input.next ? { note: "the config files do not load; fix them in your editor" } : dropped ? { note: `the hub does not read this value: ${dropped}` } : {}) };
   });
 }

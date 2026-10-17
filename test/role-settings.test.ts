@@ -38,7 +38,7 @@ async function fixture(managedKimi = false, initialKimiRoles?: string[]) {
 test("catalog settings validate two compatible ids and preserve shared config through write and undo (#295)", async () => {
   const f = await fixture(), key = "catalog_roles.codex", def = settingDef(key); expect(typeof def).toBe("object");
   if (typeof def === "string") throw new Error(def);
-  expect(def).toMatchObject({ group: "Roles", type: "roles", store: "config", applies: "peer start", risk: "safe" });
+  expect(def).toMatchObject({ group: "Roles", type: "roles", store: "config", applies: "next use", risk: "safe" });
   for (const bad of ["backend-engineer", ["code-reviewer"], ["missing"], ["backend-engineer", "backend-engineer"], ["backend-engineer", "test-engineer", "frontend-engineer"]]) {
     expect((await f.client.request({ t: "settings_set", key, value: bad })).ok).toBe(false);
   }

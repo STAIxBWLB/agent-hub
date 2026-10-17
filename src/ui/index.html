@@ -319,16 +319,19 @@ async function previewSetting(row, value, out, control) {
 function settingRow(row, raise) {
   const node = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), id = 'setting-' + row.key.replaceAll('.', '-');
   const title = el('label', row.label, 'label'); title.htmlFor = id;
+  const fileValue = row.fileValue !== undefined ? row.fileValue : row.pending !== undefined ? row.pending : row.value;
   head.append(title, badge(settingText(row.value), row.group === 'Permissions' && row.value !== null && row.value !== 'ask' ? 'warn' : ''));
-  node.append(head, el('p', row.key + ' / from ' + row.source + ' / ' + (row.applies === 'live' ? 'applies at once' : row.applies === 'peer start' ? "applies at the peer's next start" : 'read at hub start') + ' / written to ' + row.file, 'meta'));
-  if (row.pending !== undefined) node.append(el('p', 'Pending restart: ' + settingText(row.pending) + ' at the next ' + (row.applies === 'peer start' ? 'peer' : 'hub') + ' start.', 'meta'));
+  node.append(head, el('p', row.key + ' / from ' + row.source + ' / ' + (row.applies === 'live' ? 'applies at once' : row.applies === 'next use' ? 'applies at next use' : row.applies === 'restart' ? 'applies after restart' : row.applies === 'peer start' ? "applies at the peer's next start" : 'read at hub start') + ' / written to ' + row.file, 'meta'));
+  node.append(el('p', 'Running: ' + settingText(row.value) + ' / File: ' + settingText(fileValue), 'meta'));
+  if (['live', 'next use', 'restart'].includes(row.applies)) node.append(el('p', 'Apply: ' + row.applies + (row.restartReason ? ' / ' + row.restartReason : ''), 'meta'));
+  if (row.pending !== undefined) node.append(el('p', ['hub start', 'peer start'].includes(row.applies) ? 'Pending restart: ' + settingText(row.pending) + ' at the next ' + (row.applies === 'peer start' ? 'peer' : 'hub') + ' start.' : 'Pending ' + row.applies + ': ' + settingText(row.pending), 'meta'));
   if (row.hint) node.append(el('p', 'Bounds: ' + row.hint, 'meta'));
   if (row.note) node.append(el('p', row.note, 'meta'));
   if (row.risk === 'raises' && !raise) node.append(el('p', 'Raising this needs a settings session: run ahub ui --settings.' + (row.floor === undefined ? '' : ' Setting it to ' + row.floor + ' works here.'), 'meta'));
   const actions = el('div', undefined, 'actions'), stored = row.file !== 'this hub run';
   let read, confirm, force;
   if (row.type === 'roles') {
-    const current = Array.isArray(row.pending) ? row.pending : Array.isArray(row.value) ? row.value : [];
+    const current = Array.isArray(fileValue) ? fileValue : [];
     const choices = [0, 1].map(index => {
       const select = el('select'); select.id = index ? id + '-second' : id;
       if (index) select.setAttribute('aria-label', row.label + ': second optional role');
@@ -338,15 +341,15 @@ function settingRow(row, raise) {
       select.value = current[index] || ''; actions.append(select); return select;
     });
     read = () => choices.map(select => select.value).filter(Boolean);
-  } else if (row.type === 'integer') {
-    const input=el('input');input.type='number';input.id=id;input.step='1';input.min=String(row.min ?? 0);input.max=String(row.max ?? Number.MAX_SAFE_INTEGER);const current=row.pending!==undefined ? row.pending : row.value;input.value=current===null ? '' : String(current);input.placeholder='Empty inherits';
+  } else if (row.type === 'integer' || row.type === 'number') {
+    const input=el('input');input.type='number';input.id=id;input.step=row.type === 'number' ? 'any' : '1';input.min=String(row.min ?? 0);input.max=String(row.max ?? Number.MAX_SAFE_INTEGER);const current=fileValue;input.value=current===null ? '' : String(current);input.placeholder='Empty inherits';
     read=()=>input.value==='' ? null : Number(input.value);actions.append(input);
   } else if (row.type === 'peers') {
-    const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(row.value) ? row.value.join(', ') : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
+    const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(fileValue) ? fileValue.join(', ') : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
     read = () => { const list = input.value.split(',').map((value) => value.trim()).filter(Boolean); return list.length ? list : null; };
     actions.append(input);
   } else {
-    const select = el('select'), values = row.type === 'boolean' ? ['true', 'false'] : (row.values || []), current = row.value === null ? '' : String(row.value); select.id = id;
+    const select = el('select'), values = row.type === 'boolean' ? ['true', 'false'] : (row.values || []), current = fileValue === null ? '' : String(fileValue); select.id = id;
     if (current && !values.includes(current)) { const option = el('option', current + ' (now)'); option.value = current; option.disabled = true; select.append(option); }
     for (const value of values) { const option = el('option', value); option.value = value; select.append(option); }
     if (stored) { const option = el('option', 'inherit (remove the machine-local value)'); option.value = INHERIT; select.append(option); }
@@ -391,6 +394,7 @@ function renderSettings(settings, roster = []) {
   // are rebuilt only when their own data changed, so a value being typed in one row survives a save of another.
   update('settings', settings.rows.map((row) => row.key), (target) => {
     settingSlots.clear();
+    const reload = el('div'); settingSlots.set('$reload', { node: reload, signature: null }); target.append(reload);
     const undo = el('div'); settingSlots.set('', { node: undo, signature: null }); target.append(undo);
     for (const group of SETTING_GROUPS) {
       const rows = settings.rows.filter((row) => row.group === group);
@@ -402,6 +406,18 @@ function renderSettings(settings, roster = []) {
       target.append(box);
     }
   });
+  const reloadSlot = settingSlots.get('$reload'), reloadSupported = Array.isArray(settings.pendingRestart);
+  const reloadSignature = JSON.stringify([settings.pendingRestart, managerMode && !snapshotValid]);
+  if (reloadSlot && reloadSlot.signature !== reloadSignature) {
+    reloadSlot.signature = reloadSignature; reloadSlot.node.replaceChildren();
+    if (reloadSupported) {
+      reloadSlot.node.append(button('Reload configuration', {action:'setting_reload'}));
+      if (settings.pendingRestart.length) {
+        reloadSlot.node.append(el('p', 'Pending restart', 'label'));
+        for (const pending of settings.pendingRestart) reloadSlot.node.append(el('p', pending.key + ': ' + pending.reason, 'meta'));
+      }
+    }
+  }
   const undoSlot = settingSlots.get(''), undoKey = settings.undo || '';
   if (undoSlot && undoSlot.signature !== undoKey) {
     undoSlot.signature = undoKey; undoSlot.node.replaceChildren();

@@ -1331,11 +1331,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { hub.close(); }
   },
   settings: async () => {
-    const usage = "usage: ahub settings [list] [--json] | get <key> [--json] | set <key> <value|inherit> [--yes] [--preview] | undo";
+    const usage = "usage: ahub settings [list] [--json] | get <key> [--json] | set <key> <value|inherit> [--yes] [--preview] | undo | reload";
     const flags = args.filter((arg) => arg.startsWith("--")), [sub = "list", key, text, ...extra] = args.filter((arg) => !arg.startsWith("--"));
-    const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview", "--now"], undo: [] };
+    const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview", "--now"], undo: [], reload: [] };
     if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);
-    if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo") && key !== undefined)) fail(usage);
+    if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo" || sub === "reload") && key !== undefined)) fail(usage);
     const def = key === undefined ? undefined : settingDef(key);
     if (typeof def === "string") fail(`${key}: ${def}`);
     if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
@@ -1355,6 +1355,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         }
         return reply;
       };
+      if (sub === "reload") return console.log(paint([{ text: (await request({ t: "settings_reload" })).text }], false));
       if (sub === "undo") {
         const view = await request({ t: "settings_get" }), undoDef = settingDef(view.undo);
         const rosterPeer = typeof undoDef !== "string" && undoDef.group === "Roster" ? undoDef.path[1] : undefined;
@@ -1382,15 +1383,16 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       const view = await request({ t: "settings_get" });
       const rows = (view.rows as SettingRow[]).filter((row) => sub === "list" || row.key === key);
-      if (flags.includes("--json")) return console.log(JSON.stringify(sub === "get" ? rows[0] : { rows, ...(view.undo ? { undo: view.undo } : {}) }, null, 2));
+      if (flags.includes("--json")) return console.log(JSON.stringify(sub === "get" ? rows[0] : { rows, pendingRestart: view.pendingRestart ?? [], ...(view.undo ? { undo: view.undo } : {}) }, null, 2));
       const width = Math.max(...rows.map((row) => row.key.length)), valueWidth = Math.max(...rows.map((row) => settingText(row.value).length));
       let group = "";
       for (const row of rows) {
         if (sub === "list" && row.group !== group) console.log(`${group ? "\n" : ""}${group = row.group}`);
-        const facts = [`from ${row.source}`, row.applies === "live" ? "applies at once" : row.applies === "peer start" ? "applies at the peer's next start" : "read at hub start", ...(row.pending !== undefined ? [`${settingText(row.pending)} at the next ${row.applies === "peer start" ? "peer" : "hub"} start`] : []), ...(row.note ? [row.note] : [])];
+        const facts = [`from ${row.source}`, `file: ${settingText(row.fileValue === undefined ? row.pending ?? row.value : row.fileValue)}`, row.applies === "live" ? "applies at once" : row.applies === "next use" ? "applies at next use" : "pending restart", ...(row.restartReason ? [row.restartReason] : []), ...(row.note ? [row.note] : [])];
         console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join("; ")}`);
-        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
+        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "integer" || row.type === "number" ? `a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
       }
+      if (sub === "list" && view.pendingRestart?.length) console.log(`\npending restart: ${view.pendingRestart.map((entry: { key: string }) => entry.key).join(", ")}`);
       if (sub === "list" && view.undo) console.log(`\nahub settings undo puts back the last write (${view.undo})`);
     } finally { hub.close(); }
   },
