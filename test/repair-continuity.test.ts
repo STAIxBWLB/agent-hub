@@ -116,7 +116,7 @@ test("#166 arming a detachment repair durably pins the accepted conversation bef
     delete f.progress.reattachments; f.control.orphaned = true;
     await expect(f.verify()).rejects.toThrow("detached after restore");
     expect((f.progress as any).repairedSessions).toEqual({ claude: true });
-    expect(f.progress.reattachments?.claude).toMatchObject({ state: "ready", binding: { sessionId: "recorded-claude" } });
+    expect((f.progress as ProjectProgress).reattachments?.claude).toMatchObject({ state: "ready", binding: { sessionId: "recorded-claude" } });
     expect(f.creates()).toBe(0);
   } finally { f.cleanup(); }
 });

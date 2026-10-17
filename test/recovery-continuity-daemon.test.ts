@@ -238,7 +238,7 @@ test("#166 coordinator retirement is observed before later authenticated Pi sess
   expect(started.ok).toBe(true);
   await until(() => daemon.bus.peers.get("pi")?.state === "idle", "recorded Pi authenticated after coordinator retirement");
   const file = join(f.stateDir, "sessions.json"), inode = statSync(file).ino;
-  daemon.bus.pause("pi", "fixture pause"); daemon.bus.resume("pi");
+  daemon.bus.pause("pi"); daemon.bus.resume("pi");
   expect(statSync(file).ino).toBe(inode);
   expect(readSessions(f.stateDir)?.peers.find(row => row.peer === "pi")?.meta.sessionId).toBe(f.bookmark.pi.sessionId);
   expect((f.log().match(/bookmark changed before attachment settlement/g) ?? []).length).toBeLessThanOrEqual(1);
