@@ -72,8 +72,8 @@ test("a PII owner withdrawal notice uses the public title and a private delivery
   const shown = JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
   expect(shown.owner).toBe("local");
   expect((await console_.request({ t: "task", op: "task_unassign", args: { id: 1, revision: shown.flowRevision } })).ok).toBe(true);
-  await until(() => local.got.some(env => env.kind === "status" && env.body.includes("no longer assigned")), "PII withdrawal notice");
-  const notice = local.got.find(env => env.kind === "status" && env.body.includes("no longer assigned"));
+  await until(() => local.got.some(env => env.kind === "task" && env.body.includes("no longer assigned")), "PII withdrawal notice");
+  const notice = local.got.find(env => env.kind === "task" && env.body.includes("no longer assigned"));
   expect(notice).toMatchObject({ private: true });
   expect(notice.body).toContain("[pii]");
   expect(notice.body).not.toContain("900101");
