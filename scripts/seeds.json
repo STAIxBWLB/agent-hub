@@ -1748,7 +1748,7 @@
     {
       "id": "release-approval-floor",
       "file": "src/hub/tasks.ts",
-      "search": "input.state === \"shipped\" && this.d.board.list().some(task => task.release === release.id && task.state !== \"approved\")",
+      "search": "input.state === \"shipped\" && this.d.board.list().some(task => task.release === release.id && !isClosedTaskState(task.state))",
       "replacement": "false",
       "testFile": "test/planning.test.ts",
       "testName": "planner cannot override pins person order or frozen scope and undo respects later edits (#263)"
@@ -2340,8 +2340,8 @@
     {
       "id": "attention-board-structural-query",
       "file": "src/hub/board.ts",
-      "search": "SELECT id, state, owner, reviewer FROM tasks WHERE state != 'approved' ORDER BY id",
-      "replacement": "SELECT * FROM tasks WHERE state != 'approved' ORDER BY id",
+      "search": "SELECT id, state, owner, reviewer FROM tasks WHERE state NOT IN ('approved','cancelled') ORDER BY id",
+      "replacement": "SELECT * FROM tasks WHERE state NOT IN ('approved','cancelled') ORDER BY id",
       "testFile": "test/attention-followup.test.ts",
       "testName": "status task facts read only structural columns without decoding stored payloads"
     },
@@ -2716,8 +2716,8 @@
     {
       "id": "split-proposed-parent-p0",
       "file": "src/hub/tasks.ts",
-      "search": "this.d.board.list().filter(goal => goal.state !== \"approved\" && (goal.priority",
-      "replacement": "this.d.board.list(\"backlog\").filter(goal => goal.state !== \"approved\" && (goal.priority",
+      "search": "this.d.board.list().filter(goal => !isClosedTaskState(goal.state) && (goal.priority",
+      "replacement": "this.d.board.list(\"backlog\").filter(goal => !isClosedTaskState(goal.state) && (goal.priority",
       "testFile": "test/planner-split.test.ts",
       "testName": "split prerequisites retain P0 ordering after their blocked parent moves to To Do"
     },
@@ -3180,7 +3180,7 @@
     {
       "id": "sdlc-done-fence-after-readback",
       "file": "src/hub/tasks.ts",
-      "search": "if (task.state === \"in_review\" || task.state === \"approved\") throw new Error(`task #${task.id} is already ${task.state}`);",
+      "search": "if (task.state === \"in_review\" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);",
       "replacement": "void 0;",
       "testFile": "test/sdlc.test.ts",
       "testName": "advise: overlapping dones record one done after a single readback and one advice notice (#382)"

@@ -1,4 +1,4 @@
-import type { HistoryEntry, Task, TaskMoveReason } from "./board.ts";
+import { isClosedTaskState, type HistoryEntry, type Task, type TaskMoveReason, type TaskStall } from "./board.ts";
 import { sanitize, type Kind, type Priority } from "./envelope.ts";
 
 export type SupervisionScope = "own" | "all" | "off";
@@ -11,7 +11,7 @@ export interface SupervisionFields {
   check?: "passed" | "failed" | "unknown";
   verdict?: "approved" | "changes_requested";
   reason?: SupervisionReason;
-  sweep?: "unaccepted-assignment" | "idle-owner" | "review-pending";
+  sweep?: "unaccepted-assignment" | "idle-owner" | "review-pending" | "ready-unassigned";
 }
 export interface SupervisionNotice {
   peer: string;
@@ -102,13 +102,25 @@ export class SupervisionFeed {
     this.checkRound();
   }
 
+  /** Tasks owns durable cause/replan deduplication; the feed keeps its configured recipient and scope. */
+  taskStalled(stall: TaskStall): boolean {
+    const task = this.d.tasks().find(task => task.id === stall.task);
+    if (!task || isClosedTaskState(task.state) || !this.includes(task)) return false;
+    const cause = stall.cause;
+    const bits = [`#${stall.task}: stalled`, `cause ${cause.kind}`, `reason ${cause.code}`];
+    if (cause.peer) bits.push(`peer ${cause.peer}`);
+    if (cause.dependency !== undefined) bits.push(`dependency #${cause.dependency}`);
+    if (cause.refusals?.length) bits.push(`refusals ${cause.refusals.map(refusal => `${refusal.peer}:${refusal.code}`).join(", ")}`);
+    return this.send(`task:${stall.task}:stall`, bits.join("; "), "status", stall.task);
+  }
+
   peerOffline(peer: string): boolean {
-    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && t.state !== "approved" && (t.owner === peer || t.reviewer === peer))) return false;
+    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer))) return false;
     return this.send(`peer:${peer}:offline`, `${peer}: offline`);
   }
 
   budgetPaused(peer: string, resetsAt?: number): boolean {
-    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && t.state !== "approved" && (t.owner === peer || t.reviewer === peer))) return false;
+    if (this.d.scope() !== "all" && !this.d.tasks().some((t) => this.includes(t) && !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer))) return false;
     const resetDate = new Date(resetsAt ?? NaN);
     const reset = Number.isFinite(resetDate.getTime()) ? resetDate.toISOString() : "unknown";
     return this.send(`peer:${peer}:budget`, `${peer}: budget paused; reset ${reset}`, "status", undefined, "budget");
@@ -137,13 +149,16 @@ export class SupervisionFeed {
     const peer = this.recipient();
     if (!peer) return false;
     const tasks = this.d.tasks().filter((t) => this.includes(t));
-    if (!tasks.length || tasks.some((t) => t.state !== "approved")) return false;
+    if (!tasks.length || tasks.some((t) => !isClosedTaskState(t.state))) return false;
     const signature = tasks.map((t) => t.id).sort((a, b) => a - b).join(",");
     const previous = this.d.readRound?.(peer) ?? this.rounds.get(peer);
     const completed = new Set(previous?.split(",") ?? []);
     const newlyJoined = tasks.filter((t) => !completed.has(String(t.id)));
     if (!newlyJoined.length) return false;
-    const sent = this.send("round", `Supervision round complete: ${newlyJoined.length} task${newlyJoined.length === 1 ? "" : "s"} approved; report the results and open decisions to the person.`);
+    const count = `${newlyJoined.length} task${newlyJoined.length === 1 ? "" : "s"}`;
+    const cancelled = newlyJoined.filter(t => t.state === "cancelled").length;
+    const outcome = cancelled ? `${count} closed (${newlyJoined.length - cancelled} approved, ${cancelled} cancelled)` : `${count} approved`;
+    const sent = this.send("round", `Supervision round complete: ${outcome}; report the results and open decisions to the person.`);
     if (sent) {
       this.rounds.set(peer, signature);
       this.d.writeRound?.(peer, signature);

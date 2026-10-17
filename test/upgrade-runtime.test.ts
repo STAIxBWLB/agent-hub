@@ -23,7 +23,7 @@ test("delegated staging refuses an older target before protocol probes or runtim
   writeFileSync(join(root, "src/cli/main.js"), "throw new Error('old target must not execute');");
   writeFileSync(join(root, "src/cli/identity.ts"), "export const oldIdentity = true;");
   const calls: string[][] = [];
-  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: String(PROTOCOL), stderr: "" }; };
+  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }; };
   const op = { sourceRoot: root, plan: { kind: "restart", version: "0.0.0", sourceDigest: packageDigest(root), projects: [] } } as unknown as RecoveryOperation;
   try {
     const delegated = makeRecoveryDriver(run, "codex");
@@ -35,11 +35,11 @@ test("delegated staging refuses an older target before protocol probes or runtim
     writeFileSync(join(root, "src/cli/identity.ts"), "export const LIVE_TEST_SUPPORTED = true;");
     op.plan.sourceDigest = packageDigest(root); delete op.targetDigest;
     expect(await delegated.stage(op)).toMatchObject({ root });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     op.plan.projects = [{ source: { peers: [{ id: "local", state: "idle" }] } }] as PlannedProject[];
     op.targetRoot = root; op.targetDigest = packageDigest(root);
     expect(await delegated.stage(op)).toMatchObject({ root });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(3);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -424,12 +424,12 @@ test("production recovery verification tolerates a fresh zero-turn Claude sessio
 });
 
 // #215: a fake hub that answers status and every recovery request with the given view.
-function fakeHub(root: string, stateDir: string, instanceId: string, view: () => Record<string, unknown>) {
+function fakeHub(root: string, stateDir: string, instanceId: string, view: () => Record<string, unknown>, observe?: (message: Record<string, unknown>) => void) {
   const server = Bun.serve<any>({
     hostname: "127.0.0.1", port: 0,
     fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
     websocket: { message(ws, data) {
-      const msg = JSON.parse(String(data));
+      const msg = JSON.parse(String(data)); observe?.(msg);
       if (msg.t === "hello") ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-215", instanceId, cwd: root, protocol: PROTOCOL }));
       else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-215", instanceId, cwd: root, version: VERSION, protocol: PROTOCOL } }));
       else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: view() }));
@@ -1874,5 +1874,82 @@ test("#143 an exact gone first read is not erased by an unrelated ended row on t
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
     expect(f.elapsed()).toBe(1000); expect(f.creates()).toBe(0); expect(f.progress.terminals["restored:codex"]).toEqual({ state: "failed" });
     expect(nextActions(f.op).some(line => line.includes("--fresh-session codex"))).toBe(true);
+  } finally { f.cleanup(); }
+});
+function featureStageFixture(controlSource: string) {
+  const root = mkdtempSync(join(tmpdir(), "ahub-target-features-"));
+  for (const dir of ["src/cli", "src/hub", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(root, dir), { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: "0.0.0" }));
+  writeFileSync(join(root, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: "0.0.0" }));
+  writeFileSync(join(root, "src/cli/main.js"), ""); writeFileSync(join(root, "src/hub/control-client.ts"), controlSource);
+  const project = { id: "feature", root, stateDir: join(root, "state"), instanceId: "source", pid: null, basePort: 4600 };
+  const op = { sourceRoot: root, projects: [{ id: project.id, phase: "pending", terminals: {} }],
+    plan: { kind: "restart", version: "0.0.0", sourceDigest: packageDigest(root), projects: [{ project, source: { state: "running", peers: [], blockers: [] }, terminals: [], blockers: [] }] } } as unknown as RecoveryOperation;
+  return { root, op, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+for (const supported of [false, true]) test(`#438 direct restart probes verified target features with ${supported ? "task_cancel" : "a legacy missing export"}`, async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; ${supported ? 'export const DAEMON_FEATURES = ["task_cancel"];' : ""}`);
+  try {
+    expect(await makeRecoveryDriver().stage(f.op)).toMatchObject({ root: f.root, targetFeatures: supported ? ["task_cancel"] : [] });
+  } finally { f.cleanup(); }
+});
+test("#438 cached staged targets still probe features and malformed capability metadata fails closed", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL}; export const DAEMON_FEATURES = ["task_cancel"];`);
+  let probes = 0;
+  const driver = makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: ["task_cancel"] }), stderr: "" }; });
+  try {
+    f.op.targetRoot = f.root; f.op.targetDigest = packageDigest(f.root);
+    expect(await driver.stage(f.op)).toMatchObject({ targetFeatures: ["task_cancel"] }); expect(probes).toBe(1);
+    const malformed = makeRecoveryDriver(async () => ({ code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [123] }), stderr: "" }));
+    await expect(malformed.stage(f.op)).rejects.toThrow("staged target features");
+  } finally { f.cleanup(); }
+});
+test("#438 production recovery driver transmits verified features on readonly inspect, prepare and commit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-feature-rpc-")), stateDir = join(root, "state"); mkdirSync(stateDir);
+  const messages: Record<string, unknown>[] = [];
+  const server = fakeHub(root, stateDir, "i-feature", () => ({ operationId: "op-feature", phase: "prepared", ready: true, peers: {} }), message => messages.push(message));
+  const project = { id: "p-215", root, stateDir, instanceId: "i-feature", pid: null, basePort: 4600 };
+  try {
+    const driver = makeRecoveryDriver();
+    await driver.inspect(project, ["task_cancel"]);
+    await driver.prepare(project, "op-feature", "i-feature", ["task_cancel"]);
+    await driver.commit(project, "op-feature", "i-feature", ["task_cancel"]);
+    const recovery = messages.filter(message => message.t === "recovery");
+    expect(recovery.map(message => message.op)).toEqual(["inspect", "prepare", "commit"]);
+    expect(recovery.every(message => JSON.stringify(message.targetFeatures) === '["task_cancel"]')).toBe(true);
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+});
+for (const features of [[], ["task_cancel"]]) test(`#117 P3-5 cached verified ${features.length ? "task_cancel" : "empty"} features avoid target probing before commit`, async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root), targetFeatures: features });
+  const driver = makeRecoveryDriver(async () => { probes++; throw new Error("transient target probe must not run"); });
+  try {
+    expect(await driver.stage(f.op)).toMatchObject({ root: f.root, digest: f.op.targetDigest, targetFeatures: features });
+    expect(probes).toBe(0);
+  } finally { f.cleanup(); }
+});
+test("#117 P3-5 a fully committed legacy cached receipt needs no target feature probe", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root) });
+  f.op.projects[0]!.phase = "peers-restored"; f.op.projects[0]!.commitSent = true;
+  try {
+    const target = await makeRecoveryDriver(async () => { probes++; throw new Error("no feature probe after commit"); }).stage(f.op);
+    expect(target).toMatchObject({ root: f.root, digest: f.op.targetDigest }); expect(target.targetFeatures).toBeUndefined(); expect(probes).toBe(0);
+  } finally { f.cleanup(); }
+});
+test("#117 P3-5 legacy prepared commitSent still requires feature evidence before a possible commit", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root) });
+  f.op.projects[0]!.phase = "prepared"; f.op.projects[0]!.commitSent = true;
+  try {
+    await expect(makeRecoveryDriver(async () => { probes++; return { code: 1, stdout: "", stderr: "" }; }).stage(f.op)).rejects.toThrow("control protocol could not be read"); expect(probes).toBe(1);
+  } finally { f.cleanup(); }
+});
+test("#117 P3-5 cached feature evidence cannot authorize changed target bytes", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: "different-digest", targetFeatures: ["task_cancel"] });
+  try {
+    const target = await makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }; }).stage(f.op);
+    expect(target.targetFeatures).toEqual([]); expect(probes).toBe(1);
   } finally { f.cleanup(); }
 });

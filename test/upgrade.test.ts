@@ -291,7 +291,7 @@ test("protocol-9 source recovery stages only the current protocol target", async
   f.operation.plan.version = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
   f.operation.plan.sourceDigest = packageDigest(PACKAGE_ROOT);
   const driver = makeRecoveryDriver(async (argv) => argv[1] === "-e"
-    ? { code: 0, stdout: `${PROTOCOL}\n`, stderr: "" }
+    ? { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }
     : { code: 0, stdout: "", stderr: "" });
   const target = await driver.stage(f.operation);
   expect(target.root).toBe(PACKAGE_ROOT);
@@ -542,7 +542,7 @@ test("staging refuses a target that cannot read recovery waivers when a reconnec
   f.operation.sourceRoot = older;
   Object.assign(f.operation.plan, { sourceRoot: older, sourceDigest: packageDigest(older) });
   f.operation.plan.projects[0]!.reconnectOnly = ["claude"];
-  const driver = makeRecoveryDriver(async () => ({ code: 0, stdout: `${PROTOCOL}\n`, stderr: "" }));
+  const driver = makeRecoveryDriver(async () => ({ code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }));
   await expect(driver.stage(f.operation)).rejects.toThrow("predates recovery waivers");
   await expect(driver.stage(f.operation)).rejects.toBeInstanceOf(FinalRefusal); // the staged target never changes back
   f.operation.sourceRoot = PACKAGE_ROOT;
@@ -976,8 +976,7 @@ test("a final staging refusal is recorded and next no longer offers resume", asy
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
 });
 
-// #215 review: the protocol and waiver checks belong to the staged bytes. A probe that does not answer (killed: exit 1)
-// is retried before the first staging, never recorded final, and is not run again once these bytes were staged.
+// #215: verified staged bytes remain usable after a transient probe failure on resume.
 test("a failing staging probe is retried, and never run again once the target was staged", async () => {
   const f = fixture("restart");
   const version = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
@@ -986,7 +985,7 @@ test("a failing staging probe is retried, and never run again once the target wa
   const { fingerprint: _ignored, ...body } = f.plan;
   f.plan.fingerprint = planFingerprint(body);
   writeOperation(f.operation.id, f.operation, f.home);
-  const answered = { code: 0, stdout: `${PROTOCOL}\n`, stderr: "" }, killed = { code: 1, stdout: "", stderr: "" };
+  const answered = { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }, killed = { code: 1, stdout: "", stderr: "" };
   let probe = killed, probes = 0;
   const real = makeRecoveryDriver(async () => { probes++; return probe; });
   f.driver.stage = real.stage;
@@ -1341,4 +1340,54 @@ test("#433 restart retires tagged done and every waiting binding without nesting
     expect(progress.terminals[`restored:${peer}`]).toBeUndefined(); expect(progress.terminals[`retired:${peer}`]).not.toHaveProperty("binding");
   }
   expect(progress.terminals["closedRetired:claude"]).toBeUndefined(); expect(progress.instanceId).toBeUndefined();
+});
+test("#438 unsupported target is checked against every source before any prepare or runtime effect", async () => {
+  const f = fixture(); const inspected: string[] = [];
+  f.driver.stage = async () => ({ root: PACKAGE_ROOT, digest: "target-digest", targetFeatures: [] });
+  const inspect = f.driver.inspect;
+  f.driver.inspect = async (project, targetFeatures?: readonly string[]) => {
+    if (targetFeatures !== undefined) { inspected.push(project.id); if (project.id === "beta") throw new Error("target lacks task_cancel; cancelled tasks #72, #85"); }
+    return inspect(project);
+  };
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("blocked"); expect(result.error).toContain("cancelled tasks #72, #85");
+  expect(inspected).toEqual(["alpha", "beta"]); expect(f.calls).toEqual([]);
+});
+test("#438 staged target features propagate through expired-lease reprepare and commit", async () => {
+  const f = expiredLease(), prepared: (readonly string[] | undefined)[] = [], committed: (readonly string[] | undefined)[] = [];
+  f.driver.stage = async () => ({ root: PACKAGE_ROOT, digest: "target-digest", targetFeatures: ["task_cancel"] });
+  const prepare = f.driver.prepare, commit = f.driver.commit;
+  f.driver.prepare = async (project, id, instance, features?: readonly string[]) => { prepared.push(features); await prepare(project, id, instance); };
+  f.driver.commit = async (project, id, instance, features?: readonly string[]) => { committed.push(features); await commit(project, id, instance); };
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("completed"); expect(prepared.length).toBeGreaterThan(0); expect(committed.length).toBeGreaterThan(0);
+  expect(prepared.every(features => features?.includes("task_cancel"))).toBe(true); expect(committed.every(features => features?.includes("task_cancel"))).toBe(true);
+});
+test("#117 P3-5 verified target features are durable in the receipt before preparation and read back unchanged", async () => {
+  const f = fixture(); let beforePrepare = 0;
+  f.driver.stage = async () => ({ root: PACKAGE_ROOT, digest: "target-digest", targetFeatures: ["task_cancel"] });
+  const prepare = f.driver.prepare;
+  f.driver.prepare = async (project, id, instance, features) => {
+    const stored = readOperation<RecoveryOperation>(id, f.home);
+    expect(stored).toMatchObject({ targetRoot: PACKAGE_ROOT, targetDigest: "target-digest", targetFeatures: ["task_cancel"] }); beforePrepare++;
+    await prepare(project, id, instance, features);
+  };
+  const completed = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(completed.phase).toBe("completed"); expect(beforePrepare).toBe(2);
+  expect(readOperation<RecoveryOperation>(f.operation.id, f.home)).toHaveProperty("targetFeatures", ["task_cancel"]);
+});
+test("#117 P3-5 fully committed resumes omit feature-aware source compatibility inspection", async () => {
+  const f = fixture(); Object.assign(f.operation, { targetRoot: PACKAGE_ROOT, targetDigest: "target-digest" });
+  Object.assign(f.operation.projects[0]!, { phase: "peers-restored", commitSent: true, instanceId: "new-alpha" });
+  f.operation.projects[1]!.phase = "verified";
+  f.states.set("alpha", { state: "running", instanceId: "new-alpha", version: "0.5.0", protocol: 10, peers: [], blockers: [], recovery: { operationId: f.operation.id, phase: "restored", ready: true } });
+  writeOperation(f.operation.id, f.operation, f.home);
+  const inspect = f.driver.inspect;
+  f.driver.inspect = async (project, features) => { if (features !== undefined) throw new Error("feature compatibility is irrelevant after commit"); return inspect(project); };
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).phase).toBe("completed");
+});
+test("#117 P3-5 malformed persisted feature evidence is rejected before staging or source effects", async () => {
+  const f = fixture(); Object.assign(f.operation, { targetRoot: PACKAGE_ROOT, targetDigest: "target-digest", targetFeatures: ["task_cancel", 123] });
+  writeOperation(f.operation.id, f.operation, f.home);
+  await expect(runRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("invalid target features"); expect(f.calls).toEqual([]);
 });

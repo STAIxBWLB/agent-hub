@@ -68,6 +68,7 @@ export interface OfficeLink {
 export interface OfficeCounts {
   proposed: number; waiting: number; in_progress: number; in_review: number; changes_requested: number; approved: number;
   backlog?: number;
+  cancelled?: number;
   unknown?: number;
 }
 /** One task card. Positions are grid units; the renderer maps them into the SVG viewBox. */
@@ -178,7 +179,7 @@ export interface OfficeScene {
 
 export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene | null, options: { cols?: number; now?: number }): OfficeScene {
   const FIXED = ["claude", "codex", "kimi", "pi", "local"];
-  const KNOWN = ["proposed", "in_progress", "in_review", "changes_requested", "approved"];
+  const KNOWN = ["proposed", "in_progress", "in_review", "changes_requested", "approved", "cancelled"];
   const GLYPHS: Record<string, string> = { idle: "○", busy: "●", offline: "×", paused: "‖", waiting: "⚑", unknown: "?" };
   const LABELS: Record<string, string> = { idle: "idle", busy: "busy", offline: "offline", paused: "paused", waiting: "waiting on approval" };
   const DESK_CAP = 12, ROOM_CARDS = 8, DESK_CARDS = 3;
@@ -204,6 +205,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
   for (const task of tasks) {
     const state = text(task.state);
     if (state === "backlog") { counts.backlog = (counts.backlog ?? 0) + 1; waitingById.set(task.id, false); continue; }
+    if (state === "cancelled") { counts.cancelled = (counts.cancelled ?? 0) + 1; waitingById.set(task.id, false); continue; }
     if (!KNOWN.includes(state)) { counts.unknown = (counts.unknown ?? 0) + 1; waitingById.set(task.id, false); continue; }
     const waiting = state === "proposed" && (task.deps ?? []).some((id: number) => states.get(id) !== "approved");
     waitingById.set(task.id, waiting);
@@ -349,6 +351,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     placed[task.id] = state === "proposed" ? "room:todo"
       : state === "in_review" ? "room:review"
       : state === "approved" ? "shelf:done"
+      : state === "cancelled" ? "counted:cancelled"
       : state === "in_progress" || state === "changes_requested" ? (owner && shownSet.has(owner) ? `desk:${owner}` : "room:work")
       : state === "backlog" ? "counted:backlog" : "counted:unknown";
   }

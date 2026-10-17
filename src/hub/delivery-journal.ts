@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import type { BusSnapshot } from "./bus.ts";
-import { HUB, type Envelope, type Kind } from "./envelope.ts";
+import { HUB, USER, type Envelope, type Kind } from "./envelope.ts";
 import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -277,6 +277,7 @@ export class DeliveryJournal {
           );
         // A new daemon cannot infer completion of an old process's handoffs, including
         // controlled restarts with silent native/bridge receipts still outstanding.
+        for (const row of this.db.query("SELECT * FROM task_offer_reads WHERE project_id = ?").all(this.projectId) as Record<string, unknown>[]) this.validateOfferRead(row);
         this.recoverRetryHistory(meta);
         this.recoverRetryEvidence();
         this.recoverInterrupted();
@@ -316,6 +317,7 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, originals TEXT NOT NULL, out_json TEXT NOT NULL, reason TEXT, attempt INTEGER, previous_id TEXT)`,
     );
+    this.db.run("CREATE TABLE IF NOT EXISTS task_offer_reads (project_id TEXT NOT NULL, peer TEXT NOT NULL, envelope_id TEXT NOT NULL, delivery_id TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('adapter','reply','pull')), offer_revision INTEGER NOT NULL CHECK(offer_revision >= 1), PRIMARY KEY(project_id,peer,envelope_id))");
     this.db.run(
       `CREATE TABLE IF NOT EXISTS resolution_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, delivery_id TEXT NOT NULL, observed_revision INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, result_revision INTEGER NOT NULL, result_state TEXT NOT NULL, UNIQUE(project_id, delivery_id, observed_revision, action, reason))`,
     );
@@ -675,6 +677,32 @@ export class DeliveryJournal {
       this.pruneTerminal();
       return { ...input, revision, updatedAt };
     })();
+  }
+  private validateOfferRead(row: Record<string, unknown>): void {
+    text(row.peer, "offer read peer", 256); text(row.envelope_id, "offer read envelope", 256); text(row.delivery_id, "offer read delivery", 256);
+    integer(row.offer_revision, "offer read revision", 1);
+    if (!["adapter", "reply", "pull"].includes(String(row.source))) fail("offer read source is invalid");
+  }
+  /** Positive delivery provenance only; generic transitions and operator resolutions never call this. */
+  completeDelivered(deliveryId: string, peer: string, source: "adapter" | "reply" | "pull", reason?: string): JournalDelivery {
+    this.ensureOpen(); text(deliveryId, "delivery id", 256); text(peer, "delivery peer", 256);
+    if (peer === HUB || peer === USER || !["adapter", "reply", "pull"].includes(source)) throw new Error("invalid delivered completion source");
+    if (reason !== undefined) text(reason, "delivery completion reason", 1_000_000);
+    return this.db.transaction((): JournalDelivery => {
+      const row = this.get(deliveryId);
+      if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state)) throw new Error("delivery is not active for this peer");
+      const completed = this.transition(deliveryId, "completed", reason, row.revision);
+      const put = this.db.query("INSERT OR IGNORE INTO task_offer_reads (project_id,peer,envelope_id,delivery_id,source,offer_revision) VALUES (?,?,?,?,?,?)");
+      for (const env of row.originals) if (env.from === HUB && env.kind === "task" && Number.isSafeInteger(env.refs?.taskOffer) && env.refs!.taskOffer! >= 1) put.run(this.projectId, peer, env.id, deliveryId, source, env.refs!.taskOffer!);
+      return completed;
+    })();
+  }
+  /** Exact immutable offer id, independent of queue snapshots or generic completed rows. */
+  offerRead(peer: string, envelopeId: string): boolean {
+    this.ensureOpen(); text(peer, "offer read peer", 256); text(envelopeId, "offer read envelope", 256);
+    const row = this.db.query("SELECT * FROM task_offer_reads WHERE project_id = ? AND peer = ? AND envelope_id = ?").get(this.projectId, peer, envelopeId) as Record<string, unknown> | null;
+    if (!row) return false;
+    this.validateOfferRead(row); return true;
   }
   transition(
     id: string,

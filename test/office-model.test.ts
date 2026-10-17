@@ -543,3 +543,12 @@ test("office recognizes staged backlog and matches the shared progress counts (#
   expect(model.placed[1]).toBe("counted:backlog");
   expect(model.rooms.flatMap(room=>room.cards).some(card=>card.id===1)).toBe(false);
 });
+test("#438 office counts cancelled work as closed separately from approved and keeps its dependents waiting", () => {
+  const tasks = [{ id: 1, title: "cancelled", class: "implement", state: "cancelled", deps: [] },
+    { id: 2, title: "approved", class: "implement", state: "approved", deps: [] },
+    { id: 3, title: "dependent", class: "implement", state: "proposed", deps: [1] }];
+  const model = officeModel({ status: { peers: {} }, tasks }, null, { cols: 1, now: 1000 });
+  expect(model.counts).toEqual(taskProgress(tasks).counts); expect(model.counts.cancelled).toBe(1); expect(model.counts.approved).toBe(1); expect(model.counts.waiting).toBe(1); expect(model.counts.unknown).toBeUndefined();
+  expect(model.placed[1]).toBe("counted:cancelled"); expect(model.placed[2]).toBe("shelf:done"); expect(model.rooms.find(room => room.id === "done")?.count).toBe(1);
+  expect(model.rooms.flatMap(room => room.cards).some(card => card.id === 1)).toBe(false);
+});

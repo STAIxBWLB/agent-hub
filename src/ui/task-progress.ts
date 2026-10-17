@@ -5,11 +5,11 @@ export interface PublicProgressTask {
   readonly deps?: readonly number[];
 }
 export interface ProgressStage {
-  id: number; stage: number; waiting: boolean; changes: boolean; label: string;
+  id: number; stage: number; waiting: boolean; changes: boolean; label: string; cancelled?: true;
 }
 export interface TaskProgress {
   total: number;
-  counts: { proposed: number; waiting: number; in_progress: number; in_review: number; changes_requested: number; approved: number; backlog?: number; unknown?: number };
+  counts: { proposed: number; waiting: number; in_progress: number; in_review: number; changes_requested: number; approved: number; backlog?: number; cancelled?: number; unknown?: number };
   stages: ProgressStage[];
 }
 /** Self-contained so the dashboard executes this exact function inside its hashed inline script. */
@@ -18,6 +18,10 @@ export function taskProgress(tasks: readonly PublicProgressTask[]): TaskProgress
   const counts: TaskProgress["counts"] = { proposed: 0, waiting: 0, in_progress: 0, in_review: 0, changes_requested: 0, approved: 0 };
   const known = ["proposed", "in_progress", "in_review", "changes_requested", "approved"];
   const stages = tasks.map(task => {
+    if (task.state === "cancelled") {
+      counts.cancelled = (counts.cancelled ?? 0) + 1;
+      return { id: task.id, stage: 4, waiting: false, changes: false, label: "cancelled (closed)", cancelled: true as const };
+    }
     if (task.state === "backlog") {
       counts.backlog = (counts.backlog ?? 0) + 1;
       return { id: task.id, stage: 0, waiting: false, changes: false, label: "backlog (not offered)" };

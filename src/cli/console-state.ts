@@ -14,9 +14,10 @@ export interface Approval {
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
+  features?: readonly string[];
   /** Older embedding callers omit choices and retain the original STAI/off toggle. */
   petChoices?: readonly CharacterId[]; petCharacter?: CharacterId; petSize?: PetSize; petGlyphs?: "ascii" | "blocks";
-  attentionFacts?: { kind: "review" | "offline"; id: number; peer?: string }[];
+  attentionFacts?: { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
   attentionFingerprint?: string;
   petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;
@@ -378,7 +379,7 @@ export function parseConsoleCommand(input: string): string[] {
 }
 export function commandNeedsConfirmation(args: string[]): boolean {
   const positional = args.filter(arg => arg !== "--yes");
-  return (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && ["assign", "unassign"].includes(args[1] ?? "")) || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
+  return (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && ["assign", "unassign", "cancel"].includes(args[1] ?? "")) || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
 }
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
@@ -425,6 +426,7 @@ function lockedCommandPrompt(lock: NonNullable<ConsoleState["actionLock"]>, args
     const action = commandFlag(args, "--action") ?? "resolve";
     return `${action} delivery ${lock.id} at revision ${lock.revision}${action === "completed" ? "; this asserts external effects" : action === "discard" ? "; no task or native turn is cancelled" : ""}`;
   }
+  if (lock.prefix[1] === "cancel") return `cancel task #${lock.id} at revision ${lock.revision}; native turns and worktrees are retained`;
   const role = commandFlag(args, "--role") ?? "owner";
   if (lock.prefix[1] === "assign") return `assign ${role} on task #${lock.id} at revision ${lock.revision}${lock.waiting && role === "owner" ? " as a reservation until dependencies approve" : ""}`;
   const affected = role === "owner" ? [lock.owner, lock.reserved].filter(Boolean).join(" and ") : lock.reviewer ?? "none";
@@ -632,6 +634,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` :
       s.panel === 3 && key === "r" && selected.state === "in_review" ? `review ${item} ` : undefined;
     if (prefill) { s.input = prefill; s.editing = true; return done(); }
+    if (s.panel === 3 && key === "c") {
+      if (!s.features?.includes("task_cancel")) { notify(s, "task cancellation requires a newer hub", now); return done(); }
+      const revision = selected.flowRevision;
+      if (!["proposed", "in_progress", "in_review", "changes_requested", "backlog"].includes(selected.state)) return done();
+      if (!Number.isSafeInteger(revision) || revision < 0) { notify(s, "task row actions need flowRevision; upgrade the hub", now); return done(); }
+      s.actionLock = { prefix: ["task", "cancel"], id: String(item), revision, state: String(selected.state) };
+      s.input = `task cancel ${item} --revision ${revision} --reason `; s.editing = true; return done();
+    }
     if (s.panel === 3 && (key === "a" || key === "u")) {
       if (!["proposed", "in_progress", "in_review", "changes_requested"].includes(selected.state)) return done();
       const revision = selected.flowRevision, role = selected.state === "in_review" || key === "u" && !selected.owner && !selected.reserved && selected.reviewer ? "reviewer" : "owner";
@@ -700,9 +710,9 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
     const at = last?.at ?? row.updated ?? row.created;
     const failed = last?.event === "check failed" || last?.event === "failed";
     const stage = stages?.get(row.id);
-    const meter = stage ? "[" + "#".repeat(stage.stage - (stage.changes ? 1 : 0)) + (stage.changes ? "!" : "") + "-".repeat(4 - stage.stage) + "]" : "[----]";
-    return [id(`#${row.id}`, "info"), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
-      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.profileClass ? `${row.profileClass} (base ${row.class})` : row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(row.lifecycle ? `${meter} ${row.lifecycle.workflow ? row.lifecycle.workflow + " " : ""}SDLC ${row.lifecycle.stage}${row.lifecycle.definition ? ` (base ${row.lifecycle.definition.base}) / next: ${row.lifecycle.actor} / entry: ${row.lifecycle.entry?.length ? "blocked" : "ready"} / exit: ${row.lifecycle.exit?.length ? "blocked" : "ready"}` : ""}: ${row.lifecycle.next}` : meter, stage?.changes ? "failure" : stateTone(row.state))];
+    const meter = stage?.cancelled ? "[----] cancelled" : stage ? "[" + "#".repeat(stage.stage - (stage.changes ? 1 : 0)) + (stage.changes ? "!" : "") + "-".repeat(4 - stage.stage) + "]" : "[----]";
+    return [id(`#${row.id}`, "info"), span(`${row.state}${s.attentionFacts?.some(fact => fact.kind === "stall" && fact.id === row.id) ? " stalled" : ""}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
+      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.profileClass ? `${row.profileClass} (base ${row.class})` : row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(row.lifecycle ? `${meter} ${row.lifecycle.workflow ? row.lifecycle.workflow + " " : ""}SDLC ${row.lifecycle.stage}${row.lifecycle.definition ? ` (base ${row.lifecycle.definition.base}) / next: ${row.lifecycle.actor} / entry: ${row.lifecycle.entry?.length ? "blocked" : "ready"} / exit: ${row.lifecycle.exit?.length ? "blocked" : "ready"}` : ""}: ${row.lifecycle.next}` : meter, stage?.cancelled ? "muted" : stage?.changes ? "failure" : stateTone(row.state))];
   }
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
   const [header, ...body] = String(row.text).split("\n");
@@ -749,7 +759,7 @@ function taskHints(row: any): string[] {
 function panelContext(s: ConsoleState, row: any): string[] {
   if (!row) return [];
   if (s.panel === 1) return ["p pause", "r resume", "m permission mode"];
-  if (s.panel === 3) return taskHints(row);
+  if (s.panel === 3) return [...taskHints(row), ...(s.features?.includes("task_cancel") ? ["c cancel"] : [])];
   if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];
   return [];
 }

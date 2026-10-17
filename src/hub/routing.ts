@@ -234,7 +234,10 @@ export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, rou
 /** A peer's entry in a peer-indexed map: own keys only, so a peer named `constructor` is never an inherited Object member. */
 export const peerEntry = <T>(map: Readonly<Record<string, T>> | undefined, peer: string): T | undefined => (map && Object.hasOwn(map, peer) ? map[peer] : undefined);
 
+export type RoutingRefusalCode = "tests" | "spec" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
+export interface RoutingRefusal { peer: PeerId; role: "owner" | "reviewer"; code: RoutingRefusalCode; reason: string }
 export interface Assignment {
+  refusals?: RoutingRefusal[];
   owner?: PeerId;
   reviewer?: PeerId;
   /** what `local` should ask for on this task: a Switchyard route id and the model to fall back to */
@@ -285,6 +288,7 @@ export function assign(
     roles?: Record<string, string[]>;
   } = {},
 ): Assignment {
+  if (task.state === "cancelled" || task.state === "approved") return { trace: [`${task.state}: closed; not routed`] };
   if (task.state === "backlog") return { trace: ["backlog: not routed; pull into To Do first"] };
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
@@ -301,34 +305,35 @@ export function assign(
   if (!pii) try { needsSpec = specRefs({ title: task.title ?? "", detail: task.detail ?? "", refs: task.refs ?? {}, external: task.external }, opts.repository ?? "", { bareTitle: isGitHubRepository(opts.repository) }).length > 0; }
   catch { needsSpec = true; } // an invalid/foreign reference never grants a sandboxed peer spec access
   const needsTests = ["implement", "test", "bulk_edit"].includes(task.class);
+  const refusals = new Map<string, RoutingRefusal>();
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
+    const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
     if (role === "owner" && opts.capabilities && !pii) {
       const caps = peerEntry(opts.capabilities, peer);
-      if (needsTests && !caps?.tests) return `missing tests: ${caps?.testsReason ?? "capability unavailable"}`;
-      if (needsSpec && !caps?.spec) return `missing spec: ${caps?.specReason ?? "capability unavailable"}`;
+      if (needsTests && !caps?.tests) return deny("tests", `missing tests: ${caps?.testsReason ?? "capability unavailable"}`);
+      if (needsSpec && !caps?.spec) return deny("spec", `missing spec: ${caps?.specReason ?? "capability unavailable"}`);
     }
-    if (opts.offRoster?.includes(peer)) return "off roster";
+    if (opts.offRoster?.includes(peer)) return deny("roster", "off roster");
     const named = role === "owner" ? opts.namedOwner ?? reserved : opts.namedReviewer;
-    if (opts.pullOnly?.includes(peer) && named !== peer) return "pull-only: takes work when named or when it claims it";
-    if (!Object.hasOwn(states, peer)) return "not attached";
-    if (opts.exclude?.includes(peer)) return "excluded (declined or replaced)";
-    if (role === "owner" && opts.excludeOwners?.includes(peer)) return "owner admission: WIP or delivery hold";
-    if (states[peer] === "offline") return "offline";
-    if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return "paused";
+    if (opts.pullOnly?.includes(peer) && named !== peer) return deny("pull-only", "pull-only: takes work when named or when it claims it");
+    if (!Object.hasOwn(states, peer)) return deny("not-attached", "not attached");
+    if (opts.exclude?.includes(peer)) return deny("excluded", "excluded (declined or replaced)");
+    if (role === "owner" && opts.excludeOwners?.includes(peer)) return deny("owner-admission", "owner admission: WIP or delivery hold");
+    if (states[peer] === "offline") return deny("offline", "offline");
+    if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return deny("paused", "paused");
     const failing = peerEntry(opts.failing, peer);
-    if (failing) return `failing: ${failing}`;
-    if (pii && peer !== LOCAL) return "pii: on-prem peers only";
-    if (peer === LOCAL && policy?.local_allowed === false) return "local_allowed = false for this class";
-    if (peer === PI && policy?.local_allowed === false) return "local_allowed = false also excludes pi for this class";
+    if (failing) return deny("failing", `failing: ${failing}`);
+    if (pii && peer !== LOCAL) return deny("pii", "pii: on-prem peers only");
+    if (peer === LOCAL && policy?.local_allowed === false) return deny("policy", "local_allowed = false for this class");
+    if (peer === PI && policy?.local_allowed === false) return deny("policy", "local_allowed = false also excludes pi for this class");
     if (peer === PI && task.signals.includes("long_context")) {
       const backend = policy?.pi_backend ?? "dgx";
       const limit = backend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens;
-      if (routing.signals.long_context_tokens > limit) return `pi ${backend} capability limit ${limit} tokens`;
+      if (routing.signals.long_context_tokens > limit) return deny("policy", `pi ${backend} capability limit ${limit} tokens`);
     }
-    if (peer === LOCAL && role === "owner" && task.signals.includes("long_context") && routing.constraints.long_context === "skip_local") return "long_context: skip local";
+    if (peer === LOCAL && role === "owner" && task.signals.includes("long_context") && routing.constraints.long_context === "skip_local") return deny("policy", "long_context: skip local");
     return undefined;
   };
-
   /** Quota that resets soonest gets used first: headroom per hour left in the window, at least 15 min (a task assigned that close to a reset mostly runs after it). */
   const drain = (p: PeerId): number | undefined => {
     const q = peerEntry(opts.quota, p);
@@ -410,7 +415,7 @@ export function assign(
   const piBackend = policy?.pi_backend;
   if (owner === LOCAL) trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
   if (owner === PI) trace.push(`pi decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
-  return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), trace };
+  return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
 }
 
 /**

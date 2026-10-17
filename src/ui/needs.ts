@@ -1,4 +1,4 @@
-export type NeedKind = "approval" | "default" | "storage" | "recovery" | "delivery" | "review" | "message" | "budget" | "offline";
+export type NeedKind = "approval" | "default" | "storage" | "recovery" | "delivery" | "review" | "message" | "budget" | "offline" | "stall" | "offer";
 export interface NeedItem { kind: NeedKind; level: "act" | "watch"; peer?: string; id?: string | number; until?: number; since?: number; }
 export interface NeedsInput {
   approvals?: readonly { id: string; peer?: string; expiresAt: number; since?: number }[];
@@ -7,7 +7,7 @@ export interface NeedsInput {
   storageBlocked?: boolean;
   recovery?: { id?: string; running?: boolean; since?: number };
   tasks?: readonly { id: number; state: string; owner?: string | null; reviewer?: string | null }[];
-  facts?: readonly { kind: "review" | "offline"; id: number; peer?: string }[];
+  facts?: readonly { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
   messages?: readonly { id?: string; peer?: string; important: boolean; since?: number }[];
   budget?: Readonly<Record<string, { paused?: { since?: number; resetsAt?: number } }>>;
 }
@@ -38,15 +38,17 @@ export function needs(input: NeedsInput, now: number): Needs {
     }
   }
   for (const fact of input.facts ?? []) if (Number.isSafeInteger(fact.id) && fact.id > 0) {
-    if (fact.kind === "review") add("review", "act", undefined, fact.id);
+    if (fact.kind === "stall") add("stall", "act", undefined, fact.id);
+    else if (fact.kind === "offer" && agent(fact.peer)) add("offer", "act", fact.peer, fact.id);
+    else if (fact.kind === "review") add("review", "act", undefined, fact.id);
     else if (fact.kind === "offline" && agent(fact.peer) && !offline.has(fact.peer)) { offline.add(fact.peer); add("offline", "watch", fact.peer, fact.id); }
   }
   for (const [peer, budget] of Object.entries(input.budget ?? {})) if (budget.paused) add("budget", "watch", peer, undefined, budget.paused.resetsAt, budget.paused.since);
-  const order: Record<NeedKind, number> = { approval: 0, default: 1, storage: 2, recovery: 3, delivery: 4, review: 5, message: 6, budget: 7, offline: 8 };
+  const order: Record<NeedKind, number> = { approval: 0, default: 1, storage: 2, recovery: 3, delivery: 4, review: 5, stall: 6, offer: 7, message: 8, budget: 9, offline: 10 };
   items.sort((a,b) => (a.level === "act" ? 0 : 1) - (b.level === "act" ? 0 : 1) || order[a.kind] - order[b.kind] || (a.kind === "approval" ? (a.until ?? Infinity) - (b.until ?? Infinity) : 0) || (a.since ?? 0) - (b.since ?? 0));
   const act = items.filter(item => item.level === "act").length, watch = items.length - act;
   const peers = Object.values(input.peers ?? {}), attached = peers.some(peer => peer.attached !== false && ["idle", "busy", "paused"].includes(peer.state ?? ""));
-  const state: Needs["state"] = items.some(item => item.kind === "approval" || item.kind === "default") ? "waiting" : items.some(item => item.level === "act" && ["storage", "delivery", "recovery"].includes(item.kind)) ? "blocked" : act ? "review" : peers.some(peer => peer.attached !== false && peer.state === "busy") ? "working" : attached ? "idle" : "sleeping";
+  const state: Needs["state"] = items.some(item => item.kind === "approval" || item.kind === "default") ? "waiting" : items.some(item => item.level === "act" && ["storage", "delivery", "recovery", "stall"].includes(item.kind)) ? "blocked" : act ? "review" : peers.some(peer => peer.attached !== false && peer.state === "busy") ? "working" : attached ? "idle" : "sleeping";
   return { items, act, watch, state };
 }
 

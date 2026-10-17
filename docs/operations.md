@@ -2514,6 +2514,22 @@ the capability is absent. It never rewrites these settings. Explicit
 refused before any local startup. Re-enable MLX or explicitly migrate the
 recorded launch before recovery.
 
+## Task stalls and cancellation
+
+A ready task with an ineligible reservation, no eligible peer or a cancelled dependency shows an ids-only stall cause in status and the Tasks panel. The hub reports a cause once, repeating only when the cause changes or the task is re-planned. It directs ownerless advice to the designated planner's next bounded preface and the configured supervision stream, otherwise the person's attention list; it does not create an extra ordinary turn beside backlog batching. Configure the missing capability, assign another eligible peer, re-plan or cancel the task as appropriate; a reservation never bypasses routing guards.
+
+An offer to a pull-only peer adds an advisory "open <peer>: task #N is waiting for it" attention item. It clears when that exact offer is accepted, declined, superseded or genuinely delivered and settled to the addressed peer. Another inbox read, an accepted-only receipt or a person's queue completion does not prove it was read. The attention item does not alter delivery state.
+
+The person can retain superseded work as closed history:
+
+```sh
+ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]
+```
+
+The console also offers cancellation with the selected task's flow revision. Approved tasks cannot be cancelled. The planner's `hub_task_cancel` tool is limited to its own unaccepted backlog/proposed work; previously accepted work requires the person. Cancellation sends the former owner/reviewer a stop notice, releases overlap/reservation participation and keeps dependents blocked with a cancelled-dependency notice. It does not stop a native turn, delete a worktree or write an outcome memory note. Use the displayed revision to avoid acting on a task that changed while it was selected.
+
+The daemon advertises `task_cancel`; a current CLI refuses cancellation against older daemons. Recovery retains verified target features beside its immutable root/digest, reuses them on resume and checks only sources not yet past commit; a legacy receipt without that evidence needs a target probe only before commit. Upgrade/restart refuses a target without this feature while cancelled rows exist and names their ids. No cancelled row is rewritten as approved. An old binary launched by hand remains unsupported: it can count cancelled work as open or fail to move it. Use a compatible coordinator instead. Live task cancellation and sweep enablement are separate post-release operations.
+
 ## Task idle sweep
 
 The between-turn task sweep (#186) is disabled by default. Set `task_sweep` in
@@ -2527,6 +2543,7 @@ The between-turn task sweep (#186) is disabled by default. Set `task_sweep` in
     "unaccepted_min": 60,
     "idle_min": 120,
     "review_min": 120,
+    "ready_min": 60,
     "ladder_min": 30,
     "auto_reassign": false
   }
@@ -2537,6 +2554,8 @@ Booleans must be actual booleans. Each time setting must be a finite number of
 at least 1; timeouts are bounded to the platform timer limit. Each threshold
 measures time since the last real task history event. A ladder record does not
 refresh that activity; a new event resets the ladder even at the same timestamp.
+
+Ready proposed tasks without an owner use `ready_min` and the `ready-unassigned` ladder; unresolved or cancelled dependencies do not become ready.
 
 The first overdue sweep sends the assigned owner or reviewer one normal task
 reminder. After `ladder_min`, the next sweep notifies the console and available

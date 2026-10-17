@@ -1,4 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
+import { taskProgress } from "../src/ui/task-progress.ts";
 import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow, appendEvent } from "../src/cli/console-state.ts";
 import { eventTone, navigationPresses, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
@@ -1682,4 +1683,19 @@ test("#452 w opens the web UI and o the pet window as console commands, never wh
   expect(parseConsoleCommand("ui --all")).toEqual(["ui", "--all"]);
   expect(parseConsoleCommand("pet --window --close")).toEqual(["pet", "--window", "--close"]);
   expect(() => parseConsoleCommand("kill")).toThrow("use another shell for this command");
+});
+
+test("cancelled console task rows have a neutral meter distinct from checked approval (#438)", () => {
+  const s = initialConsoleState(true); s.panel = 3;
+  s.tasks = [
+    { id: 1, title: "cancelled work", state: "cancelled", class: "implement" },
+    { id: 2, title: "approved work", state: "approved", class: "implement" },
+  ];
+  // Closed rows are omitted from the active Tasks panel; exercise its actual row renderer directly.
+  const stages = new Map(taskProgress(s.tasks).stages.map(stage => [stage.id, stage]));
+  const cancelled = paint(cells(s, s.tasks[0], false, 1000, stages), false);
+  const approved = paint(cells(s, s.tasks[1], false, 1000, stages), false);
+  expect(cancelled).toContain("[----] cancelled");
+  expect(cancelled).not.toContain("[####]");
+  expect(approved).toContain("[####]");
 });
