@@ -131,7 +131,11 @@
         "src/hub/start-mode.ts",
         "src/hub/terminal-open.ts",
         "src/hub/recovery-error.ts",
-        "src/hub/db-timeout.ts"
+        "src/hub/db-timeout.ts",
+        "src/hub/config-reload.ts",
+        "src/hub/config-apply.ts",
+        "src/hub/recovery-continuity.ts",
+        "src/cli/recovery-presentation-options.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -168,7 +172,8 @@
         "src/hub/conductor.ts",
         "src/hub/supervision.ts",
         "src/hub/tool-refusal.ts",
-        "src/hub/daemon.ts"
+        "src/hub/daemon.ts",
+        "src/hub/settled-roles.ts"
       ]
     },
     "docs/agent-notes/tests.md": {

@@ -39,7 +39,9 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   an effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per
   repository or worktree with a machine-wide view, and `ahub upgrade` that carries
-  running sessions across versions. The console supports revision-checked task
+  running sessions across versions. Settings reload without a restart where their
+  apply class allows; guarded values wait for a person's confirmed
+  `ahub settings reload` in a terminal. The console supports revision-checked task
   assignment/unassignment and delivery-queue resolution. Peers with independent
   tool turns can request one uncertain redelivery; the delivery-only local worker
   and headless ACP peers leave held deliveries for the person to resolve.
@@ -73,19 +75,23 @@ cd <your project> && ahub init && ahub up
 `ahub init --dry-run --json` shows what init would write first. While hubs run,
 `ahub upgrade` moves them to the latest release.
 
-After upgrading to 0.12.31, run `ahub jcode --mode headless` once in each project
-that uses Jcode to refresh its owned MCP entry before conductor or dashboard starts of Jcode.
+After upgrading from 0.12.30 or earlier, run `ahub jcode --mode headless` once in each
+project that uses Jcode to refresh its owned MCP entry before conductor or dashboard
+starts of Jcode. The entry's format is unchanged in 0.12.32; a daemon start that still
+reports the entry missing or stale is fixed by the same command.
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. For local/Pi implementation, opt in to an
 available `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-17-0.12.31.md) for the live legs
-still open, including #418 AC8 and #438 AC7.
+See [release verification](docs/verification/2026-10-18-0.12.32.md) for the live legs
+still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5)
+and a real upgrade with reattach (#463).
 
 Before migrating a memory home with `amem`, upgrade every hub using that home to
 0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory
 consumers. Shared v1 remains the default; installing this release does not migrate
-data. See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
+data. The curated shard migration in agent-mem is unreleased; do not run it, because
+this hub does not open memory through shards. See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
 
 ## Documentation
 

@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.31 and control protocol 16. Live verification
+This guide describes ahub 0.12.32 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -135,7 +135,7 @@ the stream; only the header is tab-flattened before tokenizing. Body lines retai
 the previous rendering and stay plain, as does command output; colour never changes
 what the panel's text says.
 
-Peers, Approvals, Tasks and Queue are tables with a header row. A column is as
+Peers, Approvals, Tasks, Queue and Settings are tables with a header row. A column is as
 wide as its widest cell, up to a third of the terminal; the last column takes
 the rest and is cut with `...`. In Tasks, TITLE takes the rest and the STAGE
 meter keeps a fixed column at the right edge.
@@ -146,6 +146,7 @@ meter keeps a fixed column at the right edge.
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE STAGE |
 | Queue | ID PEER STATE REV AGE |
+| Settings | GROUP KEY VALUE SOURCE APPLIES |
 
 The MODE column appears only when at least one peer has a non-`ask` mode.
 Zero counters and unknown values read `-`. Durations read `45s`, `12m`, `3h05m`
@@ -1520,8 +1521,9 @@ Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain 
   committed (config trust); where the hub will not read what was written, the
   reload refuses the guarded candidate and the Settings row identifies the file.
 - Authority: a dashboard opened with `ahub ui` reads settings, lowers a mode to
-  `ask`, turns `pi.auto_start` off, sets a start mode back to `tui` and changes
-  the Switches group. Everything
+  `ask`, turns `pi.auto_start` off, sets a start mode back to `tui`, sets a WIP
+  limit to 0, turns `task_sweep.enabled` or `.auto_reassign` off and changes
+  the other Switches. Everything
   else needs `ahub ui --settings`, whose session may raise for 15 minutes, or
   `ahub settings` in a terminal. `never-ask` needs the peer id typed in the
   dashboard, or `--yes` in the terminal, and a stored never-ask default still
@@ -1947,21 +1949,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.31), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.32), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.31 ahub upgrade --to 0.12.31 --dry-run
-bunx --package @staix/agent-hub@0.12.31 ahub upgrade --to 0.12.31 --yes
+bunx --package @staix/agent-hub@0.12.32 ahub upgrade --to 0.12.32 --dry-run
+bunx --package @staix/agent-hub@0.12.32 ahub upgrade --to 0.12.32 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.31 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.32 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1993,14 +1995,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.31 --dry-run
+ahub upgrade --to 0.12.32 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.31 --yes
+ahub upgrade --to 0.12.32 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2367,6 +2369,14 @@ next actions").
   restored hub resumes Pi's recorded session). It records the lost session or
   thread id (status shows it under `lostContinuity`) and resumes: the peer
   starts without its old conversation, and the rest is verified as usual.
+  A session the operation already reattached keeps that repaired provenance
+  across target restarts and is never replaced automatically. Its
+  loss can be accepted only after the restoration reported the recorded Claude
+  transcript or Codex rollout as positively missing, naming the checked path;
+  dispose checks that path again before saving the choice and otherwise refuses
+  with "recorded conversation is not positively missing". Under `--live-test`
+  this repaired-session choice is refused even where an ordinary fresh session
+  may be delegated.
 - `ahub recovery dispose <operation-id> --stop-and-archive --reason <text>`
   abandons the operation. It checks every project first and refuses while a
   hub is unreachable, starting, stopping or of another control protocol; `next`
@@ -2414,6 +2424,7 @@ next actions").
   Start a project whose target ran with that release's CLI (`bunx --package
   @staix/agent-hub@<version> ahub up`), since it may have changed the task
   database. The global CLI was not promoted. The archive summary distinguishes completed target startup and plugin installation from remaining global CLI installation, and prints recorded-session commands: `ahub codex resume <thread-id>`, `ahub pi --session-file <path>`, and the Claude reconnect command. On the next `ahub up`, `pi.auto_start` resumes the archived operation's recorded Pi session rather than choosing a fresh conversation. Unknown or conflicting archived identity refuses that automatic resume.
+  That session is kept as a bookmark, `.agenthub/state/recovery-continuity.json`. When its session file can no longer be resumed or does not match it, the hub archives the bookmark and starts no fresh session in that start; the error names `ahub pi --mode <mode> --session-file <managed-file>` for choosing one. An invalid or unreadable bookmark, or session storage that cannot be verified, starts nothing, keeps the bookmark and prints the `mv -n` command that archives it after inspection. The bookmark is retired once Pi attaches with a different authenticated session.
 - Both choices are for a person in a terminal; an agent shell is refused, and
   the reason is kept in the operation's audit. Run each with the command
   `next` or the error prints: the operation's own coordinator, or the release

@@ -5,6 +5,7 @@
 Scope: delivery, digests and condensation, reply addressing, priority and limits. Read before editing `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/delivery-journal.ts`, `src/hub/inference.ts` (digest condensation), or how an adapter addresses a reply or sets its priority.
 
 - Lifecycle `deliveryHeld` fences both drain/pull and important steering before owner teardown awaits; retain newly queued work for an explicit restart without altering manual, budget or conductor pauses.
+- Apply reloaded `batch_max`, `batch_ms` and `queue_cap` only through `Bus.configureScheduling` (#439): it validates the values and changes later batching and admission only. Never re-arm an existing batch deadline, trim or reorder queued work, or touch prefaces, pauses, recovery holds or in-flight delivery from it.
 - A failed digest is retried one envelope at a time, so a poison envelope cannot take its neighbours down with it.
 - An `important` envelope being steered is not in the queue while the steer is in flight; queue it first and an idle transition delivers it twice.
 - `replyParent()` decides what a reply answers (highest hop, never the `hub` preface). Use it for deliveries and steers alike, or the hop cap can be reset.
