@@ -4800,7 +4800,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // A peer whose stop rejects must not strand the daemon (issue #56): its failure is
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
       for (const exit of exits) if (exit.status === "rejected") log(`peer stop failed during shutdown: ${(exit.reason as Error)?.message ?? exit.reason}`);
-      for (const exit of await runnerStopped) if (exit.status === "rejected") log("isolated check teardown unconfirmed; inspect its retained heavy slot and receipt");
+      await runnerStopped;
       await modelRelay?.close();
       await egress?.close();
       await piReceipts?.close();

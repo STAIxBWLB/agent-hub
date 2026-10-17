@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Keep explicit GitHub issue references gated in projects without GitHub origins, expire malformed-receipt full output after 24 hours and clear obsolete receipt warnings (#418).
 - Add task-bound complete spec reads and opt-in isolated container checks for sandboxed peers, with current capability routing and screened exact-head receipts (#418).
 - On upgrade, non-PII implement, test and bulk_edit owners need an enabled, available `checks.runner = "container"`; local/Pi owners of issue-backed tasks in every class (including review) also need authenticated spec access. These capability gates do not restrict designated reviewers; PII work remains local-only without the opt-in (#418).
 - CI: run the seeded guards as four parallel shards beside the check (PR wall time from about 26 to about 11 minutes), move artifacts to upload-artifact v7, pin setup-bun by SHA with the Bun version in `.bun-version`, add Dependabot for actions, refuse a release tag that is not on main, and split the GitHub Release from the npm publish job (#457).
