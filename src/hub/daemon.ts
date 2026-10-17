@@ -2123,7 +2123,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const taskChanged = board.onChange;
   board.onChange = (task, entry) => {
     try { taskChanged?.(task, entry); }
-    finally { settleSupersededDeliveries(); writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
+    finally {
+      try { settleSupersededDeliveries(); }
+      finally { writeStatus(); } // committed task transitions refresh token-free attention even without bus activity
+    }
   };
 
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
