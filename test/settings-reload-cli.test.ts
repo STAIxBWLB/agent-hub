@@ -6,7 +6,13 @@ import { join } from "node:path";
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const CONTROL = join(import.meta.dir, "../src/hub/control-client.ts");
 const MARKERS = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_DELIVERY_ONLY"];
-const challenge = { ok: true, text: "guarded settings await confirmation", confirmation: { token: "fixture-bound-token", keys: ["roster.codex", "permission_modes.kimi"] }, rejected: [{ key: "codex_bin", reason: "restart only, unsafe candidate\x1b[31m" }], applied: [] };
+const beforeArgv = JSON.stringify(["fixture-kimi-old", "--profile", "old-fixture-full-argv"]);
+const afterArgv = JSON.stringify(["fixture-kimi-new", "--profile", "new-fixture-full-argv", "--mode", "headless"]);
+const challenge = { ok: true, text: "guarded settings await confirmation", confirmation: { token: "fixture-bound-token", keys: ["roster.codex", "permission_modes.kimi", "kimi_cmd"], changes: [
+  { key: "roster.codex", before: "false", after: "true" },
+  { key: "permission_modes.kimi", before: JSON.stringify("ask"), after: JSON.stringify("never-ask"), effect: "approval prompts are disabled" },
+  { key: "kimi_cmd", before: beforeArgv, after: afterArgv, effect: "next native start uses this complete argv" },
+] }, rejected: [{ key: "codex_bin", reason: "restart only, unsafe candidate\x1b[31m" }], applied: [] };
 
 /** Real CLI entry and identity gate; replace only its WS connection, never a real hub or project setting. */
 async function cli(options: { tty?: boolean; answer?: string; timeout?: boolean; markers?: Record<string, string>; args?: string[]; reply?: object } = {}) {
@@ -79,4 +85,27 @@ test("#439 reload CLI preserves safe reload output without prompting", async () 
 test("#439 reload CLI refuses --yes and inherited agent identity before any connection", async () => {
   const auto = await cli({ args: ["settings", "reload", "--yes"] }); expect(auto.code).toBe(1); expect(auto.connections).toEqual([]); expect(auto.requests).toEqual([]);
   const agent = await cli({ tty: true, markers: { AGENTHUB_PEER_ID: "codex" } }); expect(agent.code).toBe(1); expect(agent.err).toContain("codex cannot run"); expect(agent.connections).toEqual([]); expect(agent.requests).toEqual([]);
+});
+
+
+test("#439 reload CLI displays every full before and after value before accepting the token", async () => {
+  const result = await cli({ tty: true, answer: "y\n" });
+  expect(result.code, result.err).toBe(0);
+  expect(result.out).toContain(`${beforeArgv} -> ${afterArgv}`);
+  expect(result.out).toContain('"ask" -> "never-ask"');
+  expect(result.out).toContain("false -> true");
+  expect(result.out).toContain("next native start uses this complete argv");
+  expect(result.out.indexOf(beforeArgv)).toBeLessThan(result.out.indexOf("Apply guarded settings"));
+  expect(result.requests).toEqual([{ t: "settings_reload" }, { t: "settings_reload", confirm: "fixture-bound-token" }]);
+});
+
+for (const [name, confirmation] of [
+  ["legacy keys-only preview", { token: "fixture-bound-token", keys: ["kimi_cmd"] }],
+  ["missing after value", { token: "fixture-bound-token", keys: ["kimi_cmd"], changes: [{ key: "kimi_cmd", before: beforeArgv }] }],
+  ["mismatched key", { token: "fixture-bound-token", keys: ["kimi_cmd"], changes: [{ key: "other", before: beforeArgv, after: afterArgv }] }],
+  ["overlong full value", { token: "fixture-bound-token", keys: ["kimi_cmd"], changes: [{ key: "kimi_cmd", before: beforeArgv, after: JSON.stringify("x".repeat(16_384)) }] }],
+] as const) test(`#439 reload CLI refuses incomplete or malformed values: ${name}`, async () => {
+  const result = await cli({ tty: true, answer: "y\n", reply: { ok: true, confirmation } });
+  expect(result.code).toBe(1); expect(result.requests).toEqual([{ t: "settings_reload" }]);
+  expect(result.out).not.toContain("Apply guarded settings"); expect(result.err).toContain("review");
 });

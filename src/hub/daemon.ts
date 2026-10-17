@@ -36,6 +36,7 @@ import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configChanges, validateEffectiveConfig } from "./config-apply.ts";
+import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
@@ -609,23 +610,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let plannerSource: "setting" | "roles" | "automatic" | "none" = "none";
   let plannerLogged = "";
   const settlePlanner = () => {
-    const roles = structuredClone(policyRoles);
-    const pinned = (PLANNER_PEERS as readonly string[]).includes(config.planner ?? "") ? config.planner! : undefined;
-    let source: typeof plannerSource;
-    if (pinned) {
-      for (const peer of Object.keys(roles)) roles[peer] = roles[peer]!.filter(role => role !== "planner");
-      roles[pinned] = ["planner", ...(roles[pinned] ?? [])];
-      source = "setting";
-    } else if (Object.entries(roles).some(([peer, list]) => list.includes("planner") && onRoster(peer))) source = "roles";
-    else {
-      const auto = PLANNER_PEERS.find(onRoster);
-      if (auto) { // the off-roster holders give the role up while the automatic planner holds it
-        for (const peer of Object.keys(roles)) roles[peer] = roles[peer]!.filter(role => role !== "planner");
-        roles[auto] = [...(roles[auto] ?? []), "planner"];
-      }
-      source = auto ? "automatic" : "none";
-    }
-    conductorPeer(roles);
+    const { roles, source } = resolveSettledRoles(policyRoles, config.planner, onRoster);
     for (const key of Object.keys(config.roles)) delete config.roles[key];
     Object.assign(config.roles, roles);
     plannerSource = source;
@@ -3770,11 +3755,18 @@ export async function startDaemon(opts: DaemonOptions) {
     return prefix ? [prefix] : [];
   }
   const isMachineKey = (key: string) => ALL_MACHINE_LOCAL.some(path => key === path || key.startsWith(`${path}.`));
+  function roleHolders(candidate: HubConfig): { planners: string[]; conductors: string[] } {
+    // A valid transfer may briefly have two conductors while its leaves are planned. Validate the final map later.
+    const policy = Object.fromEntries(Object.entries(candidate.roles).map(([peer, roles]) => [peer, roles.filter(role => role !== "conductor")]));
+    const settled = resolveSettledRoles(policy, candidate.planner, peer => rosterAllows(candidate.roster, peer, candidate.pi.enabled));
+    return { planners: settled.planners, conductors: Object.keys(candidate.roles).filter(peer => candidate.roles[peer]!.includes("conductor")).sort() };
+  }
   function prepareConfiguration(sources: ConfigSources, authority: SettingAuthority, scope?: string, confirmed: readonly string[] = []) {
     const fileConfig = loadConfig(opts.cwd, sources.layers);
     validateEffectiveConfig(fileConfig);
     const candidate = structuredClone(desiredConfig), routing = structuredClone(desiredRouting);
     const accepted: string[] = [], rejected: { key: string; reason: string }[] = [], guarded: string[] = [];
+    const previews: { key: string; before: string; after: string; effect?: string }[] = [];
     const paths = new Set<string>();
     for (const layer of [...sources.trustLayers, ...acceptedSources.trustLayers]) {
       const prefix = layer.name.endsWith(".toml") ? "routing" : "";
@@ -3805,12 +3797,24 @@ export async function startDaemon(opts: DaemonOptions) {
         rejected.push({ key, reason: "use the confirmed ahub roster add/remove setting; a full reload cannot bypass peer lifecycle" });
         continue;
       }
-      const input = { key, before, acceptedFallback, after: machine && rawChanged ? rawAfter : after, source: route ? "routing" as const : "config" as const, tracked, authority, guard, confirmed: !!scope || confirmed.includes(key) };
+      let settledHolderChange = false, effect: string | undefined;
+      if (key === "planner" || key === "roles" || key.startsWith("roles.")) {
+        const prospective = structuredClone(candidate);
+        putConfig(prospective, path.join("."), after);
+        const oldHolders = roleHolders(candidate), newHolders = roleHolders(prospective);
+        settledHolderChange = JSON.stringify(oldHolders) !== JSON.stringify(newHolders);
+        if (settledHolderChange) effect = `planner ${JSON.stringify(oldHolders.planners)} -> ${JSON.stringify(newHolders.planners)}; conductor ${JSON.stringify(oldHolders.conductors)} -> ${JSON.stringify(newHolders.conductors)}`;
+      }
+      const input = { key, before, acceptedFallback, settledHolderChange, after: machine && rawChanged ? rawAfter : after, source: route ? "routing" as const : "config" as const, tracked, authority, guard, confirmed: !!scope || confirmed.includes(key) };
       const decision = authorizeConfigLeaf(input);
       if (!decision.allowed) {
         const next = `${decision.reason}; review and run ahub settings reload, or revert this key${machine && tracked !== false ? "; move machine-local declarations to an untracked local file first" : ""}`;
         rejected.push({ key, reason: next });
-        if (!scope && authority === "terminal" && authorizeConfigLeaf({ ...input, confirmed: true }).allowed) guarded.push(key);
+        if (!scope && authority === "terminal" && authorizeConfigLeaf({ ...input, confirmed: true }).allowed) {
+          const shown = { key, before: before === undefined ? "(unset)" : JSON.stringify(before)!, after: after === undefined ? "(unset)" : JSON.stringify(after)!, ...(effect ? { effect } : {}) };
+          if (key.length > 160 || Buffer.byteLength(shown.before) > 16_384 || Buffer.byteLength(shown.after) > 16_384 || effect && Buffer.byteLength(effect) > 2048) rejected.at(-1)!.reason += "; complete preview exceeds the 16 KiB value/2 KiB effect bound; reduce this edit before confirmation";
+          else { guarded.push(key); previews.push(shown); }
+        }
         continue;
       }
       putConfig(route ? routing : candidate, path.join("."), after);
@@ -3827,6 +3831,20 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       accepted.push(key);
     }
+    // Describe the guarded transaction against all safe changes already admitted by this plan.
+    const rolePreviews = previews.filter(item => item.key === "planner" || item.key === "roles" || item.key.startsWith("roles."));
+    if (rolePreviews.length) {
+      const prospective = structuredClone(candidate);
+      for (const item of rolePreviews) putConfig(prospective, item.key, item.after === "(unset)" ? undefined : JSON.parse(item.after));
+      const before = roleHolders(candidate), after = roleHolders(prospective);
+      const effect = `planner ${JSON.stringify(before.planners)} -> ${JSON.stringify(after.planners)}; conductor ${JSON.stringify(before.conductors)} -> ${JSON.stringify(after.conductors)}`;
+      for (const item of rolePreviews) item.effect = effect;
+    }
+    guarded.sort(); previews.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    if (previews.some(item => item.effect && Buffer.byteLength(item.effect) > 2048) || guarded.length > 200 || Buffer.byteLength(JSON.stringify({ token: "x".repeat(36), keys: guarded, changes: previews })) > 131_072) {
+      for (const item of rejected) if (guarded.includes(item.key)) item.reason += "; combined confirmation preview exceeds its 128 KiB bound; split this edit";
+      guarded.length = 0; previews.length = 0;
+    }
     const changes = configChanges({ ...config, roles: policyRoles }, candidate);
     const running = structuredClone({ ...config, roles: policyRoles });
     for (const change of changes) if (change.applies !== "restart") putConfig(running, change.key, change.after);
@@ -3835,7 +3853,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const peer of Object.keys(running.catalog_roles ?? {})) selectedRoles(peer, running.roles, { ...resolvedProfile.catalog_roles, ...catalogAssignments(running.catalog_roles) }, catalog);
     const problem = running.mlx.enabled === false ? mlxPinProblem(routing, sources.texts["routing.toml"] !== null) : undefined;
     if (problem) throw new Error(problem);
-    return { sources, fileConfig, candidate, running, routing, changes, accepted, rejected, guarded: guarded.sort() };
+    return { sources, fileConfig, candidate, running, routing, changes, accepted, rejected, guarded, previews };
   }
   /** Acknowledging one field never hides another pending edit in the same file. */
   function acknowledgeConfiguration(sources: ConfigSources, paths: readonly string[]): void {
@@ -3931,7 +3949,7 @@ export async function startDaemon(opts: DaemonOptions) {
       writeStatus();
       const applied = [...changes.filter(change => change.applies !== "restart").map(change => change.key), ...routingChanges.filter(key => configApply(key).applies !== "restart")];
       return { ok: true, applied, pendingRestart, rejected: prepared.rejected,
-        ...(prepared.guarded.length ? { confirmation: { token: reloadConfirmation!.token, keys: reloadConfirmation!.keys } } : {}),
+        ...(prepared.guarded.length ? { confirmation: { token: reloadConfirmation!.token, keys: reloadConfirmation!.keys, changes: prepared.previews } } : {}),
         text: [applied.length ? `configuration reloaded: ${applied.join(", ")}` : pendingRestart.length ? `pending restart: ${pendingRestart.map(item => item.key).join(", ")}` : "configuration unchanged", ...(prepared.rejected.length ? [`retained keys: ${prepared.rejected.map(item => item.key).join(", ")}; review ahub settings reload or revert the file`] : [])].join("\n") };
     } catch (error) {
       const message = sanitize(error instanceof Error ? error.message : "configuration reload could not be confirmed").slice(0, 600);

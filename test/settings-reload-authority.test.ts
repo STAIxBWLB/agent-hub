@@ -15,7 +15,7 @@ async function until(condition: () => boolean | Promise<boolean>, label: string,
   while (!(await condition()) && Date.now() < deadline) await Bun.sleep(15);
   expect(await condition(), label).toBe(true);
 }
-async function fixture(options: { trackedRouting?: boolean; kimi?: boolean; limits?: boolean; embedded?: boolean; malformedInitial?: boolean } = {}) {
+async function fixture(options: { trackedRouting?: boolean; codex?: boolean; kimi?: boolean; kimiTui?: boolean; roles?: Record<string, string[]>; limits?: boolean; embedded?: boolean; malformedInitial?: boolean } = {}) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-reload-authority-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -25,15 +25,16 @@ async function fixture(options: { trackedRouting?: boolean; kimi?: boolean; limi
     expect(result.status, result.stderr).toBe(0);
   };
   const shared = {
-    ...(options.embedded ? {} : { batch_ms: 0 }), roster: { claude: false, codex: false, kimi: !!options.kimi, qwen: false, jcode: false, pi: false, local: false },
+    ...(options.embedded ? {} : { batch_ms: 0 }), roster: { claude: false, codex: !!options.codex, kimi: !!options.kimi, qwen: false, jcode: false, pi: false, local: false },
     memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false },
     snapshots: { enabled: false }, research: { enabled: false }, approvals: { notify: false },
     tasks: { wip_limits: { codex: 1 } }, task_sweep: { enabled: false }, pi: { enabled: false, auto_start: false },
+    ...(options.roles ? { roles: options.roles } : {}),
     ...(options.limits ? { limits: { sender_per_min: 1, pair_per_min: 0, important_per_hour: 0, repeat_window_s: 0 } } : {}),
   };
   const originalProtocol = join(dir, "known-fake-original.jsonl"), unreviewedProtocol = join(dir, "known-fake-unreviewed.jsonl");
   const fake = (record: string) => [process.execPath, join(import.meta.dir, "fakes/acp-server.ts"), "--record-protocol", record];
-  const initialLocal = options.kimi ? { peers: { kimi: { start_mode: "headless" } }, kimi_cmd: fake(originalProtocol) } : {};
+  const initialLocal = options.kimi ? { peers: { kimi: { start_mode: options.kimiTui ? "tui" : "headless" } }, kimi_cmd: fake(originalProtocol) } : {};
   writeFileSync(file("config.json"), JSON.stringify(shared));
   if (options.kimi) writeFileSync(file("config.local.json"), JSON.stringify(initialLocal));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8")
@@ -52,6 +53,89 @@ async function fixture(options: { trackedRouting?: boolean; kimi?: boolean; limi
   const set = (key: string, value: unknown) => client.request({ t: "settings_set", key, value, reason: "approve this named setting only" });
   return { dir, state, file, git, shared, routing, daemon, client, pushes, row, local, reload, set, originalProtocol, unreviewedProtocol, fake };
 }
+
+test("#439 removing the settled planner is guarded and previews the automatic successor", async () => {
+  const f = await fixture({ codex: true, kimi: true, roles: { claude: [], kimi: ["planner"] } });
+  const status = async () => (await f.client.request({ t: "status" })).status;
+  expect((await status()).planner).toEqual({ peers: ["kimi"], source: "roles" });
+  f.local({ roles: { kimi: [] } });
+  await until(async () => f.pushes.some(message => message.t === "notice" && String(message.line).includes("roles.kimi")) || JSON.stringify((await status()).planner.peers) !== JSON.stringify(["kimi"]), "watcher processes planner withdrawal");
+  expect((await status()).planner).toEqual({ peers: ["kimi"], source: "roles" });
+  const preview = await f.reload();
+  expect(preview.ok).toBe(true);
+  expect(preview.rejected.some((entry: { key: string }) => entry.key === "roles.kimi")).toBe(true);
+  expect(preview.confirmation.keys).toContain("roles.kimi");
+  const change = preview.confirmation.changes.find((entry: { key: string }) => entry.key === "roles.kimi");
+  expect(JSON.parse(change.before)).toEqual(["planner"]);
+  expect(JSON.parse(change.after)).toEqual([]);
+  expect(change.effect).toContain("planner"); expect(change.effect).toContain("kimi"); expect(change.effect).toContain("codex");
+  expect((await status()).planner.peers).toEqual(["kimi"]);
+  const confirmed = await f.reload(preview.confirmation.token);
+  expect(confirmed.ok, String(confirmed.error)).toBe(true);
+  expect((await status()).planner).toEqual({ peers: ["codex"], source: "automatic" });
+}, 15_000);
+
+test("#439 removing the conductor remains guarded even when its role list only shrinks", async () => {
+  const f = await fixture({ codex: true, kimi: true, kimiTui: true, roles: { claude: [], codex: ["planner"], kimi: ["conductor", "reviewer"] } });
+  // An authenticated in-process bridge makes role status observable; it launches no native CLI or model.
+  const peer = await ControlClient.connect(f.state, { role: "peer", peer: "kimi", channel: false }); cleanup.push(() => peer.close());
+  const roles = async () => (await f.client.request({ t: "status" })).status.roleInfo.kimi.flowRoles as string[];
+  expect(await roles()).toContain("conductor");
+  f.local({ roles: { kimi: ["reviewer"] } });
+  await until(async () => f.pushes.some(message => message.t === "notice" && String(message.line).includes("roles.kimi")) || !(await roles()).includes("conductor"), "watcher processes conductor withdrawal");
+  expect(await roles()).toContain("conductor");
+  const preview = await f.reload();
+  expect(preview.ok).toBe(true);
+  expect(preview.confirmation.keys).toContain("roles.kimi");
+  const change = preview.confirmation.changes.find((entry: { key: string }) => entry.key === "roles.kimi");
+  expect(JSON.parse(change.before)).toEqual(["conductor", "reviewer"]);
+  expect(JSON.parse(change.after)).toEqual(["reviewer"]);
+  expect(change.effect).toContain("conductor"); expect(change.effect).toContain("kimi");
+  expect((await f.reload(preview.confirmation.token)).ok).toBe(true);
+  expect(await roles()).toEqual(["reviewer"]);
+}, 15_000);
+
+test("#439 nonholder role subsets still tighten automatically without acquiring authority", async () => {
+  const f = await fixture({ codex: true, kimi: true, kimiTui: true, roles: { claude: [], codex: ["planner"], kimi: ["reviewer", "implementer"] } });
+  const peer = await ControlClient.connect(f.state, { role: "peer", peer: "kimi", channel: false }); cleanup.push(() => peer.close());
+  const status = async () => (await f.client.request({ t: "status" })).status;
+  f.local({ roles: { kimi: ["reviewer"] } });
+  await until(async () => JSON.stringify((await status()).roleInfo.kimi.flowRoles) === JSON.stringify(["reviewer"]), "ordinary role reduction applies through watcher");
+  const reloaded = await f.reload();
+  expect(reloaded.ok).toBe(true);
+  expect(reloaded.confirmation).toBeUndefined();
+  expect((await status()).planner).toEqual({ peers: ["codex"], source: "roles" });
+}, 15_000);
+
+test("#439 command confirmation displays complete old and new argv as parseable JSON", async () => {
+  const f = await fixture({ kimi: true });
+  const before = f.fake(f.originalProtocol);
+  const after = [...f.fake(f.unreviewedProtocol), "--fixture-label", "argument with spaces and literal quotes: 'safe'"];
+  f.local({ kimi_cmd: after });
+  const preview = await f.reload();
+  expect(preview.ok).toBe(true);
+  expect(preview.confirmation.keys).toContain("kimi_cmd");
+  const change = preview.confirmation.changes.find((entry: { key: string }) => entry.key === "kimi_cmd");
+  expect(JSON.parse(change.before)).toEqual(before);
+  expect(JSON.parse(change.after)).toEqual(after);
+  expect(existsSync(f.originalProtocol)).toBe(false);
+  expect(existsSync(f.unreviewedProtocol)).toBe(false);
+}, 15_000);
+
+test("#439 command previews over 16 KiB are rejected per key and never made confirmable", async () => {
+  const f = await fixture({ kimi: true });
+  // Every argument is individually valid. Only the aggregate serialized preview exceeds its display bound.
+  const after = [...f.fake(f.unreviewedProtocol), ...Array.from({ length: 500 }, (_, index) => `argument-${index}-${"x".repeat(40)}`)];
+  expect(JSON.stringify(after).length).toBeGreaterThan(16 * 1024);
+  f.local({ kimi_cmd: after, research: { enabled: true } });
+  const preview = await f.reload();
+  expect(preview.ok).toBe(true);
+  expect(preview.rejected.some((entry: { key: string; reason: string }) => entry.key === "kimi_cmd" && /bound|large|16|preview/i.test(entry.reason))).toBe(true);
+  expect(preview.confirmation?.keys ?? []).not.toContain("kimi_cmd");
+  expect((await f.row("research.enabled")).value).toBe(true);
+  expect(existsSync(f.originalProtocol)).toBe(false);
+  expect(existsSync(f.unreviewedProtocol)).toBe(false);
+}, 15_000);
 
 for (const trackedRouting of [true, false]) {
   test(`#439 privacy tightening in ${trackedRouting ? "tracked" : "untracked"} routing is adopted by the watcher`, async () => {

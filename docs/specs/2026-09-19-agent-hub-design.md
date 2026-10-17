@@ -3139,7 +3139,7 @@ Unapplied edits remain pending for a later explicit reload; accepting another ke
 not acknowledge them in the accepted source baseline.
 
 Privacy tightening is automatic from tracked or untracked files: enabling local PII
-constraints/screening, adding PII patterns, removing role memberships and narrowing an explicit capability list cannot
+constraints/screening, adding PII patterns, removing nonholder role memberships and narrowing an explicit capability list cannot
 be mistaken for a raise. Deleting a restricted capability entry restores the default of all capabilities and is a guarded widening. Roster membership changes always use their named confirmation and peer lifecycle, even when removing a peer; generic reload never bypasses those steps. Registered floors and known semantic reductions in admission
 or permission likewise remain available without authorizing a wider policy. Other
 agent-relevant policy, including limits, supervision feed, inference, review and crash
@@ -3166,3 +3166,25 @@ Inheritance and undo use the actual destination source trust. They may restore a
 Reserved prototype path components are refused throughout nested routing extension tables before publication. Configuration path writes never traverse inherited object properties.
 
 Switchyard targets/routes and hub-route dictionaries retain opaque quoted keys, including dots. Each dictionary is one guarded value for reload confirmation and publication; privacy fields and ordinary registry settings retain leaf-level decisions.
+
+### Settled authority and reviewable confirmation (#439 round-2 amendment)
+
+A role-list subset is automatic only when the settled planner and conductor holder
+sets stay unchanged. Removing the last explicit planner can hand that authority to
+the automatic fallback; removing a settled holder therefore requires guarded
+confirmation even though the raw role list shrinks. The same pure role resolver
+serves publication and the authority comparison.
+
+The console preview shows a complete bounded before -> after value for every guarded
+key, including full executable argv, and describes any settled holder change. Values
+stay out of notices and events. A value that cannot fit the review budget is retained
+with an actionable rejection, never silently truncated and authorized. Each before
+or after representation is at most 16 KiB, an effect description at most 2 KiB, and
+the complete confirmation at most 128 KiB.
+
+The confirmation token proves candidate/state freshness. It does not independently
+prove a person's presence: console-role authority is the existing server trust
+boundary, while the CLI enforces interactive TTY, explicit y and the deadline.
+The roster exact-key mutation guard observes admission while teardown is held,
+before reload can repair a wrong whole-roster assignment. The roster authority seed
+covers the dashboard authority boundary; its separate leaf check is defence in depth.

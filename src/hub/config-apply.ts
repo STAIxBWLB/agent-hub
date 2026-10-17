@@ -25,6 +25,8 @@ export interface ConfigAuthorizationInput {
   confirmed?: boolean;
   /** Root proved the destination equals an unchanged, effective startup declaration in this origin. */
   acceptedFallback?: boolean;
+  /** The prospective settled planner/conductor holder sets change, even if the raw role list shrinks. */
+  settledHolderChange?: boolean;
   guard?: ReloadGuard;
 }
 export interface ConfigAuthorizationDecision { key: string; allowed: boolean; guarded: boolean; reason: string }
@@ -57,7 +59,7 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   }
   if (["inference.enabled", "inference.triage", "review.adaptive"].includes(key) && before === true && after === false) tightening = true;
   if (key === "review.min_reviews" && numeric(before) && numeric(after) && after >= before) tightening = true;
-  if (tightening) return result(true, false, "semantic tightening");
+  if (tightening && !input.settledHolderChange) return result(true, false, "semantic tightening");
   if (guard?.risk === "safe" && !machine) return result(true, false, "safe registered setting");
   if (input.acceptedFallback && !machine) {
     const person = input.authority === "terminal" || input.authority === "settings" && !!guard;

@@ -1489,8 +1489,8 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   including atomic file replacement. Invalid candidates apply nothing and emit
   one bounded error notice. Valid but unauthorized keys retain their accepted value and are reported per key; other eligible changes still apply. Recovery/shutdown hold reloads.
 - Individual writes and undo publish only the named setting. Other file edits remain unapplied.
-- `ahub settings reload` lists guarded keys and requires an interactive terminal and exact `y` within 30 seconds before adopting them. Candidate bytes or accepted state changes invalidate that confirmation. Watchers and ordinary dashboard reloads never confirm a raise.
-- Privacy tightening (local PII constraints/screening, added PII patterns and removed roles/capabilities) is automatic, including tracked files. Reload checks the actual files' Git provenance. Changed machine-local or raising
+- `ahub settings reload` lists guarded keys with complete before -> after values (including full argv) and any planner/conductor holder effect. It requires an interactive terminal and exact `y` within 30 seconds before adopting them. Oversized previews remain unapplied and must be split or reduced. Candidate bytes or accepted state changes invalidate that confirmation. Watchers and ordinary dashboard reloads never confirm a raise.
+- Privacy tightening (local PII constraints/screening, added PII patterns, nonholder role reductions and explicit capability-list narrowing) is automatic, including tracked files. A planner/conductor holder change is guarded even when a role list shrinks; deleting a restricted capability entry restores all capabilities and is guarded. Reload checks the actual files' Git provenance. Changed machine-local or raising
   values from tracked/unverifiable files are refused; an ordinary dashboard or
   watcher cannot adopt unrelated raising local edits. A settings session cannot
   adopt routing fields outside its editable registry. Existing confirmation and

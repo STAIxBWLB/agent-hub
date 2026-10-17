@@ -1933,3 +1933,5 @@ confirm undo; verify the restored value through `ahub settings get`. Paste y at
 confirmation and verify no write. Change a sweep interval and confirm the same
 hub instance stays running with its queue and pauses intact. Record the source
 head, terminal and daemon readbacks separately before claiming AC5 native smoke.
+
+For the guarded CLI leg, edit a disposable untracked WIP limit, run `ahub settings reload`, inspect its complete before -> after preview, decline and verify the running limit is retained. Repeat and confirm y, then verify the same instance and queue/pause state. Record this separately from the scripted CLI fixture; the token proves freshness within console authority, and the CLI supplies the person-presence checks.

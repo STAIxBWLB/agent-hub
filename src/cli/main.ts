@@ -1361,9 +1361,22 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (Array.isArray(result.rejected)) for (const row of result.rejected.slice(0, 100)) console.log(terminalText(`${String(row.key).slice(0, 160)}: ${String(row.reason).slice(0, 1000)}`));
         if (confirmation !== undefined) {
           if (!confirmation || typeof confirmation.token !== "string" || !confirmation.token || confirmation.token.length > 256 || !Array.isArray(confirmation.keys) || !confirmation.keys.length || confirmation.keys.length > 200 || confirmation.keys.some((key: unknown) => typeof key !== "string" || key.length > 160)) fail("invalid reload confirmation; guarded settings were not applied");
+          const fullValue = (value: unknown): boolean => {
+            if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 16_384) return false;
+            if (value === "(unset)") return true;
+            try { JSON.parse(value); return true; } catch { return false; }
+          };
+          if (Buffer.byteLength(JSON.stringify(result), "utf8") > 131_072 || new Set(confirmation.keys).size !== confirmation.keys.length || !Array.isArray(confirmation.changes) || confirmation.changes.length !== confirmation.keys.length || confirmation.changes.some((change: unknown, index: number) => {
+            if (!change || typeof change !== "object" || Array.isArray(change)) return true;
+            const row = change as Record<string, unknown>;
+            return row.key !== confirmation.keys[index] || !fullValue(row.before) || !fullValue(row.after) || (row.effect !== undefined && (typeof row.effect !== "string" || Buffer.byteLength(row.effect, "utf8") > 2048));
+          })) fail("reload preview is incomplete or unavailable; upgrade the running hub and run ahub settings reload again to review every full value; guarded settings were not applied");
           const token = confirmation.token;
           console.log("Guarded settings awaiting confirmation:");
-          for (const key of confirmation.keys) console.log(`  ${terminalText(key)}`);
+          for (const change of confirmation.changes) {
+            console.log(`  ${terminalText(change.key)}: ${terminalText(change.before)} -> ${terminalText(change.after)}`);
+            if (change.effect !== undefined) console.log(`    ${terminalText(change.effect)}`);
+          }
           if (!process.stdin.isTTY || !process.stdout.isTTY) fail("guarded settings need an interactive person's terminal; run ahub settings reload there; guarded settings were not applied");
           const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
           const ended = new AbortController();
