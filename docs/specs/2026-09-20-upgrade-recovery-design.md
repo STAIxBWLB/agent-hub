@@ -685,7 +685,13 @@ file, backend and model. Before any new terminal effect the marker becomes
 attachment bound; an interruption cannot grant another create. A second detach or
 an exhausted attempt blocks with its recorded cause. These repairs are recorded-
 session only: no automatic fresh/zero-turn replacement or fresh-session choice is
-introduced for a marked repair. The original strict session/file checks remain.
+introduced for a marked repair. Strict session/file checks remain for repairs;
+ordinary verified-empty Pi attachments retain their pre-existing id-only rules.
+When `recordRestart` retires a known done or waiting binding from a dead target,
+it clears that binding's repair fence. The normal #225 relaunch preserves its
+accepted conversation and a new target gets its own repair allowance. An uncertain
+creation with no durable selected binding does not gain a second creation by
+merely losing the target. Database contention retains its typed retryable outcome.
 
 The person-only `ahub recovery reattach <operation> <peer>` is admitted only for
 that operation's current structured reattachment block. It claims the existing
@@ -707,3 +713,16 @@ operation's bookmark. No global operation-directory scan or native probe is used
 to discover sessions. The person summary distinguishes historical target startup,
 plugin installation and the remaining global CLI installation, and continues to
 say abandoned, not completed or rolled back.
+
+A missing, expired, unreadable or foreign snapshot prevents a continuity bookmark,
+not stop-and-archive itself. Disposal records a per-project continuity warning and
+still releases its machine lock. An actual rename failure of this operation's own
+snapshot retains the existing failure and retry path. Optional bookmark storage
+failure is recorded as unavailable rather than blocking this last-resort exit.
+
+A valid bookmark is archived with a structured reason under its exact CAS when a
+different authenticated Pi session becomes the saved crash record, its recorded
+session is proven unresumable, or a later recovery successfully releases the
+project. Unknown I/O or provider failures do not prove an unresumable session.
+Malformed or unverifiable bookmark evidence remains fail-closed. The TUI resume
+argv carries `--session-file` when available, otherwise `--session-id`, never both.

@@ -1,15 +1,26 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { writeSessions } from "../src/hub/crash.ts";
+import { readSessions, writeSessions } from "../src/hub/crash.ts";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
 import { readRecoveryContinuity, writeRecoveryContinuity, type RecoveryContinuityBookmark } from "../src/hub/recovery-continuity.ts";
 import type { TerminalOpener } from "../src/hub/terminal-open.ts";
 
 const OP = "00000000-0000-4000-8000-000000000463";
+function parsePiFlags(args: string[]): Record<string, unknown> {
+  // ponytail: main.ts dispatches when imported. Keep its real pure parser until the CLI extracts a parser module.
+  const source = readFileSync(new URL("../src/cli/main.ts", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
+  const parser = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "piFlags");
+  expect(parser).toBeDefined();
+  const js = ts.transpileModule(parser!.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
+  return runInNewContext(`${js}; piFlags();`, { args: [...args], fail: (message: string) => { throw new Error(message); } });
+}
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function until(check: () => boolean, label: string) {
@@ -53,8 +64,17 @@ test("#463 pi.auto_start opens the configured TUI with fixed recorded resume arg
   const f = rig(); writeRecoveryContinuity(f.stateDir, f.bookmark);
   const { daemon } = await f.start("tui");
   await until(() => f.opened.length === 1, "recorded Pi terminal opened");
-  expect(f.opened[0]).toEqual([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", f.cwd, "pi", "--mode", "tui", "--session-id", f.bookmark.pi.sessionId, "--session-file", f.bookmark.pi.sessionFile!, "--backend", "dgx", "--model", "dgx/coding"]);
+  expect(f.opened[0]).toEqual([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", f.cwd, "pi", "--mode", "tui", "--session-file", f.bookmark.pi.sessionFile!, "--backend", "dgx", "--model", "dgx/coding"]);
   expect(daemon.bus.peers.has("pi")).toBe(false);
+  expect(existsSync(f.file)).toBe(true);
+});
+
+test("#463 the actual Pi CLI parser accepts the exact continuity TUI command", async () => {
+  const f = rig(); writeRecoveryContinuity(f.stateDir, f.bookmark);
+  await f.start("tui");
+  await until(() => f.opened.length === 1, "recorded terminal command captured");
+  expect(parsePiFlags(f.opened[0]!.slice(5))).toEqual({ mode: "tui", sessionFile: f.bookmark.pi.sessionFile, backend: "dgx", model: "dgx/coding" });
+  expect(() => parsePiFlags(["--mode", "tui", "--session-id", "one", "--session-file", "/fixture/one.jsonl"])).toThrow("usage: ahub pi");
   expect(existsSync(f.file)).toBe(true);
 });
 
@@ -64,17 +84,22 @@ for (const wrong of ["malformed", "project"] as const) test(`#463 ${wrong} conti
   else writeRecoveryContinuity(f.stateDir, { ...f.bookmark, projectId: "another-project" });
   const { daemon } = await f.start("tui");
   await until(() => f.log().includes("pi.auto_start"), "continuity refusal reported");
+  expect(f.log()).toContain("mv");
+  expect(f.log()).toContain(f.file);
   expect(f.opened).toEqual([]);
   expect(daemon.bus.peers.has("pi")).toBe(false);
   expect(existsSync(f.file)).toBe(true);
 });
 
-test("#463 failed archived-session attachment retains its bookmark and never falls back fresh", async () => {
+test("#463 a proven mismatching archived-session header is retired without falling back fresh", async () => {
   const f = rig(); writeRecoveryContinuity(f.stateDir, { ...f.bookmark, pi: { ...f.bookmark.pi, sessionId: "different-recorded-session" } });
   const { daemon } = await f.start("headless");
   await until(() => f.log().includes("pi.auto_start did not start Pi:") || f.log().includes("Pi auto-start failed:"), "exact session refusal reported");
   expect(daemon.bus.peers.get("pi")?.state ?? "offline").toBe("offline");
-  expect(existsSync(f.file)).toBe(true);
+  expect(existsSync(f.file)).toBe(false);
+  const archive = readdirSync(f.stateDir).find(name => name.startsWith("recovery-continuity.retired.resume_unavailable."));
+  expect(archive).toBeDefined();
+  expect(JSON.parse(readFileSync(join(f.stateDir, archive!), "utf8")).pi.sessionId).toBe("different-recorded-session");
   expect(f.log()).not.toContain("started a fresh session");
 });
 
@@ -104,4 +129,40 @@ test("#463 an off-roster Pi leaves continuity evidence untouched", async () => {
   const status = await client.request({ t: "status" });
   expect(status.t).toBe("status"); expect(status.status.stopping).toBe(false);
   expect(f.opened).toEqual([]); expect(daemon.bus.peers.has("pi")).toBe(false); expect(existsSync(f.file)).toBe(true);
+});
+
+test("#463 a different authenticated Pi retires old continuity only after recording the current crash session", async () => {
+  const f = rig(); writeRecoveryContinuity(f.stateDir, f.bookmark);
+  const currentFile = join(f.stateDir, "pi-sessions", "current.jsonl");
+  writeFileSync(currentFile, JSON.stringify({ type: "session", id: "current-pi-session", cwd: f.cwd }) + "\n");
+  const { daemon, client } = await f.start("headless", { pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false, backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] } });
+  const started = await client.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx", sessionId: "current-pi-session", sessionFile: currentFile } });
+  expect(started.ok).toBe(true);
+  await until(() => daemon.bus.peers.get("pi")?.state === "idle", "current Pi authenticated");
+  expect(readSessions(f.stateDir)?.peers.find(peer => peer.peer === "pi")?.meta.sessionId).toBe("current-pi-session");
+  expect(existsSync(f.file)).toBe(false);
+  const archive = readdirSync(f.stateDir).find(name => name.startsWith("recovery-continuity.retired.authenticated_session_changed."));
+  expect(archive).toBeDefined();
+  expect(JSON.parse(readFileSync(join(f.stateDir, archive!), "utf8")).pi.sessionId).toBe(f.bookmark.pi.sessionId);
+});
+
+for (const mode of ["headless", "tui"] as const) test(`#463 missing archived session retires continuity after the ${mode} auto-start decision without a fresh replacement`, async () => {
+  const f = rig(); writeRecoveryContinuity(f.stateDir, f.bookmark); rmSync(f.bookmark.pi.sessionFile!);
+  const { daemon } = await f.start(mode);
+  await until(() => f.log().includes("pi.auto_start") || f.log().includes("Pi auto-start failed:"), "unresumable decision reported");
+  expect(existsSync(f.file)).toBe(false);
+  expect(readdirSync(f.stateDir).some(name => name.startsWith("recovery-continuity.retired.resume_unavailable."))).toBe(true);
+  expect(daemon.bus.peers.get("pi")?.state ?? "offline").toBe("offline");
+  expect(f.opened).toEqual([]);
+  expect(f.log()).toContain("ahub pi");
+  expect(f.log()).not.toContain("started a fresh session");
+});
+
+test("#463 uncertain session storage failure retains continuity and never starts a fresh TUI", async () => {
+  const f = rig(); writeRecoveryContinuity(f.stateDir, f.bookmark); rmSync(f.bookmark.pi.sessionFile!); mkdirSync(f.bookmark.pi.sessionFile!);
+  const { daemon } = await f.start("tui");
+  await until(() => f.log().includes("pi.auto_start") || f.log().includes("Pi auto-start failed:"), "uncertain failure reported");
+  expect(existsSync(f.file)).toBe(true);
+  expect(readdirSync(f.stateDir).some(name => name.startsWith("recovery-continuity.retired."))).toBe(false);
+  expect(daemon.bus.peers.has("pi")).toBe(false); expect(f.opened).toEqual([]);
 });

@@ -14,6 +14,7 @@ interface Api {
   writeRecoveryContinuity(stateDir: string, bookmark: Bookmark): { digest: string };
   readRecoveryContinuity(stateDir: string, expected: Expected): Reading;
   consumeRecoveryContinuity(stateDir: string, expected: Expected & { operationId: string; digest: string }): boolean;
+  retireRecoveryContinuity(stateDir: string, expected: Expected & { operationId: string; digest: string }, reason: "authenticated_session_changed" | "resume_unavailable" | "recovery_released"): { retired: boolean; archive?: string };
 }
 const OP_A = "00000000-0000-4000-8000-000000000001", OP_B = "00000000-0000-4000-8000-000000000002";
 const cleanup: (() => void)[] = [];
@@ -113,4 +114,54 @@ test("#463 a symlinked SQLite continuity lock cannot redirect writes outside thi
 test("#463 world-readable continuity metadata is invalid rather than silently trusted", async () => {
   const f = await fixture(); f.api.writeRecoveryContinuity(f.stateDir, f.bookmark); chmodSync(f.file, 0o644);
   expect(f.api.readRecoveryContinuity(f.stateDir, f.expected).state).toBe("invalid");
+});
+
+test("#463 retirement archives the exact private bookmark under a structured reason without deleting its evidence", async () => {
+  const f = await fixture(), wrote = f.api.writeRecoveryContinuity(f.stateDir, f.bookmark);
+  expect(typeof f.api.retireRecoveryContinuity).toBe("function");
+  const before = readFileSync(f.file, "utf8");
+  const retired = f.api.retireRecoveryContinuity(f.stateDir, { ...f.expected, operationId: OP_A, digest: wrote.digest }, "authenticated_session_changed");
+  expect(retired.retired).toBe(true); expect(retired.archive).toContain("authenticated_session_changed");
+  expect(readFileSync(retired.archive!, "utf8")).toBe(before);
+  expect(statSync(retired.archive!).mode & 0o777).toBe(0o600);
+  expect(f.api.readRecoveryContinuity(f.stateDir, f.expected)).toEqual({ state: "absent" });
+});
+
+test("#463 retirement CAS retains a newer bookmark and invalid evidence remains fail closed", async () => {
+  const f = await fixture(), first = f.api.writeRecoveryContinuity(f.stateDir, f.bookmark);
+  expect(typeof f.api.retireRecoveryContinuity).toBe("function");
+  f.api.writeRecoveryContinuity(f.stateDir, { ...f.bookmark, operationId: OP_B, at: 2000 });
+  const before = readFileSync(f.file, "utf8");
+  expect(f.api.retireRecoveryContinuity(f.stateDir, { ...f.expected, operationId: OP_A, digest: first.digest }, "recovery_released")).toEqual({ retired: false });
+  expect(readFileSync(f.file, "utf8")).toBe(before);
+  writeFileSync(f.file, "{", { mode: 0o600 });
+  expect(() => f.api.retireRecoveryContinuity(f.stateDir, { ...f.expected, operationId: OP_B, digest: first.digest }, "resume_unavailable")).toThrow();
+  expect(readFileSync(f.file, "utf8")).toBe("{");
+});
+
+test("#463 retirement never overwrites unrelated archived evidence at its preferred archive name", async () => {
+  const f = await fixture(), wrote = f.api.writeRecoveryContinuity(f.stateDir, f.bookmark);
+  expect(typeof f.api.retireRecoveryContinuity).toBe("function");
+  const occupied = join(f.stateDir, `recovery-continuity.retired.resume_unavailable.${wrote.digest}.json`);
+  writeFileSync(occupied, "unrelated preserved evidence", { mode: 0o600 });
+  const retired = f.api.retireRecoveryContinuity(f.stateDir, { ...f.expected, operationId: OP_A, digest: wrote.digest }, "resume_unavailable");
+  expect(retired.retired).toBe(true); expect(retired.archive).not.toBe(occupied);
+  expect(readFileSync(occupied, "utf8")).toBe("unrelated preserved evidence");
+  expect(JSON.parse(readFileSync(retired.archive!, "utf8"))).toEqual(f.bookmark);
+});
+
+test("#463 Pi session validation classifies proven unresumable evidence but keeps storage I/O uncertain", async () => {
+  const path = "../src/pi/session.ts", module = await import(path);
+  expect(typeof module.PiSessionUnresumable).toBe("function");
+  const f = await fixture(), sessions = join(f.stateDir, "pi-sessions"); mkdirSync(sessions);
+  const invalid = join(sessions, "invalid.jsonl"), mismatch = join(sessions, "mismatch.jsonl"), io = join(sessions, "directory.jsonl"), outside = join(f.root, "outside.jsonl");
+  writeFileSync(invalid, "{"); writeFileSync(mismatch, JSON.stringify({ type: "session", id: "another", cwd: f.expected.projectRoot })); mkdirSync(io); writeFileSync(outside, "{}");
+  for (const [file, reason] of [[join(sessions, "missing.jsonl"), "missing"], [outside, "outside_managed"], [invalid, "invalid_header"], [mismatch, "invalid_header"]] as const) {
+    let error: unknown; try { module.validatePiSession(f.stateDir, f.expected.projectRoot, file, "expected"); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(module.PiSessionUnresumable);
+    expect((error as { reason: string }).reason).toBe(reason);
+  }
+  let error: unknown; try { module.validatePiSession(f.stateDir, f.expected.projectRoot, io, "expected"); } catch (caught) { error = caught; }
+  expect(error).toBeInstanceOf(Error);
+  expect(error).not.toBeInstanceOf(module.PiSessionUnresumable);
 });

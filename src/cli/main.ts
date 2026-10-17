@@ -43,7 +43,7 @@ import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
-import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner } from "../hub/recovery-store.ts";
+import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, reattachRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
@@ -547,9 +547,16 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (action === "reattach") {
       const selected = parseRecoveryReattach(args);
       if (!selected) fail("usage: ahub recovery reattach <operation-id> codex|claude|pi");
-      const operation = readOperation<RecoveryOperation>(selected.id);
+      let operation: RecoveryOperation;
+      try { operation = readOperation<RecoveryOperation>(selected.id); }
+      catch { fail(`recovery receipt ${selected.id} cannot be read; inspect the retained operation with ahub recovery status ${selected.id}; no session was started`); }
+      if (typeof operation.sourceRoot !== "string" || !operation.sourceRoot.trim()) fail(`recovery receipt ${selected.id} has no retained coordinator path; inspect it with ahub recovery status ${selected.id}; no session was started`);
       const coordinator = join(operation.sourceRoot, "src/cli/main.js");
-      if (realPath(coordinator) !== realPath(join(import.meta.dir, "main.js"))) {
+      if (!existsSync(coordinator)) fail(`the retained coordinator for ${selected.id} is unavailable; restore its retained package and inspect ahub recovery status ${selected.id} before retrying; no session was started`);
+      let coordinatorIsCurrent: boolean;
+      try { coordinatorIsCurrent = realPath(coordinator) === realPath(join(import.meta.dir, "main.js")); }
+      catch { fail(`the retained coordinator for ${selected.id} cannot be resolved; inspect ahub recovery status ${selected.id} before retrying; no session was started`); }
+      if (supportsAction(operation.sourceRoot, "reattach") && !coordinatorIsCurrent) {
         console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, "reattach", selected.peer)}`);
         const code = await new Promise<number>(resolve => {
           const child = spawn(process.execPath, [coordinator, "recovery", "reattach", selected.id, selected.peer], { cwd, stdio: "inherit", env: process.env });

@@ -109,7 +109,7 @@ export interface RecoveryOperation {
   blockedReattachment?: { projectId: string; peer: RecoveryNativePeer };
   /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
   audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
-  disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string> };
+  disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string>; continuity?: Record<string, "not-archived" | "unavailable"> };
   /** #215: a refusal no resume can get past was recorded (FinalRefusal); `next` no longer offers resume. */
   final?: boolean;
 }
@@ -161,7 +161,10 @@ export function recordRestart(progress: ProjectProgress, at: number): void {
     progress.terminals[`retired:${peer}`] = receipt.binding;
     delete progress.terminals[`closedRetired:${peer}`]; // a newer binding to close: its own receipt starts over
     delete progress.terminals[key];
+    // The allowance belongs to the target whose exact binding was retired, not every later #225 restart.
+    if (progress.reattachments) delete progress.reattachments[peer as RecoveryNativePeer];
   }
+  if (progress.reattachments && !Object.keys(progress.reattachments).length) delete progress.reattachments;
   delete progress.instanceId;
   progress.phase = "stopped";
 }
@@ -261,7 +264,7 @@ export function nextChoices(receipt: RecoveryOperation, runner?: number | "unkno
   const old = !!op.sourceRoot && !coordinatorCurrent(op.sourceRoot);
   const abortable = !abortRefusal(op, live);
   const stuck = resumeBlocked(op, live);
-  const selected = op.blockedReattachment;
+  const selected = op.phase === "blocked" ? op.blockedReattachment : undefined;
   const repair = selected && op.projects.find(project => project.id === selected.projectId)?.reattachments?.[selected.peer];
   const reattach = selected && repair && (repair.state === "ready" || repairWaiting(op, selected.projectId, selected.peer));
   return [
@@ -408,7 +411,7 @@ export interface RecoveryDriver {
   release(project: Project, operation: string, instance: string): Promise<void>;
   verify(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, save?: () => void): Promise<void>;
   /** #215 stop-and-archive: stop this operation's unreleased target (when given) and archive its committed snapshot. */
-  stopAndArchive(project: Project, op: RecoveryOperation, targetInstance?: string): Promise<void>;
+  stopAndArchive(project: Project, op: RecoveryOperation, targetInstance?: string): Promise<void | { continuity: "not-archived" | "unavailable" }>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -644,8 +647,9 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     else delete op.blockedReattachment;
     if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
     if (error instanceof FinalRefusal) op.final = true;
+    op.phase = "blocked";
     const next = nextActionsText(op, await liveProjects(op, driver.inspect));
-    op.phase = "blocked"; op.error = `${error instanceof Error ? error.message : "recovery failed"}; ${next}`; save();
+    op.error = `${error instanceof Error ? error.message : "recovery failed"}; ${next}`; save();
   } finally { releaseRunner(); }
   return op;
 }
@@ -653,14 +657,16 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
 export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown", live: Record<string, Inspection | undefined> = {}) {
   const effect = (key: string, value: unknown) => key.startsWith("restored:") ? restoreReceiptStatus(value) : value === "pending" || value === "failed" ? value : "done";
-  const next = nextActions(op, runnerPid, live);
+  const choices = nextChoices(op, runnerPid, live), next = choices.map(choice => choice.text);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
     runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
     projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(key, value)])) } : {}),
       ...(op.plan.projects.find(planned => planned.project.id === p.id) ? { recordedSessions: recordedPeerGuidance(op.plan.projects.find(planned => planned.project.id === p.id)!, p, {
         recorded: Object.fromEntries(Object.entries(p.reattachments ?? {}).flatMap(([peer, marker]) => marker ? [[peer, marker.binding]] : [])),
-        reattachCommand: peer => recoveryCommand(op, "reattach", peer),
+        reattachCommand: peer => op.phase === "blocked" && !op.disposition && !op.final && op.targetRoot && op.targetDigest && p.instanceId && ["started", "peers-restored"].includes(p.phase) &&
+          op.blockedReattachment?.projectId === p.id && op.blockedReattachment.peer === peer && choices.some(choice => choice.kind === "reattach" && choice.peer === peer)
+          ? recoveryCommand(op, "reattach", peer) : undefined,
       }) } : {}),
       ...(p.fresh ? { lostContinuity: Object.fromEntries(Object.entries(p.fresh).map(([peer, f]) => [peer, f.lost])) } : {}),
       ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
@@ -838,7 +844,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       acts.push({ planned, ...(state ? { live: state } : {}), act });
     }
     // Each outcome is recorded as it happens, so a disposition that stops partway stays true and resume refuses it.
-    const disposition = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
+    const disposition: NonNullable<RecoveryOperation["disposition"]> = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
     delete op.blockedReattachment;
     abandoned(op); // #227: in the same write as the disposition
     (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
@@ -849,7 +855,8 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       for (const { planned, live, act } of acts) {
         if (act.startsWith("source hold")) await driver.abort(planned.project, id, planned.source.instanceId!);
         else if (act === "stopped" || act === "target stopped") {
-          await driver.stopAndArchive(planned.project, op, act === "target stopped" ? live!.instanceId : undefined);
+          const outcome = await driver.stopAndArchive(planned.project, op, act === "target stopped" ? live!.instanceId : undefined);
+          if (outcome && outcome.continuity) (disposition.continuity ??= {})[planned.project.id] = outcome.continuity;
           if ((await driver.inspect(planned.project)).state !== "stopped") throw new Error(`${planned.project.id}: shutdown of instance ${live!.instanceId ?? "unknown"} is not verified`);
         }
         disposition.projects[planned.project.id] ??= act;

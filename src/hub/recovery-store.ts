@@ -70,7 +70,7 @@ export function assertLifecycleAvailable(): void {
  * named, which does all of that in-process (its resume still runs the operation's own runner).
  */
 export type RecoveryAction = "status" | "resume" | "abort" | "dispose" | "reattach";
-function supportsAction(sourceRoot: string, action: RecoveryAction): boolean {
+export function supportsAction(sourceRoot: string, action: RecoveryAction): boolean {
   if (!coordinatorCurrent(sourceRoot)) return false;
   if (action !== "reattach") return true;
   try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function reattachRecovery"); } catch { return false; }

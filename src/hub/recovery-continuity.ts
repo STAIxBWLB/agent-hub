@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, unlinkSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import { realPath } from "./project.ts";
 import { atomicPrivateJSON, operationIdPattern } from "./recovery-store.ts";
@@ -18,6 +18,7 @@ export interface RecoveryContinuityBookmark {
   pi: { sessionId: string; sessionFile?: string; backend?: "auto" | "dgx" | "mlx"; model?: string };
 }
 export interface RecoveryContinuityExpected { projectId: string; projectRoot: string; operationId?: string }
+export type ContinuityRetirementReason = "authenticated_session_changed" | "resume_unavailable" | "recovery_released";
 export type RecoveryContinuityReading =
   | { state: "absent" }
   | { state: "invalid"; reason: "unavailable" | "invalid_shape" | "invalid_path" | "identity_mismatch" | "oversized" }
@@ -124,5 +125,28 @@ export function consumeRecoveryContinuity(stateDir: string, expected: RecoveryCo
     if (current.bookmark.operationId !== expected.operationId || current.digest !== expected.digest) return false;
     unlinkSync(join(stateDir, BOOKMARK));
     return true;
+  });
+}
+
+/** Preserve superseded evidence privately; only a matching project/operation/digest may retire the active file. */
+export function retireRecoveryContinuity(
+  stateDir: string,
+  expected: RecoveryContinuityExpected & { operationId: string; digest: string },
+  reason: ContinuityRetirementReason,
+): { retired: boolean; archive?: string } {
+  if (!["authenticated_session_changed", "resume_unavailable", "recovery_released"].includes(reason)) return unavailable();
+  if (!operationIdPattern.test(expected.operationId) || !/^[a-f0-9]{64}$/.test(expected.digest)) return { retired: false };
+  return withWriter(stateDir, () => {
+    const current = readRecoveryContinuity(stateDir, { projectId: expected.projectId, projectRoot: expected.projectRoot });
+    if (current.state === "absent") return { retired: false };
+    if (current.state === "invalid") return unavailable();
+    if (current.bookmark.operationId !== expected.operationId || current.digest !== expected.digest) return { retired: false };
+    // A unique destination preserves an earlier retirement even when the same bookmark was explicitly restored.
+    const archive = join(stateDir, `recovery-continuity.retired.${reason}.${current.digest}.${randomUUID()}.json`);
+    try { lstatSync(archive); return unavailable(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    renameSync(join(stateDir, BOOKMARK), archive);
+    chmodSync(archive, 0o600);
+    return { retired: true, archive };
   });
 }

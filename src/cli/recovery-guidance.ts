@@ -17,7 +17,7 @@ export interface RecoveryGuidanceOptions {
   /** Caller-validated retained repair bindings, including accepted sessions no longer in a done/waiting receipt. */
   recorded?: Partial<Record<RecoveryNativePeer, RecordedSessionOverride>>;
   /** The caller's fixed formatter for this operation's own coordinator, never model-supplied code. */
-  reattachCommand?: (peer: RecoveryNativePeer) => string;
+  reattachCommand?: (peer: RecoveryNativePeer) => string | undefined;
 }
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -69,7 +69,8 @@ export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectP
       ? "The existing Claude channel may reconnect while its native session remains open. Transcript availability is unknown; the recorded resume command is guidance, not proof that the transcript can be resumed."
       : peer === "codex" ? "Recorded Codex thread; leave the old native client before resuming this conversation."
         : "Recorded Pi conversation; preserve this session when starting Pi again.";
-    return { peer, ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}), ...(command ? { command } : {}), ...(options.reattachCommand && command ? { reattachCommand: options.reattachCommand(peer) } : {}), note };
+    const reattachCommand = command ? options.reattachCommand?.(peer) : undefined;
+    return { peer, ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}), ...(command ? { command } : {}), ...(reattachCommand ? { reattachCommand } : {}), note };
   });
 }
 
@@ -82,8 +83,18 @@ export function stopAndArchiveSummary(op: RecoveryOperation, live: Readonly<Reco
     if (["started", "peers-restored", "verified"].includes(progress.phase) || progress.restarts?.length) lines.push(`${progress.id}: target ${op.plan.version} had started; this is a recorded historical step.`);
     const outcome = op.disposition?.projects[progress.id];
     if (outcome) lines.push(`${progress.id}: ${outcome}`);
+    const continuity = op.disposition?.continuity?.[progress.id];
+    if (continuity === "not-archived") lines.push(`${progress.id}: no Pi continuity bookmark because the snapshot was not archived by this operation; use the manual recorded-session commands below.`);
+    else if (continuity === "unavailable") lines.push(`${progress.id}: Pi continuity bookmark unavailable; automatic session continuity is unconfirmed, so use the manual recorded-session commands below.`);
     const observed = live[progress.id];
     if (observed) lines.push(`${progress.id}: supplied inspection reported ${observed.state}${observed.version ? ` on ${observed.version}` : ""}; it does not change the recorded disposition.`);
+    const planned = op.plan.projects.find(project => project.project.id === progress.id);
+    if (planned) for (const row of recordedPeerGuidance(planned, progress, {
+      recorded: Object.fromEntries(Object.entries(progress.reattachments ?? {}).flatMap(([peer, marker]) => marker ? [[peer, marker.binding]] : [])),
+    })) {
+      if (row.command) lines.push(`${progress.id} ${row.peer}: ${row.command}`);
+      lines.push(`${progress.id} ${row.peer}: ${row.note}`);
+    }
   }
   lines.push(op.pluginInstalled ? "Claude plugin installation recorded." : "Claude plugin installation not recorded.");
   if (op.globalInstalled) lines.push("global CLI installation recorded.");

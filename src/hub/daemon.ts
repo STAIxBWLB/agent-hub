@@ -50,7 +50,7 @@ import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts, packPiShellResult } from "../pi/tool-receipts.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { processSignature } from "../pi/process-signature.ts";
-import { recordPiReplacement, validatePiSession } from "../pi/session.ts";
+import { PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
@@ -98,7 +98,7 @@ import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
 import { changedPaths, hasTree, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
-import { consumeRecoveryContinuity, readRecoveryContinuity } from "./recovery-continuity.ts";
+import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote } from "../cli/terminal-recovery.ts";
 
 import { isStartablePeer, peerStartConfig, PEER_START_RETRY_MS, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
@@ -2614,24 +2614,32 @@ export async function startDaemon(opts: DaemonOptions) {
     const peer = bus.peers.get("pi");
     if (!(peer instanceof PiPeer) || peer.state === "offline" || !peer.sessionGeneration || !peer.recoveryReady) return;
     const saved = piContinuity.bookmark, actual = peer.recoveryMetadata();
-    if (actual.sessionId !== saved.pi.sessionId || saved.pi.sessionFile !== undefined && actual.sessionFile !== saved.pi.sessionFile) return;
+    if (typeof actual.sessionId !== "string" || !actual.sessionId) return;
+    const matches = actual.sessionId === saved.pi.sessionId && (saved.pi.sessionFile === undefined || actual.sessionFile === saved.pi.sessionFile);
     try {
-      if (consumeRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd, operationId: saved.operationId, digest: piContinuity.digest })) piContinuity = { state: "absent" };
+      const expected = { projectId, projectRoot: opts.cwd, operationId: saved.operationId, digest: piContinuity.digest };
+      const settled = matches ? consumeRecoveryContinuity(opts.stateDir, expected) : retireRecoveryContinuity(opts.stateDir, expected, "authenticated_session_changed").retired;
+      if (settled) {
+        piContinuity = { state: "absent" };
+        if (!matches) log("Pi archived continuity retired after recording a different authenticated session");
+      }
       else log("Pi continuity bookmark changed before attachment settlement; retained for inspection");
     } catch { log("Pi continuity attachment settlement unavailable; bookmark retained"); }
   }
   const recordSessions = () => {
     if (stopping) return;
-    settlePiContinuity();
     const peers = [...bus.peers.values()].filter((p) => p.state !== "offline").map((p) => {
       let meta: Record<string, unknown> = {};
       try { meta = (p as { recoveryMetadata?: () => Record<string, unknown> }).recoveryMetadata?.() ?? {}; } catch { /* not ready yet: the id alone */ }
       return { peer: p.id, meta };
     });
     const text = JSON.stringify(peers);
-    if (text === sessionsWritten) return;
-    sessionsWritten = text;
-    try { writeSessions(opts.stateDir, { instanceId, at: Date.now(), peers }); } catch (error) { log(`session record not written: ${(error as Error).message}`); }
+    if (text === sessionsWritten && piContinuity.state !== "ready") return;
+    try {
+      writeSessions(opts.stateDir, { instanceId, at: Date.now(), peers });
+      sessionsWritten = text;
+      settlePiContinuity(); // retirement follows the successful crash-record write, never just an attachment event
+    } catch (error) { log(`session record not written: ${(error as Error).message}`); }
   };
   const recoverAfterCrash = async (prev: SessionsFile) => {
     const report = (line: string) => (crashReport.push(line), notify(`crash recovery: ${line}`));
@@ -2901,7 +2909,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const running = startPeerOnce(peer, args).then(async result => {
       if (!result.ok && peer === "codex") unattendedPeers.delete(peer);
       if (!result.ok || result.already) return result;
-      if (peer === "pi") settlePiContinuity();
+      if (peer === "pi") recordSessions();
       return permissionChange(peer, async () => {
         if (peer === "codex") { if (args.unattended) unattendedPeers.add(peer); else unattendedPeers.delete(peer); }
         logPermissionStart(peer); writeStatus(); return result;
@@ -2930,6 +2938,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const mode = startMode(peer), owner = bus.peers.get(peer), can = mode === "tui" ? opener.available() : undefined;
     return { peer, mode, attached: !!owner && owner.state !== "offline", command: peer === "kimi" ? "ahub kimi" : `ahub ${startWords(peer, mode).join(" ")}`, ...(can ? (can.ok ? { via: can.via } : { why: can.why }) : {}) };
   });
+  // Printed for a person's explicit reconciliation only; never executed by auto-start.
+  const continuityCleanup = () => `After inspection, archive the active bookmark with ${["mv", "-n", "--", join(opts.stateDir, "recovery-continuity.json"), join(opts.stateDir, `recovery-continuity.retired.manual.${randomUUID()}.json`)].map(shellQuote).join(" ")} before choosing another session`;
   async function hubStart(peer: unknown, by: string): Promise<Record<string, unknown>> {
     if (stopping) return { ok: false, error: "hub is stopping" };
     if (rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
@@ -2938,9 +2948,26 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
     const continuity = peer === "pi" && by === "pi.auto_start" ? piContinuity : undefined;
-    if (continuity?.state === "invalid") return { ok: false, error: "archived Pi continuity evidence is invalid or unreadable; inspect recovery-continuity.json before starting Pi; no fresh session was started" };
+    if (continuity?.state === "invalid") return { ok: false, error: `archived Pi continuity evidence is invalid or unreadable; no fresh session was started. ${continuityCleanup()}` };
     const resume = continuity?.state === "ready" ? continuity.bookmark.pi : undefined;
     const mode = startMode(peer);
+    if (resume?.sessionFile && continuity?.state === "ready") {
+      try { validatePiSession(opts.stateDir, opts.cwd, resume.sessionFile, resume.sessionId); }
+      catch (error) {
+        const retry = `ahub pi --mode ${mode} --session-file ${shellQuote(resume.sessionFile)}`;
+        if (error instanceof PiSessionUnresumable) {
+          try {
+            const retired = retireRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd, operationId: continuity.bookmark.operationId, digest: continuity.digest }, "resume_unavailable");
+            if (retired.retired) {
+              piContinuity = { state: "absent" };
+              return { ok: false, error: `recorded Pi session is unresumable; continuity evidence was archived; no fresh session was started. Inspect the preserved session, then select a valid managed file with ahub pi --mode ${mode} --session-file <managed-file>` };
+            }
+          } catch { return { ok: false, error: `Pi continuity retirement could not be confirmed; bookmark retained; no fresh session was started. After inspecting storage, retry ${retry}. ${continuityCleanup()}` }; }
+          return { ok: false, error: `Pi continuity changed before retirement; inspect recovery-continuity.json; no fresh session was started. Retry the intended session with ${retry}. ${continuityCleanup()}` };
+        }
+        return { ok: false, error: `Pi continuity session storage could not be verified; bookmark retained; no fresh session was started. After inspecting storage, retry ${retry}. ${continuityCleanup()}` };
+      }
+    }
     if (mode === "tui" && (peer === "pi" || peer === "local")) { await ensureSpec(true); await refreshRunner(); }
     const owner = bus.peers.get(peer);
     if (mode === "headless") {
@@ -2953,7 +2980,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
     const words = [...startWords(peer, mode)];
-    if (resume) words.push("--session-id", resume.sessionId, ...(resume.sessionFile ? ["--session-file", resume.sessionFile] : []), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : []));
+    if (resume) words.push(...(resume.sessionFile ? ["--session-file", resume.sessionFile] : ["--session-id", resume.sessionId]), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : []));
     const command = `ahub ${resume ? words.map(shellQuote).join(" ") : words.join(" ")}`;
     const since = Date.now() - (opening.get(peer) ?? 0);
     if (since < PEER_START_RETRY_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };

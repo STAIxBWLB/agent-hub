@@ -71,3 +71,25 @@ test("#463 archive summary does not infer installation or a live target from a p
   const live: Inspection = { state: "running", version: "0.12.99", instanceId: "other", peers: [], blockers: [] };
   expect(stopAndArchiveSummary(f.op, { "project-1": live }).join("\n")).not.toContain("currently running 0.12.31");
 });
+
+test("#463 text archive summary prints every recorded resume command and reconnect note", () => {
+  const f = fixture();
+  const saved = binding("pi", "accepted-pi", "/sessions/last accepted pi.jsonl");
+  f.progress.reattachments = { pi: { state: "attempted", cause: "detached after restore", at: 1, binding: saved } };
+  f.progress.terminals["restored:pi"] = { state: "failed" };
+  const text = stopAndArchiveSummary(f.op).join("\n");
+  expect(text).toContain(argv("ahub", "--project", root, "codex", "resume", "original-thread"));
+  expect(text).toContain(argv("ahub", "--project", root, "pi", "--session-file", "/sessions/last accepted pi.jsonl"));
+  expect(text).toContain(argv("ahub", "--project", root, "claude", "--resume", "original-claude"));
+  expect(text).toContain("existing Claude channel"); expect(text).toContain("Transcript availability is unknown");
+});
+
+for (const warning of ["not-archived", "unavailable"] as const) test(`#463 text archive summary explains continuity ${warning} without claiming disposal failed`, () => {
+  const f = fixture();
+  Object.assign(f.op.disposition!, { continuity: { "project-1": warning } });
+  const text = stopAndArchiveSummary(f.op).join("\n");
+  expect(text).toContain(warning === "not-archived" ? "snapshot was not archived by this operation" : "continuity bookmark unavailable");
+  expect(text).toContain("manual");
+  expect(text).toContain(argv("ahub", "--project", root, "pi", "--session-file", "/sessions/original pi.jsonl"));
+  expect(text).toContain("abandoned, not completed"); expect(text).toContain("target stopped");
+});

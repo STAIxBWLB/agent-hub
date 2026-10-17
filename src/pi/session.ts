@@ -4,13 +4,27 @@ import { randomUUID } from "node:crypto";
 import { realPath } from "../hub/project.ts";
 import { atomicPrivateJSON } from "../hub/recovery-store.ts";
 
+export class PiSessionUnresumable extends Error {
+  readonly code = "pi_session_unresumable";
+  constructor(readonly reason: "missing" | "outside_managed" | "invalid_header", message: string, options?: ErrorOptions) { super(message, options); }
+}
+function sessionReadFailure(error: unknown): never {
+  if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new PiSessionUnresumable("missing", (error as Error).message, { cause: error });
+  throw error;
+}
+
 /** One validation boundary for ordinary starts and explicit preserved-history selection. */
 export function validatePiSession(stateDir: string, cwd: string, sessionFile: string, sessionId?: string): { sessionFile: string; sessionId: string } {
-  const file = realPath(sessionFile), sessions = realPath(join(stateDir, "pi-sessions"));
+  let file: string, sessions: string;
+  try { file = realPath(sessionFile); sessions = realPath(join(stateDir, "pi-sessions")); }
+  catch (error) { return sessionReadFailure(error); }
   const rel = relative(sessions, file);
-  if (!rel || rel.startsWith("..") || resolve(sessions, rel) !== file) throw new Error("Pi session file is outside the managed project session directory");
-  const header = JSON.parse(readFileSync(file, "utf8").split("\n", 1)[0]!);
-  if (header.type !== "session" || typeof header.id !== "string" || !header.id || typeof header.cwd !== "string" || realPath(header.cwd) !== realPath(cwd) || (sessionId && header.id !== sessionId)) throw new Error("Pi session header does not match the requested project/session");
+  if (!rel || rel.startsWith("..") || resolve(sessions, rel) !== file) throw new PiSessionUnresumable("outside_managed", "Pi session file is outside the managed project session directory");
+  let first: string;
+  try { first = readFileSync(file, "utf8").split("\n", 1)[0]!; } catch (error) { return sessionReadFailure(error); }
+  let header: { type?: unknown; id?: unknown; cwd?: unknown } | null;
+  try { header = JSON.parse(first); } catch (error) { throw new PiSessionUnresumable("invalid_header", (error as Error).message, { cause: error }); }
+  if (!header || header.type !== "session" || typeof header.id !== "string" || !header.id || typeof header.cwd !== "string" || realPath(header.cwd) !== realPath(cwd) || (sessionId && header.id !== sessionId)) throw new PiSessionUnresumable("invalid_header", "Pi session header does not match the requested project/session");
   return { sessionFile: file, sessionId: header.id };
 }
 

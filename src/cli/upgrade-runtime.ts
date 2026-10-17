@@ -14,7 +14,7 @@ import { ReattachmentRequired, FinalRefusal, planFingerprint, registeredProjects
 import { readEvents } from "../hub/events.ts";
 import { refreshManager } from "../hub/manager.ts";
 import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
-import { writeRecoveryContinuity } from "../hub/recovery-continuity.ts";
+import { readRecoveryContinuity, retireRecoveryContinuity, writeRecoveryContinuity } from "../hub/recovery-continuity.ts";
 import { recoveryLock } from "../hub/recovery-store.ts";
 import { decodeRestoreReceipt, restoreTransition, type RestoreReceipt, type RestoreEvidence, type RestoreTransition } from "./upgrade-restore-state.ts";
 
@@ -378,7 +378,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     if (observed.instanceId !== progress.instanceId) throw new Error(`${saved.peer}: daemon instance changed during terminal revalidation`);
     const peer = observed.peers.find((item) => item.id === saved.peer);
     const session = saved.peer === "codex" ? peer?.threadId : peer?.sessionId;
-    if (session !== saved.sessionId || saved.peer === "pi" && saved.sessionFile && peer?.sessionFile !== saved.sessionFile) throw new Error(`${saved.peer}: daemon session changed during terminal revalidation; manual-required`);
+    if (session !== saved.sessionId || saved.peer === "pi" && progress.reattachments?.pi && saved.sessionFile && peer?.sessionFile !== saved.sessionFile) throw new Error(`${saved.peer}: daemon session changed during terminal revalidation; manual-required`);
     return current;
   };
   /** Whether Orca's inventory lists the terminal; a failed, not-ok, truncated or non-JSON answer shows nothing. */
@@ -593,7 +593,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     prepare: (p, id, instance, features) => control(p, "prepare", id, instance, features),
     abort: (p, id, instance) => control(p, "abort", id, instance),
     commit: (p, id, instance, features) => control(p, "commit", id, instance, features),
-    release: (p, id, instance) => control(p, "release", id, instance),
+    release: async (p, id, instance) => {
+      // Snapshot before the request: a later writer must never be retired by this older release completion.
+      const previous = readRecoveryContinuity(p.stateDir, { projectId: p.id, projectRoot: p.root });
+      await control(p, "release", id, instance);
+      if (previous.state === "ready" && previous.bookmark.operationId !== id) {
+        try { retireRecoveryContinuity(p.stateDir, { projectId: p.id, projectRoot: p.root, operationId: previous.bookmark.operationId, digest: previous.digest }, "recovery_released"); }
+        catch { console.error("Pi continuity retirement is unconfirmed after successful recovery release; inspect the retained bookmark before another automatic start"); }
+      }
+    },
     closeTerminals: async (planned, progress, op, save) => {
       for (const binding of planned.terminals as TerminalBinding[]) {
         const key = `closed:${binding.peer}`;
@@ -851,7 +859,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           const sessionId = await awaitBound(awaiting, fresh() ? null : restored.newBinding.sessionId);
           await settle(sessionId, awaiting.binding);
         } catch (error) {
-          if (error instanceof ReattachmentRequired) throw error;
+          if (error instanceof ReattachmentRequired || isDatabaseBusy(error)) throw error;
           if (progress.reattachments?.[plannedBinding.peer]) throw new ReattachmentRequired(planned.project.id, plannedBinding.peer,
             error instanceof Error ? error.message : `${plannedBinding.peer}: recorded-session reattachment is unconfirmed`);
           throw error;
@@ -903,16 +911,18 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         // A continuity bookmark needs positive archival evidence, including when disposal resumes after a crash.
         const archive = join(project.stateDir, `restart.abandoned.${createHash("sha256").update(op.id).digest("hex")}.json`);
         let archived: unknown;
-        try { archived = JSON.parse(readFileSync(archive, "utf8")); } catch { throw new Error("matching operation snapshot archive is unavailable; Pi continuity bookmark was not written"); }
-        if (!archived || typeof archived !== "object" || (archived as { operationId?: unknown }).operationId !== op.id) throw new Error("snapshot archive does not belong to this operation; Pi continuity bookmark was not written");
-        const receipt = decodeRestoreReceipt(progress.terminals["restored:pi"]);
-        const binding = receipt?.state === "done" || receipt?.state === "waiting" ? receipt.binding : progress.reattachments?.pi?.binding;
-        const sessionId = binding?.sessionId ?? source.sessionId;
-        if (!sessionId) throw new Error("Pi recorded session unavailable; archive continuity bookmark was not written");
-        const backend = binding?.backend ?? source.args?.backend;
-        writeRecoveryContinuity(project.stateDir, { schema: 1, operationId: op.id, projectId: project.id, projectRoot: project.root, at: now(),
-          pi: { sessionId, sessionFile: binding?.sessionFile ?? source.sessionFile ?? source.args?.sessionFile,
-            ...(backend === "auto" || backend === "dgx" || backend === "mlx" ? { backend } : {}), model: binding?.model ?? source.args?.model } });
+        try { archived = JSON.parse(readFileSync(archive, "utf8")); } catch { return { continuity: "not-archived" }; }
+        if (!archived || typeof archived !== "object" || (archived as { operationId?: unknown }).operationId !== op.id) return { continuity: "not-archived" };
+        try {
+          const receipt = decodeRestoreReceipt(progress.terminals["restored:pi"]);
+          const binding = receipt?.state === "done" || receipt?.state === "waiting" ? receipt.binding : progress.reattachments?.pi?.binding;
+          const sessionId = binding?.sessionId ?? source.sessionId;
+          if (!sessionId) throw new Error("Pi recorded session unavailable; archive continuity bookmark was not written");
+          const backend = binding?.backend ?? source.args?.backend;
+          writeRecoveryContinuity(project.stateDir, { schema: 1, operationId: op.id, projectId: project.id, projectRoot: project.root, at: now(),
+            pi: { sessionId, sessionFile: binding?.sessionFile ?? source.sessionFile ?? source.args?.sessionFile,
+              ...(backend === "auto" || backend === "dgx" || backend === "mlx" ? { backend } : {}), model: binding?.model ?? source.args?.model } });
+        } catch { return { continuity: "unavailable" }; } // optional metadata must not wedge stop-and-archive
       }
     },
     refreshManager: async (op) => { await refreshManager({ home: hubHome(), cli: join(op.targetRoot!, "src/cli/main.ts") }); },
@@ -927,9 +937,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           throw new Error(`${old.id}: peer reattachment not verified`);
         }
         const accepted = decodeRestoreReceipt(progress.terminals[`restored:${old.id}`]);
-        if (progress.reattachments?.[old.id as "codex" | "pi" | "claude"] && accepted?.state === "done") {
+        const repair = progress.reattachments?.[old.id as "codex" | "pi" | "claude"];
+        const retiredValue = progress.terminals[`retired:${old.id}`];
+        const retired = retiredValue === undefined ? undefined : decodeRestoreReceipt({ state: "done", binding: retiredValue });
+        // A #225 restart clears the old target's repair fence, never its accepted conversation.
+        const retained = retired?.state === "done" && accepted?.state === "done" && retired.binding.peer === old.id && retired.binding.projectRoot === planned.project.root && retired.binding.sessionId === accepted.binding.sessionId;
+        if ((repair || retained) && accepted?.state === "done") {
           const session = old.id === "codex" ? peer.threadId : peer.sessionId;
-          if (session !== accepted.binding.sessionId || old.id === "pi" && accepted.binding.sessionFile && peer.sessionFile !== accepted.binding.sessionFile) throw new Error(`${old.id}: reattached a different recorded conversation`);
+          if (session !== accepted.binding.sessionId || repair && accepted.binding.sessionId !== repair.binding.sessionId ||
+              old.id === "pi" && (repair || old.sessionFile) && accepted.binding.sessionFile && peer.sessionFile !== accepted.binding.sessionFile) throw new Error(`${old.id}: reattached a different recorded conversation`);
           continue;
         }
         if (progress.fresh?.[old.id] || planned.freshStart?.includes(old.id)) continue; // #215: a new session was accepted (recorded)

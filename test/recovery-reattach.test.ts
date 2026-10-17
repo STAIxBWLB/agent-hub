@@ -110,3 +110,12 @@ test("#463 reattach never races a claimed runner or another operation's machine 
 test("#463 reattach is classified as a person command, never an agent read or native launch", () => {
   expect(classifyPeerCommand("recovery", ["reattach", crypto.randomUUID(), "pi"])).toBe("console");
 });
+
+test("#463 status advertises reattach only for the eligible blocked project and peer", () => {
+  const f = fixture();
+  const commands = () => recovery.publicOperation(f.op).projects.flatMap(project => project.recordedSessions ?? []).filter(row => row.reattachCommand);
+  expect(commands().map(row => row.peer)).toEqual(["pi"]);
+  for (const phase of ["completed", "cancelled", "running"] as const) { f.op.phase = phase; expect(commands()).toEqual([]); }
+  f.op.phase = "blocked"; delete f.op.blockedReattachment;
+  expect(commands()).toEqual([]);
+});
