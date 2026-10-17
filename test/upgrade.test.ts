@@ -1460,3 +1460,62 @@ for (const outcome of ["busy then stopped", "always busy", "ordinary error"] as 
   expect(f.calls).not.toContain("prepare:alpha"); expect(f.calls).not.toContain("close:alpha"); expect(f.calls).not.toContain("commit:alpha");
   expect(f.calls.filter(call => call === "start:alpha")).toHaveLength(outcome === "busy then stopped" ? 1 : 0);
 });
+
+test("#466 prepare timing records the actual wait interval at coordinator save boundaries", async () => {
+  const f = fixture("restart", ["alpha"]), inspect = f.driver.inspect, prepare = f.driver.prepare, sleep = f.driver.sleep;
+  const observed: unknown[] = [];
+  f.driver.prepare = async (...args) => { await prepare(...args); f.states.get("alpha")!.recovery!.ready = false; };
+  f.driver.inspect = async (...args) => {
+    const live = await inspect(...args);
+    if (live.recovery?.phase === "prepared") live.recovery.ready = f.driver.now() >= 500;
+    return live;
+  };
+  f.driver.sleep = async ms => {
+    observed.push((readOperation<RecoveryOperation>(f.operation.id, f.home) as any).waits?.["prepare:alpha"]);
+    await sleep(ms);
+  };
+  const result = await runRecovery(f.operation.id, f.driver, f.home, 1000);
+  expect(result.phase).toBe("completed");
+  expect((result as any).waits?.["prepare:alpha"]).toEqual({ waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(1000).toISOString(), waitEndedAt: new Date(500).toISOString() });
+  expect(observed).toHaveLength(2);
+  expect(observed[0]).toEqual({ waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(1000).toISOString() });
+  expect(f.driver.now()).toBe(500);
+  expect(f.calls).toEqual(["stage", "prepare:alpha", "close:alpha", "commit:alpha", "start:alpha", "native:alpha", "claude:alpha", "verify:alpha", "release:alpha"]);
+});
+
+test("#466 a blocked prepare records its actual end without extending the existing deadline", async () => {
+  const f = fixture("restart", ["alpha"]), inspect = f.driver.inspect, prepare = f.driver.prepare;
+  f.driver.prepare = async (...args) => { await prepare(...args); f.states.get("alpha")!.recovery!.ready = false; };
+  f.driver.inspect = async (...args) => { const live = await inspect(...args); if (live.recovery) live.recovery.ready = false; return live; };
+  const result = await runRecovery(f.operation.id, f.driver, f.home, 500);
+  expect(result.phase).toBe("blocked"); expect(result.error).toContain("active turns, approvals or completion checks did not finish");
+  expect((result as any).waits?.["prepare:alpha"]).toEqual({ waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(500).toISOString(), waitEndedAt: new Date(500).toISOString() });
+  expect(f.driver.now()).toBe(500); expect(f.calls.filter(call => call === "abort:alpha")).toHaveLength(1);
+  expect(f.calls).not.toContain("commit:alpha"); expect(f.calls).not.toContain("start:alpha");
+});
+
+test("#466 coordinator persists only typed preservation causes and clears one on an unrelated later failure", async () => {
+  const path = "../src/cli/upgrade-presentation-data.ts", module = await import(path).catch(() => undefined);
+  expect(typeof module?.RecoveryPreservationError).toBe("function");
+  const f = fixture("restart", ["alpha"]);
+  f.driver.verify = async () => { throw new module.RecoveryPreservationError("budgetDigest", "alpha"); };
+  const blocked = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(blocked.phase).toBe("blocked");
+  expect((blocked as any).presentationCause).toEqual({ kind: "preservation", check: "budgetDigest", projectId: "alpha" });
+  expect((readOperation<RecoveryOperation>(f.operation.id, f.home) as any).presentationCause).toEqual((blocked as any).presentationCause);
+  f.driver.verify = async () => { throw new Error("ordinary verification failure"); };
+  const later = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(later.phase).toBe("blocked"); expect(later.error).toContain("ordinary verification failure");
+  expect((later as any).presentationCause).toBeUndefined();
+});
+
+test("#466 a resumed attempt never presents an earlier attempt's completed wait as its current timer", async () => {
+  const f = fixture("restart", ["alpha"]);
+  f.operation.waits = { "prepare:alpha": { waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(1000).toISOString(), waitEndedAt: new Date(500).toISOString() } };
+  writeOperation(f.operation.id, f.operation, f.home);
+  const stage = f.driver.stage; let observed: unknown = "not called";
+  f.driver.stage = async (...args) => { observed = readOperation<RecoveryOperation>(f.operation.id, f.home).waits; return stage(...args); };
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("completed"); expect(observed).toBeUndefined();
+  expect(result.waits?.["prepare:alpha"]?.waitEndedAt).toBeDefined();
+});

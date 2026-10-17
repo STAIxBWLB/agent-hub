@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Make upgrade and recovery screens use shared colours, measured wrapping, typed failure guidance, exact wait timing and recommended actions, while preserving machine output (#466).
 - Reattach a recorded session once after its restored terminal disappears, preserve Pi continuity after stop and archive, and show the remaining upgrade steps (#463).
 - Reload validated settings without restarting, with apply classes, pending restart status and console/dashboard controls (#439).
 - List the person-only task cancel command and its reason, supersession and revision arguments in help (#437).

@@ -2362,3 +2362,44 @@ test("#463 unavailable bookmark storage is reported after archival without faili
     expect(existsSync(join(f.stateDir, "recovery-continuity.json"))).toBe(false);
   } finally { f.cleanup(); }
 });
+
+for (const check of ["queues", "manualPaused", "boardDigest", "budgetDigest"] as const) test(`#466 verify reports the actual ${check} preservation comparison as a typed cause`, async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-466-cause-"))), stateDir = join(root, "state"); mkdirSync(stateDir);
+  const expected = { queues: { codex: ["queued-one"] }, manualPaused: ["codex"], boardDigest: "board-before", budgetDigest: "budget-before" };
+  const current = { ...expected, [check]: check === "queues" ? { codex: [] } : check === "manualPaused" ? [] : "different" };
+  const server = fakeHub(root, stateDir, "i-target", () => ({ operationId: "op-466", phase: "restored", ready: true, peers: {}, integrity: { expected, current } }));
+  const planned: PlannedProject = { project: { id: "p-215", root, stateDir, instanceId: "i-source", pid: null, basePort: 4600 }, source: { state: "running", peers: [], blockers: [] }, terminals: [], blockers: [] };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "peers-restored", terminals: {} };
+  const op = { id: "op-466", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
+  const driver = makeRecoveryDriver(async () => { throw new Error("verify must not create a terminal"); }, undefined, { now: () => 1250, sleep: async () => { throw new Error("verify must not wait"); } });
+  try {
+    let error: unknown; try { await driver.verify(planned, progress, op); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as { presentationCause?: unknown }).presentationCause).toEqual({ kind: "preservation", check, projectId: planned.project.id });
+    expect((error as Error).message).toBe("queue, manual pause, task board or budget preservation was not verified");
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#466 actual managed attachment wait records its existing bound and completed fake-clock interval", async () => {
+  const f = delayedManagedFixture("codex"), snapshots: any[] = [];
+  f.op.step = "restore:p-215"; f.control.attachAfterMs = 2000;
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => { snapshots.push(JSON.parse(JSON.stringify((f.op as any).waits ?? null))); });
+    const timing = (f.op as any).waits?.[f.op.step];
+    expect(timing).toEqual({ waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(600_000).toISOString(), waitEndedAt: new Date(f.elapsed()).toISOString() });
+    expect(snapshots.some(saved => saved?.[f.op.step]?.waitStartedAt === new Date(0).toISOString() && saved[f.op.step].waitEndedAt === undefined)).toBe(true);
+    expect(f.elapsed()).toBeGreaterThanOrEqual(2000); expect(f.elapsed()).toBeLessThan(600_000); expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done" });
+  } finally { f.cleanup(); }
+});
+
+test("#466 an interrupted managed wait records its actual end but keeps the saved binding and original error", async () => {
+  const f = delayedManagedFixture("codex");
+  f.op.step = "restore:p-215"; f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("fixture coordinator interrupted");
+    expect((f.op as any).waits?.[f.op.step]).toEqual({ waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(600_000).toISOString(), waitEndedAt: new Date(1000).toISOString() });
+    expect(f.elapsed()).toBe(1000); expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", binding: { handle: "term-new" } });
+  } finally { f.cleanup(); }
+});

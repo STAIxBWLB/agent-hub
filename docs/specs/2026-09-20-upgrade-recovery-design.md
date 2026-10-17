@@ -726,3 +726,36 @@ session is proven unresumable, or a later recovery successfully releases the
 project. Unknown I/O or provider failures do not prove an unresumable session.
 Malformed or unverifiable bookmark evidence remains fail-closed. The TUI resume
 argv carries `--session-file` when available, otherwise `--session-id`, never both.
+
+## Recovery presentation (#466)
+
+Interactive upgrade and recovery screens reuse the console's Span tones, paint,
+measured wrapping and resolveColor precedence. Auto uses TTY and environment
+rules; explicit always has exactly the console's behaviour, including on a pipe.
+Default and never retain existing piped, dry-run, status and dispose JSON bytes.
+Raw JSON, including [j] and --json, bypasses paint and width handling. Human plan,
+progress, error, menu and summary lines fit the measured terminal width.
+
+Only nextChoices supplies operation actions. Presentation may annotate a choice
+as recommended or disabled, but cannot create an action, bypass a refusal or run
+a driver. Existing commands through io.run remain the only mutation path. A
+destructive choice names its stop/abandon consequence before confirmation. Resume
+really runs stage again, labelled "checking retained release"; the screen reports
+only work observed on that attempt and keeps internal coordinator paths verbose.
+
+Operation receipts may add read-only wait timing metadata with ISO waitStartedAt,
+deadlineAt and waitEndedAt values. The coordinator records them at the actual
+prepare and awaitAttachment wait boundaries. They do not set or extend any
+deadline, change controls, alter the 540-cell transition oracle or its supplemental
+matrix, or turn unknown evidence into a decision. Older receipts say "timing
+unknown"; updatedAt is never substituted for the actual wait start.
+Each new runner attempt clears the previous timing projection before observing
+its own waits, so a resumed step cannot display a previous wait as current.
+
+Preservation errors carry a typed cause from the exact queue, manual-pause,
+task-board and budget integrity comparisons. What/Why/What-to-do is rendered from
+that cause and recorded recovery guidance, never inferred by parsing a combined
+error string. A read-only end-inspection port may supply current runtime state to
+the human summary; a failed readback is unknown. Summary rendering performs no
+lifecycle action and distinguishes recorded installation effects from current
+runtime observations. Older readers ignore the optional presentation metadata.

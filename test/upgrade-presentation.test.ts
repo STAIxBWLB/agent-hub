@@ -1,0 +1,91 @@
+import { expect, test } from "bun:test";
+import { renderBlocked, renderMenu, renderOperation, renderPlan, renderStep, renderSummary, renderWait, type RecoveryPresentationOptions } from "../src/cli/upgrade-presentation.ts";
+import { PALETTE, terminalText } from "../src/cli/console-state.ts";
+import type { Inspection, NextChoice, RecoveryOperation, UpgradePlan } from "../src/cli/upgrade.ts";
+
+const id = "00000000-0000-4000-8000-000000000466";
+const project = { id: "한국어프로젝트", root: "/fixture/한국어 프로젝트/" + "긴경로".repeat(32), stateDir: "/fixture/state", basePort: 4600, instanceId: "source", pid: null };
+function fixture(): RecoveryOperation {
+  const plan: UpgradePlan = { schema: 1, kind: "upgrade", version: "0.12.31", sourceRoot: "/fixture/retained coordinator", sourceDigest: "fixture", fingerprint: "fixture", blockers: [], projects: [{ project,
+    source: { state: "running", instanceId: "source", version: "0.12.30", peers: [{ id: "pi", state: "idle", sessionId: "saved-pi", sessionFile: "/sessions/한국어 " + "긴파일".repeat(30) + ".jsonl" }, { id: "codex", state: "idle", threadId: "saved-thread" }, { id: "claude", state: "idle", sessionId: "saved-claude" }], blockers: [] },
+    terminals: [], blockers: ["한국어로 표시되는 긴 안내문 " + "기다리는 동안 승인을 확인하세요 ".repeat(12)] }] };
+  return { schema: 1, id, plan, sourceRoot: plan.sourceRoot, createdAt: 0, updatedAt: 0, phase: "blocked", step: "prepare:한국어프로젝트", pluginInstalled: true, projects: [{ id: project.id, phase: "peers-restored", instanceId: "target", terminals: {} }], error: "unrecognized legacy error; manual-required; native evidence unavailable" };
+}
+const choices: readonly NextChoice[] = [{ kind: "resume", text: `ahub recovery resume ${id}` }, { kind: "stop", text: `ahub recovery dispose ${id} --stop-and-archive --reason '한국어 이유'` }];
+const options = (columns = 80, color = false): RecoveryPresentationOptions => ({ columns, color, now: () => 130_000 });
+function bounded(lines: string[], columns: number, color: boolean) {
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines) { expect(Bun.stringWidth(terminalText(line))).toBeLessThanOrEqual(columns); if (!color) expect(line).not.toContain("\x1b"); }
+}
+
+for (const columns of [80, 120]) for (const color of [false, true]) test(`#466 all human views fit ${columns} columns with color ${color}`, () => {
+  const op = fixture(), opts = options(columns, color), before = JSON.stringify(op);
+  const menus = [{ key: "r", label: "resume 한국어 프로젝트", recommended: true }, { key: "e", label: "stop and archive", destructive: true }, { key: "f", label: "fresh session", disabledReason: "recorded conversation must be retained" }];
+  for (const lines of [renderPlan(op.plan, "0.12.31", opts), renderOperation(op, undefined, opts), renderBlocked(op, choices, opts), renderSummary(op, {}, opts), renderWait(op, op.step, ["pi is busy", "pending approvals"], opts), renderStep("긴 한국어 단계 " + "설명 ".repeat(100), "waiting", undefined, opts), renderMenu(menus, opts)]) bounded(lines, columns, color);
+  expect(JSON.stringify(op)).toBe(before);
+});
+
+test("#466 shared tones distinguish done, waiting, blocked and destructive choices without a new palette", () => {
+  const opts = options(120, true);
+  expect(renderStep("restore sessions", "done", 2500, opts).join("\n")).toContain(PALETTE.success);
+  expect(renderStep("waiting for approval", "waiting", undefined, opts).join("\n")).toContain(PALETTE.attention);
+  expect(renderStep("restore blocked", "blocked", undefined, opts).join("\n")).toContain(PALETTE.failure);
+  expect(renderMenu([{ key: "e", label: "stop the hub; upgrade will not finish", destructive: true }], opts).join("\n")).toContain(PALETTE.failure);
+  expect(renderStep("restore sessions", "done", 2500, options()).join("\n")).toContain("[done]");
+});
+
+for (const [check, label] of [["queues", "message queues"], ["manualPaused", "manual pauses"], ["boardDigest", "task board"], ["budgetDigest", "budget records"]] as const) test(`#466 typed preservation cause names only its actual ${check} check`, () => {
+  const op = fixture();
+  Object.assign(op, { presentationCause: { kind: "preservation", check, projectId: project.id } });
+  const text = renderBlocked(op, choices, options(120)).join("\n");
+  expect(text).toContain("What happened:"); expect(text).toContain("Why:"); expect(text).toContain("What to do:"); expect(text).toContain(label);
+  for (const other of ["message queues", "manual pauses", "task board", "budget records"]) if (other !== label) expect(text).not.toContain(other);
+  expect(text).toContain(`ahub recovery resume ${id}`);
+  expect(text).not.toContain("queue, manual pause, task board or budget preservation was not verified");
+});
+
+test("#466 an older generic error stays unknown and never invents a preservation or terminal cause", () => {
+  const op = fixture(); op.error = "queue, manual pause, task board or budget preservation was not verified";
+  const text = renderBlocked(op, choices, options(120)).join("\n");
+  expect(text).toContain("What happened:"); expect(text).toContain("Why:"); expect(text).toContain("What to do:"); expect(text).toContain("unknown");
+  expect(text).not.toContain("the terminal was closed");
+  expect(renderBlocked(op, choices, { ...options(120), verbose: true }).join("\n")).toContain("queue, manual pause, task board or budget");
+});
+
+test("#466 menu annotations never add actions and show the caller's recommendation and disabled reason", () => {
+  const items = [{ key: "a", label: "reattach pi", recommended: true }, { key: "r", label: "resume", disabledReason: "first restore the recorded session" }, { key: "e", label: "stop and archive", destructive: true }];
+  const before = JSON.stringify(items), text = renderMenu(items, options(120)).join("\n");
+  expect(text).toContain("[a]"); expect(text).toContain("recommended"); expect(text).toContain("Enter"); expect(text).toContain("disabled"); expect(text).toContain("first restore the recorded session"); expect(text).toContain("warning");
+  expect(text).not.toContain("[f]"); expect(JSON.stringify(items)).toBe(before);
+});
+
+test("#466 wait timing uses the recorded boundary and fake clock, with an approval action", () => {
+  const op = fixture();
+  Object.assign(op, { waits: { [op.step]: { waitStartedAt: new Date(0).toISOString(), deadlineAt: new Date(600_000).toISOString() } } });
+  const text = renderWait(op, op.step, ["pi is busy", "pending approvals"], options(120)).join("\n");
+  expect(text).toContain("2m10s"); expect(text).toContain("10m"); expect(text).toContain("ahub console"); expect(text).toContain("approval");
+});
+
+test("#466 old wait receipts show timing unknown and never estimate from updatedAt", () => {
+  const op = fixture();
+  const first = renderWait(op, op.step, ["pi is busy"], options());
+  expect(first.join("\n")).toContain("timing unknown"); expect(first.join("\n")).not.toContain("2m10s");
+  op.updatedAt = 129_999;
+  expect(renderWait(op, op.step, ["pi is busy"], options())).toEqual(first);
+});
+
+test("#466 human summary distinguishes fresh runtime evidence from recorded installation effects", () => {
+  const op = fixture(); op.phase = "cancelled"; op.disposition = { choice: "stop-and-archive", at: 1, projects: { [project.id]: "target stopped" } };
+  const text = renderSummary(op, {}, options(120)).join("\n");
+  expect(text).toContain("abandoned"); expect(text).toContain("runtime unknown"); expect(text).toContain("plugin installation recorded"); expect(text).toContain("global CLI installation remains");
+  expect(text).toContain("saved-thread"); expect(text).toContain("--session-file"); expect(text).toContain("existing Claude channel");
+  const observed: Inspection = { state: "running", instanceId: "new-instance", version: "0.12.33", peers: [], blockers: [] };
+  const live = renderSummary(op, { [project.id]: observed }, options(120)).join("\n");
+  expect(live).toContain("running on 0.12.33"); expect(live).not.toContain("currently running 0.12.31");
+});
+
+test("#466 human operation view hides raw effect keys and exposes them only when verbose", () => {
+  const op = fixture(); op.projects[0]!.terminals["closed:codex"] = true;
+  expect(renderOperation(op, undefined, options(120)).join("\n")).not.toContain("closed:codex");
+  expect(renderOperation(op, undefined, { ...options(120), verbose: true }).join("\n")).toContain("closed:codex");
+});

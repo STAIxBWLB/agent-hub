@@ -17,6 +17,7 @@ import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from 
 import { readRecoveryContinuity, retireRecoveryContinuity, writeRecoveryContinuity } from "../hub/recovery-continuity.ts";
 import { recoveryLock } from "../hub/recovery-store.ts";
 import { decodeRestoreReceipt, restoreTransition, type RestoreReceipt, type RestoreEvidence, type RestoreTransition } from "./upgrade-restore-state.ts";
+import { RecoveryPreservationError } from "./upgrade-presentation-data.ts";
 
 /** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
 const UNMANAGED_RECONNECT_WAIT_MS = 90_000;
@@ -480,7 +481,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
   const awaitAttachment = async (planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, waiting: Extract<RestoreReceipt, { state: "waiting" }>, save: () => void, expectedSession: string | null = waiting.binding.sessionId): Promise<string> => {
     const binding = waiting.binding;
     const matchesTerminal = (terminal: Pick<TerminalBinding, "handle" | "incarnationId" | "worktreeId">) => terminal.handle === binding.handle && terminal.incarnationId === binding.incarnationId && terminal.worktreeId === binding.worktreeId;
-    const deadline = now() + RECONNECT_WAIT_MS;
+    const startedAt = now(), deadline = startedAt + RECONNECT_WAIT_MS;
+    const waitStep = op.step;
+    if (waitStep) {
+      (op.waits ??= {})[waitStep] = { waitStartedAt: new Date(startedAt).toISOString(), deadlineAt: new Date(deadline).toISOString() };
+      save();
+    }
+    let waitFailed = false;
+    try {
     let live: Inspection;
     for (;;) {
       live = await inspectRecovery(planned.project);
@@ -546,6 +554,17 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       lastHubConnectAttempt: "unknown" };
     save();
     throw new Error(`${binding.peer}: attachment not verified within ${RECONNECT_WAIT_MS / 1000} s; terminal ${binding.handle} retained; resume after it attaches (native-start diagnostic recorded; last hub connect attempt unknown)`);
+    } catch (error) { waitFailed = true; throw error; }
+    finally {
+      const finish = () => {
+        if (!waitStep) return;
+        op.waits![waitStep] = { ...op.waits![waitStep]!, waitEndedAt: new Date(now()).toISOString() };
+        save();
+      };
+      // Metadata storage must not hide the attachment failure or change its recovery outcome.
+      if (waitFailed) { try { finish(); } catch { /* original attachment failure remains authoritative */ } }
+      else finish();
+    }
   };
   return {
     now, sleep, inspect: inspectRecovery,
@@ -968,6 +987,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (snapshot.ok === false) throw new Error("dashboard snapshot readback failed");
       const recovery = await rpc(planned.project, { t: "recovery", op: "inspect", expectedInstanceId: progress.instanceId });
       const integrity = recovery.recovery?.integrity;
+      if (integrity?.expected && integrity.current) {
+        for (const check of ["queues", "manualPaused", "boardDigest", "budgetDigest"] as const) {
+          if (JSON.stringify(integrity.current[check]) !== JSON.stringify(integrity.expected[check])) {
+            throw new RecoveryPreservationError(check, planned.project.id);
+          }
+        }
+      }
       if (!integrity?.expected || JSON.stringify(integrity.current) !== JSON.stringify(integrity.expected)) {
         throw new Error("queue, manual pause, task board or budget preservation was not verified");
       }
