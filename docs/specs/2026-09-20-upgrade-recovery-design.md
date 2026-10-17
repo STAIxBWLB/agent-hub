@@ -249,11 +249,23 @@ itself is not distinguished from a slow one, and whether Orca reports the bare
 login shell as TUI-idle is not verified: if it does, the create stops at once as
 not mappable to the session; if not, after the 10-minute readiness bound. Either
 way it blocks as needing manual verification with the receipt `pending`, and the
-next resume, finding no live launcher and no attached session, records `failed`. Resume settles a `pending` or `failed` receipt by what is live
-(the table below): an attached planned (or accepted) session is the
-restoration, a launcher that may run is waited for, and only nothing live makes
-it `failed` or, for `failed`, launches again. No terminal is created while a
-recorded launcher for the peer may run on the target or its session is attached.
+next resume, finding no live launcher and no attached session, records `failed`.
+After a new terminal becomes ready, or a `pending` or `failed` receipt finds a
+verified live launcher of the current target, the coordinator saves that exact
+handle, incarnation and worktree before waiting up to 600 seconds for the
+planned (or accepted) session to attach. The saved binding carries its
+`attachmentReceipt` origin (`pending` for a new launch); interruption and timeout
+retain both, and resume waits on that binding without adopting a replacement.
+An idle terminal alone is not attachment proof. Each poll checks the selected
+launcher's signed identity. Only that exact launcher being gone and the target
+reporting no attached session or other live launcher exits the wait: a
+pending-origin wait records `failed` and exposes the failed-restoration choices;
+a failed-origin wait returns to `failed` and retries the launch. A missing or
+unreadable launcher identity, changed terminal binding or unreadable target
+blocks without recording failure. Successful attachment clears the waiting
+origin and still requires exact terminal/session revalidation. No terminal is
+created while a recorded launcher for the peer may run on the target or its
+session is attached.
 A launch that failed, or a thread found not resumable before the launch, is
 receipted `restored:<peer>` = `failed` and never counts as restored. A Codex
 store that cannot be read (other than missing) is unknown and blocks the plan,
@@ -451,7 +463,9 @@ An attached session is the target's report of that peer online with a thread
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
 | `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none: `--fresh-session` is neither offered nor accepted while the inspection shows the planned session attached; when it cannot tell (not inspected, target unreadable), the `failed` receipt alone decides, and a chosen fresh session whose original then attaches is cleared on resume while its audit entry stays | none |
 | `restored:<peer>` `pending` or `failed` | another session attached | blocks | dispose | `end that <peer> session and close its terminal, then <c> recovery resume <id>` |
-| `restored:<peer>` `pending` or `failed` | no session, recorded launcher live or unknown | blocks | dispose | `wait until it attaches, or end it and close terminal <handle>, then <c> recovery resume <id>` |
+| `restored:<peer>` `pending` or `failed` | no session, verified live launcher of the current target | saves the exact binding and `attachmentReceipt` origin, waits up to 600 s for authenticated attachment; timeout retains both for resume | dispose | `attachment not verified within 600 s; terminal <handle> retained; resume after it attaches` |
+| saved attachment binding | selected exact signed launcher gone, target confirms no session or other live launcher | pending origin (including a new launch): records `failed` and blocks; failed origin: records `failed` and retries the launch | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
+| saved attachment binding | selected identity missing/unreadable, replacement terminal, or target unreadable | blocks, retains exact binding and waiting origin; never adopts a replacement or treats unknown as gone | dispose | verify the saved launch or target, then `<c> recovery resume <id>` |
 | `restored:<peer>` `pending` | no session, launcher gone or never recorded | receipted `failed`, blocks | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
 | `restored:<peer>` `failed` | no session, launcher gone or never recorded | launches again (fresh if chosen) | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
 | `restored:codex` absent | rollout missing | receipted `failed`, blocks, no terminal created | fresh session, dispose | the failed-restoration choices below |

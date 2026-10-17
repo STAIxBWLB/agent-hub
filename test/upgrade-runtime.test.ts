@@ -1452,7 +1452,7 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
 function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed") {
-  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity };
+  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
   mkdirSync(stateDir);
@@ -1475,10 +1475,13 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
       integrity: { expected: {}, current: control.corruptIntegrity ? { changed: true } : {} } };
   });
   const shown = { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt", worktreePath: root, agentIdentity: peer, sessionId: session, connected: true, state: "idle", title: "PRIVATE-TERMINAL-TEXT" };
+  const endedLauncher = Bun.spawnSync(["true"]).pid;
+  const recordLauncher = (live = true) => writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer, projectRoot: root, stateDir, instanceId: "i-target",
+    launcherPid: live ? process.pid : endedLauncher, launcherSignature: live ? processSignature(process.pid) : "ended-launcher", launchId: "launch-433", handle: shown.handle, incarnationId: shown.incarnationId, worktreeId: "wt", env: {} }]));
   const run = async (argv: string[]) => {
     if (argv[1] !== "terminal") throw new Error("non-terminal command refused by fixture");
     let result: unknown;
-    if (argv[2] === "create") { created = true; creates++; if (control.wrongInstance) progress.instanceId = "wrong-instance"; result = { terminal: shown }; }
+    if (argv[2] === "create") { created = true; creates++; recordLauncher(); if (control.wrongInstance) progress.instanceId = "wrong-instance"; result = { terminal: shown }; }
     else if (argv[2] === "list") result = { terminals: created ? [shown] : [] };
     else if (argv[2] === "show") result = { terminal: shown };
     else if (argv[2] === "wait") result = { wait: { satisfied: true } };
@@ -1491,14 +1494,14 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
     source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: peer, state: "idle", ...(peer === "codex" ? { threadId: session } : { sessionId: session }), ...(peer === "pi" ? { args: { mode: "tui" } } : {}) }], blockers: [] },
     terminals: [binding], blockers: [] };
   const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "peers-restored", terminals: { [`closed:${peer}`]: true } };
-  const op = { id: "op-414", targetRoot: PACKAGE_ROOT, plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
+  const op = { id: "op-414", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
   if (pending) {
     progress.terminals[`restored:${peer}`] = pending;
-    writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer, projectRoot: root, stateDir, instanceId: "i-target",
-      launcherPid: process.pid, launcherSignature: processSignature(process.pid), launchId: "launch-433", handle: shown.handle, incarnationId: shown.incarnationId, worktreeId: "wt", env: {} }]));
+    recordLauncher();
   }
   return { root, stateDir, planned, progress, op, control, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
-    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
+    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.exitAtMs) { recordLauncher(false); control.exitAtMs = Infinity; } if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
+    endLauncher: () => recordLauncher(false),
     replaceTerminal: () => { shown.handle = "term-replacement"; shown.incarnationId = "inc-replacement"; },
     cleanup: () => { server.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }
@@ -1646,5 +1649,54 @@ test("#433 interrupted pending wait persists exact chosen terminal and refuses a
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("saved terminal identity changed");
     expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
     expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+for (const origin of ["pending", "new"] as const) test(`#433 selected ${origin} launcher exit during attachment wait enables fresh-session`, async () => {
+  const f = delayedManagedFixture("codex", origin === "pending" ? "pending" : undefined);
+  f.control.attachAfterRead = false; f.control.exitAtMs = 1000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
+    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toBe("failed");
+    expect(nextActions(f.op)).toContain(`${COORD} dispose op-414 --fresh-session codex --reason <text>`);
+    expect(f.creates()).toBe(origin === "new" ? 1 : 0);
+  } finally { f.cleanup(); }
+});
+test("#433 interrupted selected pending wait resumes to failed when that exact launcher exited", async () => {
+  const f = delayedManagedFixture("codex", "pending");
+  f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  let saved: ProjectProgress | undefined;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => { saved = JSON.parse(JSON.stringify(f.progress)); })).rejects.toThrow("coordinator interrupted");
+    expect(saved?.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    f.endLauncher(); f.control.interruptAtMs = Infinity; Object.assign(f.progress, saved);
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
+    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toBe("failed"); expect(f.creates()).toBe(0);
+    expect(nextActions(f.op)).toContain(`${COORD} dispose op-414 --fresh-session codex --reason <text>`);
+  } finally { f.cleanup(); }
+});
+test("#433 selected failed-origin launcher exit retries once and clears its waiting marker on success", async () => {
+  const f = delayedManagedFixture("codex", "failed"); f.control.attachAfterMs = 2000; f.control.exitAtMs = 1000;
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(f.creates()).toBe(1); expect(f.elapsed()).toBeLessThan(600_000);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "session-414" });
+    expect(f.progress.terminals["restored:codex"]).not.toHaveProperty("attachmentReceipt");
+  } finally { f.cleanup(); }
+});
+for (const evidence of ["unknown", "replacement"] as const) test(`#433 interrupted chosen launcher ${evidence} remains blocked without failed receipt`, async () => {
+  const f = delayedManagedFixture("codex", "pending"); f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
+    f.control.interruptAtMs = Infinity;
+    const record = join(f.stateDir, "terminal-recovery.json");
+    if (evidence === "unknown") writeFileSync(record, "not JSON");
+    else {
+      const records = JSON.parse(readFileSync(record, "utf8")); records[0].handle = "term-replacement"; records[0].incarnationId = "inc-replacement";
+      writeFileSync(record, JSON.stringify(records));
+    }
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow(evidence === "unknown" ? "identity cannot be verified" : "saved terminal identity changed");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new", attachmentReceipt: "pending" });
+    expect(f.creates()).toBe(0); expect(f.elapsed()).toBe(1000);
+    expect(nextActions(f.op).some(choice => choice.includes("--fresh-session"))).toBe(false);
   } finally { f.cleanup(); }
 });
