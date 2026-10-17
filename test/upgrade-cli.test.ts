@@ -192,10 +192,24 @@ await import(${JSON.stringify(main)});
     terminal.stdin.write("a\n"); terminal.stdin.end();
     const [typedCode, screen] = await Promise.all([terminal.exited, new Response(terminal.stdout).text()]);
     expect(typedCode).toBe(0);
-    expect(screen).toContain(`restart on ${after.version}\n\n${after.projectId}  ${root}  hub ${after.version} (running)`);
-    expect(screen).toContain("[a] apply  [r] refresh  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
-    expect(screen).toMatch(/operation [a-f0-9-]{36} started; Enter opens its menu, Ctrl\+C leaves, and neither stops the restart\n  staging the release\n/);
-    expect(screen.trimEnd()).toEndWith(`  completed\nrestart to ${after.version} completed`);
+    // #466 reviewer-approved exception: replace only the four #272 TTY presentation goldens.
+    const plain = screen.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    const { wrap } = await import("../src/cli/console-state.ts");
+    // Only platform-dependent paths need the shared console wrapping primitive; UI text is pinned literally.
+    const wrapped = (...rows: string[]) => rows.flatMap(row => wrap(row, 80)).join("\n");
+    expect(screen).toContain(String.fromCharCode(27) + "[");
+    expect(plain).toContain(wrapped(`restart to ${after.version}: plan`, `Coordinator version ${after.version}`, "",
+      `${after.projectId}  ${root}  hub ${after.version} (running)`));
+    expect(plain).toContain("[a] apply this reviewed plan (recommended; Enter)\n[r] refresh the plan\n[j] plan as JSON\n[x] reset a project's hub [warning]\n[q] quit\n>");
+    const announced = /operation ([a-f0-9-]{36}) started/.exec(screen)?.[1];
+    expect(announced).toBeDefined();
+    expect(plain).toContain(wrapped(`operation ${announced} started; Enter opens its menu, Ctrl+C leaves, and neither stops the restart`,
+      "[running] staging the release (timing unknown)") + "\n");
+    expect(plain.trimEnd()).toEndWith(wrapped("[done] completed (0s)", "restart completed",
+      `${after.projectId}: running on ${after.version} (fresh readback).`,
+      `${after.projectId}: target ${after.version} had started; this is a recorded historical step.`,
+      ...["codex", "pi", "claude"].map(peer => `${after.projectId} ${peer}: ${peer}: recorded session identity unavailable; inspect the retained recovery receipt before choosing a conversation`),
+      "Claude plugin installation not recorded.", "global CLI installation not recorded; a restart does not install a new CLI."));
     operation = /operation ([a-f0-9-]{36}) started/.exec(screen)?.[1] ?? operation;
     const typed = await status();
     expect(typed.instanceId).not.toBe(after.instanceId);

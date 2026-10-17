@@ -735,6 +735,8 @@ rules; explicit always has exactly the console's behaviour, including on a pipe.
 Default and never retain existing piped, dry-run, status and dispose JSON bytes.
 Raw JSON, including [j] and --json, bypasses paint and width handling. Human plan,
 progress, error, menu and summary lines fit the measured terminal width.
+The #272 simulated-TTY golden moves to this #466 presentation contract; its
+restart identity, board and non-TTY byte assertions remain unchanged.
 
 Only nextChoices supplies operation actions. Presentation may annotate a choice
 as recommended or disabled, but cannot create an action, bypass a refusal or run
