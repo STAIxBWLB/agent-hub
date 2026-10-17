@@ -6,6 +6,7 @@ import { PLANNER_PEERS } from "../hub/peer-catalog.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
+import type { SettingRow, SettingValue } from "../hub/settings.ts";
 
 export interface Approval {
   id: string; peer: string; title: string; expiresAt: number;
@@ -13,7 +14,14 @@ export interface Approval {
 }
 export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
+export interface SettingsEdit {
+  token: number; key?: string; undo: boolean; phase: "value" | "preview" | "reason" | "confirm";
+  text: string; value?: SettingValue; reason?: string; lines?: string[]; confirm?: string; undoDigest?: string;
+}
 export interface ConsoleState {
+  settingsRows?: SettingRow[]; settingsKnown?: boolean; settingsUndo?: string; settingsProblem?: string;
+  settingsEdit?: SettingsEdit; settingsSequence?: number;
+  pendingRestart?: { key: string; reason: string }[];
   features?: readonly string[];
   /** Older embedding callers omit choices and retain the original STAI/off toggle. */
   petChoices?: readonly CharacterId[]; petCharacter?: CharacterId; petSize?: PetSize; petGlyphs?: "ascii" | "blocks";
@@ -42,6 +50,8 @@ export interface ConsoleState {
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
+  { type: "settings_preview"; token: number; key?: string; value?: SettingValue; undo: boolean } |
+  { type: "settings_write"; key?: string; value?: SettingValue; undo: boolean; reason: string; confirm?: string; undoDigest?: string } |
   { type: "permission_default"; peer: string; confirmed: boolean } | { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
@@ -69,7 +79,7 @@ export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean 
   s.permissionDefaultsHandled = s.permissionDefaultsHandled.filter(fingerprint => current.has(fingerprint));
   const pending = s.confirm;
   if (pending?.type === "permission_default" && !s.permissionDefaults.some(row => row.peer === pending.peer && row.source === pending.source)) s.confirm = undefined;
-  if (s.confirm || s.editing || s.input || s.modeChoice || s.optionChoice || s.help) return false;
+  if (s.settingsEdit || s.confirm || s.editing || s.input || s.modeChoice || s.optionChoice || s.help) return false;
   const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(permissionDefaultFingerprint(s, row)));
   if (!next) return false;
   s.confirm = { type: "permission_default", peer: next.peer, source: next.source };
@@ -329,6 +339,7 @@ const KEYS: [string, string[]][] = [
   ["Tasks", ["a assign/reviewer (then y)", "u unassign (then y)", "r review (in review)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry"]],
   ["Events", ["f peer filter", "g kind filter"]],
+  ["Settings", ["6 Settings panel", "e edit", "u undo", "preview, reason, then y"]],
 ];
 /** The `?` key table: one group per panel, its keys kept whole and packed into the width after the group column. */
 export function keyTable(columns: number, attention = false, characters = false): Span[][] {
@@ -388,6 +399,7 @@ export function panelRows(s: ConsoleState): any[] {
     const states = ["proposed", "in_progress", "in_review", "changes_requested"];
     return s.tasks.filter(t => states.includes(t.state)).sort((a, b) => states.indexOf(a.state) - states.indexOf(b.state));
   }
+  if (s.panel === 6) return [...(s.settingsRows ?? [])].sort((a, b) => a.group.localeCompare(b.group) || a.key.localeCompare(b.key));
   if (s.panel === 4) return s.queue.filter(q => q.state === "needs_review" || q.state === "queued");
   return s.events.filter(e => (!s.peerFilter || e.peer === s.peerFilter) && (!s.kindFilter || e.kind === s.kindFilter));
 }
@@ -435,12 +447,41 @@ function lockedCommandPrompt(lock: NonNullable<ConsoleState["actionLock"]>, args
   return `unassign ${role} ${affected} on task #${lock.id} at revision ${lock.revision} -> ${resulting}${guidance}; native work and uncertain deliveries are not stopped or resolved`;
 }
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
-  const attentionKeyBlocked = !!(state.confirm || state.optionChoice || state.modeChoice || state.help || state.editing || state.input);
+  const attentionKeyBlocked = !!(state.settingsEdit || state.confirm || state.optionChoice || state.modeChoice || state.help || state.editing || state.input);
   // A notice answers the key before this one; one that pruning raises now stays.
   let s = pruneApprovals({ ...state, notice: "" }, now); const effects: ConsoleEffect[] = [];
   const done = () => ({ state: bound(s), effects });
   const answered = (id: string) => { s.approvals = s.approvals.filter(a => a.id !== id); if (s.approvalId === id) s.approvalId = undefined; };
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
+  if (s.settingsEdit) {
+    const edit = { ...s.settingsEdit }; s.settingsEdit = edit;
+    if (key === "\x1b") { s.settingsEdit = undefined; return done(); }
+    if (edit.phase === "preview") return done();
+    if (edit.phase === "confirm") {
+      s.settingsEdit = undefined;
+      if (key === "y") {
+        if (edit.undo && (!edit.key || !edit.undoDigest)) { notify(s, "undo preview changed; reload settings and review it again", now); return done(); }
+        effects.push({ type: "settings_write", undo: edit.undo, ...(edit.key ? { key: edit.key } : {}), ...(!edit.undo ? { value: edit.value } : { undoDigest: edit.undoDigest }), reason: edit.reason!, ...(edit.confirm ? { confirm: edit.confirm } : {}) });
+      }
+      return done();
+    }
+    if (key === "\x7f" || key === "\b") edit.text = Array.from(edit.text).slice(0, -1).join("");
+    else if (key === "\x15") edit.text = "";
+    else if (key === "\r" || key === "\n") {
+      if (edit.phase === "reason") {
+        if (!edit.text.trim() || Buffer.byteLength(edit.text.trim()) > 400) { notify(s, "give a reason from 1 to 400 UTF-8 bytes", now); return done(); }
+        edit.reason = edit.text.trim(); edit.text = ""; edit.phase = "confirm";
+      } else {
+        const row = s.settingsRows?.find(row => row.key === edit.key);
+        if (!row) { s.settingsEdit = undefined; notify(s, "setting is no longer available", now); return done(); }
+        const text = edit.text;
+        edit.value = text === "inherit" ? null : row.type === "boolean" ? text === "true" ? true : text === "false" ? false : text : row.type === "number" ? text.trim() && Number.isFinite(Number(text)) ? Number(text) : text : row.type === "integer" ? /^(0|[1-9]\d*)$/.test(text) ? Number(text) : text : row.type === "peers" || row.type === "roles" ? text.split(",").map(value => value.trim()).filter(Boolean) : text;
+        edit.phase = "preview"; edit.text = "";
+        effects.push({ type: "settings_preview", token: edit.token, key: edit.key, value: edit.value, undo: false });
+      }
+    } else if (!key.startsWith("\x1b")) edit.text += terminalText(key).replace(/\n/g, "").slice(0, Math.max(0, 1000 - edit.text.length));
+    return done();
+  }
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
     if (confirm.type === "permission_default") {
@@ -546,10 +587,19 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
   const switchPanel = (panel: number) => { s.panel = panel; s.selection = panel === 5 ? newestEvent(s) : 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
-  if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
+  if (s.mode === "panels" && /^[1-6]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
   // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
-  if (s.mode === "panels" && (key === "\x1b[C" || key === "\x1b[D") && !s.optionChoice) return switchPanel((s.panel + (key === "\x1b[C" ? 0 : 3)) % 5 + 1);
+  if (s.mode === "panels" && (key === "\x1b[C" || key === "\x1b[D") && !s.optionChoice) return switchPanel(s.panel === 6 ? key === "\x1b[C" ? 1 : 5 : (s.panel + (key === "\x1b[C" ? 0 : 3)) % 5 + 1);
+  if (s.mode === "panels" && s.panel === 6 && s.detail === undefined && (key === "e" || key === "u")) {
+    const row = selectedPanelRow(s);
+    if (key === "u" && !s.settingsUndo) { notify(s, "nothing to undo", now); return done(); }
+    if (key === "e" && !row) return done();
+    const token = (s.settingsSequence ?? 0) + 1; s.settingsSequence = token;
+    s.settingsEdit = { token, undo: key === "u", ...(key === "e" ? { key: row.key } : {}), phase: key === "u" ? "preview" : "value", text: key === "e" ? settingValueText(row.fileValue) : "" };
+    if (key === "u") effects.push({ type: "settings_preview", token, undo: true });
+    return done();
+  }
   if (key === "?") {
     if (s.mode === "stream") effects.push({ type: "keys" });
     else s.help = !s.help;
@@ -685,6 +735,7 @@ export const TABLES: Record<number, string[]> = {
   2: ["ID", "PEER", "LEFT", "TITLE"],
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
+  6: ["GROUP", "KEY", "VALUE", "SOURCE", "APPLIES"],
 };
 const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
@@ -714,6 +765,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
     return [id(`#${row.id}`, "info"), span(`${row.state}${s.attentionFacts?.some(fact => fact.kind === "stall" && fact.id === row.id) ? " stalled" : ""}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
       span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.profileClass ? `${row.profileClass} (base ${row.class})` : row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(row.lifecycle ? `${meter} ${row.lifecycle.workflow ? row.lifecycle.workflow + " " : ""}SDLC ${row.lifecycle.stage}${row.lifecycle.definition ? ` (base ${row.lifecycle.definition.base}) / next: ${row.lifecycle.actor} / entry: ${row.lifecycle.entry?.length ? "blocked" : "ready"} / exit: ${row.lifecycle.exit?.length ? "blocked" : "ready"}` : ""}: ${row.lifecycle.next}` : meter, stage?.cancelled ? "muted" : stage?.changes ? "failure" : stateTone(row.state))];
   }
+  if (s.panel === 6) return [span(row.group), span(row.key, selected ? "strong" : "info"), span(settingValueText(row.value)), span(row.source), span(`${row.applies}${row.pending !== undefined ? ` (file ${settingValueText(row.fileValue)})` : ""}`, row.pending !== undefined ? "attention" : undefined)];
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
   const [header, ...body] = String(row.text).split("\n");
   // The header goes through the stream's own tokenizer with the event's tone and kind, on the same tab-flattened
@@ -756,8 +808,10 @@ function taskHints(row: any): string[] {
   if (review) hints.push("r review");
   return hints;
 }
+const settingValueText = (value: unknown): string => value === null || value === undefined ? "inherit" : Array.isArray(value) ? value.join(",") : String(value);
 function panelContext(s: ConsoleState, row: any): string[] {
   if (!row) return [];
+  if (s.panel === 6) return ["e edit", ...(s.settingsUndo ? ["u undo"] : [])];
   if (s.panel === 1) return ["p pause", "r resume", "m permission mode"];
   if (s.panel === 3) return [...taskHints(row), ...(s.features?.includes("task_cancel") ? ["c cancel"] : [])];
   if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];
@@ -778,7 +832,7 @@ function hint(s: ConsoleState, columns: number): string {
 function header(s: ConsoleState, columns: number): Span[] {
   const counts = [0, s.approvals.length, 0, s.queue.filter(q => q.state === "needs_review").length, 0];
   const tabs: Span[] = [];
-  for (const [i, name] of ["Peers", "Approvals", "Tasks", "Queue", "Events"].entries()) {
+  for (const [i, name] of ["Peers", "Approvals", "Tasks", "Queue", "Events", "Settings"].entries()) {
     const active = i + 1 === s.panel; const tone = active ? "strong" : "info";
     tabs.push(span(active ? " [" : "  ", tone), span(`${i + 1} ${name}`, tone));
     if (counts[i]) tabs.push(span(` ${counts[i]}`, i === 1 ? "attention" : "failure"));
@@ -822,6 +876,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   let prompt = s.editing ? `: ${s.input}` : hint(s, columns);
   if (s.confirm?.type === "permission") prompt = `allow ${quoted(s.confirm.option)} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.prompt ?? s.confirm.args.join(" ")}? y/N`;
+  if (s.settingsEdit) {
+    const edit = s.settingsEdit;
+    prompt = edit.phase === "value" ? `value for ${edit.key} (inherit removes): ${edit.text}` : edit.phase === "preview" ? "checking setting preview; Esc cancels" : edit.phase === "reason" ? `reason: ${edit.text}` : `${edit.undo ? "undo last setting" : `set ${edit.key}`} (${edit.reason})? y/N`;
+  }
   if (s.modeChoice) prompt = `permission ${s.modeChoice}: 1 ask  2 ask-when-needed  3 never-ask  Esc cancel`;
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
@@ -834,6 +892,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (p.paused) summary.push(span(" paused", "attention"));
     if (p.toolsOnly) summary.push(span(id === "kimi" ? ` pull-only, read ${typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never"}` : " tools-only: ahub claude", "attention"));
   }
+  if (s.pendingRestart?.length) summary.push(span(`${summary.length ? " | " : ""}restart pending: ${s.pendingRestart.map(row => row.key).join(", ")}`, "attention"));
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");
   if (quotas) summary.push(span(`${summary.length ? " | " : ""}${quotas}`));
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
@@ -863,6 +922,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const height = bodyHeight - noticeLines.length;
   const lines: Span[][] = [];
   if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
+  else if (s.settingsEdit) {
+    const edit = s.settingsEdit;
+    lines.push(...fieldLines([["setting", edit.key ?? s.settingsUndo ?? "last write"], ["preview", (edit.lines ?? []).join("\n")], ["decision", "Esc cancels; saving needs a reason and explicit y"]], columns, now).flat());
+  }
   else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
@@ -879,6 +942,12 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
     const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now, stages)), columns) : undefined;
+    if (s.panel === 6) {
+      const row = selectedPanelRow(s);
+      const info = s.settingsProblem ?? (!s.settingsKnown ? "settings loading..." : row?.restartReason ?? row?.note ?? row?.label ?? "Settings");
+      lines.push(...wrap(info, columns).slice(0, 2).map(text => [span(text, s.settingsProblem ? "failure" : "info")]));
+      if (s.pendingRestart?.length) lines.push(fitLine([span(`pending restart: ${s.pendingRestart.map(row => `${row.key}: ${row.reason}`).join("; ")}`, "attention")], columns));
+    }
     if (s.panel === 3) {
       const done = progress.total ? Math.floor(progress.counts.approved * 20 / progress.total) : 0;
       const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${progress.total ? Math.floor(progress.counts.approved * 100 / progress.total) : 0}%`;

@@ -97,6 +97,8 @@ export interface TasksDeps {
   recordScreen?: (record: ScreenRecord) => void;
   /** Turn-free coordination (issue #107): configured and no PII task open. Asked at each use. */
   turnFree?: () => boolean;
+  /** Coordination preference captured for each newly created task; existing rows keep their initial mode. */
+  coordination?: () => boolean;
   /** Whether a peer's context path for facts is verified in its current session (issue #108). */
   capable?: (peer: PeerId) => boolean;
   /** Whether `peer` is between native turns now (issue #107): Codex not busy, Claude stopped since its last tool call. */
@@ -223,10 +225,15 @@ export class Tasks {
   private readonly knownPlanners = new Set<PeerId>();
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
-  private readonly sweepConfig: TaskSweepConfig;
+  private readonly coordinationModes = new Map<number, boolean>();
+  private sweepConfig: TaskSweepConfig;
   private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
+    if (d.coordination) {
+      const mode = d.coordination();
+      for (const task of d.board.list()) this.coordinationModes.set(task.id, mode);
+    }
     const backlog = d.board.list("backlog");
     for (const [peer, roles] of Object.entries(d.roles ?? {})) {
       if (!roles.includes("planner")) continue;
@@ -310,13 +317,14 @@ export class Tasks {
   /** Task-owned, default-off between-turn ladder. Persist before sending so restart cannot repeat a step. */
   async sweep(now = Date.now()): Promise<{ task: number; finding: SweepRecord }[]> {
     const recorded: { task: number; finding: SweepRecord }[] = [];
-    if (!this.sweepConfig.enabled || this.sweeping || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return recorded;
+    const config = this.sweepConfig;
+    if (!config.enabled || this.sweeping || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return recorded;
     this.sweeping = true;
     try {
       for (const task of this.d.board.list()) {
         if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) break;
         if (!task.owner && this.personUnassigned(task)) continue;
-        const finding = nextSweep(task, this.sweepConfig, now, this.waitsFor(task).length === 0);
+        const finding = nextSweep(task, config, now, this.waitsFor(task).length === 0);
         if (!finding || this.waitsFor(task).length || this.isChecking(task.id) || this.silentFor(task.id)) continue;
         if (finding.kind === "ready-unassigned") {
           this.d.board.update(task.id, HUB, "idle sweep", {}, undefined, { sweep: finding });
@@ -329,7 +337,7 @@ export class Tasks {
           } else {
             const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class) });
             this.releaseNotice(`${text} Owner reassignment suggestion: ${admission.owner ?? "no eligible peer"}.`);
-            if (admission.owner && this.sweepConfig.auto_reassign && this.sweepAvailable(admission.owner)) {
+            if (admission.owner && config.auto_reassign && this.sweepAvailable(admission.owner)) {
               try { await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [admission.owner], event: "reassigned", reason: "idle", note: "ready-unassigned idle sweep" }); }
               catch (e) { if (!(e instanceof AssignmentUndeliveredError)) throw e; }
             }
@@ -338,7 +346,7 @@ export class Tasks {
         }
         const responsible = finding.kind === "review-pending" ? task.reviewer! : task.owner!;
         if (responsible !== USER && !this.sweepAvailable(responsible)) continue;
-        if (finding.step === 3 && finding.kind !== "review-pending" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), responsible], excludeOwners: this.plannerFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).owner) continue;
+        if (finding.step === 3 && finding.kind !== "review-pending" && config.auto_reassign && this.plannerPullRecord(task)?.pull && !assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), responsible], excludeOwners: this.plannerFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).owner) continue;
         const title = this.publicTitle(task);
         const message = `Task ${title}: ${finding.kind}, idle escalation ${finding.step}/3.`;
         // Only identifiers, kind and step are kept in the ladder event. A crash after this write and before publish
@@ -358,7 +366,7 @@ export class Tasks {
           const candidate = reviewer ? a.reviewer : a.owner;
           this.passedOver(task, a);
           this.d.notify(`${message} ${reviewer ? "Reviewer" : "Owner"} reassignment suggestion: ${candidate ?? "no eligible peer"}.`);
-          if (!reviewer && candidate && this.sweepConfig.auto_reassign && this.sweepAvailable(candidate)) {
+          if (!reviewer && candidate && config.auto_reassign && this.sweepAvailable(candidate)) {
             try {
               await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [candidate], exclude: [responsible], event: "reassigned", reason: "idle", note: `idle sweep: ${finding.kind}; from ${responsible}` });
             } catch (e) {
@@ -371,6 +379,11 @@ export class Tasks {
       }
     } finally { this.sweeping = false; }
     return recorded;
+  }
+
+  /** A validated snapshot takes effect on the next sweep, never halfway through one. */
+  configureSweep(config: TaskSweepConfig): void {
+    this.sweepConfig = taskSweepConfig(config);
   }
 
   private sweepAvailable(peer: PeerId): boolean {
@@ -934,6 +947,10 @@ export class Tasks {
     const inherited = current.drafts.map((_part, index) => (initialParentPrivate || this.isPii(current.parent)) && !deterministicPrivate[index]);
     const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!, ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
     const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld || initialReasonPrivate || this.isPii(current.parent) || !this.nameable(reason));
+    if (this.d.coordination) {
+      const mode = this.d.coordination();
+      for (const child of result.children) this.coordinationModes.set(child.id, mode);
+    }
     for (const [index, child] of result.children.entries()) {
       this.incomingBacklog.add(child.id);
       if (screening) { this.recordScreen(child.id, "task", verdicts[index], inherited[index]); if (verdicts[index]?.label === "unknown") this.releaseNotice(`task #${child.id}: the PII screen gave no verdict (${verdicts[index]!.miss}); it is handled as a PII task`); }
@@ -1029,6 +1046,7 @@ export class Tasks {
     if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }
     if (reserved) this.requireCapabilities({ ...draft, signals, ...(external ? { external } : {}) }, reserved);
     let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
+    if (this.d.coordination) this.coordinationModes.set(task.id, this.d.coordination());
     created?.();
     if (screening) task = this.screenedTask(task, screened);
     if (goal) this.linkNative(task, goal, by);
@@ -1912,8 +1930,10 @@ export class Tasks {
    */
   private formCohort(task: Task, hits: ReturnType<Tasks["overlapHits"]>): void {
     if (!task.owner || this.isPii(task)) return;
+    const coordinate = this.coordinationModes.get(task.id);
+    const coordinated = this.d.coordination ? hits.filter(hit => this.coordinationModes.get(hit.task.id) === coordinate) : hits;
     const before = this.cohorts.of(task.id)?.revision;
-    const joined = this.cohorts.join(task, hits.map((h) => h.task), ownerGen, handedAt);
+    const joined = this.cohorts.join(task, coordinated.map((h) => h.task), ownerGen, handedAt, !this.d.coordination || coordinate === true);
     if (!joined) return;
     const c = joined.cohort;
     if (joined.formed || c.revision !== before) {

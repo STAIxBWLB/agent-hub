@@ -31,7 +31,7 @@ export interface SupervisionDeps {
   isPrivate: (task: Task) => boolean;
   /** false means not admitted, so latches must remain retryable. No separate batching timer. */
   emit: (notice: SupervisionNotice) => boolean | void;
-  approvalAgeMs?: number;
+  approvalAgeMs?: number | (() => number);
   now?: () => number;
   /** Durable round state belongs to the daemon's store, not the controller. */
   readRound?: (peer: string) => string | undefined;
@@ -127,10 +127,11 @@ export class SupervisionFeed {
   }
 
   approvalWaiting(request: { id: string; peer: string; tool: string; createdAt: number }): boolean {
+    const approvalAgeMs = typeof this.d.approvalAgeMs === "function" ? this.d.approvalAgeMs() : this.d.approvalAgeMs ?? 60_000;
     const peer = this.recipient();
     const age = (this.d.now?.() ?? Date.now()) - request.createdAt;
     const key = `${peer}:${request.id}`;
-    if (!peer || !Number.isFinite(age) || age < (this.d.approvalAgeMs ?? 60_000) || this.approvals.has(key)) return false;
+    if (!peer || !Number.isFinite(age) || age < approvalAgeMs || this.approvals.has(key)) return false;
     const sent = this.send(`approval:${request.id}`, `${request.peer}: approval waiting; tool ${request.tool}; age ${Math.floor(age / 1000)}s; ask the person to answer it in ahub console`, "important");
     if (sent) this.approvals.add(key);
     return sent;

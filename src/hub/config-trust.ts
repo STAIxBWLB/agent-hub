@@ -1,5 +1,5 @@
-import { statSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
 
@@ -30,6 +30,15 @@ export const MACHINE_LOCAL = [
 ] as const;
 /** Legacy exported field list stays compatible; new policies use the complete list below. */
 export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "text_projection"] as const;
+
+/** A known repository, including an unreadable marker, must never be mistaken for a plain directory. */
+export function configRepositoryPresent(cwd: string): boolean {
+  for (let at = cwd; ; at = dirname(at)) {
+    try { lstatSync(join(at, ".git")); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return true; }
+    if (dirname(at) === at) return false;
+  }
+}
 
 /**
  * Why `.agenthub/<name>` must not set machine-local fields, or undefined when git confirms nobody committed it.

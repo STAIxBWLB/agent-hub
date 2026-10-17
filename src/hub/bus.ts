@@ -162,6 +162,17 @@ export class Bus {
     }
   }
 
+  /** Apply future batching and admission limits without disturbing queued work or its existing deadline. */
+  configureScheduling(config: Pick<BusOptions, "batchMax" | "batchMs" | "queueCap">): void {
+    const { batchMax, batchMs, queueCap } = config;
+    if (!Number.isSafeInteger(batchMax) || batchMax < 1 || batchMax > 2_147_483_647 ||
+        !Number.isFinite(batchMs) || batchMs < 0 || batchMs > 2_147_483_647 ||
+        !Number.isSafeInteger(queueCap) || queueCap < 1 || queueCap > 2_147_483_647) {
+      throw new Error("invalid bus scheduling configuration");
+    }
+    Object.assign(this.opts, { batchMax, batchMs, queueCap });
+  }
+
   add(peer: PeerAdapter): void {
     this.peers.set(peer.id, peer);
     if (!this.queues.has(peer.id)) this.queues.set(peer.id, []);

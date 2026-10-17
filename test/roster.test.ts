@@ -11,6 +11,7 @@ import { peerRosterConfig, rosterAllows, type PeerRoster } from "../src/hub/rost
 import { KNOWN_PEERS } from "../src/hub/peer-catalog.ts";
 import { newEnvelope, USER, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { AcpPeer } from "../src/adapters/acp.ts";
 import { realPath } from "../src/hub/project.ts";
 
 async function legacyHub(root: string, enabled: boolean, roster: PeerRoster = {}, extra: Partial<HubConfig> = {}, codexAppPort = 0, hooks: { taskSweepNow?: () => number } = {}) {
@@ -136,6 +137,32 @@ test("a confirmed live removal fences Claude admission and retains its queue unt
     peer.close(); peer = await ControlClient.connect(hub.stateDir, { role: "peer", peer: "claude" });
     expect(hub.daemon.bus.isRostered("claude")).toBe(true);
     expect(hub.daemon.bus.queueList("claude").flatMap(row => row.originals.map(env => env.id))).toContain(original.id);
+
+    // Observe exact-key authority while removal is suspended, before its final reload can repair a broad write.
+    let releaseStop!: () => void, stopEntered = false;
+    const stopGate = new Promise<void>(resolve => { releaseStop = resolve; });
+    class HeldKimi extends AcpPeer {
+      constructor() { super("kimi", { cmd: ["unused-in-process-fixture"], cwd: root }); }
+      override async start() { this.setState("idle"); }
+      override async deliver(_envelopes: Envelope[]) { throw new Error("the held-stop fixture receives no work"); }
+      override async stop() { stopEntered = true; await stopGate; this.setState("offline"); }
+    }
+    const kimi = new HeldKimi(); hub.daemon.bus.add(kimi); await kimi.start();
+    const edited = JSON.parse(readFileSync(path, "utf8")); edited.roster.codex = false;
+    writeFileSync(path, JSON.stringify(edited));
+    const removal = hub.client.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi" });
+    void removal.catch(() => {}); // Always consume a teardown rejection, including an assertion's early exit.
+    let codex: ControlClient | undefined;
+    try {
+      const deadline = Date.now() + 1500;
+      while (!stopEntered && Date.now() < deadline) await hub.client.request({ t: "status" });
+      expect(stopEntered).toBe(true);
+      expect(hub.daemon.bus.isRostered("codex")).toBe(true);
+      codex = await ControlClient.connect(hub.stateDir, { role: "tools", peer: "codex" });
+      expect((await codex.request({ t: "status" })).status.projectId).toBe("roster-legacy-project");
+    } finally { codex?.close(); releaseStop(); await removal; }
+    expect(await removal).toMatchObject({ ok: true });
+    expect(hub.daemon.bus.isRostered("codex")).toBe(true);
   } finally { peer?.close(); await hub.close(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
 });
 
@@ -182,6 +209,9 @@ test("busy owned ACP removal is refused until --now stops it, and a conductor ho
     hub.daemon.bus.publish(newEnvelope(USER, "ACK_SLOW removal fixture", { to: ["kimi"] }));
     for (let n = 0; n < 100 && owner.state !== "busy"; n++) await hub.client.request({ t: "status" });
     expect(owner.state).toBe("busy");
+    const preview = await hub.client.request({ t: "settings_preview", key: "roster.kimi", value: false });
+    expect(preview.lines.join("\n")).toContain("ahub roster remove kimi --now");
+    expect(preview.lines.join("\n")).toContain("during the active turn");
     expect(await hub.client.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi" })).toMatchObject({ ok: false, error: "kimi is in a turn; retry when it is idle, or pass --now" });
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);
     expect(await hub.client.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi", now: true })).toMatchObject({ ok: true });

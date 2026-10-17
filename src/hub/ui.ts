@@ -131,7 +131,7 @@ export function startDashboard(options: DashboardOptions) {
         }
       }
       try {
-        if (sessionOf(cookie).liveTest && !["start", "stop", "pause", "resume", "permit", "start_peer", "setting", "setting_undo", "setting_preview", "sdlc_queue", "sdlc_release"].includes(String(input.action))) {
+        if (sessionOf(cookie).liveTest && !["start", "stop", "pause", "resume", "permit", "start_peer", "setting", "setting_undo", "setting_preview", "setting_reload", "sdlc_queue", "sdlc_release"].includes(String(input.action))) {
           return reject(403, "live-test dashboard cannot write person-attributed content; use peer tools");
         }
         if (input.action === "sdlc_queue" || input.action === "sdlc_release") server.timeout(req, 35);

@@ -61,7 +61,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub roster [--json] [--color=auto|always|never]", "human only: every known peer, participation, start mode and retained work"],
     ["ahub roster add <peer> | remove <peer> [--yes] [--now]", "human only: change live participation through settings; removal previews retained messages and task handoff"],
     ["ahub settings [list] [--json] | get <key>", "human only: the settings the dashboard can change, each with its value, the file it comes from and when it applies"],
-    ["ahub settings set <key> <value|inherit> [--yes] [--preview] [--now] | undo", "human only: change one, written to .agenthub/config.local.json or routing.local.toml (never a tracked file); --preview shows the effect and saves nothing; undo puts back the last write"],
+    ["ahub settings set <key> <value|inherit> [--yes] [--preview] [--now] | undo | reload", "human only: change or reload validated settings, written to .agenthub/config.local.json or routing.local.toml (never a tracked file); --preview shows the effect and saves nothing; undo puts back the last write"],
     ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
     ["ahub queue list [--peer <id>] [--json] [--color=auto|always|never]", "inspect durable deliveries"],
     ["ahub queue show <delivery-id> [--json] [--color=auto|always|never]", "inspect one delivery and revision"],

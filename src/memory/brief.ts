@@ -45,7 +45,7 @@ export class Briefs {
   constructor(
     private readonly client: MemoryClient | undefined,
     private readonly project: string,
-    private readonly maxItems = 8,
+    private readonly maxItems: number | (() => number) = 8,
     private readonly native?: NativeBrief,
     /** Counts of what a brief carried, for the research records (#258 AC11); never its text. */
     private readonly observe?: (peer: PeerId, task: number, counts: { native: number; fails: number; claudeMem: number }) => void,
@@ -53,18 +53,19 @@ export class Briefs {
   ) {}
 
   async forTask(peer: PeerId, task: BriefTask, priority: readonly NativeItem[] = []): Promise<string | undefined> {
+    const maximum = typeof this.maxItems === "function" ? this.maxItems() : this.maxItems;
     const seen = this.seen.get(peer) ?? new Set<string>();
     this.seen.set(peer, seen);
     const own: NativeItem[] = [];
     // A plan fail is task-specific guidance even when a previous task already carried it.
-    for (const item of priority) if (own.length < this.maxItems && !own.some(existing => existing.id === item.id)) own.push(item);
-    try { for (const item of this.native?.(task) ?? []) if (!seen.has(item.id) && !own.some(existing => existing.id === item.id) && own.length < this.maxItems) own.push(item); } catch { /* fail-open: the store is optional */ }
-    const found = this.client && own.length < this.maxItems ? await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" ")) : [];
+    for (const item of priority) if (own.length < maximum && !own.some(existing => existing.id === item.id)) own.push(item);
+    try { for (const item of this.native?.(task) ?? []) if (!seen.has(item.id) && !own.some(existing => existing.id === item.id) && own.length < maximum) own.push(item); } catch { /* fail-open: the store is optional */ }
+    const found = this.client && own.length < maximum ? await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" ")) : [];
     const items: BriefItem[] = [];
     for (const item of found) {
       if (seen.has(`#${item.id}`)) continue;
       items.push(item);
-      if (own.length + items.length === this.maxItems) break;
+      if (own.length + items.length === maximum) break;
     }
     if (!own.length && !items.length) return undefined;
     for (const item of own) seen.add(item.id);

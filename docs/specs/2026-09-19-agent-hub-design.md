@@ -3056,3 +3056,142 @@ Evidence: `docs/verification/2026-10-17-418-probes.md`. The feasibility probe is
 - Cancellation releases overlap/reservation participation and sends each distinct former owner/reviewer one stop notice. Its trusted cancellation revision marker keeps that stop notice relevant; earlier notices for the cancelled task become moot under #434. The classifier never uses timestamps alone to identify the stop notice. Dependents keep waiting and receive the cancelled-dependency cause. List, show, explain, dashboard and release projections treat cancellation as closed, retaining the current privacy screen and distinguishing cancellation from successful approval.
 - The daemon advertises `task_cancel` in hello and status features. Current clients refuse cancellation without that feature. Upgrade and restart persist the verified target's exported features with its immutable root/digest before prepare, including cached targets, and reuse that receipt on resume after verifying the same bytes. A legacy staged receipt without feature evidence is probed only while a project is not yet past commit; fully committed projects do not require another probe. This preserves #215: a transient probe failure cannot refuse a target that was already staged with verified evidence. Preflight checks only uncommitted sources and refuses a target lacking `task_cancel` while cancelled rows exist. Source prepare/commit recheck before holds/snapshots and around asynchronous work; cancellation cannot write through recovery preparation. Refusals name task ids and never rewrite rows. An older binary started manually can misclassify cancelled rows as open or fail to move them; this is the explicit unsupported compatibility ceiling. Never map cancellation to approval.
 - The post-release live step remains separate: do not cancel the historical task or enable the project's sweep from implementation tests. AC7 needs installed-runtime receipts.
+
+## Amendment: live configuration reload (issue #439)
+
+The daemon validates one captured candidate containing config.json, config.local.json,
+routing.toml and routing.local.toml before applying any part of it. Missing files use
+existing defaults; unreadable, malformed, unknown or invalid configuration refuses the
+whole candidate. The accepted routing snapshot remains authoritative until another
+complete candidate succeeds; last-good parser fallbacks never authorize a reload.
+Settings writes, undo, explicit `ahub settings reload`, dashboard reload and debounced
+file changes share this path. One invalid candidate produces one bounded notice naming
+the file/key and validation error, without echoing configuration values.
+
+Every setting and configuration block has one apply class. Leaf rules override block
+rules. `live` changes future decisions immediately; `next use` changes the next task,
+request, batch or peer start; `restart` retains the running value and reports its key
+and reason. The registry exposes the running and file values separately.
+
+| Apply class | Configuration |
+|---|---|
+| live | runtime permission choices, authorized roster changes, roles/planner/conductor, instruction-file protection, approvals.notify, research.enabled, snapshots.enabled/keep, task_sweep, tasks.wip_limits, capabilities, routing classes/stay_switch/signals/constraints/hub_routes/max_switch_prefill_tokens |
+| next use | permission_modes and catalog_roles at the next peer start; peers.*.start_mode and native launch argv; coordination for newly created tasks; task release/review policy; new approval timeouts; bus batch/admission limits; budget/context/inference/limits; peer watchdog and step limits; recovery and experiment decisions; memory brief/injection/suggestion limits |
+| next use | pi.auto_start changes a later startup/recovery auto-start decision; reloading it never starts or replaces a running peer |
+| restart | memory.enabled/native/worker_url/short_ttl_days/sync_interval_min: open consumers, selected profile binding, client and sync timer must be quiesced together |
+| next use | routing targets/routes/local selection at the next local peer or sidecar creation; existing native sessions retain their model contract |
+| restart | pi.dgx_coding/dgx_fast and routing.pi: model catalogue and context publication belong to the existing Pi relay; a reload must not replace a live native relay |
+| restart | omniroute: credential and gateway clients are bound to relay ownership |
+| restart | mlx: model/runtime ownership and device resources belong to the running instance |
+| restart | checks: bounded runner and completion-check execution contracts are constructed together |
+| restart | pii, data and local deny/read/network policy: existing native sessions and generated sandbox/proxy contracts must not acquire a different trust boundary mid-session |
+| restart | profile/profile_overrides and text_projection: session tool schemas, role/profile contracts and converter/cache ownership are bound at startup |
+| restart | terminal.open: the terminal provider is supplied by the daemon lifecycle |
+| restart | bench.enabled: the benchmark execution environment is selected before work starts |
+
+Listener ports and the state directory are startup options rather than editable
+settings; their already-bound sockets and state ownership require a new daemon.
+Changing the external memory selector likewise requires the existing quiesce/reopen
+lifecycle and is never a hot reload or automatic migration.
+
+Trust is checked against the actual source files and their last accepted raw layers,
+not against a scratch project's Git status. Effective guarded changes are also
+checked when unchanged raw declarations acquire different Git provenance. A
+settings ticket never authorizes command/policy fields outside the editable registry.
+Changed MACHINE_LOCAL values and raising
+registry values are refused from tracked or unverifiable files. Ordinary dashboard
+and watcher authority cannot adopt a raise hidden in an unrelated local edit. A
+settings session or terminal may adopt an untracked value within its existing
+settings authority; neither bypasses the tracked-file rule or the never-ask and
+roster confirmation/lifecycle fences. Runtime permission mutation still uses
+permissionChange/changePermission exclusively.
+
+A sweep reload validates its next-pass policy and reschedules its timer without
+changing a pass already in progress. Bus scheduling changes retain queued originals,
+prefaces, manual pauses, recovery holds and inflight delivery. Coordination preference
+is pinned when a task is created (including split children); changing it neither
+retroactively silences an existing task nor lifts an existing silent cohort. Current
+PII and capability fences remain authoritative. Snapshot enablement applies to a
+later turn; a running turn retains its capture decision and is never stopped.
+
+The console's sixth Settings tab reads the same registry as the dashboard. It edits
+through the authenticated daemon client: value, preview, nonempty bounded reason,
+then explicit y; undo also previews and confirms. Stale preview replies cannot arm a
+write, and pasted confirmation text never executes one. The daemon accepts additive
+settings_reload and undo-preview requests only from console roles. The dashboard's
+setting_reload action uses its existing authenticated session; manager forwarding
+has ordinary authority. No client writes configuration files directly. Pending
+restart keys and reasons appear in status, console and dashboard. These requests and
+optional projections are additive; older daemons refuse unknown requests and the
+control protocol remains 16.
+
+### Reload authority and publication scope (#439 review amendment)
+
+Malformed syntax, unknown keys and invalid values still refuse the complete candidate
+before any publication. A valid but unauthorized key is different: retain that key's
+accepted value, report its name and reason, and continue applying independently
+eligible changes. A refused key never wedges an unrelated setting write.
+
+An individual setting write or undo publishes only its named registry path. Its
+preview and confirmation do not authorize other edits in either config file or either
+routing file. This includes catalog guidance: only the named peer is prepared (#295).
+Unapplied edits remain pending for a later explicit reload; accepting another key must
+not acknowledge them in the accepted source baseline.
+
+Privacy tightening is automatic from tracked or untracked files: enabling local PII
+constraints/screening, adding PII patterns, removing nonholder role memberships and narrowing an explicit capability list cannot
+be mistaken for a raise. Deleting a restricted capability entry restores the default of all capabilities and is a guarded widening. Roster membership changes always use their named confirmation and peer lifecycle, even when removing a peer; generic reload never bypasses those steps. Registered floors and known semantic reductions in admission
+or permission likewise remain available without authorizing a wider policy. Other
+agent-relevant policy, including limits, supervision feed, inference, review and crash
+resume, receives a per-key authority check even outside the settings registry.
+
+`ahub settings reload` is the explicit adoption path for guarded file edits. The daemon
+first returns the exact guarded keys and a confirmation token bound to the candidate
+bytes and accepted configuration revision. The person reviews that list and confirms
+from an interactive terminal; only then may the same candidate be adopted. Changed
+bytes or accepted state invalidate the token. An ordinary watcher or dashboard never
+confirms a raise; a settings session remains restricted to registry keys. Tracked or
+unverifiable MACHINE_LOCAL command and credential declarations cannot become trusted
+through confirmation. Refusal notices name each key and say to review and run
+`ahub settings reload` or revert the file; tracked machine-local declarations also
+require moving the declaration to an untracked machine-local source.
+
+Coordination pinning is local to a daemon lifetime. A setting reload preserves each
+existing task's captured mode and existing cohort silence; a daemon restart re-pins
+retained task rows to the startup mode. This is an explicit compatibility ceiling,
+not durable task metadata or a migration.
+
+Inheritance and undo use the actual destination source trust. They may restore an unchanged effective startup value after explicit consent, but a shadowed edit that was never authorized is not an accepted fallback. New lower-layer raises remain refused even when an unchanged local overlay previously hid them.
+
+Reserved prototype path components are refused throughout nested routing extension tables before publication. Configuration path writes never traverse inherited object properties.
+
+Switchyard targets/routes and hub-route dictionaries retain opaque quoted keys, including dots. Each dictionary is one guarded value for reload confirmation and publication; privacy fields and ordinary registry settings retain leaf-level decisions.
+
+### Settled authority and reviewable confirmation (#439 round-2 amendment)
+
+A role-list subset is automatic only when the settled planner and conductor holder
+sets stay unchanged. Removing the last explicit planner can hand that authority to
+the automatic fallback; removing a settled holder therefore requires guarded
+confirmation even though the raw role list shrinks. The same pure role resolver
+serves publication and the authority comparison.
+
+The console preview shows a complete bounded before -> after value for every guarded
+key, including full executable argv, and describes any settled holder change. Values
+stay out of notices and events. A value that cannot fit the review budget is retained
+with an actionable rejection, never silently truncated and authorized. Each before
+or after representation is at most 16 KiB, an effect description at most 2 KiB, and
+the complete confirmation at most 128 KiB.
+
+The confirmation token proves candidate/state freshness. It does not independently
+prove a person's presence: console-role authority is the existing server trust
+boundary, while the CLI enforces interactive TTY, explicit y and the deadline.
+The roster exact-key mutation guard observes admission while teardown is held,
+before reload can repair a wrong whole-roster assignment. The roster authority seed
+covers the dashboard authority boundary; its separate leaf check is defence in depth.
+
+Console undo binds its confirmation to the previewed setting key and the SHA-256
+of the exact undo record. A changed or missing record refuses without writing;
+same-key replacement also invalidates the preview. These optional request fields
+preserve protocol 16 for older direct CLI clients. The Settings panel never forces
+a busy roster removal: it names `ahub roster remove <peer> --now` and the active-turn
+stop/detach consequence so the person can make that choice explicitly in the CLI.

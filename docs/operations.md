@@ -120,7 +120,7 @@ sounds on an action-count transition from zero, at most once per minute, never
 for a message alone. Plain mode prints the line only when the action count changes.
 Messages addressed to `user` remain attention items until the next key. Drawing
 adds no timer, network request or writable settings path.
-Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
+The operational tabs change with digits 1 to 5 or Left and Right (wrapping at both
 ends), never while a command is being edited or a choice is open; under a
 confirmation an arrow dismisses it like any key but y, without moving a tab. A pasted
 chunk can only edit the command line, but a read that holds nothing but arrow or
@@ -1436,6 +1436,16 @@ override them.
 
 ## Settings from the dashboard and the terminal
 
+In `ahub console`, press `6` for Settings. Existing operational-tab arrow cycling
+is unchanged; from Settings, Left returns to Events and Right to Peers. Select a
+row and press `e` to edit: value, daemon preview, nonempty reason, then `y`. Press
+`u` to preview and confirm undo. Undo binds the key and exact undo-record digest;
+if another write replaces that record, preview again. For busy roster removal,
+the panel names `ahub roster remove <peer> --now`, which explicitly stops an owned
+runtime or detaches a native session during its active turn; the panel does not force it.
+Esc cancels, and pasted confirmation text cannot
+write. This panel uses the current authenticated daemon connection.
+
 The dashboard's Settings section and `ahub settings` show and change the same
 closed list of settings (issue #269). Run them from a plain terminal:
 
@@ -1447,17 +1457,21 @@ ahub settings set routing.classes.implement.peers codex,kimi,pi
 ahub settings set permission_modes.kimi ask-when-needed
 ahub settings set research.enabled inherit   # remove the machine-local value
 ahub settings undo                 # put back the file the last write changed
+ahub settings reload               # validate and apply the complete four-file candidate
 ahub ui --settings                 # dashboard with a 15-minute settings session
 ```
 
 | Group | Keys | Stored in | Applies |
 | --- | --- | --- | --- |
 | Permissions | `permission.<peer>` (the mode now) | the running hub only | at once |
-| Permissions | `permission_modes.<peer>` (the mode at hub start) | `config.local.json` | next hub start |
+| Permissions | `permission_modes.<peer>` (the default mode) | `config.local.json` | next peer start |
 | Start | `peers.pi.start_mode`, `peers.codex.start_mode`, `peers.kimi.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
-| Start | `pi.auto_start` | `config.local.json` | next hub start |
+| Start | `pi.auto_start` | `config.local.json` | next startup/recovery auto-start decision; never starts a peer merely on reload |
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
-| Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled`, `coordination` | `config.local.json` | next hub start |
+| Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled` | `config.local.json` | live, without disturbing an active turn |
+| Switches | `coordination` | `config.local.json` | newly created tasks only |
+| Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min` | `config.local.json` | live; reschedules the sweep timer |
+| Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Roles | `planner` (the one peer that plans) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
@@ -1470,8 +1484,28 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   file each value comes from. `--preview`, and the dashboard's Preview button,
   show `ahub route explain` for the open tasks before and after, or what a
   permission mode grants, and save nothing.
-- A row shows the value in force, its source file, when it applies, and for a
-  value read at hub start what the next start will read (`Pending restart`).
+- A row shows running and file values, source and apply class (`live`, `next use`,
+  or `restart`). Pending restart keys and reasons also appear in status, console
+  and dashboard, including startup-only blocks outside the editable registry.
+- Settings writes and undo, the dashboard Reload configuration button and
+  `ahub settings reload` use one complete validation/apply path. Debounced changes
+  of config.json, config.local.json, routing.toml and routing.local.toml use it too,
+  including atomic file replacement. Invalid candidates apply nothing and emit
+  one bounded error notice. Valid but unauthorized keys retain their accepted value and are reported per key; other eligible changes still apply. Recovery/shutdown hold reloads.
+- Individual writes and undo publish only the named setting. Other file edits remain unapplied.
+- `ahub settings reload` lists guarded keys with complete before -> after values (including full argv) and any planner/conductor holder effect. It requires an interactive terminal and exact `y` within 30 seconds before adopting them. Oversized previews remain unapplied and must be split or reduced. Candidate bytes or accepted state changes invalidate that confirmation. Watchers and ordinary dashboard reloads never confirm a raise.
+- Privacy tightening (local PII constraints/screening, added PII patterns, nonholder role reductions and explicit capability-list narrowing) is automatic, including tracked files. A planner/conductor holder change is guarded even when a role list shrinks; deleting a restricted capability entry restores all capabilities and is guarded. Reload checks the actual files' Git provenance. Changed machine-local or raising
+  values from tracked/unverifiable files are refused; an ordinary dashboard or
+  watcher cannot adopt unrelated raising local edits. A settings session cannot
+  adopt routing fields outside its editable registry. Existing confirmation and
+  roster lifecycle fences remain; use the confirmed roster setting for membership.
+Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain their running values until restart, because existing native sessions use the published relay catalogue and context contract. Routing policy changes apply to future decisions; local model/target changes apply at the next peer or sidecar creation.
+
+- Runtime/client ownership still requires restart for memory handles and sync,
+  gateway/MLX, runner/check commands, profile/tool contracts, converters, existing
+  session privacy/sandbox policies, the terminal provider and benchmark environment.
+  The exhaustive reasons are in the issue #439 spec amendment. A pending file value
+  is not applied to the running consumer. Coordination creation pins last for the daemon lifetime; a restart re-pins retained rows to its startup mode.
 - `ahub settings undo` (the dashboard's "Undo last write") puts back the one
   previous version of the file the last write changed. It refuses when that
   file was edited since, and when it would put a stored never-ask back (set it
@@ -1484,7 +1518,7 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   `.agenthub/routing.local.toml`: run `ahub init` again, or add it. A
   `permission_modes` value is read only from a file git confirms nobody
   committed (config trust); where the hub will not read what was written, the
-  reply and the Settings row say so.
+  reload refuses the guarded candidate and the Settings row identifies the file.
 - Authority: a dashboard opened with `ahub ui` reads settings, lowers a mode to
   `ask`, turns `pi.auto_start` off, sets a start mode back to `tui` and changes
   the Switches group. Everything

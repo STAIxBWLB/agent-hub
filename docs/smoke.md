@@ -1901,3 +1901,37 @@ The current source fixture at 6d311a51dccd41d3703079175cac65a487189b15 used the 
 This supersedes earlier phone-fixture pending statements only for this source. The old 1bbced04 captures remain historical; no later byte-identity premise is used. Native planner/two-release, accounts, model ingestion and measured effects remain unverified.
 
 The later bounded release-audit preview text is verified by DOM tests, not by a refreshed phone capture. The6d311a51 PNGs remain evidence for their pinned source; see the later-audit note in the phone verification report.
+
+
+## Settings reload and console fixture (#439, 2026-10-17)
+
+Native real-terminal smoke is **UNVERIFIED**. The admitted remote install/test
+attempt exited 75 before running because Python pid 6672 (parent 6671) had no
+verified repository owner. No retry, process kill, user-hub settings change,
+installation or restart was performed. A scripted ConsoleTerminal is fixture
+evidence, not a native PTY or account result.
+
+The implementation fixtures cover the following in disposable projects and temp
+memory homes:
+
+- Console Settings tab, daemon preview, bounded reason, explicit y, undo, stale
+  preview fencing and pasted-y refusal.
+- Dashboard reload/context, running/file values, pending restart reasons and
+  stable drafts; older snapshots remain readable.
+- Real fixture daemon: live switches/WIP and undo, retained pause/queue/instance,
+  actual sweep timer cancellation/rescheduling, atomic rename watcher, snapshot
+  capture on a later turn and pending memory restart without opening a consumer.
+- Whole-candidate JSON/TOML/unknown-key refusal, one error notice, per-key retention
+  of valid unauthorized edits, automatic privacy tightening, scoped write/undo,
+  fingerprint-bound guarded reload confirmation and agent-role request refusals.
+
+To complete the native leg, use a disposable project from a person terminal (or
+an explicitly authorized per-invocation delegation under docs/security.md).
+Open `ahub console`, select Settings with 6, edit a safe switch, inspect its
+preview, enter a reason, confirm y and verify running/file values. Preview and
+confirm undo; verify the restored value through `ahub settings get`. Paste y at
+confirmation and verify no write. Change a sweep interval and confirm the same
+hub instance stays running with its queue and pauses intact. Record the source
+head, terminal and daemon readbacks separately before claiming AC5 native smoke.
+
+For the guarded CLI leg, edit a disposable untracked WIP limit, run `ahub settings reload`, inspect its complete before -> after preview, decline and verify the running limit is retained. Repeat and confirm y, then verify the same instance and queue/pause state. Record this separately from the scripted CLI fixture; the token proves freshness within console authority, and the CLI supplies the person-presence checks.

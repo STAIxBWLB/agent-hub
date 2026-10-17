@@ -189,11 +189,13 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const replies = await Promise.all([
         client.request({ t: "status" }, 3000), client.request({ t: "budget" }, 3000),
         ...(panels ? [client.request({ t: "task", op: "hub_task_list", args: {} }, 3000), client.request({ t: "queue", op: "list" }, 3000), client.request({ t: "task", op: "hub_task_list", args: { ready: true } }, 3000)] : []),
+        ...(panels && state.panel === 6 ? [client.request({ t: "settings_get" }, 3000)] : []),
       ]);
       if (!active) return;
-      const [status, budget, tasks, queue, ready] = replies;
+      const [status, budget, tasks, queue, ready, settings] = replies;
       captureConsoleSelection(state);
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
+      if (status.status && status.ok !== false) state.pendingRestart = Array.isArray(status.status.pendingRestart) ? status.status.pendingRestart : [];
       if (status.status) state.features = Array.isArray(status.status.features) ? status.status.features : [];
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (status.status && status.ok !== false) {
@@ -209,6 +211,13 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           state.tasksKnown = true;
         } }
       if (queue?.ok && state.mode === "panels" && Array.isArray(queue.deliveries)) state.queue = queue.deliveries;
+      if (settings) {
+        if (settings.ok && Array.isArray(settings.rows)) {
+          state.settingsRows = settings.rows; state.settingsKnown = true; state.settingsProblem = undefined;
+          state.settingsUndo = typeof settings.undo === "string" ? settings.undo : undefined;
+          state.pendingRestart = Array.isArray(settings.pendingRestart) ? settings.pendingRestart : [];
+        } else state.settingsProblem = String(settings.error ?? "settings are unavailable");
+      }
       reconcileDetail();
       const error = replies.find(reply => reply.ok === false)?.error; if (error) notice(String(error));
       draw();
@@ -233,6 +242,23 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   });
   const effect = async (action: ConsoleEffect) => {
     if (action.type === "exit") return stop();
+    if (action.type === "settings_preview") {
+      const response = await client.request(action.undo ? { t: "settings_preview", undo: true } : { t: "settings_preview", key: action.key, value: action.value }, 3000);
+      const edit = state.settingsEdit;
+      if (!active || state.mode !== "panels" || state.panel !== 6 || !edit || edit.phase !== "preview" || edit.token !== action.token || edit.undo !== action.undo || edit.key !== action.key || (!action.undo && JSON.stringify(edit.value) !== JSON.stringify(action.value))) return;
+      if (response.ok === false) { state.settingsEdit = undefined; notice(String(response.error ?? "setting preview refused")); }
+      else if (action.undo && (typeof response.key !== "string" || !response.key || response.key.trim() !== response.key || response.key.length > 160 || typeof response.undoDigest !== "string" || !/^[a-f0-9]{64}$/i.test(response.undoDigest))) {
+        state.settingsEdit = undefined; notice("undo preview is unavailable or changed; reload settings and review it again");
+      } else state.settingsEdit = { ...edit, ...(action.undo ? { key: response.key, undoDigest: response.undoDigest } : {}), phase: "reason", text: "", lines: [...(Array.isArray(response.lines) ? response.lines.map(String) : []), ...(Array.isArray(response.tasks) ? response.tasks.flatMap((task: any) => [String(task.before?.join("\n") ?? ""), String(task.after?.join("\n") ?? "")]) : []), ...(response.hidden ? [`${response.hidden} more open tasks are not shown`] : [])], ...(typeof response.confirm === "string" ? { confirm: response.confirm } : {}) };
+      draw(); return;
+    }
+    if (action.type === "settings_write") {
+      const result = await client.request({ t: action.undo ? "settings_undo" : "settings_set", key: action.key, ...(!action.undo ? { value: action.value } : { undoDigest: action.undoDigest }), reason: action.reason, ...(action.confirm ? { confirm: action.confirm } : {}) }, 35_000);
+      if (!active) return;
+      if (result.ok === false) notice(String(result.error ?? "setting write refused"));
+      else stream({ text: String(result.text ?? "setting saved"), kind: "settings" });
+      await refresh(); draw(); return;
+    }
     if (action.type === "permission_default") {
       const result = await client.request({ t: "permission_default", peer: action.peer, confirmed: action.confirmed }, 35_000);
       if (!active) return;
@@ -268,12 +294,13 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   };
   const handle = (key: string) => {
     if (!active) return;
+    const priorPanel = state.panel;
     const result = reduceConsole(state, key); state = result.state;
     state.attentionMessages = []; state.attentionSelection = key === "n" ? state.attentionSelection : undefined;
     if (state.mode === "panels" && (plain || columns < 80 || rows < 24)) { state.mode = "stream"; notice("panels need at least 80x24"); }
     for (const action of result.effects) void effect(action).catch(error => stop(`Console error: ${String(error.message)}`));
     draw();
-    if (key === "\t") void refresh();
+    if (key === "\t" || state.panel !== priorPanel) void refresh();
   };
   client.onPush = msg => {
     if (!active) return;
@@ -320,6 +347,12 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
             state.attentionMessages = []; state.attentionSelection = undefined;
             if (state.help && state.mode === "panels") { draw(); return; }
             if (state.confirm?.type === "permission_default") { draw(); return; }
+            if (state.settingsEdit) {
+              const edit = state.settingsEdit;
+              if (edit.phase === "value" || edit.phase === "reason") state.settingsEdit = { ...edit, text: (edit.text + terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/[\r\n]/g, " ")).slice(0, 1000) };
+              else state.settingsEdit = undefined;
+              draw(); return;
+            }
             state.confirm = undefined; state.optionChoice = undefined; state.editing = true;
             state.input += terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/\n/g, " "); draw();
           }
