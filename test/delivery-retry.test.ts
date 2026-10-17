@@ -358,3 +358,65 @@ test("an old-writer attempt with unknown provenance is never backfilled without 
   expect(reopened.journal.retryEvidence("codex", [legacy])).toBe("used"); expect(reopened.journal.retryWarning("codex", [legacy])).toBe(true);
   expect(reopened.journal.retryEvidence("codex", [newEnvelope("user", "unrelated")])).toBe("unused");
 });
+
+for (const legacyCarrier of [false, true]) test(`a restored presence carrier never consumes a fresh message retry${legacyCarrier ? " with old proof, history and queued attempt" : ""} (#434)`, async () => {
+  const f = rig(); f.journal.transition("held", "completed");
+  const peer = new Peer("codex"); peer.pullOnly = false; f.bus.add(peer); await peer.start();
+  f.bus.preface("codex", "recall preserved");
+  const x = newEnvelope("user", "uncertain X", { to: ["codex"] }); f.bus.publish(x); await until(() => peer.got.length === 1);
+  const p = peer.got[0]![0]!; expect(p.from).toBe("hub"); expect(p.kind).toBe("presence");
+  peer.setBusy(); f.bus.retryDelivery("codex", peer.ids[0]!); f.bus.withdraw(x.id); peer.idle();
+  expect(peer.got).toHaveLength(1);
+  if (legacyCarrier) {
+    const { Database } = await import("bun:sqlite"); const db = new Database(join(f.dir, "hub.db"));
+    db.query("INSERT OR REPLACE INTO delivery_retry_evidence VALUES ('p','codex',?,'old-carrier',1)").run(p.id);
+    db.query("INSERT INTO resolution_history (project_id,delivery_id,observed_revision,action,reason,result_revision,result_state,actor,peer,original_ids) VALUES ('p','old-carrier',1,'retry','old presence carrier',1,'failed','peer:codex','codex',?)").run(JSON.stringify([p.id]));
+    db.query("UPDATE delivery_meta SET retry_unknown_ids = ? WHERE project_id = 'p'").run(JSON.stringify({ codex: [p.id] })); db.close();
+    f.journal.createDelivery({ id: "old-carrier", peer: "codex", state: "queued", createdAt: p.ts, originals: [p], out: [p], attempt: 1 });
+  }
+  const b = newEnvelope("user", "fresh B", { to: ["codex"] }); f.bus.publish(b); await until(() => peer.got.length === 2);
+  expect(peer.got[1]![0]!.id).toBe(p.id); expect(peer.got[1]![0]!.body).toContain("recall preserved");
+  expect(peer.got[1]![0]!.body).not.toContain("Hub redelivery warning:");
+  expect(f.journal.retryEvidence("codex", [b])).toBe("unused"); expect(f.journal.retryWarning("codex", [b])).toBe(false);
+  expect(f.journal.retryEvidence("codex", [x])).toBe("used"); expect(f.journal.retryWarning("codex", [x])).toBe(true);
+  expect(f.journal.get(peer.ids[1]!)?.attempt ?? 0).toBe(0);
+  peer.setBusy(); expect(() => f.bus.retryDelivery("codex", peer.ids[1]!)).not.toThrow();
+});
+
+test("recovery imports a pending presence without fencing the first unrelated fresh message (#434)", async () => {
+  const f = rig(); f.journal.transition("held", "completed"); f.bus.preface("codex", "imported recall");
+  const snapshot = { ...f.bus.snapshot(false), journal: f.journal.snapshot() };
+  const dir = mkdtempSync(join(tmpdir(), "ahub-presence-import-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: f.dir, projectId: "p", instanceId: "import", operationId: "op" });
+  const bus = new Bus({ journal, batchMs: 0 }); cleanup.push(() => { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); });
+  bus.restore(snapshot, "op"); const peer = new Peer("codex"); peer.pullOnly = false; bus.add(peer); await peer.start(); bus.setRecoveryHold(false);
+  const b = newEnvelope("user", "fresh after import", { to: ["codex"] }); bus.publish(b); await until(() => peer.got.length === 1);
+  expect(peer.got[0]![0]!.body).toContain("imported recall"); expect(peer.got[0]![0]!.body).not.toContain("Hub redelivery warning:");
+  expect(journal.retryEvidence("codex", [b])).toBe("unused"); expect(journal.retryWarning("codex", [b])).toBe(false);
+  peer.setBusy(); expect(() => bus.retryDelivery("codex", peer.ids[0]!)).not.toThrow();
+});
+
+test("legacy unmappable-history and presence-only attempt backfills cannot fence a later fresh message (#434)", async () => {
+  const f = rig(); f.journal.transition("held", "completed"); f.bus.preface("codex", "legacy recall");
+  const p = f.bus.snapshot(false).prefaces.codex!;
+  f.journal.createDelivery({ id: "presence-attempt", peer: "codex", state: "failed", createdAt: p.ts, originals: [p], out: [p], attempt: 1 });
+  const { Database } = await import("bun:sqlite"); const db = new Database(join(f.dir, "hub.db"));
+  db.run("INSERT INTO resolution_history (project_id,delivery_id,observed_revision,action,reason,result_revision,result_state,peer,original_ids) VALUES ('p','pruned-legacy',1,'retry','legacy',1,'failed','','[]')"); db.close();
+  const reopened = f.reopen(), peer = new Peer("codex"); peer.pullOnly = false; reopened.bus.add(peer); await peer.start();
+  const b = newEnvelope("user", "fresh after legacy return", { to: ["codex"] }); reopened.bus.publish(b); await until(() => peer.got.length === 1);
+  expect(peer.got[0]![0]!.id).toBe(p.id); expect(peer.got[0]![0]!.body).toContain("legacy recall");
+  expect(reopened.journal.retryEvidence("codex", [p, b])).toBe("unused"); expect(reopened.journal.retryWarning("codex", [p, b])).toBe(false);
+  const check = new Database(join(f.dir, "hub.db"));
+  expect(check.query("SELECT 1 FROM delivery_retry_evidence WHERE original_id = ?").get(p.id)).toBeNull();
+  const unknown = JSON.parse((check.query("SELECT retry_unknown_ids FROM delivery_meta WHERE project_id = 'p'").get() as any).retry_unknown_ids);
+  expect(unknown.codex ?? []).not.toContain(p.id); check.close();
+});
+
+test("presence exclusion is limited to hub context and retains real hub tasks and peer presence retries (#434)", () => {
+  const f = rig();
+  for (const env of [newEnvelope("hub", "real hub task", { kind: "task" }), newEnvelope("codex", "peer-authored presence", { kind: "presence" })]) {
+    const row = f.journal.createDelivery({ id: env.id, peer: "pi", state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+    f.bus.retryDelivery("pi", row.id);
+    expect(f.journal.retryEvidence("pi", [env])).toBe("used"); expect(f.journal.retryWarning("pi", [env])).toBe(true);
+  }
+});

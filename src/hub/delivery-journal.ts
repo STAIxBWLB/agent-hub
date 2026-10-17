@@ -31,6 +31,8 @@ const STATES = new Set<JournalDeliveryState>([
   "discarded",
 ]);
 const ACTIONS = new Set<JournalResolution>(["completed", "retry", "discard"]);
+// Hub presence ids survive context merges; they are not immutable attempted work.
+const retryOriginals = (originals: readonly Envelope[]): Envelope[] => originals.filter(env => env.from !== HUB || env.kind !== "presence");
 
 export interface JournalDelivery {
   id: string;
@@ -333,7 +335,8 @@ export class DeliveryJournal {
     const cursor = Number(meta.retry_history_cursor ?? 0);
     const latest = Number((this.db.query("SELECT COALESCE(MAX(id), 0) AS n FROM resolution_history WHERE project_id = ?").get(this.projectId) as { n: number }).n);
     if (latest > cursor) {
-      this.db.query("UPDATE resolution_history SET peer = COALESCE((SELECT peer FROM deliveries d WHERE d.id = delivery_id AND d.project_id = resolution_history.project_id), ''), original_ids = COALESCE((SELECT json_group_array(json_extract(e.value, '$.id')) FROM deliveries d, json_each(d.originals) e WHERE d.id = delivery_id AND d.project_id = resolution_history.project_id), '[]') WHERE project_id = ? AND peer = '' AND id > ?").run(this.projectId, cursor);
+      const legacy = this.db.query("SELECT r.id,d.peer,d.originals FROM resolution_history r LEFT JOIN deliveries d ON d.id = r.delivery_id AND d.project_id = r.project_id WHERE r.project_id = ? AND r.peer = '' AND r.id > ?").all(this.projectId, cursor) as { id: number; peer: string | null; originals: string | null }[];
+      for (const row of legacy) if (row.peer && row.originals) this.db.query("UPDATE resolution_history SET peer = ?, original_ids = ? WHERE project_id = ? AND id = ?").run(row.peer, JSON.stringify(retryOriginals(JSON.parse(row.originals) as Envelope[]).map(env => env.id)), this.projectId, row.id);
       // A pruned pre-feature retry cannot be mapped back to its originals. Fence current legacy work only.
       if (this.db.query("SELECT 1 FROM resolution_history WHERE project_id = ? AND action = 'retry' AND peer = '' AND id > ? LIMIT 1").get(this.projectId, cursor)) {
         this.markRetryUnknown(this.list(), JSON.parse(String(meta.bus_snapshot || '{}')));
@@ -346,20 +349,23 @@ export class DeliveryJournal {
     integer(row.warning, "retry proof warning", 0, 1);
   }
   private retryProof(peer: string, originals: readonly Envelope[]): { proof: string; warning: boolean } | undefined {
+    originals = retryOriginals(originals);
+    if (!originals.length) return undefined;
     const rows = this.db.query("SELECT peer,original_id,proof_id,warning FROM delivery_retry_evidence WHERE project_id = ? AND peer = ? AND original_id IN (SELECT value FROM json_each(?))").all(this.projectId, peer, JSON.stringify(originals.map(env => env.id))) as Record<string, unknown>[];
     for (const row of rows) this.validateRetryProof(row);
     return rows.length ? { proof: String(rows[0]!.proof_id), warning: rows.some(row => row.warning === 1) } : undefined;
   }
   private recordRetryEvidence(peer: string, originals: readonly Envelope[], proof: string, warning: boolean): void {
     const put = this.db.query("INSERT INTO delivery_retry_evidence (project_id,peer,original_id,proof_id,warning) VALUES (?,?,?,?,?) ON CONFLICT(project_id,peer,original_id) DO UPDATE SET warning = MAX(warning,excluded.warning)");
-    for (const id of new Set(originals.map(env => env.id))) put.run(this.projectId, peer, id, proof, warning ? 1 : 0);
+    for (const id of new Set(retryOriginals(originals).map(env => env.id))) put.run(this.projectId, peer, id, proof, warning ? 1 : 0);
   }
   private recoverRetryEvidence(): void {
     for (const row of this.db.query("SELECT peer,original_id,proof_id,warning FROM delivery_retry_evidence WHERE project_id = ?").all(this.projectId) as Record<string, unknown>[]) this.validateRetryProof(row);
     // An older writer can append attempt-bearing rows while this writer is absent.
     const rows = this.db.query("SELECT d.id,d.peer,d.originals FROM deliveries d WHERE d.project_id = ? AND d.attempt > 0 AND EXISTS (SELECT 1 FROM json_each(d.originals) env WHERE NOT EXISTS (SELECT 1 FROM delivery_retry_evidence e WHERE e.project_id = d.project_id AND e.peer = d.peer AND e.original_id = json_extract(env.value,'$.id')))").all(this.projectId) as { id: string; peer: string; originals: string }[];
     for (const row of rows) {
-      const originals = JSON.parse(row.originals) as Envelope[];
+      const originals = retryOriginals(JSON.parse(row.originals) as Envelope[]);
+      if (!originals.length) continue;
       const known = this.retryProof(row.peer, originals) || this.db.query("SELECT 1 FROM resolution_history r, json_each(r.original_ids) old, json_each(?) current WHERE r.project_id = ? AND r.peer = ? AND r.action = 'retry' AND old.value = current.value LIMIT 1").get(JSON.stringify(originals.map(env => env.id)), this.projectId, row.peer);
       this.recordRetryEvidence(row.peer, originals, row.id, this.retryWarning(row.peer, originals) || !known);
     }
@@ -594,12 +600,14 @@ export class DeliveryJournal {
         this.recordRetryEvidence(delivery.peer, delivery.originals, delivery.id, this.retryWarning(delivery.peer, delivery.originals));
         delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
       } else if (evidence === "unknown") this.markRetryUnknown([{ ...delivery, revision: 0, updatedAt: delivery.createdAt }], {});
-      const ids = new Set(delivery.originals.map((env) => env.id));
+      const ids = new Set(delivery.originals.map((env) => env.id)), immutableIds = new Set(retryOriginals(delivery.originals).map(env => env.id));
       for (const row of this.list(delivery.peer)) {
         if (row.state !== "queued" || !row.originals.some((env) => ids.has(env.id))) continue;
         this.transition(row.id, "discarded", `grouped into delivery ${delivery.id}`);
-        delivery = { ...delivery, previousId: delivery.previousId ?? row.id };
-        if ((row.attempt ?? 0) > 0) delivery = { ...delivery, attempt: Math.max(delivery.attempt ?? 0, row.attempt!) };
+        if (retryOriginals(row.originals).some(env => immutableIds.has(env.id))) {
+          delivery = { ...delivery, previousId: delivery.previousId ?? row.id };
+          if ((row.attempt ?? 0) > 0) delivery = { ...delivery, attempt: Math.max(delivery.attempt ?? 0, row.attempt!) };
+        }
       }
       const revision = this.bump();
       const now = Date.now();
@@ -757,14 +765,16 @@ export class DeliveryJournal {
   /** Explicit resolutions, not automatic safe failures, consume the immutable originals' retry lineage. */
   retryEvidence(peer: string, originals: readonly Envelope[]): "unused" | "used" | "unknown" {
     this.ensureOpen();
+    originals = retryOriginals(originals);
+    if (!originals.length) return "unused";
     const ids = JSON.stringify([...new Set(originals.map(env => env.id))]);
     const proof = this.retryProof(peer, originals);
     if (this.retryUnknown(peer, new Set(originals.map(env => env.id)))) return "unknown";
     if (proof) return "used";
     if (this.db.query("SELECT 1 FROM resolution_history r, json_each(r.original_ids) old, json_each(?) current WHERE r.project_id = ? AND r.peer = ? AND r.action = 'retry' AND old.value = current.value LIMIT 1").get(ids, this.projectId, peer)) return "used";
     const wanted = new Set(originals.map(env => env.id));
-    type Ancestor = { id: string; peer: string; attempt: number | null; previous_id: string | null };
-    const related = this.db.query("SELECT d.id, d.peer, d.attempt, d.previous_id FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state IN ('queued','dispatching','accepted','needs_review') AND EXISTS (SELECT 1 FROM json_each(d.originals) env, json_each(?) ids WHERE json_extract(env.value, '$.id') = ids.value)").all(this.projectId, peer, ids) as Ancestor[];
+    type Ancestor = { id: string; peer: string; attempt: number | null; previous_id: string | null; originals: string };
+    const related = this.db.query("SELECT d.id, d.peer, d.attempt, d.previous_id, d.originals FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state IN ('queued','dispatching','accepted','needs_review') AND EXISTS (SELECT 1 FROM json_each(d.originals) env, json_each(?) ids WHERE json_extract(env.value, '$.id') = ids.value)").all(this.projectId, peer, ids) as Ancestor[];
     const retried = (id: string) => !!this.db.query("SELECT 1 FROM resolution_history WHERE project_id = ? AND delivery_id = ? AND action = 'retry' LIMIT 1").get(this.projectId, id);
     const inspected = new Set<string>();
     let unknown = false;
@@ -772,14 +782,14 @@ export class DeliveryJournal {
       const chain = new Set<string>();
       let current: Ancestor | undefined = row;
       while (current) {
+        if (!retryOriginals(JSON.parse(current.originals) as Envelope[]).some(env => wanted.has(env.id))) break;
         if (chain.has(current.id)) { unknown = true; break; }
         if (inspected.has(current.id)) break;
         chain.add(current.id); inspected.add(current.id);
         if ((current.attempt ?? 0) > 0 || retried(current.id)) return "used";
         if (!current.previous_id) break;
         const parent = current.previous_id;
-        if (retried(parent)) return "used";
-        current = this.db.query("SELECT id, peer, attempt, previous_id FROM deliveries WHERE project_id = ? AND id = ?").get(this.projectId, parent) as Ancestor | undefined;
+        current = this.db.query("SELECT id, peer, attempt, previous_id, originals FROM deliveries WHERE project_id = ? AND id = ?").get(this.projectId, parent) as Ancestor | undefined;
         if (!current || current.peer !== peer) { unknown = true; break; }
       }
     }
@@ -788,6 +798,8 @@ export class DeliveryJournal {
   /** Console retries consume the allowance too, but only recipient-requested/unknown lineage adds a warning. */
   retryWarning(peer: string, originals: readonly Envelope[]): boolean {
     this.ensureOpen();
+    originals = retryOriginals(originals);
+    if (!originals.length) return false;
     const wanted = new Set(originals.map(env => env.id));
     const ids = JSON.stringify([...wanted]);
     if (this.retryProof(peer, originals)?.warning) return true;
@@ -810,7 +822,7 @@ export class DeliveryJournal {
       if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new Error("retry lineage metadata unavailable");
       map[peer] = new Set(ids as string[]);
     }
-    const add = (peer: string, envs: readonly Envelope[]) => { for (const env of envs) (map[peer] ??= new Set()).add(env.id); };
+    const add = (peer: string, envs: readonly Envelope[]) => { for (const env of retryOriginals(envs)) (map[peer] ??= new Set()).add(env.id); };
     for (const row of deliveries) add(row.peer, row.originals);
     for (const [peer, envs] of Object.entries(bus.queues ?? {})) add(peer, envs);
     for (const [peer, env] of Object.entries(bus.prefaces ?? {})) add(peer, [env]);
@@ -882,7 +894,7 @@ export class DeliveryJournal {
           result.state,
           actor,
           current.peer,
-          JSON.stringify(current.originals.map(env => env.id)),
+          JSON.stringify(retryOriginals(current.originals).map(env => env.id)),
         );
       if (action === "retry") this.recordRetryEvidence(current.peer, current.originals, id, actor === `peer:${current.peer}`);
       this.pruneTerminal();
