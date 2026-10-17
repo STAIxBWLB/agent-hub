@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Keep explicit GitHub issue references gated in projects without GitHub origins, clear obsolete receipt warnings and document unknown-payload retention without unsafe path-based deletion (#418).
 - Report task stalls once per cause, show exact unread pull-only offers, add the ready-unassigned sweep and revision-checked cancellation; current clients and upgrade/restart refuse incompatible daemons/targets, while manually launched older binaries remain unsupported for cancelled rows (#438).
 
 - Add task-bound complete spec reads and opt-in isolated container checks for sandboxed peers, with current capability routing and screened exact-head receipts (#418).

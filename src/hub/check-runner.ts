@@ -486,13 +486,11 @@ export class ContainerRunner {
     catch { this.maintenanceFailed = true; }
   }
   private async retain(): Promise<void> {
-    const names = await readdir(this.records).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; });
-    if (names) {
-      const present = new Set(names.filter(name => name.endsWith(".json")).map(name => name.slice(0, -5)));
-      for (const id of this.unknownReceiptIds) if (id === "unidentified" || !present.has(id)) this.unknownReceiptIds.delete(id);
-    }
+    const names = await readdir(this.records).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
+    const present = new Set(names.filter(name => name.endsWith(".json")).map(name => name.slice(0, -5)));
+    for (const id of this.unknownReceiptIds) if (id === "unidentified" || !present.has(id)) this.unknownReceiptIds.delete(id);
     const receipts: RunReceipt[] = [];
-    for (const name of names ?? []) {
+    for (const name of names) {
       if (!name.endsWith(".json")) continue;
       const id = name.slice(0, -5), safeId = /^[a-f0-9-]{36}$/.test(id) ? id : "unidentified";
       if (safeId === "unidentified") { this.unknownReceiptIds.add(safeId); continue; }

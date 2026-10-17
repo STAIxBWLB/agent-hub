@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
@@ -591,4 +591,60 @@ test("removing an unknown receipt clears its warning on the next successful scan
   await rm(records); await rename(`${records}-paused`, records);
   await rm(path); await f.runner.sweep(); expect(f.runner.unknownReceipts).toEqual([]);
   expect(existsSync(staging)).toBe(false); expect(f.runner.maintenanceUnavailable).toBe(false);
+});
+test("#149 unknown receipt retains aged payload under the explicit ownership retention exception", async () => {
+  const f = await fixture(), id = "11111111-1111-1111-1111-111111111111";
+  const records = join(f.root, "state/checks"), staging = join(f.root, "storage/fixture", id), output = join(staging, "output.log"), source = join(staging, "src/retained.ts");
+  await mkdir(records, { recursive: true }); await mkdir(join(staging, "src"), { recursive: true });
+  await writeFile(join(records, `${id}.json`), "{malformed private receipt"); await writeFile(output, "expired private output"); await writeFile(source, "unknown source");
+  const old = new Date(Date.now() - 86_400_001); await utimes(output, old, old); await utimes(staging, old, old);
+  await f.runner.sweep();
+  expect(await readFile(output, "utf8")).toBe("expired private output"); expect(f.runner.unknownReceipts).toEqual([id]);
+  expect(await readFile(join(records, `${id}.json`), "utf8")).toBe("{malformed private receipt"); expect(await readFile(source, "utf8")).toBe("unknown source");
+  expect(f.runner.maintenanceUnavailable).toBe(false);
+});
+test("#149 removing the whole receipt directory clears unknown warnings and expires unindexed staging", async () => {
+  const f = await fixture(), id = "11111111-1111-1111-1111-111111111111", records = join(f.root, "state/checks"), staging = join(f.root, "storage/fixture", id);
+  await mkdir(records, { recursive: true }); await mkdir(staging, { recursive: true }); await writeFile(join(records, `${id}.json`), "{malformed");
+  const old = new Date(Date.now() - 86_400_001); await utimes(staging, old, old);
+  await f.runner.sweep(); expect(f.runner.unknownReceipts).toEqual([id]); expect(existsSync(staging)).toBe(true);
+  await rm(records, { recursive: true }); await f.runner.sweep();
+  expect(f.runner.unknownReceipts).toEqual([]); expect(existsSync(staging)).toBe(false); expect(f.runner.maintenanceUnavailable).toBe(false);
+});
+test("#149 output expiry never follows a symbolic link owned by an unknown receipt", async () => {
+  const f = await fixture(), id = "11111111-1111-1111-1111-111111111111", records = join(f.root, "state/checks"), staging = join(f.root, "storage/fixture", id), target = join(f.root, "preserved.txt");
+  await mkdir(records, { recursive: true }); await mkdir(staging, { recursive: true }); await writeFile(join(records, `${id}.json`), "{malformed"); await writeFile(target, "preserve target");
+  const old = new Date(Date.now() - 86_400_001); await utimes(target, old, old); await symlink(target, join(staging, "output.log")); await utimes(staging, old, old);
+  await f.runner.sweep(); expect(await readFile(target, "utf8")).toBe("preserve target"); expect(existsSync(join(staging, "output.log"))).toBe(true); expect(f.runner.unknownReceipts).toEqual([id]);
+});
+test("#149 active run output remains untouched even when its file timestamp exceeds retention", async () => {
+  let base!: ContainerCommand, entered!: () => void;
+  const executing = new Promise<void>(resolve => { entered = resolve; });
+  const f = await fixture({ command: async (args, options) => {
+    if (args[0] === "exec") { entered(); return new Promise(resolve => options?.signal?.addEventListener("abort", () => resolve({ code: null, stdout: "" }), { once: true })); }
+    return base(args, options);
+  } }); base = f.command;
+  const handle = f.runner.start(f.request); await executing;
+  try {
+    const output = join(f.root, "storage/fixture", handle.run, "output.log"); await writeFile(output, "active output");
+    const old = new Date(Date.now() - 86_400_001); await utimes(output, old, old);
+    await f.runner.sweep(); expect(await readFile(output, "utf8")).toBe("active output"); expect(f.runner.activeRun).toBe(handle.run);
+  } finally { await f.runner.cancel(handle.run); await handle.done; }
+});
+
+test("#149 unknown output maintenance cannot delete outside storage through a swapped parent", async () => {
+  let armed = false, swapped = false, staging = "", outside = "";
+  const f = await fixture({ enabled: false, now: () => {
+    if (armed && !swapped) { renameSync(staging, `${staging}-retained`); symlinkSync(outside, staging); swapped = true; }
+    return Date.now();
+  } });
+  const id = "11111111-1111-1111-1111-111111111111", records = join(f.root, "state/checks");
+  staging = join(f.root, "storage/fixture", id); outside = join(f.root, "outside");
+  await mkdir(records, { recursive: true }); await mkdir(staging, { recursive: true }); await mkdir(outside);
+  await writeFile(join(records, `${id}.json`), "{malformed"); await writeFile(join(staging, "output.log"), "unknown output"); await writeFile(join(outside, "output.log"), "outside output");
+  const old = new Date(Date.now() - 86_400_001); await utimes(join(staging, "output.log"), old, old); await utimes(join(outside, "output.log"), old, old); await utimes(staging, old, old);
+  armed = true; await f.runner.sweep(); armed = false;
+  expect(await Bun.file(join(outside, "output.log")).exists()).toBe(true);
+  expect(await readFile(join(outside, "output.log"), "utf8")).toBe("outside output");
+  expect(f.runner.unknownReceipts).toEqual([id]); expect(f.runner.maintenanceUnavailable).toBe(false);
 });
