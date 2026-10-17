@@ -32,7 +32,9 @@ await import(${JSON.stringify(CLI)});
 describe("ahub help (#212)", () => {
   test("#437 help lists person-only task cancellation and its complete syntax", () => {
     const usage = "ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]";
-    expect(HELP.find(entry => entry.usage === usage)).toMatchObject({ section: "Tasks and review", description: expect.stringContaining("person only") });
+    const entry = HELP.find(entry => entry.usage === usage);
+    expect(entry?.section).toBe("Tasks and review");
+    expect(entry?.description).toContain("person only");
     expect(renderHelp(80, false, "task").replace(/\s+/g, " ")).toContain(usage);
   });
 
