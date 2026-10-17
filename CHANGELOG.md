@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Wait within the managed TUI attachment bound for a pending live restoration launcher instead of blocking early; retain strict session/instance fences and prevent duplicate terminals (#433).
+- Model restoration receipts as explicit pending/waiting/done/failed states; wait within the managed TUI bound even before a launch record exists, preserve completed conversations, and retain strict session/terminal fences without duplicate launches (#433).
 
 ## 0.12.30
 

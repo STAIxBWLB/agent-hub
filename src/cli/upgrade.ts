@@ -1,3 +1,4 @@
+import { canChooseFresh, decodeRestoreReceipt, restoreReceiptStatus } from "./upgrade-restore-state.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
@@ -135,9 +136,11 @@ export function coordinatorRestarts(op: { sourceRoot?: string }): boolean {
 export function recordRestart(progress: ProjectProgress, at: number): void {
   (progress.restarts ??= []).push({ instanceId: progress.instanceId ?? "unknown", at });
   for (const [key, value] of Object.entries(progress.terminals)) {
-    if (!key.startsWith("restored:") || !value || typeof value !== "object") continue;
+    if (!key.startsWith("restored:")) continue;
+    const receipt = decodeRestoreReceipt(value);
+    if (receipt?.state !== "done" && receipt?.state !== "waiting") continue;
     const peer = key.slice("restored:".length);
-    progress.terminals[`retired:${peer}`] = value;
+    progress.terminals[`retired:${peer}`] = receipt.binding;
     delete progress.terminals[`closedRetired:${peer}`]; // a newer binding to close: its own receipt starts over
     delete progress.terminals[key];
   }
@@ -278,13 +281,9 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
  * resumes its recorded session), not one already chosen, and not a planned fresh start (nothing to lose; resume
  * launches it new again).
  */
-function attachmentReceipt(value: unknown): "pending" | "failed" | undefined {
-  const origin = value && typeof value === "object" ? (value as { attachmentReceipt?: unknown }).attachmentReceipt : undefined;
-  return origin === "pending" || origin === "failed" ? origin : undefined;
-}
 function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
-  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && (value === "failed" || attachmentReceipt(value) === "failed")).map(([key]) => key.slice("restored:".length))
+  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && canChooseFresh(value)).map(([key]) => key.slice("restored:".length))
     .filter((peer) => peer !== "pi" && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
 }
 
@@ -588,12 +587,12 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
 export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown", live: Record<string, Inspection | undefined> = {}) {
-  const effect = (value: unknown) => attachmentReceipt(value) ? `waiting:${attachmentReceipt(value)}` : value === "pending" || value === "failed" ? value : "done";
+  const effect = (key: string, value: unknown) => key.startsWith("restored:") ? restoreReceiptStatus(value) : value === "pending" || value === "failed" ? value : "done";
   const next = nextActions(op, runnerPid, live);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
     runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
-    projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(value)])) } : {}),
+    projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(key, value)])) } : {}),
       ...(p.fresh ? { lostContinuity: Object.fromEntries(Object.entries(p.fresh).map(([peer, f]) => [peer, f.lost])) } : {}),
       ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
     pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
@@ -673,10 +672,10 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       const peer = choice.fresh;
       // Per project: a planned fresh start has nothing to lose, so only the other failed projects take the choice.
       const failed = op.projects.filter((p) => failedPeers(op, p, live).includes(peer));
-      if (!failed.length && op.projects.some((p) => p.terminals[`restored:${peer}`] === "failed" && op.plan.projects.find((planned) => planned.project.id === p.id)?.freshStart?.includes(peer))) {
+      if (!failed.length && op.projects.some((p) => canChooseFresh(p.terminals[`restored:${peer}`]) && op.plan.projects.find((planned) => planned.project.id === p.id)?.freshStart?.includes(peer))) {
         throw new Error(`${peer}: its plan already restarts it as a new session (no rollout and no turn, nothing to lose), so there is no conversation to record as lost; ${next}`);
       }
-      if (!failed.length && op.projects.some((p) => p.terminals[`restored:${peer}`] === "failed" && plannedAttached(op, p, peer, live))) {
+      if (!failed.length && op.projects.some((p) => canChooseFresh(p.terminals[`restored:${peer}`]) && plannedAttached(op, p, peer, live))) {
         throw new Error(`${peer}: its planned session is attached again, so nothing was lost; resume records it as restored; ${next}`);
       }
       if (!failed.length) throw new Error(`${peer}: no failed restoration of it is open to a fresh session (none failed, or one is already chosen); --fresh-session applies only then (${recoveryCommand(op, "status")})`);

@@ -295,7 +295,8 @@ test("a pending restored:claude accepts a fresh attach when the original session
   const f = claudeRestoreFixture("session-F");
   try {
     await f.driver.restore(f.planned, f.progress, f.op, "claude", () => {});
-    const recorded = f.progress.terminals["restored:claude"] as any;
+    expect(f.progress.terminals["restored:claude"]).toMatchObject({ state: "done" });
+    const recorded = (f.progress.terminals["restored:claude"] as any).binding;
     expect(recorded.sessionId).toBe("session-F"); // revalidated against the attach that actually exists
     expect(recorded.handle).toBe("term-fresh");
   } finally { f.cleanup(); }
@@ -514,17 +515,17 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     const driver = makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; } });
     // A pending create with no live launcher and no attached session left nothing to reconcile: failed.
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
-    expect(progress.terminals["restored:codex"]).toBe("failed");
+    expect(progress.terminals["restored:codex"]).toEqual({ state: "failed" });
 
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("resume launches it again once the cause is fixed");
     // The runner ends the error with these choices, the same list as status.
     expect(nextActions(op, undefined, await liveProjects(op, inspectRecovery))).toEqual([`${COORD} resume op-215`, `${COORD} dispose op-215 --fresh-session codex --reason <text>`, `${COORD} dispose op-215 --stop-and-archive --reason <text>`]);
-    expect(progress.terminals["restored:codex"]).toBe("failed");
+    expect(progress.terminals["restored:codex"]).toEqual({ state: "failed" });
     expect(calls).toEqual([]); // no rollout: found before any terminal was created
 
     writeFileSync(join(sessions, "rollout-2026-10-09T00-00-00-thread-T.jsonl"), "{}\n");
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("the codex restoration launcher in terminal term-new exited before its TUI was ready");
-    expect(progress.terminals["restored:codex"]).toBe("failed");
+    expect(progress.terminals["restored:codex"]).toEqual({ state: "failed" });
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
     expect(calls.some((argv) => argv.includes("exit"))).toBe(false);
 
@@ -532,18 +533,18 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     record(true);
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("attachment not verified within 600 s");
     expect(elapsed).toBe(600_000);
-    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "failed", binding: { handle: "term-new", incarnationId: "inc-new" } });
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
     // ...and once the planned thread attached there, the failed receipt is the restoration.
     replacement.sessionId = "thread-T"; attachedThread = "thread-T";
     await driver.restore(planned, progress, op, "native", () => {});
-    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "thread-T" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "thread-T" } });
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
     // A fresh session chosen for it lost nothing when the original attaches after all.
     progress.terminals["restored:codex"] = "failed";
     progress.fresh = { codex: { lost: "thread-T", reason: "chosen before the original came back", at: 1 } };
     await driver.restore(planned, progress, op, "native", () => {});
-    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-T" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { sessionId: "thread-T" } });
     expect(progress.fresh).toBeUndefined();
     // A chosen new session found attached when a pending launch is settled is accepted with its waiver written here,
     // not only by the launch that normally writes it first.
@@ -552,7 +553,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     replacement.sessionId = "thread-other"; attachedThread = "thread-other";
     rmSync(join(stateDir, "recovery-waivers.json"), { force: true });
     await driver.restore(planned, progress, op, "native", () => {});
-    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-other" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { sessionId: "thread-other" } });
     expect(readRecoveryWaivers(stateDir, "op-215")).toEqual({ codex: "fresh-session" });
     delete progress.fresh; rmSync(join(stateDir, "recovery-waivers.json"), { force: true });
     progress.terminals["restored:codex"] = "failed"; replacement.sessionId = "thread-new"; attachedThread = undefined;
@@ -561,7 +562,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     progress.fresh = { codex: { lost: "thread-T", reason: "test", at: 1 } };
     resumes = true;
     await driver.restore(planned, progress, op, "native", () => {});
-    expect((progress.terminals["restored:codex"] as { sessionId: string }).sessionId).toBe("thread-new");
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { sessionId: "thread-new" } });
     const create = calls.filter((argv) => argv[2] === "create").at(-1)!;
     expect(create[create.indexOf("--command") + 1]).toEndWith("'codex'");
     expect(readRecoveryWaivers(stateDir, "op-215")).toEqual({ codex: "fresh-session" });
@@ -728,7 +729,7 @@ test("a failed Pi restoration names resume and stop-and-archive, never --fresh-s
     const failed = await driver.restore(planned, progress, op, "native", () => {}).then(() => undefined, (error: Error) => error.message);
     expect(failed).toContain("pi: its launcher no longer runs and no pi session attached");
     expect(nextActions(op, undefined, await liveProjects(op, inspectRecovery))).toEqual([`${COORD} resume op-pi`, `${COORD} dispose op-pi --stop-and-archive --reason <text>`]);
-    expect(progress.terminals["restored:pi"]).toBe("failed");
+    expect(progress.terminals["restored:pi"]).toEqual({ state: "failed" });
 
     // The relaunch on the next resume reads what is attached right before it creates, not at restore start.
     const codexPlanned: PlannedProject = { ...planned, source: { ...planned.source, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }] },
@@ -827,7 +828,7 @@ test("an absent Codex receipt with a missing rollout reads the evidence first", 
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
     await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {});
-    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-attached", sessionId: "thread-T" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-attached", sessionId: "thread-T" } });
 
     server.stop(true); // the target stops answering
     delete progress.terminals["restored:codex"];
@@ -872,7 +873,7 @@ test("a relaunch whose launcher exits while the target stops answering stays pen
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
     await expect(makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {})).rejects.toThrow("whether a codex session or launcher is live cannot be told (the target hub reads as unavailable)");
-    expect(progress.terminals["restored:codex"]).toBe("pending");
+    expect(progress.terminals["restored:codex"]).toEqual({ state: "pending" });
     expect(nextActions(op).some((line) => line.includes("--fresh-session"))).toBe(false);
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
@@ -916,7 +917,7 @@ test("a launcher that exits after an accepted new session attached is settled as
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
     await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {});
-    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "thread-new" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "thread-new" } });
     expect(readRecoveryWaivers(stateDir, "op-215")).toEqual({ codex: "fresh-session" });
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
@@ -1012,7 +1013,7 @@ test("a restarted target's retired terminal is closed first, dead launchers bloc
     const create = calls.filter((c) => c[2] === "create");
     expect(create).toHaveLength(1);
     expect(create[0]![create[0]!.indexOf("--command") + 1]).toEndWith("'codex' 'resume' 'thread-accepted'");
-    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "thread-accepted" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "thread-accepted" } });
     expect(calls.filter((c) => c[2] === "close")).toHaveLength(1); // closed once, never again
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
@@ -1092,7 +1093,7 @@ test("a restarted target keeps a fresh choice when the accepted session attaches
     const driver = makeRecoveryDriver(run);
     // The accepted thread is attached: the pending receipt settles to it and the operator's choice stays recorded.
     await driver.restore(planned, progress, op, "native", () => {});
-    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-accepted" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { sessionId: "thread-accepted" } });
     expect(progress.fresh?.codex).toMatchObject({ lost: "thread-T" });
     // The accepted Claude session never got a transcript: it starts new rather than resuming S-accepted.
     await driver.restore(planned, progress, op, "claude", () => {});
@@ -1100,7 +1101,7 @@ test("a restarted target keeps a fresh choice when the accepted session attaches
     const command = create[create.indexOf("--command") + 1]!;
     expect(command).toEndWith("'claude'");
     expect(command).not.toContain("--resume");
-    expect(progress.terminals["restored:claude"]).toMatchObject({ sessionId: "S-new" });
+    expect(progress.terminals["restored:claude"]).toMatchObject({ state: "done", binding: { sessionId: "S-new" } });
     // The waiver's audit label for a Claude with nothing to resume.
     expect(readRecoveryWaivers(stateDir, "op-225")).toEqual({ claude: "zero-turn" });
   } finally {
@@ -1170,7 +1171,7 @@ test("a restarted target whose planned session comes back clears the fresh choic
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
     await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {});
-    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-T" });
+    expect(progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { sessionId: "thread-T" } });
     expect(progress.fresh).toBeUndefined();
     expect(readRecoveryWaivers(stateDir, "op-225")).toEqual({ codex: "fresh-session" });
   } finally {
@@ -1452,7 +1453,7 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
 function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed") {
-  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity, unavailableAtMs: Infinity, pulseAtMs: Infinity };
+  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity, unavailableAtMs: Infinity, pulseAtMs: Infinity, noRecord: false };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
   mkdirSync(stateDir);
@@ -1482,7 +1483,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
   const run = async (argv: string[]) => {
     if (argv[1] !== "terminal") throw new Error("non-terminal command refused by fixture");
     let result: unknown;
-    if (argv[2] === "create") { created = true; creates++; recordLauncher(); if (control.wrongInstance) progress.instanceId = "wrong-instance"; result = { terminal: shown }; }
+    if (argv[2] === "create") { created = true; creates++; if (!control.noRecord) recordLauncher(); if (control.wrongInstance) progress.instanceId = "wrong-instance"; result = { terminal: shown }; }
     else if (argv[2] === "list") result = { terminals: created ? [shown] : [] };
     else if (argv[2] === "show") result = { terminal: shown };
     else if (argv[2] === "wait") result = { wait: { satisfied: true } };
@@ -1524,7 +1525,7 @@ for (const noId of [false, true]) test(`#414 timeout retains receipt and diagnos
     await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => { saved = JSON.parse(JSON.stringify(f.progress)); }))
       .rejects.toThrow("attachment not verified within 600 s");
     expect(f.elapsed()).toBe(600_000);
-    expect(saved?.terminals["restored:claude"]).toMatchObject({ handle: "term-new", sessionId: "session-414" });
+    expect(saved?.terminals["restored:claude"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", sessionId: "session-414" } });
     expect(saved?.attachmentTimeouts?.claude).toMatchObject({ at: 600_000, terminal: { handle: "term-new", state: "idle", connected: true },
       hub: { instanceId: "i-target", peerState: noId ? "idle" : "offline" }, lastHubConnectAttempt: "unknown" });
     expect(JSON.stringify(saved)).not.toContain("PRIVATE-TERMINAL-TEXT");
@@ -1567,12 +1568,12 @@ for (const peer of ["claude", "codex"] as const) test(`#414 fresh ${peer} idless
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, peer === "claude" ? "claude" : "native", () => { saved = JSON.parse(JSON.stringify(f.progress)); }))
       .rejects.toThrow("attachment not verified within 600 s");
-    expect(saved?.terminals[`restored:${peer}`]).toMatchObject({ handle: "term-new" });
+    expect(saved?.terminals[`restored:${peer}`]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new" } });
     expect(saved?.attachmentTimeouts?.[peer]).toMatchObject({ terminal: { handle: "term-new" }, hub: { peerState: "idle" }, lastHubConnectAttempt: "unknown" });
     f.control.noId = false; f.setAttached(false);
     await f.driver.restore(f.planned, f.progress, f.op, peer === "claude" ? "claude" : "native", () => {});
     await f.driver.verify(f.planned, f.progress, f.op);
-    expect(f.progress.terminals[`restored:${peer}`]).toMatchObject({ sessionId: "different-session" });
+    expect(f.progress.terminals[`restored:${peer}`]).toMatchObject({ state: "done", binding: { sessionId: "different-session" } });
     expect(f.creates()).toBe(1);
   } finally { f.cleanup(); }
 });
@@ -1604,7 +1605,7 @@ for (const receipt of ["pending", "failed"] as const) test(`#433 ${receipt} live
     expect(f.elapsed()).toBeGreaterThanOrEqual(210_000);
     expect(f.elapsed()).toBeLessThan(600_000);
     expect(f.creates()).toBe(0);
-    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "session-414" });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "session-414" } });
   } finally { f.cleanup(); }
 });
 
@@ -1616,7 +1617,7 @@ for (const wrong of [false, true]) test(`#433 pending launcher ${wrong ? "reject
       .rejects.toThrow(wrong ? "different conversation" : "attachment not verified within 600 s");
     expect(f.elapsed()).toBe(wrong ? 211_000 : 600_000);
     expect(f.creates()).toBe(0);
-    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", incarnationId: "inc-new" } });
   } finally { f.cleanup(); }
 });
 
@@ -1630,7 +1631,7 @@ for (const identity of ["instance", "operation"] as const) test(`#433 pending la
       .rejects.toThrow(identity === "operation" ? "target identity changed" : "target daemon changed before peer restore");
     expect(f.creates()).toBe(0);
     expect(f.elapsed()).toBe(identity === "operation" ? 1000 : 0);
-    if (identity === "operation") expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    if (identity === "operation") expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", incarnationId: "inc-new" } });
     else expect(f.progress.terminals["restored:codex"]).toBe("pending");
   } finally { f.cleanup(); }
 });
@@ -1643,12 +1644,12 @@ test("#433 interrupted pending wait persists exact chosen terminal and refuses a
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => { saved = JSON.parse(JSON.stringify(f.progress)); }))
       .rejects.toThrow("coordinator interrupted");
-    expect(saved?.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new", worktreeId: "wt" });
+    expect(saved?.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt" } });
     f.control.interruptAtMs = Infinity;
     f.replaceTerminal(); f.setAttached(true);
     Object.assign(f.progress, saved);
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("saved terminal identity changed");
-    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", incarnationId: "inc-new" } });
     expect(f.creates()).toBe(0);
   } finally { f.cleanup(); }
 });
@@ -1657,7 +1658,7 @@ for (const origin of ["pending", "new"] as const) test(`#433 selected ${origin} 
   f.control.attachAfterRead = false; f.control.exitAtMs = 1000;
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
-    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toBe("failed");
+    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toEqual({ state: "failed" });
     expect(nextActions(f.op)).toContain(`${COORD} dispose op-414 --fresh-session codex --reason <text>`);
     expect(f.creates()).toBe(origin === "new" ? 1 : 0);
   } finally { f.cleanup(); }
@@ -1668,10 +1669,10 @@ test("#433 interrupted selected pending wait resumes to failed when that exact l
   let saved: ProjectProgress | undefined;
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => { saved = JSON.parse(JSON.stringify(f.progress)); })).rejects.toThrow("coordinator interrupted");
-    expect(saved?.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new" });
+    expect(saved?.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", incarnationId: "inc-new" } });
     f.endLauncher(); f.control.interruptAtMs = Infinity; Object.assign(f.progress, saved);
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
-    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toBe("failed"); expect(f.creates()).toBe(0);
+    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toEqual({ state: "failed" }); expect(f.creates()).toBe(0);
     expect(nextActions(f.op)).toContain(`${COORD} dispose op-414 --fresh-session codex --reason <text>`);
   } finally { f.cleanup(); }
 });
@@ -1680,8 +1681,8 @@ test("#433 selected failed-origin launcher exit retries once and clears its wait
   try {
     await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
     expect(f.creates()).toBe(1); expect(f.elapsed()).toBeLessThan(600_000);
-    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "session-414" });
-    expect(f.progress.terminals["restored:codex"]).not.toHaveProperty("attachmentReceipt");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "session-414" } });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done" }); expect((f.progress.terminals["restored:codex"] as { binding: unknown }).binding).not.toHaveProperty("attachmentReceipt");
   } finally { f.cleanup(); }
 });
 for (const evidence of ["unknown", "replacement"] as const) test(`#433 interrupted chosen launcher ${evidence} remains blocked without failed receipt`, async () => {
@@ -1696,7 +1697,7 @@ for (const evidence of ["unknown", "replacement"] as const) test(`#433 interrupt
       writeFileSync(record, JSON.stringify(records));
     }
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow(evidence === "unknown" ? "identity cannot be verified" : "saved terminal identity changed");
-    expect(f.progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", incarnationId: "inc-new", attachmentReceipt: "pending" });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", incarnationId: "inc-new" } });
     expect(f.creates()).toBe(0); expect(f.elapsed()).toBe(1000);
     expect(nextActions(f.op).some(choice => choice.includes("--fresh-session"))).toBe(false);
   } finally { f.cleanup(); }
@@ -1706,13 +1707,13 @@ for (const changed of [false, true]) test(`#433 resumed chosen ${changed ? "new 
   f.progress.fresh = { codex: { lost: "session-414", reason: "operator choice", at: 0 } };
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
-    expect(f.progress.terminals["restored:codex"]).toMatchObject({ attachmentReceipt: "failed" });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "failed" });
     f.control.interruptAtMs = Infinity; f.control.wrongSession = changed; f.setAttached(true);
     await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
     expect(readRecoveryWaivers(f.stateDir, "op-414")).toEqual(changed ? { codex: "fresh-session" } : {});
     if (changed) expect(f.progress.fresh?.codex?.lost).toBe("session-414");
     else { expect(f.progress.fresh).toBeUndefined(); expect(publicOperation(f.op).projects[0]).not.toHaveProperty("lostContinuity"); }
-    expect(f.progress.terminals["restored:codex"]).not.toHaveProperty("attachmentReceipt"); expect(f.creates()).toBe(0);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done" }); expect((f.progress.terminals["restored:codex"] as { binding: unknown }).binding).not.toHaveProperty("attachmentReceipt"); expect(f.creates()).toBe(0);
   } finally { f.cleanup(); }
 });
 test("#433 interrupted failed-origin wait retains fresh choice and reports waiting rather than done", async () => {
@@ -1727,7 +1728,7 @@ test("#433 target unavailable during attachment wait blocks immediately with sav
   const f = delayedManagedFixture("codex", "pending"); f.control.attachAfterRead = false; f.control.unavailableAtMs = 1000; f.control.interruptAtMs = 2000;
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("target hub reads as unavailable while awaiting attachment");
-    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toMatchObject({ attachmentReceipt: "pending", handle: "term-new" });
+    expect(f.elapsed()).toBe(1000); expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new" } });
     expect(f.creates()).toBe(0);
   } finally { f.cleanup(); }
 });
@@ -1737,6 +1738,30 @@ test("#433 flapping launcher-gone and attached-session reads still yield between
   try {
     await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
     expect(f.elapsed()).toBe(2000); expect(f.creates()).toBe(0);
-    expect(f.progress.terminals["restored:codex"]).toMatchObject({ attachmentReceipt: "pending" });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending" });
+  } finally { f.cleanup(); }
+});
+test("#433 PROBE-A a new terminal without any launcher record waits for its delayed authenticated attachment", async () => {
+  const f = delayedManagedFixture("codex"); f.control.noRecord = true; f.control.attachAfterMs = 2000;
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(f.elapsed()).toBeGreaterThanOrEqual(2000); expect(f.elapsed()).toBeLessThan(600_000);
+    expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", incarnationId: "inc-new", sessionId: "session-414" } });
+    expect(await Bun.file(join(f.stateDir, "terminal-recovery.json")).exists()).toBe(false);
+    await f.driver.verify(f.planned, f.progress, f.op);
+  } finally { f.cleanup(); }
+});
+test("#433 PROBE-B a completed restoration whose launcher and session close stays done without a fresh choice", async () => {
+  const f = delayedManagedFixture("codex");
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    const done = JSON.parse(JSON.stringify(f.progress.terminals["restored:codex"]));
+    const elapsed = f.elapsed(); f.control.attachAfterRead = false; f.setAttached(false); f.endLauncher();
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("completed restoration is not attached");
+    expect(done).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "session-414" } });
+    expect(f.progress.terminals["restored:codex"]).toEqual(done); expect(f.elapsed()).toBe(elapsed);
+    expect(f.creates()).toBe(1); expect(nextActions(f.op).some(choice => choice.includes("--fresh-session"))).toBe(false);
+    expect(publicOperation(f.op).projects[0]?.effects?.["restored:codex"]).toBe("done");
   } finally { f.cleanup(); }
 });

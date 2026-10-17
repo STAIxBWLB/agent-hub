@@ -253,17 +253,24 @@ next resume, finding no live launcher and no attached session, records `failed`.
 After a new terminal becomes ready, or a `pending` or `failed` receipt finds a
 verified live launcher of the current target, the coordinator saves that exact
 handle, incarnation and worktree before waiting up to 600 seconds for the
-planned (or accepted) session to attach. The saved binding carries its
-`attachmentReceipt` origin (`pending` for a new launch); interruption and timeout
-retain both, and resume waits on that binding without adopting a replacement.
+planned (or accepted) session to attach. The restore receipt is an explicit
+tagged union: `pending`, `waiting` with `origin` (`pending` for a new launch, or
+`failed`) and `binding`, `done` with `binding`, or `failed`. A missing receipt
+means no launch has been attempted. Only the compatibility decoder reads older
+string/binding receipts; new writes use the tagged states. Interruption and
+timeout retain the waiting receipt, and resume waits on that binding without
+adopting a replacement.
 An idle terminal alone is not attachment proof. Each poll checks the selected
 launcher's signed identity. Only that exact launcher being gone and the target
 reporting no attached session or other live launcher exits the wait: a
 pending-origin wait records `failed` and exposes the failed-restoration choices;
-a failed-origin wait returns to `failed` and retries the launch. A missing or
-unreadable launcher identity, changed terminal binding or unreadable target
-blocks without recording failure. Successful attachment clears the waiting
-origin and still requires exact terminal/session revalidation. No terminal is
+a failed-origin wait returns to `failed` and retries the launch. A launcher
+record not written yet keeps polling within the same bound; it is
+not an unknown or mismatched record. An unreadable launcher identity, changed
+terminal binding or unreadable target blocks without recording failure.
+Successful attachment records `done` after exact terminal/session revalidation.
+A `done` receipt only revalidates its saved binding; an exited launcher cannot
+turn it into `failed` or offer a fresh session. No terminal is
 created while a recorded launcher for the peer may run on the target or its
 session is attached.
 A launch that failed, or a thread found not resumable before the launch, is
@@ -463,12 +470,14 @@ An attached session is the target's report of that peer online with a thread
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
 | `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none: `--fresh-session` is neither offered nor accepted while the inspection shows the planned session attached; when it cannot tell (not inspected, target unreadable), the `failed` receipt alone decides, and a chosen fresh session whose original then attaches is cleared on resume while its audit entry stays | none |
 | `restored:<peer>` `pending` or `failed` | another session attached | blocks | dispose | `end that <peer> session and close its terminal, then <c> recovery resume <id>` |
-| `restored:<peer>` `pending` or `failed` | no session, verified live launcher of the current target | saves the exact binding and `attachmentReceipt` origin, waits up to 600 s for authenticated attachment; timeout retains both for resume | dispose | `attachment not verified within 600 s; terminal <handle> retained; resume after it attaches` |
+| `restored:<peer>` `pending` or `failed` | no session, verified live launcher of the current target | records `waiting {origin, binding}` with the exact binding, waits up to 600 s for authenticated attachment; timeout retains both for resume | dispose | `attachment not verified within 600 s; terminal <handle> retained; resume after it attaches` |
 | `restored:<peer>` `pending` or `failed` | no session, a live launcher belongs to an older target instance | blocks, retains the original receipt; no terminal created | dispose | end that launcher and close its terminal, then `<c> recovery resume <id>` |
-| saved attachment binding | the planned or accepted session attaches | runs the ordinary settlement rules, writes a waiver for an accepted replacement or clears `fresh` when the planned session returns, exactly revalidates the selected terminal and clears the waiting origin | none while the planned session is attached | none |
-| saved attachment binding | selected launcher gone, but an older target instance's launcher remains live or unknown | blocks and retains the selected binding and waiting origin; no failure or retry is inferred | dispose | end or verify the older launcher, then `<c> recovery resume <id>` |
-| saved attachment binding | selected exact signed launcher gone, target confirms no session or other live launcher | pending origin (including a new launch): records `failed` and blocks; failed origin: records `failed` and retries the launch | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
-| saved attachment binding | selected identity missing/unreadable, replacement terminal, or target unreadable | blocks, retains exact binding and waiting origin; never adopts a replacement or treats unknown as gone | dispose | verify the saved launch or target, then `<c> recovery resume <id>` |
+| `waiting {origin, binding}` | the planned or accepted session attaches | runs the ordinary settlement rules, writes a waiver for an accepted replacement or clears `fresh` when the planned session returns, exactly revalidates the selected terminal and clears the waiting origin | none while the planned session is attached | none |
+| `waiting {origin, binding}` | selected launcher gone, but an older target instance's launcher remains live or unknown | blocks and retains the selected binding and waiting origin; no failure or retry is inferred | dispose | end or verify the older launcher, then `<c> recovery resume <id>` |
+| `waiting {origin, binding}` | selected exact signed launcher gone, target confirms no session or other live launcher | pending origin (including a new launch): records `failed` and blocks; failed origin: records `failed` and retries the launch | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
+| `waiting {origin, binding}` | selected identity unreadable, replacement terminal, or target unreadable | blocks, retains exact binding and waiting origin; never adopts a replacement or treats unknown as gone | dispose | verify the saved launch or target, then `<c> recovery resume <id>` |
+| `waiting {origin, binding}` | no launcher record yet, no attached session | polls within the same 600 s bound; timeout retains waiting | fresh-session only for waiting:failed (subject to ordinary choices), dispose | `waiting:<origin>`; resume uses the same exact binding |
+| `done {binding}` | launcher gone or no session attached | blocks exact restoration verification, retains done and its resumable conversation; never launches again or records failed | dispose; no fresh-session | resume the recorded conversation; `done` |
 | `restored:<peer>` `pending` | no session, launcher gone or never recorded | receipted `failed`, blocks | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
 | `restored:<peer>` `failed` | no session, launcher gone or never recorded | launches again (fresh if chosen) | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
 | `restored:codex` absent | rollout missing | receipted `failed`, blocks, no terminal created | fresh session, dispose | the failed-restoration choices below |
@@ -479,6 +488,48 @@ An attached session is the target's report of that peer online with a thread
 | `fresh` recorded for a peer | none live | launches it without a resume id, records the new id | dispose | none |
 | disposition recorded, not finished | any | refused | stop-and-archive only | `rerun <c> recovery dispose <id> --stop-and-archive --reason <text>` where `disposeRefusal` allows it, else `wait until <project>'s hub settles, then <c> recovery status <id>` |
 | `completed` or `cancelled` | any | nothing to do | none | none |
+
+The restore transition function is `restoreTransition` in
+`src/cli/upgrade-restore-state.ts`. Its generated table below is checked byte for
+byte by `test/upgrade-restore-state.test.ts`; the Cartesian test separately
+checks all 540 receipt/evidence/choice cells. `settle` and `revalidate` propose a
+state only: the runtime commits it after authenticated session and exact
+terminal validation. Fresh-session eligibility is shared by status, interactive
+operation lines and refusal messages: only `failed` and `waiting:failed` expose
+it, further narrowed by Pi, an existing choice, a planned fresh start, target
+waiver support and the planned session already being attached.
+
+Restore transition table (generated).
+
+Cells show action -> next receipt status. Fresh-session eligibility is marked fresh; peer/operation-specific restrictions still apply. Exact terminal revalidation and settlement must succeed before persisting a proposed done receipt.
+
+| Priority condition | Decision |
+|---|---|
+| Target stopped or changed | block -> unchanged |
+| Running target, other session not allowed | block -> unchanged |
+| Absent receipt | unstarted; initial launch is handled by the runtime outside this receipt table |
+
+Running target, no attached session (either allowOther value):
+
+| Receipt | live | gone | unknown | no-record-yet | replaced | older-instance |
+|---|---|---|---|---|---|---|
+| pending | poll -> waiting:pending | fail -> failed; fresh | block -> pending | fail -> failed; fresh | block -> pending | block -> pending |
+| waiting:pending | poll -> waiting:pending | fail -> failed; fresh | block -> waiting:pending | poll -> waiting:pending | block -> waiting:pending | block -> waiting:pending |
+| waiting:failed | poll -> waiting:failed; fresh | create -> failed; fresh | block -> waiting:failed; fresh | poll -> waiting:failed; fresh | block -> waiting:failed; fresh | block -> waiting:failed; fresh |
+| done | block -> done | block -> done | block -> done | block -> done | block -> done | block -> done |
+| failed | poll -> waiting:failed; fresh | create -> failed; fresh | block -> failed; fresh | create -> failed; fresh | block -> failed; fresh | block -> failed; fresh |
+
+Running target, planned session or explicitly allowed other session (different decisions are labeled):
+
+| Receipt | live | gone | unknown | no-record-yet | replaced | older-instance |
+|---|---|---|---|---|---|---|
+| pending | settle -> done | settle -> done | settle -> done | settle -> done | settle -> done | settle -> done |
+| waiting:pending | settle -> done | settle -> done | block -> waiting:pending | settle -> done | block -> waiting:pending | block -> waiting:pending |
+| waiting:failed | settle -> done | settle -> done | block -> waiting:failed; fresh | settle -> done | block -> waiting:failed; fresh | block -> waiting:failed; fresh |
+| done | planned: revalidate -> done; other: block -> done | planned: revalidate -> done; other: block -> done | planned: revalidate -> done; other: block -> done | planned: revalidate -> done; other: block -> done | planned: revalidate -> done; other: block -> done | planned: revalidate -> done; other: block -> done |
+| failed | settle -> done | settle -> done | settle -> done | settle -> done | settle -> done | settle -> done |
+
+End of generated restore transition table.
 
 The failed-restoration choices are `<c> recovery dispose <id> --fresh-session
 <peer> --reason <text>` (Codex or Claude; records the lost session and resumes;
