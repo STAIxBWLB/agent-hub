@@ -38,6 +38,7 @@ function validateRoutingRaw(value: unknown): void {
   const bad = (key: string): never => { throw new Error(`.agenthub/routing.toml: ${key} is invalid or unknown`); };
   const table = (v: unknown, key: string): Record<string, unknown> => {
     if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).length > 256) return bad(key);
+    if (Object.keys(v).some(name => ["__proto__", "constructor", "prototype"].includes(name))) return bad(key);
     return v as Record<string, unknown>;
   };
   const text = (v: unknown, key: string) => { if (typeof v !== "string" || !v || v.length > 4096 || /[\x00-\x1f\x7f]/.test(v)) bad(key); };

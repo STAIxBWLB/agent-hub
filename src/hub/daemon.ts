@@ -3746,9 +3746,10 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Set a validated leaf in place: objects captured by policy consumers retain their identity. */
   function putConfig(target: object, key: string, value: unknown): void {
     const parts = key.split(".");
+    if (parts.some(part => ["__proto__", "constructor", "prototype"].includes(part))) throw new Error("unsafe configuration path");
     let node = target as Record<string, unknown>;
     for (const part of parts.slice(0, -1)) {
-      if (!node[part] || typeof node[part] !== "object" || Array.isArray(node[part])) node[part] = {};
+      if (!Object.hasOwn(node, part) || !node[part] || typeof node[part] !== "object" || Array.isArray(node[part])) node[part] = {};
       node = node[part] as Record<string, unknown>;
     }
     if (value === undefined) delete node[parts.at(-1)!];

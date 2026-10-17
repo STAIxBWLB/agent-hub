@@ -3162,3 +3162,5 @@ retained task rows to the startup mode. This is an explicit compatibility ceilin
 not durable task metadata or a migration.
 
 Inheritance and undo use the actual destination source trust. They may restore an unchanged effective startup value after explicit consent, but a shadowed edit that was never authorized is not an accepted fallback. New lower-layer raises remain refused even when an unchanged local overlay previously hid them.
+
+Reserved prototype path components are refused throughout nested routing extension tables before publication. Configuration path writes never traverse inherited object properties.

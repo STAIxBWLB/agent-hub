@@ -242,3 +242,25 @@ test("#439 generic reload cannot bypass the confirmed roster lifecycle even for 
   expect((await f.client.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi" })).ok).toBe(true);
   expect(f.daemon.bus.isRostered("kimi")).toBe(false);
 }, 15_000);
+
+test("#439 nested routing extension keys cannot traverse an object prototype during reload planning", async () => {
+  const f = await fixture();
+  const prototype = Object.prototype as Record<string, unknown>;
+  const prior = Object.getOwnPropertyDescriptor(prototype, "reload439Proof");
+  Object.defineProperty(prototype, "reload439Proof", { value: "retained", writable: true, configurable: true });
+  try {
+    f.local({ research: { enabled: true } });
+    f.git("rm", "--cached", "-f", ".agenthub/routing.toml");
+    writeFileSync(f.file("routing.toml"), f.routing + '\n[targets.dsv4f.extra.__proto__]\nreload439Proof = "mutated"\n');
+    const preview = await f.reload();
+    expect(preview.ok).toBe(false);
+    expect(String(preview.error)).toMatch(/invalid|unknown|unsafe/i);
+    expect(preview.confirmation).toBeUndefined();
+    expect((await f.row("research.enabled")).value).toBe(false);
+    expect(Object.hasOwn(prototype, "reload439Proof")).toBe(true);
+    expect(prototype.reload439Proof).toBe("retained");
+  } finally {
+    if (prior) Object.defineProperty(prototype, "reload439Proof", prior);
+    else delete prototype.reload439Proof;
+  }
+}, 15_000);
