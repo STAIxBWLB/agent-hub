@@ -16267,6 +16267,7 @@ var tool = (name, description, properties, required = []) => ({
   inputSchema: { type: "object", properties, required, additionalProperties: false }
 });
 var TASK_TOOLS = [
+  tool("hub_delivery_retry", "Request one redelivery of your own needs_review delivery. An earlier attempt may have effects: inspect those effects before acting. Refuses another peer's row or any lineage already explicitly retried; a repeated uncertain row needs the person. Never completes/discards a delivery or changes task state.", { delivery_id: { type: "string", minLength: 1, maxLength: 256 } }, ["delivery_id"]),
   tool("hub_backlog_list", "Read public backlog cards with planning revisions. Configured planners only; PII remains a stub.", {}),
   tool("hub_backlog_plan", "Plan an unpinned backlog item outside frozen releases with the revision you read and a bounded reason. A person's rank is retained. Actual dates cannot be set.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", maxLength: 1000 }, fields: { type: "object", properties: { rank: { type: ["integer", "null"], minimum: 0 }, priority: { type: ["integer", "null"], minimum: 0, maximum: 3 }, release: { type: ["integer", "null"], minimum: 1 }, plannedStart: { type: ["integer", "null"], minimum: 1 }, due: { type: ["integer", "null"], minimum: 1 }, deps: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, reserved: { type: ["string", "null"], minLength: 1, maxLength: 32 } }, additionalProperties: false } }, ["id", "revision", "reason", "fields"]),
   tool("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
@@ -16337,6 +16338,29 @@ function profileTaskTools(profile = "dev", stages) {
     }
     return { ...tool, ...customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
   });
+}
+
+// src/hub/delivery-hints.ts
+var DELIVERY_RETRY_WARNING = sanitize("Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.");
+function renderHeldHint(value, now = Date.now()) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return "";
+  const held = value;
+  const kinds = new Set(["chat", "task", "review", "status", "budget", "presence"]);
+  try {
+    if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > 32 || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096)
+      return "";
+    if (held.rows.some((row) => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.length || row.id.length > 256 || !Number.isFinite(row.createdAt) || !Array.isArray(row.senders) || !Array.isArray(row.kinds) || row.senders.some((sender) => typeof sender !== "string" || sender.length > 256) || row.kinds.some((kind) => !kinds.has(kind))))
+      return "";
+  } catch {
+    return "";
+  }
+  const rows = held.rows.map((row) => `${sanitize(row.id)} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
+  const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}
+${rows.join(`
+`)}
+Use hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person.`;
+  return Buffer.byteLength(out, "utf8") <= 4096 ? out : `Held hub deliveries: ${held.count} (metadata truncated; ask the person to inspect the queue).`;
 }
 
 // src/adapters/claude-channel.ts
@@ -16457,15 +16481,23 @@ var hub;
 var detached;
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 var pendingQueued;
-function withPendingHint(result) {
-  if (channel || toolsMode || !pendingQueued || pendingQueued.important < 1)
-    return result;
+async function withPendingHint(result, includeQueued = true) {
   const r = result;
-  const last = r.content?.[r.content.length - 1];
-  if (last?.type === "text" && typeof last.text === "string")
-    last.text += `
+  if (includeQueued && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
+    const last = r.content?.[r.content.length - 1];
+    if (last?.type === "text" && typeof last.text === "string")
+      last.text += `
 
 (${pendingQueued.important} important hub message(s) waiting: call hub_inbox before starting long local work)`;
+  }
+  if (hub && r.content) {
+    try {
+      const response = await hub.request({ t: "delivery_holds" }, 1000);
+      const hint = response?.ok ? renderHeldHint(response.held) : "";
+      if (hint)
+        r.content.push({ type: "text", text: hint });
+    } catch {}
+  }
   return result;
 }
 async function push(envs, deliveryId, generation) {
@@ -16670,7 +16702,7 @@ async function callTool(req) {
   }
   return text(`unknown tool ${name}`);
 }
-server.setRequestHandler(CallToolRequestSchema, async (req) => req.params.name === "hub_inbox" ? callTool(req) : withPendingHint(await callTool(req)));
+server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox"));
 await server.connect(new StdioServerTransport);
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));
