@@ -3693,7 +3693,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const peer = def.path.at(-1)!;
       return { ok: true, lines: [permissionBoundary(peer), ...(isPermissionMode(value) ? [`${value}: ${permissionGrant(peer, value)}`] : ["inherit: the shared file's default, or ask"])] };
     }
-    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; ${def.applies === "peer start" ? "applies at the peer's next start" : "read at the next hub start"}`] };
+    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; ${def.applies === "peer start" ? "applies at the peer's next start" : def.applies === "live" ? "in force as soon as it is saved" : "read at the next hub start"}`] };
     try {
       const after = parseRouting(routingText(opts.cwd), routingCandidate(readOverlay(opts.cwd), def, value));
       const open = board.list().filter((task) => task.state !== "approved");

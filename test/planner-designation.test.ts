@@ -56,6 +56,8 @@ test("default roles keep claude as planner; the setting moves planning authority
 
   expect((await f.codex.request({ t: "settings_set", key: "planner", value: "codex" })).ok).toBe(false); // agents never change it
   expect((await f.person.request({ t: "settings_set", key: "planner", value: "pi" })).ok).toBe(false);
+  const preview = await f.person.request({ t: "settings_preview", key: "planner", value: "codex" });
+  expect(preview.lines.join("\n")).toContain("in force as soon as it is saved");
   const set = await f.person.request({ t: "settings_set", key: "planner", value: "codex" });
   expect(set).toMatchObject({ ok: true }); expect(set.text).toContain("in force now");
   expect(JSON.parse(readFileSync(join(f.dir, ".agenthub/config.local.json"), "utf8")).planner).toBe("codex");

@@ -68,8 +68,8 @@
     {
       "id": "roster-o-retained",
       "file": "src/cli/console-state.ts",
-      "search": "return [id(row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),",
-      "replacement": "return [id(row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.state, stateTone(row.state)),",
+      "search": "return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),",
+      "replacement": "return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.state, stateTone(row.state)),",
       "testFile": "test/output.test.ts",
       "testName": "retained off-roster status and queue rows say why their work is held (#315)"
     },
