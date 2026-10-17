@@ -68,8 +68,8 @@
     {
       "id": "roster-o-retained",
       "file": "src/cli/console-state.ts",
-      "search": "return [id(row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),",
-      "replacement": "return [id(row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.state, stateTone(row.state)),",
+      "search": "return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),",
+      "replacement": "return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.state, stateTone(row.state)),",
       "testFile": "test/output.test.ts",
       "testName": "retained off-roster status and queue rows say why their work is held (#315)"
     },
@@ -1948,8 +1948,8 @@
     {
       "id": "planner-pull-role-floor",
       "file": "src/hub/tasks.ts",
-      "search": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    this.planningAuthority(by);",
-      "replacement": "async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {\n    void by;",
+      "search": "    const authorized = () => this.planningAuthority(by);\n    authorized();",
+      "replacement": "    const authorized = () => void by;\n    authorized();",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
     },

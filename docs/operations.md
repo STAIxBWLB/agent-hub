@@ -128,7 +128,8 @@ Home/End sequences is that many key presses, so a held key repeats its move. Hom
 or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
 follows new events while the last row is selected and stays on a row you moved to.
 `w` opens the dashboard and `o` the pet window; `:ui --all` and `:pet --window --close`
-work on the command line too. In the Events
+work on the command line too. In the Peers tab the planner's row reads `(planner)`, and
+`l` then `y` makes the selected peer the planner (`ahub settings set planner <peer>`). In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; only the header is tab-flattened before tokenizing. Body lines retain
 the previous rendering and stay plain, as does command output; colour never changes
@@ -1432,6 +1433,7 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
 | Start | `pi.auto_start` | `config.local.json` | next hub start |
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled`, `coordination` | `config.local.json` | next hub start |
+| Roles | `planner` (the one peer that plans) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared
@@ -1732,6 +1734,28 @@ so a restarted hub never launches beside a survivor. A hub whose project root
 or state directory was deleted stops itself within about 10 seconds; the
 dashboard manager does the same when its home directory vanishes.
 
+## The planner (#455)
+
+One peer plans: it proposes and splits tasks, grooms the backlog and gets the
+backlog and sweep notices. `ahub status` prints it with its source, the
+dashboard's Agents view shows a Planner badge, and the console marks its row.
+
+- `setting`: `planner` in `.agenthub/config.json` or `config.local.json` (the
+  machine's file wins). That peer is the only planner; every other peer loses
+  the role. It is one of `claude`, `codex`, `kimi`, `qwen` or `jcode`: the
+  hub-sandboxed `pi` and `local` never plan.
+- `roles`: with no `planner` key, the `roles` planners stand. That is `claude`
+  by default.
+- `automatic`: when no rostered peer holds the role, the hub gives it to the
+  first rostered peer of that list. It recomputes this at start and after
+  each roster change, and writes nothing to disk.
+
+Change it with `ahub settings set planner codex`, the dashboard Settings row
+(a settings session, `ahub ui --settings`) or `l` in the console. Planning
+authority and the backlog notices move at once. The new planner's role text
+updates at its next start. `ahub settings undo` puts the previous planner
+back. Agents cannot change it.
+
 ## Resetting a project's hub
 
 `ahub reset` returns a project's hub to a clean state. Without `--yes` it is a
@@ -1984,7 +2008,7 @@ A lost commit or start reply is reconciled against the actual daemon identity,
 package digest, terminal binding, and phase receipt. An uncertain terminal
 creation is never repeated blindly. Recovery retains the exact-pinned first-party memory package with the preserved runtime, includes its identity and bytes in the digest, and refuses missing, symlinked or changed retained dependencies instead of resolving a mutable ancestor/global installation. It does not copy the full dependency tree.
 
-After creating a managed terminal, the coordinator saves its exact handle, incarnation and worktree before waiting up to 600 seconds (10 minutes) for authenticated attachment to the expected target hub and conversation. A pending or failed creation receipt also waits when the current target has a verified live launcher; its saved binding retains the pending/failed origin across interruption. An idle terminal alone is not attachment proof. Timeout retains the binding and diagnostic receipt; resume waits on that same binding rather than opening a duplicate.
+After creating a managed terminal, the coordinator saves its exact handle, incarnation and worktree before waiting up to 600 seconds (10 minutes) for authenticated attachment to the expected target hub and conversation. A pending or failed creation receipt also waits when the current target has a verified live launcher; its saved binding retains the pending/failed origin across interruption. An idle terminal alone is not attachment proof. Without a current launch record, a confirmed-ended row for another terminal and an attached session still reporting no id keep the chosen terminal waiting within the same bound; a late matching record continues that wait. Live replacement and unreadable records still block. Only non-offline session ids count, and older-instance launchers are checked before declaring a launch gone. Timeout retains the binding and diagnostic receipt; resume waits on that same binding rather than opening a duplicate.
 
 The wait checks the selected launcher's signed identity on each poll. When that exact launcher exits and the target confirms no session or other live launcher, a pending-origin wait (including a new terminal) records failure and offers the failed-restoration choices, including fresh-session for Codex or Claude. A failed-origin wait returns to its existing retry path. A replacement terminal, missing or unreadable launcher identity, unreadable target or different attached conversation blocks without treating unknown as gone. Success clears the waiting origin and preserves exact terminal/session revalidation. A launcher from an older target instance still blocks without another terminal. The 10-minute limit matches terminal creation readiness; terminal idle can precede native resume and MCP handshake completion. The zero-turn Claude exception still applies only when no original transcript exists. If Claude shows its development-channel confirmation screen, confirm it in
 the captured terminal, then run `ahub recovery resume <operation-id>`; resume must not open a duplicate terminal.
@@ -2106,7 +2130,8 @@ or cancel and upgrade later.
 its phase, step and error; `runner`, which says whether a runner process holds
 the operation now (`running` with its pid, or `none`; `stale` marks a receipt
 that says running with no runner behind it); each project's phase and effect
-receipts (`closed:<peer>`, `restored:<peer>` as `done`, `pending` or `failed`);
+receipts (`closed:<peer>` as `done` or `pending`; `restored:<peer>` as
+`pending`, `waiting:pending`, `waiting:failed`, `done` or `failed`);
 whether the shared plugin and the global CLI were installed; and `next`, the
 commands that apply now, read from every source the operation has not stopped
 yet (every error of `resume` ends with the same list). `resume` is left out
@@ -2116,7 +2141,11 @@ message text. `resume` does not
 start a second runner while one is alive. Every `next` entry and error names the
 operation's own coordinator, `bun <preserved source>/src/cli/main.js recovery
 ...`: in the middle of an upgrade the global `ahub` may still be the older
-release, whose `recovery` lacks these commands. Copy that command line. When
+release, whose `recovery` lacks these commands. The published 0.12.30 CLI also
+mislabels tagged waiting receipts as done and can hide the fresh-session choice,
+even when its status command exists. Use the printed preserved-source
+coordinator for status, resume and disposition; do not decide from that older
+CLI's receipt display. Copy that command line. When
 an older coordinator started the operation, `dispose` is named from the running
 release, which has it. What
 each receipt allows, given what is live, is tabulated in the recovery spec
