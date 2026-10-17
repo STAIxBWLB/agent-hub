@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.30 and control protocol 16. Live verification
+This guide describes ahub 0.12.31 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -969,7 +969,7 @@ The daemon checks its selector at hub operation entry and before candidate/count
 
 Run `ahub memory profile-check [--json]` from the person's terminal for the read-only preflight. It identifies live registry owners by signed process identity and authenticated daemon replies, then reports their loaded memory package and bound home/profile. The receipt names the current `AGENTHUB_HOME` registry scope; zero results establish no live daemon in that inventory, not system-wide process absence. Inventory and check separate custom registries too when they share `AMEM_HOME`. A missing or unreadable runtime receipt never counts as a different home or permission to migrate.
 
-Before real migration, first upgrade every hub sharing the home to 0.12.30. Obtain positive ready or unbound/quiesced receipts in every relevant registry; then quiesce consumers and close bound handles before changing the selector. A matching ready handle proves compatibility but is still an open handle. Verify synthetic cross-writes before the separately approved real migration, then reopen through the supported session-preserving lifecycle afterward. Merely installing this release does not authorize migration or provide live capture/device-sync evidence.
+Before real migration, first upgrade every hub sharing the home to 0.12.30 or later. Obtain positive ready or unbound/quiesced receipts in every relevant registry; then quiesce consumers and close bound handles before changing the selector. A matching ready handle proves compatibility but is still an open handle. Verify synthetic cross-writes before the separately approved real migration, then reopen through the supported session-preserving lifecycle afterward. Merely installing this release does not authorize migration or provide live capture/device-sync evidence.
 
 Managed agents read through `hub_memory_search`, `hub_memory_show` and `hub_memory_graph`, with the server's project identity, the `memory_read` capability and current privacy screening. They cannot supply another project; private turns are refused. The tools bound UTF-8 input/output, screen before counts and truncation, and exclude their arguments/results from hub-managed capture. `hub_memory_correct` has its own `memory_correct` capability and records a screened correction candidate, not a note change. See [the complete memory contract](memory.md) for caps and refusal semantics.
 
@@ -1913,21 +1913,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.30), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.31), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.30 ahub upgrade --to 0.12.30 --dry-run
-bunx --package @staix/agent-hub@0.12.30 ahub upgrade --to 0.12.30 --yes
+bunx --package @staix/agent-hub@0.12.31 ahub upgrade --to 0.12.31 --dry-run
+bunx --package @staix/agent-hub@0.12.31 ahub upgrade --to 0.12.31 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.30 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.31 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1959,14 +1959,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.30 --dry-run
+ahub upgrade --to 0.12.31 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.30 --yes
+ahub upgrade --to 0.12.31 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]

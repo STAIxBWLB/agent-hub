@@ -83,7 +83,7 @@ See [release verification](docs/verification/2026-10-17-0.12.31.md) for the live
 still open, including #418 AC8 and #438 AC7.
 
 Before migrating a memory home with `amem`, upgrade every hub using that home to
-0.12.30, check `ahub memory profile-check`, then quiesce and close all memory
+0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory
 consumers. Shared v1 remains the default; installing this release does not migrate
 data. See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
 
