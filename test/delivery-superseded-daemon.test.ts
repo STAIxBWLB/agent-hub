@@ -28,7 +28,11 @@ async function start(f: Awaited<ReturnType<typeof fixture>>) {
 test("AC2/AC3: restored obsolete notices settle as hub, mixed/live rows stay held; approval clears a held review (#434)", async () => {
   const f = await fixture();
   f.held("presence", [newEnvelope("hub", "private memory", { kind: "presence" })]);
-  f.held("approved-assignment", [f.notice()]); // assignment to claude, who is not owner
+  const approved = f.board.propose("user", { title: "already approved", class: "implement" });
+  f.board.update(approved.id, "user", "accepted", { state: "in_progress" });
+  f.board.update(approved.id, "user", "done", { state: "approved" });
+  f.held("approved-assignment", [newEnvelope("hub", "approved", { kind: "task", refs: { task: String(approved.id) } })]);
+  f.held("reviewer-reminder", [f.notice()]); // sweepNotice uses kind task for an active reviewer too
   f.held("live-review", [f.notice("review")]);
   f.held("mixed", [f.notice(), newEnvelope("pi", "peer chat")]);
   f.journal.close(); f.board.close();
@@ -40,13 +44,15 @@ test("AC2/AC3: restored obsolete notices settle as hub, mixed/live rows stay hel
     expect(daemon.bus.queueShow("presence")?.state).toBe("completed");
     expect(daemon.bus.queueShow("approved-assignment")?.state).toBe("completed");
     expect(daemon.bus.queueShow("live-review")?.state).toBe("needs_review");
+    expect(daemon.bus.queueShow("reviewer-reminder")?.state).toBe("needs_review");
     expect(daemon.bus.queueShow("mixed")?.state).toBe("needs_review");
-    expect((await client.request({ t: "status" })).status.peers.claude.heldRows.map((row: any) => row.id)).toEqual(["live-review", "mixed"]);
+    expect((await client.request({ t: "status" })).status.peers.claude.heldRows.map((row: any) => row.id).sort()).toEqual(["live-review", "mixed", "reviewer-reminder"]);
     const route = await client.request({ t: "task", op: "route_explain", args: { id: f.task.id } });
     expect(JSON.stringify(route)).toContain("live-review"); expect(JSON.stringify(route)).toContain("mixed");
     const reviewed = await client.request({ t: "task", op: "hub_review", args: { id: f.task.id, verdict: "approved" } });
     expect(reviewed.ok).toBe(true);
     expect(daemon.bus.queueShow("live-review")?.state).toBe("completed");
+    expect(daemon.bus.queueShow("reviewer-reminder")?.state).toBe("completed");
     expect(daemon.bus.queueShow("mixed")?.state).toBe("needs_review");
     const inspection = new DeliveryJournal({ file: f.file, projectRoot: f.dir, projectId: "superseded", instanceId: (await client.request({ t: "status" })).status.instanceId });
     try { expect(inspection.resolution("live-review")).toMatchObject({ actor: "hub", reason: `superseded: task #${f.task.id} approved` }); }
@@ -96,4 +102,23 @@ test("AC3: releasing recovery classifies restored obsolete holds without an atta
     expect(bus.queueShow("offline-presence")?.state).toBe("completed");
     expect(f.journal.resolution("offline-presence")?.actor).toBe("hub");
   } finally { bus.closeJournal(); f.board.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test("a held kind task reviewer reminder settles when the reviewer changes (#434 review)", async () => {
+  const f = await fixture(); f.held("reviewer-reminder", [f.notice()]);
+  f.journal.close(); f.board.close();
+  const daemon = await start(f), client = await ControlClient.connect(f.dir, { role: "console" });
+  try {
+    expect(daemon.bus.queueShow("reviewer-reminder")?.state).toBe("needs_review");
+    const { BasePeer } = await import("../src/hub/peers.ts");
+    class AvailableReviewer extends BasePeer {
+      async deliver() {}
+      async start() { this.setState("idle"); }
+      async stop() { this.setState("offline"); }
+    }
+    const reviewer = new AvailableReviewer("pi"); daemon.bus.add(reviewer); await reviewer.start();
+    const reassigned = await client.request({ t: "task", op: "task_assign", args: { id: f.task.id, peer: "pi", role: "reviewer" } });
+    expect(reassigned).toMatchObject({ ok: true });
+    expect(daemon.bus.queueShow("reviewer-reminder")?.state).toBe("completed");
+  } finally { await client.close(); await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
