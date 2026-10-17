@@ -1453,7 +1453,7 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
 function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed") {
-  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity, unavailableAtMs: Infinity, pulseAtMs: Infinity, noRecord: false };
+  const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity, unavailableAtMs: Infinity, pulseAtMs: Infinity, noRecord: false, staleEndedAtCreate: false, idAfterMs: 0, offlineId: false, recordAtPostCreateRead: Infinity, replacementAtRead: false, endedAtRead: false, olderAtRead: "none" };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
   mkdirSync(stateDir);
@@ -1466,14 +1466,28 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
   const server = fakeHub(root, stateDir, "i-target", () => {
     const visible = elapsed >= control.pulseAtMs ? ++pulseReads >= 4 || pulseReads % 2 === 0 : attached;
     const state = visible ? "idle" : "offline";
+    if (created && postCreateReads + 1 === control.recordAtPostCreateRead) {
+      recordLauncher(!control.endedAtRead);
+      if (control.olderAtRead !== "none") {
+        const file = join(stateDir, "terminal-recovery.json"), rows = JSON.parse(readFileSync(file, "utf8"));
+        rows.push(control.olderAtRead === "live" ? { ...rows[0], instanceId: "i-older", handle: "term-older", incarnationId: "inc-older", launcherPid: process.pid, launcherSignature: processSignature(process.pid) }
+          : { peer, projectRoot: root, instanceId: "i-older", launcherPid: "unreadable" });
+        writeFileSync(file, JSON.stringify(rows));
+      }
+      if (control.replacementAtRead) {
+        const file = join(stateDir, "terminal-recovery.json"), rows = JSON.parse(readFileSync(file, "utf8"));
+        rows[0].handle = "term-late-replacement"; rows[0].incarnationId = "inc-late-replacement";
+        writeFileSync(file, JSON.stringify(rows));
+      }
+    }
     if (created && ++postCreateReads && control.attachAfterRead && elapsed >= control.attachAfterMs) queueMicrotask(() => {
       if (control.persistOriginalBeforeAttach) writeFileSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`), "{}\n");
       attached = true;
     });
     const id = control.wrongSession ? "different-session" : session;
-    if (state === "idle" && !control.noId) shown.sessionId = id;
+    if (state === "idle" && !control.noId && elapsed >= control.idAfterMs) shown.sessionId = id;
     return { operationId: control.wrongOperation && created && (!pending || elapsed > 0) ? "wrong-operation" : "op-414", phase: "restored", ready: attached,
-      peers: { [peer]: { id: peer, state, ...(state === "idle" && !control.noId ? peer === "codex" ? { threadId: id } : { sessionId: id } : {}) } },
+      peers: { [peer]: { id: peer, state, ...((state === "idle" || control.offlineId) && !control.noId && elapsed >= control.idAfterMs ? peer === "codex" ? { threadId: id } : { sessionId: id } : {}) } },
       integrity: { expected: {}, current: control.corruptIntegrity ? { changed: true } : {} } };
   });
   const shown = { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt", worktreePath: root, agentIdentity: peer, sessionId: session, connected: true, state: "idle", title: "PRIVATE-TERMINAL-TEXT" };
@@ -1483,7 +1497,12 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
   const run = async (argv: string[]) => {
     if (argv[1] !== "terminal") throw new Error("non-terminal command refused by fixture");
     let result: unknown;
-    if (argv[2] === "create") { created = true; creates++; if (!control.noRecord) recordLauncher(); if (control.wrongInstance) progress.instanceId = "wrong-instance"; result = { terminal: shown }; }
+    if (argv[2] === "create") { created = true; creates++; if (control.staleEndedAtCreate) {
+      recordLauncher(false);
+      const rows = JSON.parse(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8"));
+      rows[0].handle = "term-earlier"; rows[0].incarnationId = "inc-earlier";
+      writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify(rows));
+    } else if (!control.noRecord) recordLauncher(); if (control.wrongInstance) progress.instanceId = "wrong-instance"; result = { terminal: shown }; }
     else if (argv[2] === "list") result = { terminals: created ? [shown] : [] };
     else if (argv[2] === "show") result = { terminal: shown };
     else if (argv[2] === "wait") result = { wait: { satisfied: true } };
@@ -1504,6 +1523,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
   return { root, stateDir, planned, progress, op, control, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
     driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.unavailableAtMs) { server.stop(true); control.unavailableAtMs = Infinity; } if (elapsed >= control.exitAtMs) { recordLauncher(false); control.exitAtMs = Infinity; } if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
     endLauncher: () => recordLauncher(false),
+    resetPostCreateReads: () => { postCreateReads = 0; },
     replaceTerminal: () => { shown.handle = "term-replacement"; shown.incarnationId = "inc-replacement"; },
     cleanup: () => { server.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }
@@ -1763,5 +1783,96 @@ test("#433 PROBE-B a completed restoration whose launcher and session close stay
     expect(f.progress.terminals["restored:codex"]).toEqual(done); expect(f.elapsed()).toBe(elapsed);
     expect(f.creates()).toBe(1); expect(nextActions(f.op).some(choice => choice.includes("--fresh-session"))).toBe(false);
     expect(publicOperation(f.op).projects[0]?.effects?.["restored:codex"]).toBe("done");
+  } finally { f.cleanup(); }
+});
+for (const condition of ["stale-ended-row", "idless-session"] as const) test(`#143 chosen new terminal polls through ${condition} until its authenticated id attaches`, async () => {
+  const f = delayedManagedFixture("codex"); f.control.noRecord = true;
+  if (condition === "stale-ended-row") { f.control.staleEndedAtCreate = true; f.control.attachAfterMs = 2000; }
+  else f.control.idAfterMs = 2000;
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(f.elapsed()).toBeGreaterThanOrEqual(2000); expect(f.elapsed()).toBeLessThan(600_000); expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", incarnationId: "inc-new", sessionId: "session-414" } });
+  } finally { f.cleanup(); }
+});
+test("#143 offline stale session id cannot hide an older live launcher while the chosen launcher is gone", async () => {
+  const f = delayedManagedFixture("codex", "pending"); f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
+    f.control.interruptAtMs = Infinity; f.control.offlineId = true; f.endLauncher();
+    const file = join(f.stateDir, "terminal-recovery.json"), rows = JSON.parse(readFileSync(file, "utf8"));
+    rows.push({ ...rows[0], instanceId: "i-older", handle: "term-older", incarnationId: "inc-older", launcherPid: process.pid, launcherSignature: processSignature(process.pid) });
+    writeFileSync(file, JSON.stringify(rows)); f.progress.restarts = [{ instanceId: "i-older", at: 0 }];
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("term-older");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new" } });
+    expect(nextActions(f.op).some(line => line.includes("--fresh-session"))).toBe(false); expect(f.creates()).toBe(0); expect(f.elapsed()).toBe(1000);
+  } finally { f.cleanup(); }
+});
+for (const condition of ["other-session", "unknown-launcher"] as const) test(`#143 completed restoration block names ${condition} evidence and retains done`, async () => {
+  const f = delayedManagedFixture("codex");
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    const done = structuredClone(f.progress.terminals["restored:codex"]); f.control.attachAfterRead = false;
+    if (condition === "other-session") f.control.wrongSession = true;
+    else { f.setAttached(false); writeFileSync(join(f.stateDir, "terminal-recovery.json"), "unreadable JSON"); }
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow(condition === "other-session" ? "different-session is attached instead of session-414" : "launcher records cannot be read");
+    expect(f.progress.terminals["restored:codex"]).toEqual(done); expect(f.creates()).toBe(1); expect(nextActions(f.op).some(line => line.includes("--fresh-session"))).toBe(false);
+  } finally { f.cleanup(); }
+});
+for (const replacement of [false, true]) test(`#143 no-record second read ${replacement ? "refuses a replacement launcher" : "adopts the matching late record and keeps polling"}`, async () => {
+  const f = delayedManagedFixture("codex"); f.control.noRecord = true; f.control.attachAfterMs = 2000;
+  f.control.recordAtPostCreateRead = 2; f.control.replacementAtRead = replacement;
+  try {
+    const restore = f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    if (replacement) {
+      await expect(restore).rejects.toThrow("saved terminal identity changed while awaiting attachment");
+      expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new", incarnationId: "inc-new" } });
+      expect(f.elapsed()).toBe(0);
+    } else {
+      await restore;
+      expect(f.elapsed()).toBeGreaterThanOrEqual(2000); expect(f.elapsed()).toBeLessThan(600_000);
+      expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "session-414" } });
+    }
+    expect(f.creates()).toBe(1);
+  } finally { f.cleanup(); }
+});
+test("#143 late matching gone launcher settles the selected pending wait on that same observation", async () => {
+  const f = delayedManagedFixture("codex"); f.control.noRecord = true; f.control.attachAfterRead = false;
+  f.control.recordAtPostCreateRead = 2; f.control.endedAtRead = true;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
+    expect(f.elapsed()).toBe(0); expect(f.progress.terminals["restored:codex"]).toEqual({ state: "failed" }); expect(f.creates()).toBe(1);
+    expect(nextActions(f.op).some(line => line.includes("--fresh-session codex"))).toBe(true);
+  } finally { f.cleanup(); }
+});
+test("#143 late unrelated gone launcher does not fail the chosen no-record terminal", async () => {
+  const f = delayedManagedFixture("codex"); f.control.noRecord = true; f.control.attachAfterMs = 2000;
+  f.control.recordAtPostCreateRead = 2; f.control.endedAtRead = true; f.control.replacementAtRead = true;
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    expect(f.elapsed()).toBeGreaterThanOrEqual(2000); expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new", sessionId: "session-414" } });
+  } finally { f.cleanup(); }
+});
+for (const older of ["live", "unknown"] as const) test(`#143 late matching gone launcher preserves the older ${older} fence`, async () => {
+  const f = delayedManagedFixture("codex"); f.control.noRecord = true; f.control.attachAfterRead = false;
+  f.control.recordAtPostCreateRead = 2; f.control.endedAtRead = true; f.control.olderAtRead = older;
+  f.progress.restarts = [{ instanceId: "i-older", at: 0 }];
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow(older === "live" ? "term-older" : "identity cannot be verified");
+    expect(f.elapsed()).toBe(0); expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new" } });
+    expect(nextActions(f.op).some(line => line.includes("--fresh-session"))).toBe(false);
+  } finally { f.cleanup(); }
+});
+test("#143 an exact gone first read is not erased by an unrelated ended row on the second read", async () => {
+  const f = delayedManagedFixture("codex", "pending"); f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("coordinator interrupted");
+    f.endLauncher(); f.resetPostCreateReads();
+    f.control.recordAtPostCreateRead = 3; f.control.endedAtRead = true; f.control.replacementAtRead = true; f.control.interruptAtMs = 2000;
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
+    expect(f.elapsed()).toBe(1000); expect(f.creates()).toBe(0); expect(f.progress.terminals["restored:codex"]).toEqual({ state: "failed" });
+    expect(nextActions(f.op).some(line => line.includes("--fresh-session codex"))).toBe(true);
   } finally { f.cleanup(); }
 });

@@ -8,6 +8,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - On upgrade, non-PII implement, test and bulk_edit owners need an enabled, available `checks.runner = "container"`; local/Pi owners of issue-backed tasks in every class (including review) also need authenticated spec access. These capability gates do not restrict designated reviewers; PII work remains local-only without the opt-in (#418).
 - CI: run the seeded guards as four parallel shards beside the check (PR wall time from about 26 to about 11 minutes), move artifacts to upload-artifact v7, pin setup-bun by SHA with the Bun version in `.bun-version`, add Dependabot for actions, refuse a release tag that is not on main, and split the GitHub Release from the npm publish job (#457).
 - Model restoration receipts as explicit pending/waiting/done/failed states; wait within the managed TUI bound even before a launch record exists, preserve completed conversations, and retain strict session/terminal fences without duplicate launches (#433).
+- Designate the planner with a live `planner` setting (exclusive), assign one automatically when no rostered peer plans, and show and change it in `ahub status`, the console (`l`) and the dashboard (#455).
 - Safely return unseen Claude pushes, settle superseded hub-only holds with hub audit identity, list every hold and explain inherited agent command markers (#434).
 
 ## 0.12.30

@@ -20,7 +20,7 @@ import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
-import { KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
+import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { buildKimiLaunch, buildQwenLaunch } from "../cli/launch.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
@@ -129,6 +129,8 @@ export interface HubConfig {
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean };
   roster: PeerRoster;
   roles: Record<string, string[]>;
+  /** #455: the one peer that holds the planner role; unset, the `roles` planners stand, or the hub assigns one. */
+  planner?: string;
   profile?: ProfileName;
   profile_overrides?: Record<string, unknown>;
   pii?: { paths: string[] };
@@ -235,14 +237,19 @@ const CONFIG_FILES = ["config.json", "config.local.json"] as const;
 const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
-export function loadConductorPolicy(cwd: string): { roles: Record<string, string[]>; conductor: HubConfig["conductor"] } {
+export function loadConductorPolicy(cwd: string): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string } {
   const roles: Record<string, string[]> = { ...DEFAULT_ROLES };
   const conductor = { ...DEFAULT_CONFIG.conductor };
+  let planner: string | undefined;
   for (const name of CONFIG_FILES) {
     let file: Record<string, unknown>;
     try { file = JSON.parse(readFileSync(join(cwd, ".agenthub", name), "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     if (file.roles !== undefined) { conductorPeer(file.roles); Object.assign(roles, file.roles); }
+    if (file.planner !== undefined) {
+      if (!(PLANNER_PEERS as readonly unknown[]).includes(file.planner)) throw new Error(`planner must be one of ${PLANNER_PEERS.join(", ")}`);
+      planner = file.planner as string;
+    }
     if (file.conductor !== undefined) {
       if (!file.conductor || typeof file.conductor !== "object" || Array.isArray(file.conductor)) throw new Error("conductor must be an object");
       const block = file.conductor as Record<string, unknown>;
@@ -257,7 +264,7 @@ export function loadConductorPolicy(cwd: string): { roles: Record<string, string
     }
   }
   conductorPeer(roles);
-  return { roles, conductor };
+  return { roles, conductor, ...(planner ? { planner } : {}) };
 }
 
 /** `memory.short_ttl_days`: a whole number of days from 1 to 3650; anything else would make every short-term deadline invalid. */
@@ -349,6 +356,7 @@ export function loadConfig(cwd: string): HubConfig {
       ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}) }, // the native store is on with any project config (#258)
     roster: peerRosterConfig(file.roster),
     roles: conductorPolicy.roles,
+    planner: conductorPolicy.planner,
     conductor: conductorPolicy.conductor,
     budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 30, ...file.budget }, // on with any project config (issue #36)
     context: { ...DEFAULT_CONTEXT, ...file.context },
@@ -570,6 +578,39 @@ export async function startDaemon(opts: DaemonOptions) {
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
+  // #455: the planner in force. `policyRoles` is what the config files say; settlePlanner derives config.roles from it in
+  // place (Tasks holds the same object): an explicit `planner` key is exclusive, and with none and no rostered planner
+  // the first rostered PLANNER_PEERS entry plans. Never written to disk: a person pins it with the `planner` setting.
+  let policyRoles = structuredClone(config.roles);
+  let plannerSource: "setting" | "roles" | "automatic" | "none" = "none";
+  let plannerLogged = "";
+  const settlePlanner = () => {
+    const roles = structuredClone(policyRoles);
+    const pinned = (PLANNER_PEERS as readonly string[]).includes(config.planner ?? "") ? config.planner! : undefined;
+    let source: typeof plannerSource;
+    if (pinned) {
+      for (const peer of Object.keys(roles)) roles[peer] = roles[peer]!.filter(role => role !== "planner");
+      roles[pinned] = ["planner", ...(roles[pinned] ?? [])];
+      source = "setting";
+    } else if (Object.entries(roles).some(([peer, list]) => list.includes("planner") && onRoster(peer))) source = "roles";
+    else {
+      const auto = PLANNER_PEERS.find(onRoster);
+      if (auto) { // the off-roster holders give the role up while the automatic planner holds it
+        for (const peer of Object.keys(roles)) roles[peer] = roles[peer]!.filter(role => role !== "planner");
+        roles[auto] = [...(roles[auto] ?? []), "planner"];
+      }
+      source = auto ? "automatic" : "none";
+    }
+    conductorPeer(roles);
+    for (const key of Object.keys(config.roles)) delete config.roles[key];
+    Object.assign(config.roles, roles);
+    plannerSource = source;
+    const line = `${plannerPeers().join(", ") || "nobody"} (${source})`;
+    if (line !== plannerLogged) { log(`planner: ${line}${source === "automatic" ? "; pin it with ahub settings set planner <peer>" : ""}`); plannerLogged = line; }
+  };
+  const plannerPeers = () => Object.keys(config.roles).filter(peer => config.roles[peer]!.includes("planner"));
+  if (config.planner !== undefined && !(PLANNER_PEERS as readonly string[]).includes(config.planner)) log(`planner: ${JSON.stringify(config.planner)} is not one of ${PLANNER_PEERS.join(", ")}; ignored`);
+  settlePlanner();
   const catalog = loadRoleCatalog(opts.cwd);
   for (const error of catalog.errors) log(`catalog role ${error.id}: ${error.reason}`);
   const resolvedProfile = resolveProfile(config.profile, config.profile_overrides);
@@ -1022,9 +1063,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (opts.config) return; // explicit embedding/test configuration remains its authority
     const before = conductorPeer(config.roles);
     const policy = loadConductorPolicy(opts.cwd);
-    for (const key of Object.keys(config.roles)) delete config.roles[key];
-    Object.assign(config.roles, policy.roles);
+    policyRoles = structuredClone(policy.roles);
+    config.planner = policy.planner;
     config.conductor = policy.conductor;
+    settlePlanner();
     const after = conductorPeer(config.roles);
     if (before && (before !== after || config.conductor.feed === "off")) { bus.revokeSupervision(before); supervision.resetPending(before); budgetFeedSeen.clear(); }
     if (config.conductor.feed === "off" && after) bus.revokeSupervision(after);
@@ -2281,7 +2323,8 @@ export async function startDaemon(opts: DaemonOptions) {
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
-    roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id) }])),
+    roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...(config.roles[id]?.includes("planner") ? { planner: plannerSource } : {}) }])),
+    planner: { peers: plannerPeers(), source: plannerSource },
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -3623,6 +3666,8 @@ export async function startDaemon(opts: DaemonOptions) {
     return storedConfigCache.config;
   };
   /** Stored start modes and the scoped instruction policy follow a settings write or undo. */
+  /** #455: the stored planner key, applied at once; planning authority and backlog notices follow config.roles. */
+  const applyPlanner = () => { const stored = storedConfig(); if (stored) { config.planner = stored.planner; settlePlanner(); writeStatus(); } };
   const applyStartModes = () => { const stored = storedConfig(); if (stored) { config.peers = stored.peers; config.protect_instruction_files = stored.protect_instruction_files; } };
   /** Apply only the named peer; unrelated hand edits retain their prior publication scope. */
   const applyRoleSelection = (peer: string) => {
@@ -3659,7 +3704,8 @@ export async function startDaemon(opts: DaemonOptions) {
       },
     });
     const undo = pendingUndo(opts.stateDir);
-    return { rows, ...(undo ? { undo } : {}) };
+    const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it makes that peer the only planner; agents cannot change it.`;
+    return { rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
   const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false) => {
@@ -3718,6 +3764,7 @@ export async function startDaemon(opts: DaemonOptions) {
       else writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch));
       // Apply exactly the authorized key. Other file edits stay pending until the next hub start.
       config.roster = next;
+      settlePlanner(); // #455: an automatic planner follows the roster
       saved = true;
       recordSetting(def.key, before, after, source, undo);
       bus.rosterChanged(peer); // fence the queue before stopping or detaching the adapter
@@ -3792,7 +3839,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => def.type === "roles" ? validateRoleSetting(scratch, def.path[1]!) : loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
       storedConfigCache = undefined;
       const to = settingScalar(valueAt(storedConfig(), def.path));
-      if (def.type === "roles") applyRoleSelection(def.path[1]!); else applyStartModes();
+      if (def.type === "roles") applyRoleSelection(def.path[1]!); else if (def.key === "planner") applyPlanner(); else applyStartModes();
       recordSetting(def.key, from, to, source);
       if (def.type === "roles") event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) });
       // Config trust (#17) can drop a machine-local field at load: the write happened, and the person is told it will not count.
@@ -3819,7 +3866,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const from = read();
       undoSetting(opts.cwd, opts.stateDir, (scratch) => def.type === "roles" ? validateRoleSetting(scratch, def.path[1]!) : loadConfig(scratch), routingCheck);
       storedConfigCache = undefined;
-      if (def.type === "roles") applyRoleSelection(def.path[1]!); else applyStartModes();
+      if (def.type === "roles") applyRoleSelection(def.path[1]!); else if (def.key === "planner") applyPlanner(); else applyStartModes();
       recordSetting(def.key, from, read(), settingSource(authority), true);
       if (def.type === "roles") event({ type: "role", peer: def.path[1]!, actor: "user", stage: "assigned", roles: selectedRoles(def.path[1]!, config.roles, roleAssignments, catalog).map(roleIdentity) });
       return { ok: true, text: `${def.key}: put back to ${settingText(read())}` };
@@ -3843,7 +3890,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const peer = def.path.at(-1)!;
       return { ok: true, lines: [permissionBoundary(peer), ...(isPermissionMode(value) ? [`${value}: ${permissionGrant(peer, value)}`] : ["inherit: the shared file's default, or ask"])] };
     }
-    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; ${def.applies === "peer start" ? "applies at the peer's next start" : "read at the next hub start"}`] };
+    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; ${def.applies === "peer start" ? "applies at the peer's next start" : def.applies === "live" ? "in force as soon as it is saved" : "read at the next hub start"}`] };
     try {
       const after = parseRouting(routingText(opts.cwd), routingCandidate(readOverlay(opts.cwd), def, value));
       const open = board.list().filter((task) => task.state !== "approved");

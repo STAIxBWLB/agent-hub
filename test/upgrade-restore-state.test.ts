@@ -90,7 +90,6 @@ test("restore receipt decoder isolates legacy representations and preserves abse
   expect(decodeRestoreReceipt(undefined)).toBeUndefined(); expect(restoreReceiptStatus(undefined)).toBe("unstarted"); expect(canChooseFresh(undefined)).toBe(false);
   for (const origin of ["pending", "failed"] as const) {
     expect(decodeRestoreReceipt(origin)).toEqual({ state: origin });
-    expect(decodeRestoreReceipt({ ...original, attachmentReceipt: origin })).toEqual({ state: "waiting", origin, binding: original });
   }
   expect(decodeRestoreReceipt(original)).toEqual({ state: "done", binding: original });
   const permissiveMetadata = { ...launch, argv: [], env: { AGENTHUB_LAUNCH: "saved-metadata" } };
@@ -98,6 +97,15 @@ test("restore receipt decoder isolates legacy representations and preserves abse
   for (const state of statuses) expect(decodeRestoreReceipt(receipts[state])).toEqual(receipts[state]);
   const { launchMetadata: _alias, ...old } = original;
   expect(decodeRestoreReceipt(old)).toEqual({ state: "done", binding: original });
+});
+
+test("unreleased attachmentReceipt markers are not accepted as restoration receipts (#143)", () => {
+  for (const marker of ["pending", "failed", "other"]) {
+    const value = { ...original, attachmentReceipt: marker };
+    expect(() => decodeRestoreReceipt(value)).toThrow("invalid restore receipt");
+    expect(() => restoreReceiptStatus(value)).toThrow("invalid restore receipt");
+    expect(() => canChooseFresh(value)).toThrow("invalid restore receipt");
+  }
 });
 
 test("malformed receipts refuse instead of inferring done, pending or failed (#433)", () => {

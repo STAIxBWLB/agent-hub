@@ -128,7 +128,7 @@ export function coordinatorRestarts(op: { sourceRoot?: string }): boolean {
 
 /**
  * #225: record the restart of a target that stopped after it started, before the new one starts: the dead instance and
- * the time stay for status and audit. Each done `restored:<peer>` binding of the dead instance is retired
+ * the time stay for status and audit. Each done or waiting `restored:<peer>` binding of the dead instance is retired
  * (`retired:<peer>`): restore closes its terminal (or finds it absent) before that peer is relaunched, and never
  * revalidates it against the new instance. `closed:<peer>`, `commitSent`, `fresh`, waivers and the install flags stay.
  * The project goes back to `stopped`, whose path starts the target from this operation's snapshot.

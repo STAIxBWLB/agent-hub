@@ -256,8 +256,9 @@ handle, incarnation and worktree before waiting up to 600 seconds for the
 planned (or accepted) session to attach. The restore receipt is an explicit
 tagged union: `pending`, `waiting` with `origin` (`pending` for a new launch, or
 `failed`) and `binding`, `done` with `binding`, or `failed`. A missing receipt
-means no launch has been attempted. Only the compatibility decoder reads older
-string/binding receipts; new writes use the tagged states. Interruption and
+means no launch has been attempted. Only the compatibility decoder reads released older
+string/bare-binding receipts; new writes use the tagged states. The never-released
+development attachmentReceipt marker is refused rather than inferred as a state. Interruption and
 timeout retain the waiting receipt, and resume waits on that binding without
 adopting a replacement.
 An idle terminal alone is not attachment proof. Each poll checks the selected
@@ -265,8 +266,13 @@ launcher's signed identity. Only that exact launcher being gone and the target
 reporting no attached session or other live launcher exits the wait: a
 pending-origin wait records `failed` and exposes the failed-restoration choices;
 a failed-origin wait returns to `failed` and retries the launch. A launcher
-record not written yet keeps polling within the same bound; it is
-not an unknown or mismatched record. An unreadable launcher identity, changed
+record not written yet keeps polling within the same bound. A signed ended row
+for a different handle is not a current record for the chosen terminal. An
+attached session with no id keeps that same wait after all older-launcher
+checks; an offline saved id does not count as attachment or bypass those
+checks. A current record arriving between observations continues polling only
+when its handle, incarnation and worktree match the saved binding. Unknown
+records and live replacements still block. An unreadable launcher identity, changed
 terminal binding or unreadable target blocks without recording failure.
 Successful attachment records `done` after exact terminal/session revalidation.
 A `done` receipt only revalidates its saved binding; an exited launcher cannot
@@ -287,7 +293,7 @@ Status. `ahub recovery status <id>` reports the receipt (phase, step, update
 time, error); whether a runner process holds the operation now (`runner.state`
 `running` with its pid, or `none`); `stale` when the receipt says `running` but
 no runner holds it; each project's phase and effect receipts (`closed:<peer>`,
-`restored:<peer>` as `done`, `pending` or `failed`); whether the shared plugin
+`restored:<peer>` as `done`, `pending`, `waiting:pending`, `waiting:failed` or `failed`); whether the shared plugin
 and the global CLI were installed; any lost continuity and disposition; and
 `next`, the commands that apply now. It never contains task or message text.
 `resume` does not start a second runner while one is alive.
@@ -458,9 +464,9 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed before any commit request) | blocks; the phase stays `prepared` (nothing was committed, so there is nothing to start from); not offered | abort if no effects, dispose | `<c> recovery abort <id>` without effects, else stop-and-archive (the lock refuses starting that hub by hand) |
 | project `prepared` | source unavailable, starting, stopping or not inspected | as above when it reads again | none: abort (its hold may still stand) and stop-and-archive are refused until it reads | `<c> recovery status <id>` once it answers |
 | project `prepared`, operation of an older coordinator (no `commitSent` written) | source not running, or not inspected | as its own runner does | dispose once it reads running, stopped or missing; abort neither offered nor accepted (it may have committed) | `<c> recovery status <id>` |
-| project `started` or `peers-restored` | target stopped (a crash or reboot after it started), this operation's snapshot kept | records the restart (dead instance, time), retires the dead instance's done `restored:<peer>` receipts, moves the project back to `stopped` and starts the target from the snapshot; once per resume | dispose | `the target stopped after it started; resume restarts it from this operation's snapshot` (`stopped again after restart <n> in this resume` when it stops again) |
+| project `started` or `peers-restored` | target stopped (a crash or reboot after it started), this operation's snapshot kept | records the restart (dead instance, time), retires the dead instance's done and waiting `restored:<peer>` bindings, moves the project back to `stopped` and starts the target from the snapshot; once per resume | dispose | `the target stopped after it started; resume restarts it from this operation's snapshot` (`stopped again after restart <n> in this resume` when it stops again) |
 | project `started` or `peers-restored` | target stopped, snapshot gone | blocks; not offered | dispose | `this operation's restart snapshot is gone, so nothing can start it` |
-| `retired:<peer>` (a done restoration of a dead target instance) | Orca lists its terminal, or cannot be read | closed under the close receipt rules (`closedRetired:<peer>` `pending` until Orca no longer lists it); an unreadable inventory changes nothing | dispose | `close Orca terminal <handle> by hand` or `check it in Orca`, `then <c> recovery resume <id>` |
+| `retired:<peer>` (a done or waiting restoration of a dead target instance) | Orca lists its terminal, or cannot be read | closed under the close receipt rules (`closedRetired:<peer>` `pending` until Orca no longer lists it); an unreadable inventory changes nothing | dispose | `close Orca terminal <handle> by hand` or `check it in Orca`, `then <c> recovery resume <id>` |
 | project `stopped` | target stopped without this operation's snapshot (never committed) | blocks; not offered | dispose | `the target is stopped and this operation's restart snapshot is gone` |
 | project `stopped`, `started` or `peers-restored` | target running unfenced, as another instance or another version | blocks; not offered | dispose | `daemon is not owned by this recovery operation` (or `daemon instance changed`, `target daemon version mismatch`) |
 | any, at staging | preserved source or staged target changed, or (first staging of these bytes only) target protocol or recovery waivers refused | blocks; recorded as `final`, so resume is never offered again | abort if no effects, dispose | the refusal |
@@ -476,7 +482,7 @@ An attached session is the target's report of that peer online with a thread
 | `waiting {origin, binding}` | selected launcher gone, but an older target instance's launcher remains live or unknown | blocks and retains the selected binding and waiting origin; no failure or retry is inferred | dispose | end or verify the older launcher, then `<c> recovery resume <id>` |
 | `waiting {origin, binding}` | selected exact signed launcher gone, target confirms no session or other live launcher | pending origin (including a new launch): records `failed` and blocks; failed origin: records `failed` and retries the launch | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
 | `waiting {origin, binding}` | selected identity unreadable, replacement terminal, or target unreadable | blocks, retains exact binding and waiting origin; never adopts a replacement or treats unknown as gone | dispose | verify the saved launch or target, then `<c> recovery resume <id>` |
-| `waiting {origin, binding}` | no launcher record yet, no attached session | polls within the same 600 s bound; timeout retains waiting | fresh-session only for waiting:failed (subject to ordinary choices), dispose | `waiting:<origin>`; resume uses the same exact binding |
+| `waiting {origin, binding}` | no current launcher record (including a confirmed-ended other-handle row), with no session or an id-less attachment and no older live/unknown launcher | polls within the same 600 s bound; timeout retains waiting | fresh-session only for waiting:failed (subject to ordinary choices), dispose | `waiting:<origin>`; resume uses the same exact binding |
 | `done {binding}` | launcher gone or no session attached | blocks exact restoration verification, retains done and its resumable conversation; never launches again or records failed | dispose; no fresh-session | resume the recorded conversation; `done` |
 | `restored:<peer>` `pending` | no session, launcher gone or never recorded | receipted `failed`, blocks | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
 | `restored:<peer>` `failed` | no session, launcher gone or never recorded | launches again (fresh if chosen) | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
@@ -558,7 +564,7 @@ replaces the record of a Codex already running.
 #225: a target that stopped after it started is restarted only while its state
 directory holds this operation's unreleased snapshot. The runner records the restart
 in the project's receipt (`restarts`: the dead instance and the time) before acting,
-moves each done `restored:<peer>` binding to `retired:<peer>`, clears the instance
+moves each done or waiting `restored:<peer>` binding to `retired:<peer>`, clears the instance
 and moves the project back to `stopped`, whose path starts the target from the
 snapshot; the journal imports the snapshot only at revision 0, so the second start
 continues from what the first wrote. `closed:<peer>`, `commitSent`, `fresh`, waivers
