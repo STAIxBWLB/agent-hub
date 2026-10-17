@@ -276,8 +276,8 @@
     {
       "id": "roster-transaction-serialized",
       "file": "src/hub/daemon.ts",
-      "search": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false): Promise<Record<string, unknown>> {\n    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
-      "replacement": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false): Promise<Record<string, unknown>> {\n    if (false) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "search": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = \"ordinary\", reason?: string): Promise<Record<string, unknown>> {\n    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "replacement": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = \"ordinary\", reason?: string): Promise<Record<string, unknown>> {\n    if (false) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
       "testFile": "test/roster-pi.test.ts",
       "testName": "Pi roster verification serializes roster writes and holds dispatch through its idle replay (#315)"
     },
@@ -2636,8 +2636,8 @@
     {
       "id": "planner-wip-raises-authority",
       "file": "src/hub/settings.ts",
-      "search": "applies: \"hub start\", risk: \"raises\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
-      "replacement": "applies: \"hub start\", risk: \"safe\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
+      "search": "applies: \"live\", risk: \"raises\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
+      "replacement": "applies: \"live\", risk: \"safe\", floor: 0, path: [\"tasks\", \"wip_limits\", peer]",
       "testFile": "test/planner-wip-settings.test.ts",
       "testName": "ordinary WIP settings can disable admission but cannot raise or uncover capacity"
     },
@@ -2852,8 +2852,8 @@
     {
       "id": "planner-idle-final-admission",
       "file": "src/hub/tasks.ts",
-      "search": "finding.step === 3 && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
-      "replacement": "false && finding.kind !== \"review-pending\" && this.sweepConfig.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "search": "finding.step === 3 && finding.kind !== \"review-pending\" && config.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
+      "replacement": "false && finding.kind !== \"review-pending\" && config.auto_reassign && this.plannerPullRecord(task)?.pull && !assign",
       "testFile": "test/task-sweep.test.ts",
       "testName": "planner idle sweep keeps its final attempt until owner capacity is available"
     },
@@ -2924,7 +2924,7 @@
     {
       "id": "planner-pending-wip-editor",
       "file": "src/ui/index.html",
-      "search": "const current=row.pending!==undefined ? row.pending : row.value;",
+      "search": "const current=fileValue;",
       "replacement": "const current=row.value;",
       "testFile": "test/planner-wip-settings.test.ts",
       "testName": "dashboard WIP editor saves pending restart values including zero and inheritance"
