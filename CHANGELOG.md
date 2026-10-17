@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Let a peer explicitly retry its own uncertain delivery once, with an effects-check warning, durable lineage limits and ids-only hold hints (#434).
+- Let a peer explicitly retry its own uncertain delivery once, with an effects-check warning, durable message-only lineage limits and ids-only hold hints. After upgrading, run `ahub jcode --mode headless` once per project to update an older owned MCP entry before daemon/conductor starts (#434).
 - CI: run the seeded guards as four parallel shards beside the check (PR wall time from about 26 to about 11 minutes), move artifacts to upload-artifact v7, pin setup-bun by SHA with the Bun version in `.bun-version`, add Dependabot for actions, refuse a release tag that is not on main, and split the GitHub Release from the npm publish job (#457).
 - Model restoration receipts as explicit pending/waiting/done/failed states; wait within the managed TUI bound even before a launch record exists, preserve completed conversations, and retain strict session/terminal fences without duplicate launches (#433).
 - Designate the planner with a live `planner` setting (exclusive), assign one automatically when no rostered peer plans, and show and change it in `ahub status`, the console (`l`) and the dashboard (#455).
