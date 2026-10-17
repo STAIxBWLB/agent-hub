@@ -26,6 +26,8 @@ jobs:
           package-manager-cache: false
       - name: The tag has to match package.json
         run: test "v$(jq -r .version package.json)" = "$GITHUB_REF_NAME"
+      - name: The tagged commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_REF_NAME ($GITHUB_SHA) is not on origin/main"; exit 1; }
       - name: Verify documentation freshness and release-branch ancestry
         run: node scripts/check-docs.mjs --require-fresh
       - name: Verify the successful full gate for the identical release tree
@@ -33,16 +35,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci-reuse.mjs --require
 
-  # Only this job can mint the npm publish credential (OIDC) or write the release.
+  # Only this job can mint the npm publish credential (OIDC).
   publish:
     needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -53,7 +57,17 @@ jobs:
         run: npm install -g npm@11.20.0
       - name: Publish to npm (trusted publishing, provenance)
         run: npm publish --access public
+
+  # Only this job can write the release; it holds no publish credential.
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
       - name: GitHub Release with generated notes
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "agent-hub $GITHUB_REF_NAME"
