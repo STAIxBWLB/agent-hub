@@ -803,15 +803,20 @@ export class Bus {
     if (index < 0) return;
     this.steering++;
     const deliveryId = crypto.randomUUID();
+    let removed = false, handedOff = false;
     try {
-      queue.splice(index, 1);
       const out = this.retryOut(id, [env], [env]);
+      queue.splice(index, 1);
+      removed = true;
       this.durableHandoff(id, deliveryId, [env], out);
+      handedOff = true;
       this.activeDeliveries.set(deliveryId, id);
       try { await peer.steer(out, deliveryId); }
       catch { this.uncertain(id, deliveryId, "steering outcome is uncertain"); }
-    } catch { this.storageError = "delivery journal unavailable"; }
-    finally { this.steering--; this.onQueues?.(); }
+    } catch {
+      if (removed && !handedOff) queue.splice(index, 0, env);
+      this.storageError = "delivery journal unavailable";
+    } finally { this.steering--; this.onQueues?.(); }
   }
 
   /** Holds on a peer's queue, for a drain and a pull alike: off roster, recovery, an uncertain delivery, a pause (console, budget, conductor). */
@@ -911,16 +916,25 @@ export class Bus {
           this.dropIrrelevant(id, queue);
           continue;
         }
+        const deliveryId = crypto.randomUUID();
         if (this.journal) {
           if (this.prefaces.get(id) !== preface || batch.some((e) => !queue.some((item) => item.id === e.id))) continue;
+          const queued = [...queue], seen = [...this.seen];
           for (const env of batch) queue.splice(queue.findIndex((item) => item.id === env.id), 1);
           this.prefaces.delete(id);
-        }
-        this.remember(out);
+          this.remember(out); // the checkpoint must retain rendered reply ids across a restart
+          try { this.durableHandoff(id, deliveryId, delivery, out); }
+          catch (error) {
+            queue.splice(0, queue.length, ...queued);
+            if (preface) this.prefaces.set(id, preface);
+            this.seen.clear();
+            for (const [key, env] of seen) this.seen.set(key, env);
+            throw error;
+          }
+          this.activeDeliveries.set(deliveryId, id);
+        } else this.remember(out);
         this.lastDelivery.set(id, { out, originals: delivery });
         this.preparing.delete(id); // from here on the transport/journal owns settlement
-        const deliveryId = crypto.randomUUID();
-        if (this.journal) { this.durableHandoff(id, deliveryId, delivery, out); this.activeDeliveries.set(deliveryId, id); }
         try {
           try { this.onDeliver?.(id, delivery); } catch { /* observation must never affect delivery */ }
           if (this.journal) await peer.deliver(out, deliveryId);

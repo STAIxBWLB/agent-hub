@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AcpPeer } from "../src/adapters/acp.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -64,4 +65,17 @@ test("held hint metadata is bounded and explicitly reports omitted ids without p
     expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(4096);
     expect(JSON.stringify(result)).not.toContain("PRIVATE");
   } finally { journal.close(); await f.close(); }
+});
+
+
+test("delivery-only ACP adapters refuse a manually invoked recipient retry before queue mutation (#434)", async () => {
+  const f = await rig();
+  try {
+    f.daemon.bus.add(new AcpPeer("codex", { cmd: ["unused-fixture-command"], cwd: f.dir }));
+    const result = await f.peer.request({ t: "task", op: "hub_delivery_retry", args: { delivery_id: "own-held" } });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("delivery-only peers require the person");
+    expect(f.daemon.bus.queueShow("own-held")?.state).toBe("needs_review");
+    expect(f.daemon.bus.queued("codex")).toBe(0);
+  } finally { await f.close(); }
 });

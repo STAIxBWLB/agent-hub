@@ -1609,7 +1609,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // names are answered by the hub; every call still passes daemon role/capability checks before its effects.
   const HUB_TOOLS = ["hub_send", ...TASK_TOOLS.map((t) => t.name), ...CONDUCTOR_TOOLS.map((t) => t.name)];
   const HUB_TOOL_TITLES = new Set(HUB_TOOLS.map((name) => `mcp__agent-hub__${name}`));
-  const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
+  const toolEnv = (peer: PeerId, deliveryOnly = false) => ({ ...(deliveryOnly ? { AGENTHUB_DELIVERY_ONLY: "true" } : {}), AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
   // A task op can write the board across awaits (triage, briefs, the dependents an approval releases): a recovery
@@ -1641,7 +1641,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   };
   function ownHeldHint(peer: PeerId): string {
-    try { return renderHeldHint(bus.heldDeliveryHints(peer)); }
+    try { return renderHeldHint(bus.heldDeliveryHints(peer), Date.now(), !(bus.peers.get(peer) instanceof LocalPeer || bus.peers.get(peer) instanceof AcpPeer)); }
     catch { return ""; } // unavailable telemetry is not a zero count or a reason to fail the tool itself
   }
   /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
@@ -1693,6 +1693,7 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "hub_delivery_retry": {
         if (by === USER || by === HUB || !a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "delivery_id") || typeof a.delivery_id !== "string" || a.delivery_id.length < 1 || a.delivery_id.length > 256) throw new PreEffectToolRefusal("hub_delivery_retry accepts only your delivery_id; completed and discard require the person");
+        if (bus.peers.get(by) instanceof LocalPeer || bus.peers.get(by) instanceof AcpPeer) throw new PreEffectToolRefusal("delivery-only peers require the person to resolve held deliveries");
         if (stopping || recoveryActive()) throw new PreEffectToolRefusal("recovery or shutdown is holding delivery mutations");
         bus.retryDelivery(by, a.delivery_id);
         return `retry queued for delivery ${a.delivery_id}; check for earlier effects before acting`;
@@ -2820,7 +2821,7 @@ export async function startDaemon(opts: DaemonOptions) {
             : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null }, current);
         },
         onTurnFailure: () => { supervisionTurns.delete("qwen"); },
-        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen")).map(([name, value]) => ({ name, value })) }],
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("qwen", true)).map(([name, value]) => ({ name, value })) }],
         preamble: sessionRoleContract("qwen"),
       });
       recoveryTaskPreface("qwen"); await ensurePreface("qwen");
@@ -2872,7 +2873,7 @@ export async function startDaemon(opts: DaemonOptions) {
             current);
         },
         onTurnFailure: () => { supervisionTurns.delete("kimi"); },
-        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi", true)).map(([name, value]) => ({ name, value })) }],
         preamble: sessionRoleContract("kimi"),
       });
       recoveryTaskPreface("kimi");

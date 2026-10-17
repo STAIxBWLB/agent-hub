@@ -15,7 +15,7 @@ export function heldDeliveryHints(rows: readonly HeldDeliveryHints["rows"][numbe
   }
   return result;
 }
-export function renderHeldHint(value: unknown, now = Date.now()): string {
+export function renderHeldHint(value: unknown, now = Date.now(), recipientRetry = true): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const held = value as HeldDeliveryHints;
   const kinds = new Set(["chat", "task", "review", "status", "budget", "presence"]);
@@ -24,6 +24,7 @@ export function renderHeldHint(value: unknown, now = Date.now()): string {
     if (held.rows.some(row => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.length || row.id.length > 256 || !Number.isFinite(row.createdAt) || !Array.isArray(row.senders) || !Array.isArray(row.kinds) || row.senders.some(sender => typeof sender !== "string" || sender.length > 256) || row.kinds.some(kind => !kinds.has(kind)))) return "";
   } catch { return ""; }
   const rows = held.rows.map(row => `${sanitize(row.id)} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
-  const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}\n${rows.join("\n")}\nUse hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person.`;
+  const action = recipientRetry ? "Use hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person." : "Ask the person to resolve these held deliveries; this delivery-only peer cannot initiate recipient retry.";
+  const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}\n${rows.join("\n")}\n${action}`;
   return Buffer.byteLength(out, "utf8") <= 4096 ? out : `Held hub deliveries: ${held.count} (metadata truncated; ask the person to inspect the queue).`;
 }

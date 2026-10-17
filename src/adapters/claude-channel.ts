@@ -23,6 +23,8 @@ const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 const peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 /** tools mode: the same server, run by Kimi (ACP mcpServers) or Codex (mcp_servers override). Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
 const toolsMode = process.env.AGENTHUB_MODE === "tools";
+// Exposure hint only; the daemon verifies the actual adapter before any retry mutation.
+const deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
 /**
  * Channel evidence (issue #205): `ahub claude` sets AGENTHUB_CHANNEL=1 beside the development-channel flag. Without the
  * flag Claude Code drops channel notifications without an error, so a Claude session without the marker attaches
@@ -158,7 +160,7 @@ async function withPendingHint<T>(result: T, includeQueued = true): Promise<T> {
   if (hub && r.content) {
     try {
       const response = await hub.request({ t: "delivery_holds" }, 1000);
-      const hint = response?.ok ? renderHeldHint(response.held) : "";
+      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (hint) r.content.push({ type: "text", text: hint });
     } catch { /* advisory metadata can never change a saved tool result or its effect classification */ }
   }
@@ -303,7 +305,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               ]
             : []),
         ]),
-    ...profileTaskTools(profile, lifecycleStages).filter(tool => lifecycleStages !== undefined || tool.name !== "hub_sdlc_record"),
+    ...profileTaskTools(profile, lifecycleStages).filter(tool => (lifecycleStages !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
     ...CONDUCTOR_TOOLS,
   ],
   };

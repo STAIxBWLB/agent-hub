@@ -175,6 +175,86 @@ test("a pull whose journal write fails keeps every pause, the queue and the pref
   expect(bus.storageError).toBe("delivery journal unavailable");
 });
 
+test("a failed retry-warning read before steering retains the envelope in queue order (#434)", async () => {
+  const { bus, durable } = setupBus();
+  const peer = new FakePeer("claude"); peer.setState("busy"); bus.add(peer);
+  bus.add(new FakePeer("codex")); bus.pause("codex");
+  bus.preface("claude", "recall");
+  const first = newEnvelope("user", "first", { to: ["claude"], priority: "status" });
+  bus.publish(first);
+  durable.retryWarning = () => { throw new Error("warning read unavailable"); };
+  const important = newEnvelope("user", "steer", { to: ["claude"], priority: "important" });
+  bus.publish(important);
+  await waitFor(() => !!bus.storageError, "steer warning read storage failure");
+  expect(peer.steers).toEqual([]);
+  expect(bus.queueIds("claude")).toEqual([first.id, important.id]);
+  expect(bus.snapshot(false).prefaces.claude).toBeDefined();
+  expect(bus.isPaused("codex")).toBe(true);
+  await expect(bus.fenceRecovery(30)).resolves.toBeUndefined();
+  expect(bus.storageError).toBe("delivery journal unavailable");
+  durable.close();
+});
+
+test("a failed steering checkpoint restores the envelope at its original queue index (#434)", async () => {
+  const { bus, durable } = setupBus();
+  const peer = new FakePeer("claude"); peer.setState("busy"); bus.add(peer);
+  bus.add(new FakePeer("codex")); bus.pause("codex");
+  bus.preface("claude", "recall");
+  const first = newEnvelope("user", "first", { to: ["claude"], priority: "status" });
+  bus.publish(first);
+  durable.checkpointDelivery = () => { throw new Error("checkpoint unavailable"); };
+  const important = newEnvelope("user", "steer", { to: ["claude"], priority: "important" });
+  bus.publish(important);
+  await waitFor(() => !!bus.storageError, "steer checkpoint storage failure");
+  expect(peer.steers).toEqual([]);
+  expect(bus.queueIds("claude")).toEqual([first.id, important.id]);
+  expect(bus.snapshot(false).prefaces.claude).toBeDefined();
+  expect(bus.isPaused("codex")).toBe(true);
+  expect(durable.list("claude")).toEqual([]);
+  await expect(bus.fenceRecovery(30)).resolves.toBeUndefined();
+  expect(bus.storageError).toBe("delivery journal unavailable");
+  durable.close();
+});
+
+test("a condensed drain checkpoints rendered reply ids before transport for journal recovery (#434)", async () => {
+  const digest = { ...newEnvelope("digest", "condensed rendering"), hop: 3 };
+  const { bus, durable } = setupBus({ condense: async () => [digest] });
+  const peer = new FakePeer("claude"); bus.add(peer);
+  bus.publish(newEnvelope("user", "original", { to: ["claude"], priority: "status" }));
+  await waitFor(() => peer.deliveries.length === 1, "condensed delivery");
+  expect(peer.deliveries[0]!.envs.map(env => env.id)).toEqual([digest.id]);
+  expect(durable.snapshot().bus.seen.map(env => env.id)).toContain(digest.id);
+  const recovered = new Bus({ journal: durable, batchMs: 0 });
+  expect(recovered.get(digest.id)).toMatchObject({ id: digest.id, body: digest.body, from: "digest", hop: 3 });
+  durable.close();
+});
+
+test("a failed drain checkpoint restores only its own queue and preface before handoff (#434)", async () => {
+  const digest = newEnvelope("digest", "never handed over");
+  const { bus, durable } = setupBus({ condense: async () => [digest] });
+  const peer = new FakePeer("claude"); peer.setState("busy"); bus.add(peer);
+  bus.add(new FakePeer("codex")); bus.pause("codex");
+  bus.preface("claude", "recall");
+  const first = newEnvelope("user", "first", { to: ["claude"], priority: "status" });
+  const next = newEnvelope("user", "next", { to: ["claude"], priority: "status" });
+  const other = newEnvelope("user", "other", { to: ["codex"], priority: "status" });
+  bus.publish(first); bus.publish(next); bus.publish(other);
+  durable.checkpointDelivery = () => { throw new Error("checkpoint unavailable"); };
+  peer.setState("idle");
+  await waitFor(() => !!bus.storageError, "drain checkpoint storage failure");
+  expect(peer.deliveries).toEqual([]);
+  expect(bus.get(digest.id)).toBeUndefined();
+  expect(bus.lastDeliveredTo("claude")).toEqual([]);
+  expect(bus.queueIds("claude")).toEqual([first.id, next.id]);
+  expect(bus.snapshot(false).prefaces.claude).toBeDefined();
+  expect(bus.queueIds("codex")).toEqual([other.id]);
+  expect(bus.isPaused("codex")).toBe(true);
+  expect(durable.list("claude")).toEqual([]);
+  await expect(bus.fenceRecovery(30)).resolves.toBeUndefined();
+  expect(bus.storageError).toBe("delivery journal unavailable");
+  durable.close();
+});
+
 test("a failed retry-warning read after condensation keeps queued work and lets recovery fence settle (#434)", async () => {
   const { bus, durable } = setupBus({ condense: async (envs) => envs });
   const peer = new FakePeer("claude"); bus.add(peer);

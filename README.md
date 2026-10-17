@@ -38,7 +38,9 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 - **Operations.** A terminal console and a local dashboard, one hub per
   repository or worktree with a machine-wide view, and `ahub upgrade` that carries
   running sessions across versions. The console supports revision-checked task
-  assignment/unassignment and delivery-queue resolution.
+  assignment/unassignment and delivery-queue resolution. Peers with independent
+  tool turns can request one uncertain redelivery; the delivery-only local worker
+  and headless ACP peers leave held deliveries for the person to resolve.
 
 ## Where it is going
 

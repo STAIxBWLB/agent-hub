@@ -10,14 +10,14 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { renderHeldHint } from "../src/hub/delivery-hints.ts";
 
-async function rig(peer: string, mode: "channel" | "pull" | "tools") {
+async function rig(peer: string, mode: "channel" | "pull" | "tools", deliveryOnly = false) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-retry-hints-"));
   const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "hint", instanceId: "old" });
   const env = newEnvelope("user", "DO NOT EXPOSE PRIVATE CONTENT", { private: true });
   journal.createDelivery({ id: "my-private-held", peer, state: "needs_review", createdAt: env.ts, originals: [env], out: [env] }); journal.close();
   const daemon = await startDaemon({ cwd: dir, stateDir: dir, projectId: "hint", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
   const client = new Client({ name: "retry-hint-fixture", version: "0" }, { capabilities: {} });
-  const envs: Record<string, string> = { ...process.env as Record<string, string>, AGENTHUB_STATE_DIR: dir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: peer, AGENTHUB_MODE: mode === "tools" ? "tools" : "", AGENTHUB_CHANNEL: mode === "channel" ? "1" : "" };
+  const envs: Record<string, string> = { ...process.env as Record<string, string>, AGENTHUB_STATE_DIR: dir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: peer, AGENTHUB_MODE: mode === "tools" ? "tools" : "", AGENTHUB_CHANNEL: mode === "channel" ? "1" : "", AGENTHUB_DELIVERY_ONLY: deliveryOnly ? "true" : "" };
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env: envs, stderr: "pipe" });
   let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
   await client.connect(transport);
@@ -37,6 +37,20 @@ for (const mode of ["channel", "pull", "tools"] as const) {
     } finally { await f.close(); }
   });
 }
+
+test("delivery-only MCP sessions hide retry and ask the person while pull-only Kimi keeps recipient retry (#434)", async () => {
+  for (const deliveryOnly of [true, false]) {
+    const f = await rig("kimi", deliveryOnly ? "tools" : "pull", deliveryOnly);
+    try {
+      const tools = await f.client.listTools();
+      expect(tools.tools.some(tool => tool.name === "hub_delivery_retry")).toBe(!deliveryOnly);
+      const result = await f.client.callTool({ name: "hub_send", arguments: { text: "[FYI] delivery mode hint" } }) as any;
+      expect(result.content[1].text).toContain("my-private-held");
+      expect(result.content[1].text).toContain(deliveryOnly ? "Ask the person to resolve" : "Use hub_delivery_retry");
+      expect(JSON.stringify(result)).not.toContain("DO NOT EXPOSE PRIVATE CONTENT");
+    } finally { await f.close(); }
+  }
+});
 
 test("a new ordinary held row is visible on the next tools-mode result without an important enqueue", async () => {
   const f = await rig("codex", "tools");
@@ -74,7 +88,7 @@ test("hint renderer rejects malformed payloads", () => {
 
 });
 
-test("actual in-process local task callback carries body-free hints and preserves refusal identity while busy retry only requeues", async () => {
+test("actual in-process local task callback carries person-resolution hints and refuses recipient retry before effects", async () => {
   const { ControlClient } = await import("../src/hub/control-client.ts");
   const { startFakeModelServer } = await import("./fakes/model-server.ts");
   const { PreEffectToolRefusal } = await import("../src/hub/tool-refusal.ts");
@@ -97,8 +111,10 @@ test("actual in-process local task callback carries body-free hints and preserve
     expect(refusal).toBeInstanceOf(PreEffectToolRefusal);
     expect((refusal as Error).message).toContain("native-held"); expect((refusal as Error).message).not.toContain("NATIVE PRIVATE BODY");
     peer.setState("busy");
-    expect(await taskTool("hub_delivery_retry", { delivery_id: "native-held" }, { pii: false })).toContain("retry queued");
-    expect(daemon.bus.queued("local")).toBe(1); expect(daemon.bus.stateOf("local")).toBe("busy");
+    await expect(taskTool("hub_delivery_retry", { delivery_id: "native-held" }, { pii: false })).rejects.toBeInstanceOf(PreEffectToolRefusal);
+    expect(result).toContain("Ask the person to resolve");
+    expect(daemon.bus.queueShow("native-held")?.state).toBe("needs_review");
+    expect(daemon.bus.queued("local")).toBe(0); expect(daemon.bus.stateOf("local")).toBe("busy");
     expect(model.requests).toHaveLength(0);
   } finally {
     await console_.close(); await daemon.stop(); model.stop(); rmSync(dir, { recursive: true, force: true });

@@ -195,7 +195,7 @@ prefills `discard` for a queued row and `retry` for a needs_review row, with the
 action still editable before confirmation. `completed` is never the default.
 Status, console notices and `route explain` show every held row with its id, sender, kind and age. The hub completes rows made entirely of superseded hub workflow notices or presence items, recording an ids-only reason and the hub actor. Mixed messages, live task notices and unknown references remain held. A Claude session without channel support safely returns unseen pushes for `hub_inbox`; a thrown notification write remains uncertain.
 
-The addressed peer may call `hub_delivery_retry { delivery_id }` for its own
+Claude channel/pull sessions, Codex and Pi may call `hub_delivery_retry { delivery_id }` for their own
 `needs_review` row once. Its tool results show held-row count, ids, senders,
 kinds and age, never message bodies or task text (up to 32 rows/4 KiB, with an
 explicit truncation notice). The redelivery starts with a fixed warning that
@@ -206,6 +206,8 @@ the originals; delivery waits for idle and retains all pauses and recovery holds
 The tool cannot complete or discard a row. If a recovery snapshot lacks retry
 history, or older pruned retry records cannot be mapped, the affected message
 lineages require a person; unrelated new messages retain the one-retry option.
+
+The local worker and headless ACP peers receive tools only inside a delivered turn. A hold prevents that turn, so these delivery-only transports do not offer recipient retry; their held hints ask the person to resolve the row. Ordinary messages stay queued. This restriction follows the current transport, not the vendor name: Kimi TUI remains pull-only and can request its one retry.
 
 Every console resolution needs a reason. Queue `discard` removes queued originals or
 settles a needs_review receipt; it never cancels a task or native turn.
