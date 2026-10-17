@@ -2888,7 +2888,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** pi.auto_start at hub start (#269): in Pi's start mode, and said out loud when it could not be done. */
   const autoStartPi = () => void hubStart("pi", "pi.auto_start").then(
     (result) => { if (result.ok !== true) notify(`pi.auto_start did not start Pi: ${String(result.error)}`); },
-    (error) => log(`Pi auto-start failed: ${(error as Error).message}`));
+    (error) => log(`Pi auto-start failed: ${(error as Error).message}${piContinuity.state === "ready" ? `. ${continuityCleanup()}` : ""}`));
   async function stopPiForReplacement(pi: PiPeer): Promise<void> {
     replacingPi.add(pi);
     try { await pi.stop(); } finally { replacingPi.delete(pi); }

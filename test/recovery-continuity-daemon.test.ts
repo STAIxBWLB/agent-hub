@@ -166,3 +166,14 @@ test("#463 uncertain session storage failure retains continuity and never starts
   expect(readdirSync(f.stateDir).some(name => name.startsWith("recovery-continuity.retired."))).toBe(false);
   expect(daemon.bus.peers.has("pi")).toBe(false); expect(f.opened).toEqual([]);
 });
+
+test("#463 an unconfirmed ID-only resume retains evidence and prints an exact manual archive command", async () => {
+  const f = rig();
+  writeRecoveryContinuity(f.stateDir, { ...f.bookmark, pi: { sessionId: "unconfirmed-recorded-id", backend: "dgx" } });
+  const { daemon } = await f.start("headless", { pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--session-id", "different-fixture-owner"] } });
+  await until(() => f.log().includes("Pi auto-start failed") || f.log().includes("pi.auto_start did not start"), "unconfirmed native resume reported");
+  expect(daemon.bus.peers.get("pi")?.state ?? "offline").toBe("offline");
+  expect(existsSync(f.file)).toBe(true);
+  expect(f.log()).toContain("mv"); expect(f.log()).toContain(f.file);
+  expect(f.log()).not.toContain("started a fresh session");
+});
