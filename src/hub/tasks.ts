@@ -1712,7 +1712,7 @@ export class Tasks {
     this.offered.delete(task.id);
     this.d.board.clearStall(task.id);
     for (const peer of new Set([task.owner, task.reviewer])) if (peer && peer !== USER) this.releaseNotice(`task #${task.id}: cancellation notice unavailable`, () => this.d.bus.publish(newEnvelope(HUB, sanitize(`Task #${task.id} cancelled. Stop working on it. No native turn or working tree was changed.`), { to: [peer], kind: "task", priority: "important", refs: { task: String(task.id), taskCancelled: cancelled.flowRevision }, ...(this.isPii(next) ? { private: true } : {}) })));
-    for (const dependent of this.d.board.list("proposed")) if (!dependent.owner && dependent.deps?.includes(task.id)) this.reportStall(dependent, { kind: "cancelled-dependency", dependency: task.id, code: "cancelled" });
+    for (const dependent of this.d.board.list()) if (!isClosedTaskState(dependent.state) && !dependent.owner && dependent.deps?.includes(task.id)) this.reportStall(dependent, { kind: "cancelled-dependency", dependency: task.id, code: "cancelled" });
     return next;
   }
 

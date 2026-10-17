@@ -212,3 +212,25 @@ test("stall planner advice is a once-per-cause preface, never an ordinary queued
   expect(f.bus.queueIds("planner")).toEqual([]);
   expect(f.stalls).toEqual([task.id, task.id]);
 });
+
+test("cancelling a backlog prerequisite advises its retained backlog dependent with ids only", async () => {
+  const f = await fixture();
+  const parent = await f.tasks.propose("planner", { title: "PRIVATE-parent-title", class: "implement", backlog: true });
+  const dependent = await f.tasks.propose("planner", { title: "PRIVATE-dependent-title", class: "implement", backlog: true, after: [parent.id] });
+  const saved = f.board.get(dependent.id), noticeAt = f.notices.length, toldAt = f.told.length, savesBefore = f.saves();
+  await f.tasks.cancel(parent.id, "user", { reason: "obsolete prerequisite" });
+  expect(f.board.get(dependent.id)).toEqual(saved);
+  expect(f.board.get(dependent.id)).toMatchObject({ state: "backlog", deps: [parent.id], owner: null });
+  expect(f.tasks.waitsFor(f.board.get(dependent.id)!)).toEqual([parent.id]);
+  const notices = f.notices.slice(noticeAt).join("\n"), advice = f.told.slice(toldAt);
+  expect(notices).toContain(`Task #${dependent.id} stalled:`);
+  expect(notices).toContain(`#${parent.id}`);
+  expect(advice).toHaveLength(1);
+  expect(advice[0]).toMatchObject({ peer: "planner" });
+  expect(advice[0]!.text).toContain(`Task #${dependent.id} stalled:`);
+  expect(advice[0]!.text).toContain(`#${parent.id}`);
+  expect(notices + JSON.stringify(advice)).not.toContain("PRIVATE-parent-title");
+  expect(notices + JSON.stringify(advice)).not.toContain("PRIVATE-dependent-title");
+  expect(f.saves()).toEqual(savesBefore);
+  expect(f.bus.queueIds("planner")).toEqual([]);
+});
