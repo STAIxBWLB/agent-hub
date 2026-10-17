@@ -8,6 +8,10 @@ import { realPath } from "../src/hub/project.ts";
 import { initialConsoleState, reduceConsole, renderConsole } from "../src/cli/console-state.ts";
 import { renderStatus } from "../src/cli/output.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { loadRouting } from "../src/hub/routing.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -82,10 +86,23 @@ test("console marks the planner and l then y runs the setting as a terminal comm
   const s = initialConsoleState(true); s.panel = 1;
   s.peers = { claude: { state: "idle", flowRoles: ["planner", "reviewer"], planner: "roles" }, codex: { state: "idle", flowRoles: ["implementer"] }, pi: { state: "idle" } };
   expect(renderConsole(s, 160, 24, 0).join("\n")).toContain("claude (planner)");
-  s.selection = 0; expect(reduceConsole(s, "l", 0).state.notice).toContain("already the planner");
+  s.selection = 0; // pinning a roles or automatic planner is a policy change, so it asks
+  expect(reduceConsole(s, "l", 0).state.confirm).toEqual({ type: "command", args: ["settings", "set", "planner", "claude"], prompt: "make claude the planner" });
+  s.peers.claude!.planner = "setting"; expect(reduceConsole(s, "l", 0).state.notice).toContain("already the pinned planner");
   s.selection = 2; expect(reduceConsole(s, "l", 0).state.notice).toContain("pi cannot plan");
   s.selection = 1;
   const asked = reduceConsole(s, "l", 0);
   expect(asked.state.confirm).toEqual({ type: "command", args: ["settings", "set", "planner", "codex"], prompt: "make codex the planner" });
   expect(reduceConsole(asked.state, "y", 0).effects).toEqual([{ type: "command", args: ["settings", "set", "planner", "codex"] }]);
+});
+
+test("a planner moved while its screen runs cannot finish the write (#455)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-planner-race-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), routing = loadRouting(dir);
+  cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
+  const roles: Record<string, string[]> = { claude: ["planner"], codex: ["implementer"] };
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "race", roles, notify: () => {},
+    routing: () => ({ ...routing, signals: { ...routing.signals, pii_screen: "local" } }),
+    piiScreen: async () => { roles.claude = []; roles.codex = ["planner"]; return { label: "clear", ms: 0 }; } });
+  await expect(tasks.newRelease("claude", { name: "r1", goal: "ship", order: 1 })).rejects.toThrow("planning requires");
+  expect(board.releases()).toHaveLength(0);
 });

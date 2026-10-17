@@ -625,7 +625,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (s.panel === 1 && key === "l") {
       const peer = String(item);
       if (!(PLANNER_PEERS as readonly string[]).includes(peer)) notify(s, `${peer} cannot plan: the planner is one of ${PLANNER_PEERS.join(", ")}`, now);
-      else if (s.peers[peer]?.planner) notify(s, `${peer} is already the planner`, now, "attention");
+      else if (s.peers[peer]?.planner === "setting") notify(s, `${peer} is already the pinned planner`, now, "attention");
       else s.confirm = { type: "command", args: ["settings", "set", "planner", peer], prompt: `make ${peer} the planner` };
       return done();
     }
