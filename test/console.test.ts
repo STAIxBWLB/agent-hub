@@ -909,6 +909,17 @@ describe("console layout (#213)", () => {
     expect(lastFrame()).toContain("[2 Approvals]"); // the tab did not move for the arrow inside a paste
     f.input("\x1b"); f.input("q"); await running;
   });
+  test("a Home or End sequence is one key press, not a paste (#441)", async () => {
+    const f = fixture();
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false, runCommand: () => () => {} });
+    await Promise.resolve(); await Promise.resolve();
+    const lastFrame = () => f.output.join("").split("\x1b[r\x1b[1;1H").at(-1)!;
+    for (const key of ["\x1b[H", "\x1b[F", "\x1bOH", "\x1bOF", "\x1b[1~", "\x1b[4~"]) {
+      f.input(key);
+      expect(lastFrame()).toContain("? keys"); // the command line stayed closed
+    }
+    f.input("\x1b"); f.input("q"); await running;
+  });
   test("errors and refusals take the failure tone; informing notices take attention", () => {
     const tone = (s: any) => renderConsoleLines(s, 80, 24, NOW).at(-2)!.at(-1)!;
     let s = state(); s.editing = true; s.input = "kill";
@@ -1610,4 +1621,20 @@ test("#441 the Events panel follows new events at the last row and holds a row t
   expect(selectedPanelRow(s)?.text).toBe("e5"); // back on the last row, following again
   s = reduceConsole(reduceConsole(s, "1", NOW).state, "5", NOW).state;
   expect(selectedPanelRow(s)?.text).toBe("e5"); // opening the panel selects the newest row
+});
+
+test("#441 Home/< selects the first row and End/> the last, in any panel, and Home tops an open view", () => {
+  let s = reduceConsole(state(true), "5", NOW).state;
+  for (const n of [1, 2, 3, 4]) appendEvent(s, { text: `e${n}` });
+  for (const [key, want] of [["<", "e1"], [">", "e4"], ["\x1b[H", "e1"], ["\x1b[F", "e4"], ["\x1b[1~", "e1"], ["\x1b[4~", "e4"]] as const) {
+    s = reduceConsole(s, key, NOW).state;
+    expect(selectedPanelRow(s)?.text).toBe(want);
+  }
+  s = reduceConsole(reduceConsole(s, "<", NOW).state, "\r", NOW).state; // open the first event's view
+  s = reduceConsole(reduceConsole(s, "j", NOW).state, "j", NOW).state;
+  expect(s.detailOffset).toBe(2);
+  expect(reduceConsole(s, "<", NOW).state.detailOffset).toBe(0);
+  let t = state(true); t.panel = 3; t.tasks = [1, 2, 3].map(id => ({ id, state: "proposed", title: `t${id}` }));
+  t = reduceConsole(t, ">", NOW).state;
+  expect(selectedPanelRow(t)?.id).toBe(3);
 });

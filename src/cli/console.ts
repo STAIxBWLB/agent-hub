@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent } from "./console-state.ts";
+import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent, FIRST_KEYS, LAST_KEYS } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 import { consoleNeeds, attentionFacts } from "./attention.ts";
@@ -301,7 +301,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         // A pasted chunk can only edit text, never approve, confirm or run commands. Bracketed-paste delimiters are stripped.
         // Under the modal key table it does nothing at all. A read holding nothing but arrow sequences is that many
         // key presses (key repeat, a slow link), not a paste (#309): each arrow reaches the reducer on its own.
-        if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"].includes(text)) {
+        if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", ...FIRST_KEYS, ...LAST_KEYS].includes(text)) {
           if (/^(?:\x1b\[[ABCD])+$/.test(text)) { for (const key of text.match(/\x1b\[[ABCD]/g)!) handle(key); }
           else {
             state.attentionMessages = []; state.attentionSelection = undefined;

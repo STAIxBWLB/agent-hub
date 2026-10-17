@@ -315,10 +315,13 @@ function approvalFields(a: Approval): [string, unknown][] {
 export function permissionText(a: Pick<Approval, "id" | "peer" | "title" | "options">): string {
   return `  ? ${a.peer} asks permission: ${String(a.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${a.id} <${a.options.map(o => `${quoted(o.optionId)} (${quoted(o.name)})`).join(", ")}> | deny`;
 }
+/** #441: Home/End as terminals send them, plus `<` and `>` for keyboards without those keys. */
+export const FIRST_KEYS = ["<", "\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~"];
+export const LAST_KEYS = [">", "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~"];
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
-  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Enter view", "j/k scroll a view"]],
+  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode"]],
   ["Tasks", ["a assign/reviewer (then y)", "u unassign (then y)", "r review (in review)"]],
@@ -550,6 +553,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (key === "\x1b") { s.detail = undefined; s.requestDetail = undefined; s.help = false; s.optionChoice = undefined; return done(); }
+  if (s.mode === "panels" && (FIRST_KEYS.includes(key) || LAST_KEYS.includes(key))) {
+    const first = FIRST_KEYS.includes(key);
+    if (s.detail !== undefined || s.requestDetail) { if (first) s.detailOffset = 0; return done(); }
+    s.selection = first ? 0 : Math.max(0, panelRows(s).length - 1);
+    if (s.panel === 2) s.approvalId = s.approvals[s.selection]?.id;
+    captureConsoleSelection(s, true);
+    return done();
+  }
   if (s.mode === "panels" && ["j", "k", "\x1b[A", "\x1b[B"].includes(key)) {
     if (s.detail !== undefined || s.requestDetail) { s.detailOffset = Math.max(0, s.detailOffset + (["j", "\x1b[B"].includes(key) ? 1 : -1)); return done(); }
     s.selection = Math.max(0, Math.min(panelRows(s).length - 1, selection(s) + (["j", "\x1b[B"].includes(key) ? 1 : -1)));
