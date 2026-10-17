@@ -1710,7 +1710,7 @@ for (const changed of [false, true]) test(`#433 resumed chosen ${changed ? "new 
     f.control.interruptAtMs = Infinity; f.control.wrongSession = changed; f.setAttached(true);
     await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
     expect(readRecoveryWaivers(f.stateDir, "op-414")).toEqual(changed ? { codex: "fresh-session" } : {});
-    if (changed) expect(f.progress.fresh?.codex.lost).toBe("session-414");
+    if (changed) expect(f.progress.fresh?.codex?.lost).toBe("session-414");
     else { expect(f.progress.fresh).toBeUndefined(); expect(publicOperation(f.op).projects[0]).not.toHaveProperty("lostContinuity"); }
     expect(f.progress.terminals["restored:codex"]).not.toHaveProperty("attachmentReceipt"); expect(f.creates()).toBe(0);
   } finally { f.cleanup(); }
