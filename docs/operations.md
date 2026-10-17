@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.30 and control protocol 16. Live verification
+This guide describes ahub 0.12.31 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -206,6 +206,8 @@ The warning fits within the existing journal body limit. If needed, only the ren
 Any earlier explicit retry in the same recipient's lineage, including a person's
 retry, leaves a later hold for the person. A busy peer's request only requeues
 the originals; delivery waits for idle and retains all pauses and recovery holds.
+Hub presence prefaces are mutable context, so they do not consume or inherit a
+message's retry allowance and never receive the uncertain-retry warning.
 The tool cannot complete or discard a row. If a recovery snapshot lacks retry
 history, or older pruned retry records cannot be mapped, the affected message
 lineages require a person; unrelated new messages retain the one-retry option.
@@ -487,6 +489,26 @@ Tool-call receipts survive daemon restart; an interrupted operation with an
 unknown outcome must be reconciled before repeating it. Cancelling a Pi turn
 does not automatically hand its task to a cloud peer.
 
+For assigned, non-private work, `hub_task_spec` reads the named GitHub issues
+through the hub's authenticated, bounded read path. `hub_check_start` runs an
+exact Git ref's permitted tests or typecheck in the opt-in isolated container
+runner (`checks.runner: "container"`); `hub_check_result` and `hub_check_cancel`
+read or cancel that owned run. Missing spec/check capability refuses the
+assignment early; it never grants host commands, credentials or broader sandbox
+access. Receipts distinguish exact source/tree/lockfile, platform, exit and
+uncertain or cancelled outcomes. See [bounded spec and check access](security.md#bounded-task-specs-and-isolated-checks-418)
+for the authorization and resource bounds.
+
+Retention bounds inactive valid check receipts to 200 records and the newest 20
+full outputs, excluding active runs. Full output is also consumed by the owner
+result read or expires after 24 hours.
+Malformed or unreadable receipts are a retention exception: their receipt bytes,
+output and staging stay for inspection, with ID-only warnings separate from
+unknown container-owner warnings. Maintenance skips them while continuing valid
+retention; it never deletes an unknown container. See the security contract for
+the same-user parent-swap cleanup limitation. These source guarantees do not
+establish the separate native macOS acceptance leg.
+
 The `mlx/fast` alias now defaults to an externally managed Ollama MLX backend.
 Install and start Ollama separately, with `OLLAMA_NO_CLOUD=1`,
 `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=1`, and a finite
@@ -582,7 +604,8 @@ PID-name matching. See the operations guide and the
 
 ## Install and start
 
-Use Bun 1.4.2 or newer. Install the released package and install its Claude
+Use Bun 1.4.2 or newer. Source checks and CI use the version pinned in
+`.bun-version` (currently 1.4.2). Install the released package and install its Claude
 channel plugin:
 
 ```bash
@@ -946,7 +969,7 @@ The daemon checks its selector at hub operation entry and before candidate/count
 
 Run `ahub memory profile-check [--json]` from the person's terminal for the read-only preflight. It identifies live registry owners by signed process identity and authenticated daemon replies, then reports their loaded memory package and bound home/profile. The receipt names the current `AGENTHUB_HOME` registry scope; zero results establish no live daemon in that inventory, not system-wide process absence. Inventory and check separate custom registries too when they share `AMEM_HOME`. A missing or unreadable runtime receipt never counts as a different home or permission to migrate.
 
-Before real migration, first upgrade every hub sharing the home to 0.12.30. Obtain positive ready or unbound/quiesced receipts in every relevant registry; then quiesce consumers and close bound handles before changing the selector. A matching ready handle proves compatibility but is still an open handle. Verify synthetic cross-writes before the separately approved real migration, then reopen through the supported session-preserving lifecycle afterward. Merely installing this release does not authorize migration or provide live capture/device-sync evidence.
+Before real migration, first upgrade every hub sharing the home to 0.12.30 or later. Obtain positive ready or unbound/quiesced receipts in every relevant registry; then quiesce consumers and close bound handles before changing the selector. A matching ready handle proves compatibility but is still an open handle. Verify synthetic cross-writes before the separately approved real migration, then reopen through the supported session-preserving lifecycle afterward. Merely installing this release does not authorize migration or provide live capture/device-sync evidence.
 
 Managed agents read through `hub_memory_search`, `hub_memory_show` and `hub_memory_graph`, with the server's project identity, the `memory_read` capability and current privacy screening. They cannot supply another project; private turns are refused. The tools bound UTF-8 input/output, screen before counts and truncation, and exclude their arguments/results from hub-managed capture. `hub_memory_correct` has its own `memory_correct` capability and records a screened correction candidate, not a note change. See [the complete memory contract](memory.md) for caps and refusal semantics.
 
@@ -1890,21 +1913,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.30), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.31), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.30 ahub upgrade --to 0.12.30 --dry-run
-bunx --package @staix/agent-hub@0.12.30 ahub upgrade --to 0.12.30 --yes
+bunx --package @staix/agent-hub@0.12.31 ahub upgrade --to 0.12.31 --dry-run
+bunx --package @staix/agent-hub@0.12.31 ahub upgrade --to 0.12.31 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.30 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.31 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1936,14 +1959,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.30 --dry-run
+ahub upgrade --to 0.12.31 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.30 --yes
+ahub upgrade --to 0.12.31 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2185,6 +2208,11 @@ next actions").
   use its offered `ahub recovery resume <id>`. Resume rechecks the source and
   reconciles a commit that may already have been requested. A busy read while
   that committed source is stopping stays inside the existing shutdown wait.
+  A resumed prepared receipt with `commitSent` also polls an unavailable source
+  within the 30-second shutdown bound, including initial database contention,
+  without sending another commit, re-preparing or closing terminals again. Only
+  confirmed `stopped` permits target startup; a replacement instance refuses, and
+  expiry retains the prepared receipt and the same operation for another resume.
   A stop-and-archive that meets contention instead says to retry that
   disposition; resume remains refused while abandonment is partway. Successful
   abort, fresh-session choice and disposal clear the earlier failure annotation.
@@ -2518,7 +2546,7 @@ recorded launch before recovery.
 
 A ready task with an ineligible reservation, no eligible peer or a cancelled dependency shows an ids-only stall cause in status and the Tasks panel. The hub reports a cause once, repeating only when the cause changes or the task is re-planned. It directs ownerless advice to the designated planner's next bounded preface and the configured supervision stream, otherwise the person's attention list; it does not create an extra ordinary turn beside backlog batching. Configure the missing capability, assign another eligible peer, re-plan or cancel the task as appropriate; a reservation never bypasses routing guards.
 
-An offer to a pull-only peer adds an advisory "open <peer>: task #N is waiting for it" attention item. It clears when that exact offer is accepted, declined, superseded or genuinely delivered and settled to the addressed peer. Another inbox read, an accepted-only receipt or a person's queue completion does not prove it was read. The attention item does not alter delivery state.
+An offer to a pull-only peer adds an advisory "open <peer>: task #N is waiting for it" attention item. It clears when that exact offer is accepted, declined, superseded or genuinely delivered and settled to the addressed peer. Another inbox read, an accepted-only receipt or a person's queue completion does not prove it was read. The attention item survives peer detach and daemon restart using the saved offer's pull-only flag; it does not alter delivery state.
 
 The person can retain superseded work as closed history:
 
@@ -2526,7 +2554,7 @@ The person can retain superseded work as closed history:
 ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]
 ```
 
-The console also offers cancellation with the selected task's flow revision. Approved tasks cannot be cancelled. The planner's `hub_task_cancel` tool is limited to its own unaccepted backlog/proposed work; previously accepted work requires the person. Cancellation sends the former owner/reviewer a stop notice, releases overlap/reservation participation and keeps dependents blocked with a cancelled-dependency notice. It does not stop a native turn, delete a worktree or write an outcome memory note. Use the displayed revision to avoid acting on a task that changed while it was selected.
+The console also offers cancellation with the selected task's flow revision. Approved tasks cannot be cancelled. The planner's `hub_task_cancel` tool is limited to its own unaccepted backlog/proposed work; previously accepted work requires the person. Cancellation sends the former owner/reviewer a stop notice, releases overlap/reservation participation and keeps dependents blocked with a cancelled-dependency notice. It does not stop a native turn, delete a worktree or write an outcome memory note. Cancelled work is closed history, counted separately from approved work; it does not satisfy an approval dependency. A still-running private turn keeps its privacy fence after cancellation. Use the displayed revision to avoid acting on a task that changed while it was selected.
 
 The daemon advertises `task_cancel`; a current CLI refuses cancellation against older daemons. Recovery retains verified target features beside its immutable root/digest, reuses them on resume and checks only sources not yet past commit; a legacy receipt without that evidence needs a target probe only before commit. Upgrade/restart refuses a target without this feature while cancelled rows exist and names their ids. No cancelled row is rewritten as approved. An old binary launched by hand remains unsupported: it can count cancelled work as open or fail to move it. Use a compatible coordinator instead. Live task cancellation and sweep enablement are separate post-release operations.
 
@@ -2555,7 +2583,7 @@ at least 1; timeouts are bounded to the platform timer limit. Each threshold
 measures time since the last real task history event. A ladder record does not
 refresh that activity; a new event resets the ladder even at the same timestamp.
 
-Ready proposed tasks without an owner use `ready_min` and the `ready-unassigned` ladder; unresolved or cancelled dependencies do not become ready.
+Ready proposed tasks without an owner use `ready_min` and the `ready-unassigned` ladder; unresolved or cancelled dependencies do not become ready. A person's unassignment suppresses this automatic ladder until a later explicit assignment or reservation. Planner-pulled work keeps its reserved peer and current WIP/hold admission; an unavailable or full reservation never selects another worker.
 
 The first overdue sweep sends the assigned owner or reviewer one normal task
 reminder. After `ladder_min`, the next sweep notifies the console and available
@@ -3054,7 +3082,7 @@ Create a phase with `ahub release new <name> <goal> <order>`, inspect `list` or
 `show`, and set planned start/cut/ship with `plan <name> <revision> <dates-json>`.
 `activate`, `freeze`, `ship` and `drop` need its current revision. Only a person
 freezes, ships, drops or edits frozen scope. Ship records the first ship time
-only after every member is approved or moved out; it runs no tag or publish.
+only after every member is approved, cancelled or moved out; it runs no tag or publish.
 The dashboard shows phase progress, blocking dependencies, dates and remaining
 work. Actual task dates come from execution/review/approval history, never input.
 

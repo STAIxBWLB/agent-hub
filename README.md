@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code and Jcode optional)
 share a message bus and a task board per project and one memory on the machine,
 each attached through its own native interface.
 
-Status: 0.12.30, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.31, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -16,8 +16,10 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   decide what interrupts a turn, and delivery is durable across restarts.
 - **A shared task board.** Tasks are proposed, accepted, done and reviewed through
   hub tools. `routing.toml` assigns owners by task class, roles split planning,
-  implementation and review, and owners of overlapping work are told what
-  changed.
+  implementation and review, and a designated planner can be changed live.
+  Cause-deduplicated stalls and unread pull-only offers need attention; cancellation
+  closes work without approving it or releasing its dependents. Owners of
+  overlapping work are told what changed.
 - **Shared memory.** Decisions, contracts, fails and findings go to the hub's own
   store through the exact-pinned first-party `@staix/agent-mem` library (short-
   and long-term tiers, a typed graph, git sync between machines),
@@ -52,8 +54,9 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   and failure-driven management, each shipped only after its contract and a
   measurement.
 - **Every peer able to do its share** ([#418](https://github.com/STAIxBWLB/agent-hub/issues/418)).
-  Sandboxed peers read a task's spec and run tests in isolated containers through
-  hub-owned tools instead of declining the work.
+  Bounded task-spec reads and opt-in isolated checks are implemented. Installed
+  managed-Pi verification (AC8) remains open; source and CI results do not certify
+  that live runtime.
 - **Measured, not assumed.** Add-ons and memory are kept or dropped by controlled
   comparisons ([#248](https://github.com/STAIxBWLB/agent-hub/issues/248),
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
@@ -70,8 +73,17 @@ cd <your project> && ahub init && ahub up
 `ahub init --dry-run --json` shows what init would write first. While hubs run,
 `ahub upgrade` moves them to the latest release.
 
+After upgrading to 0.12.31, run `ahub jcode --mode headless` once in each project
+that uses Jcode to refresh its owned MCP entry before conductor or dashboard starts of Jcode.
+Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
+refuse while cancelled rows exist. For local/Pi implementation, opt in to an
+available `checks.runner = "container"`; issue-backed owners also need authenticated
+spec access. PII work and designated reviewers retain their separate exemptions.
+See [release verification](docs/verification/2026-10-17-0.12.31.md) for the live legs
+still open, including #418 AC8 and #438 AC7.
+
 Before migrating a memory home with `amem`, upgrade every hub using that home to
-0.12.30, check `ahub memory profile-check`, then quiesce and close all memory
+0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory
 consumers. Shared v1 remains the default; installing this release does not migrate
 data. See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
 
