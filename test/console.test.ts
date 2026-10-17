@@ -1661,3 +1661,18 @@ test("#441 navigation reads split into presses only when made of known sequences
   appendEvent(s, { text: "e5" }, 4);
   expect([s.events.map(e => e.text), s.selection, selectedPanelRow(s)?.text]).toEqual([["e2", "e3", "e4", "e5"], 0, "e2"]);
 });
+
+test("#452 w opens the web UI and o the pet window as console commands, never while editing, confirming or under the key table", () => {
+  let s = reduceConsole(state(true), "1", NOW).state;
+  expect(reduceConsole(s, "w", NOW).effects).toEqual([{ type: "command", args: ["ui"] }]);
+  expect(reduceConsole(s, "o", NOW).effects).toEqual([{ type: "command", args: ["pet", "--window"] }]);
+  const editing = { ...s, editing: true, input: "" };
+  expect(reduceConsole(editing, "w", NOW).effects).toEqual([]); // typed into the command line instead
+  const help = reduceConsole(s, "?", NOW).state;
+  expect(reduceConsole(help, "o", NOW).effects).toEqual([]);
+  const stream = reduceConsole(state(false), "w", NOW);
+  expect(stream.effects).toEqual([]); // stream mode: a letter starts the command line
+  expect(parseConsoleCommand("ui --all")).toEqual(["ui", "--all"]);
+  expect(parseConsoleCommand("pet --window --close")).toEqual(["pet", "--window", "--close"]);
+  expect(() => parseConsoleCommand("kill")).toThrow("use another shell for this command");
+});

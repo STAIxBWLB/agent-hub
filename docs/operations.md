@@ -126,7 +126,9 @@ confirmation an arrow dismisses it like any key but y, without moving a tab. A p
 chunk can only edit the command line, but a read that holds nothing but arrow or
 Home/End sequences is that many key presses, so a held key repeats its move. Home
 or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
-follows new events while the last row is selected and stays on a row you moved to. In the Events
+follows new events while the last row is selected and stays on a row you moved to.
+`w` opens the dashboard and `o` the pet window; `:ui --all` and `:pet --window --close`
+work on the command line too. In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; only the header is tab-flattened before tokenizing. Body lines retain
 the previous rendering and stay plain, as does command output; colour never changes

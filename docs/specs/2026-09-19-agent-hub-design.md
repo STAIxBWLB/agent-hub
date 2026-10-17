@@ -1499,7 +1499,9 @@ or Home/End sequences is that many key presses, never a paste. Home or `<` selec
 the first row of a panel and End or `>` the last (Home tops an open view); the
 Events panel follows new events while its selection is on the last row, keeps a
 row the person moved to, and opening it or changing its filter selects the newest
-row (#441). An Events row's header is
+row (#441). In panels `w` opens the project dashboard (`ahub ui`) and `o` the pet
+window (`ahub pet --window`) as a person's console command; the `:` line also
+accepts `ui` and `pet` (#452). An Events row's header is
 tokenized by the stream's own tokenizer on the same tab-flattened text, with the
 event's tone and kind; body lines stay plain, and selection changes only the
 `>` marker. The tail prints a peer's context reading once and repeats it only
