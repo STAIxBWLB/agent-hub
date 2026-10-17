@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,9 +29,9 @@ async function fixture() {
   const told: { peer: string; text: string }[] = [];
   const notices: string[] = [], stalls: number[] = [], offers = new Set<string>();
   const mem = startFakeMemWorker(); cleanup.push(mem.stop);
-  let privateTurn = false, held = false, screenLabel: "clear" | "pii" = "clear", screen: (() => void) | undefined;
+  let pullOnly = true, privateTurn = false, held = false, screenLabel: "clear" | "pii" = "clear", screen: (() => void) | undefined;
   const make = () => new Tasks({ board, bus, routing: () => routing, project: "fixture", cwd: root, capabilities: () => caps, repository: "owner/repo", memory: new MemoryClient(mem.url), roles: { planner: ["planner"] }, sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1 },
-    privateTurn: () => privateTurn, cancellationHeld: () => held, offerRead: (_peer, id) => offers.has(id), stallNotice: row => { stalls.push(row.task); },
+    privateTurn: () => privateTurn, cancellationHeld: () => held, offerRead: (_peer, id) => offers.has(id), offerPullOnly: () => pullOnly, stallNotice: row => { stalls.push(row.task); },
     piiScreen: async () => { screen?.(); return { label: screenLabel, ms: 1 }; }, notify: text => { notices.push(text); }, tell: (peer, text) => { told.push({ peer, text }); }, share: () => {} });
   let tasks = make();
   const task = (state: Task["state"] = "proposed", by = "planner") => {
@@ -42,6 +43,7 @@ async function fixture() {
     return t;
   };
   return { root, get board() { return board; }, get tasks() { return tasks; }, bus, caps, routing, notices, stalls, offers, told, task, saves: () => mem.calls.filter(call => call.path === "/api/memory/save"),
+    pullOnly: (value: boolean) => { pullOnly = value; },
     privacy: () => { screenLabel = "pii"; routing.signals.pii_screen = "local"; },
     private: (value: boolean) => { privateTurn = value; },
     hold: (value: boolean) => { held = value; }, screen: (fn: () => void) => { screen = fn; routing.signals.pii_screen = "local"; },
@@ -233,4 +235,75 @@ test("cancelling a backlog prerequisite advises its retained backlog dependent w
   expect(notices + JSON.stringify(advice)).not.toContain("PRIVATE-dependent-title");
   expect(f.saves()).toEqual(savesBefore);
   expect(f.bus.queueIds("planner")).toEqual([]);
+});
+
+
+for (const failure of ["clearStall", "list", "recordStall"] as const) test(`committed cancellation survives post-write ${failure} advisory failure and still notifies roles`, async () => {
+  const f = await fixture(), task = f.task();
+  f.board.propose("planner", { title: "dependent", class: "implement", deps: [task.id] });
+  const original = f.board[failure], list = f.board.list.bind(f.board);
+  if (failure === "list") f.board.list = state => { if (f.board.get(task.id)?.state === "cancelled") throw new Error("post-write advisory read failed"); return list(state); };
+  else if (failure === "clearStall") f.board.clearStall = () => { throw new Error("post-write clear failed"); };
+  else f.board.recordStall = () => { throw new Error("post-write stall failed"); };
+  try {
+    const result = await f.tasks.cancel(task.id, "user", { reason: "replaced" });
+    expect(result.state).toBe("cancelled"); expect(f.board.get(task.id)?.state).toBe("cancelled");
+    for (const role of ["pi", "reviewer"]) expect((f.bus.snapshot(false).queues[role] ?? []).filter(env => env.refs?.taskCancelled)).toHaveLength(1);
+    expect(f.saves()).toEqual([]);
+  } finally { (f.board as any)[failure] = original; }
+});
+
+test("offer sampling survives peer detach and Tasks restart until fresh delivery evidence", async () => {
+  const f = await fixture(); f.caps.pi.tests = true; f.caps.pi.spec = true;
+  const task = await f.tasks.propose("user", { title: "offered work", class: "implement", owner: "pi" });
+  const pending = f.tasks.pendingOffers(); expect(pending).toHaveLength(1);
+  expect(pending[0]).toMatchObject({ task: task.id, peer: "pi", pullOnly: true });
+  f.pullOnly(false); f.reopen();
+  expect(f.tasks.pendingOffers()[0]).toMatchObject({ task: task.id, pullOnly: true });
+  f.offers.add(pending[0]!.envelopeId); expect(f.tasks.pendingOffers()).toEqual([]);
+});
+
+test("offer candidate cache avoids repeated history decode but observes quiet local and external offer writes", async () => {
+  const f = await fixture(), task = f.task();
+  const envelope = (body: string) => newEnvelope("hub", body, { to: ["pi"], kind: "task", refs: { task: String(task.id), taskOffer: task.history.length } });
+  const first = envelope("first"); f.board.recordTaskOffer(task.id, { envelopeId: first.id, owner: "pi", assignmentFlowRevision: task.history.length }, task.history.length);
+  let decodes = 0; const list = f.board.list.bind(f.board); f.board.list = state => { decodes++; return list(state); };
+  expect(f.tasks.pendingOffers()[0]?.envelopeId).toBe(first.id); const afterFirst = decodes;
+  expect(f.tasks.pendingOffers()[0]?.envelopeId).toBe(first.id); expect(decodes).toBe(afterFirst);
+  const other = new Database(join(f.root, "hub.db")); cleanup.push(() => other.close());
+  other.run("CREATE TABLE IF NOT EXISTS status_unrelated_probe (value INTEGER)");
+  other.run("INSERT INTO status_unrelated_probe VALUES (1)");
+  expect(f.tasks.pendingOffers()[0]?.envelopeId).toBe(first.id); expect(decodes).toBe(afterFirst);
+  f.offers.add(first.id); expect(f.tasks.pendingOffers()).toEqual([]); // Journal proof is fresh despite cached candidates.
+  const second = envelope("quiet local"); f.board.recordTaskOffer(task.id, { envelopeId: second.id, owner: "pi", assignmentFlowRevision: task.history.length }, task.history.length);
+  expect(f.tasks.pendingOffers()[0]?.envelopeId).toBe(second.id); expect(decodes).toBeGreaterThan(afterFirst); const afterSecond = decodes;
+  const external = new Board(join(f.root, "hub.db")); cleanup.push(() => external.close());
+  const third = envelope("quiet external"); external.recordTaskOffer(task.id, { envelopeId: third.id, owner: "pi", assignmentFlowRevision: task.history.length }, task.history.length);
+  expect(f.tasks.pendingOffers()[0]?.envelopeId).toBe(third.id); expect(decodes).toBeGreaterThan(afterSecond);
+});
+
+test("stall candidate cache avoids unchanged decoding and refreshes board and live eligibility", async () => {
+  const f = await fixture();
+  f.board.propose("planner", { title: "waiting for eligible worker", class: "implement" }); await f.tasks.releaseReady();
+  let reads = 0; const get = f.board.get.bind(f.board), list = f.board.list.bind(f.board);
+  f.board.get = id => { reads++; return get(id); }; f.board.list = state => { reads++; return list(state); };
+  expect(f.tasks.stalled()).toHaveLength(1); const first = reads;
+  expect(f.tasks.stalled()).toHaveLength(1); expect(reads).toBe(first);
+  f.caps.pi.tests = true; f.caps.pi.spec = true; expect(f.tasks.stalled()).toEqual([]);
+});
+
+test("board status revision preserves planning CAS and rolls back a write if its generation cannot advance", async () => {
+  const f = await fixture(), task = f.task();
+  const before = f.board.statusRevision();
+  const planned = f.board.plan(task.id, "user", { rank: 1 }, 0);
+  expect(planned.planningRevision).toBe(1);
+  expect(f.board.statusRevision()).toBeGreaterThan(before);
+  const afterPlan = f.board.statusRevision();
+  expect(() => f.board.plan(task.id, "user", { rank: 2 }, 0)).toThrow("planning revision changed");
+  expect(f.board.get(task.id)).toEqual(planned); expect(f.board.statusRevision()).toBe(afterPlan);
+  const connection = new Database(join(f.root, "hub.db")); cleanup.push(() => connection.close());
+  connection.run("CREATE TRIGGER reject_status_generation BEFORE UPDATE ON board_status_revision BEGIN SELECT RAISE(ABORT, 'injected generation failure'); END");
+  let notifications = 0; f.board.onChange = () => { notifications++; };
+  expect(() => f.board.update(task.id, "user", "note", {}, "must roll back")).toThrow("injected generation failure");
+  expect(f.board.get(task.id)).toEqual(planned); expect(f.board.statusRevision()).toBe(afterPlan); expect(notifications).toBe(0);
 });

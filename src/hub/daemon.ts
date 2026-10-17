@@ -1239,6 +1239,7 @@ export async function startDaemon(opts: DaemonOptions) {
     sweepHeld: () => stopping || recoveryActive(),
     cancellationHeld: () => stopping || recoveryActive(),
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
+    offerPullOnly: (id) => { const peer = bus.peers.get(id); return peer instanceof WsPeer && peer.pullOnly; },
     stallNotice: stall => { supervision.taskStalled(stall); },
     roles: config.roles,
     turnFree,
@@ -2111,7 +2112,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function recoveryTaskPreface(peer: PeerId): void {
     if (recoveryPhase !== "restored") return;
-    const open = board.list().filter((task) => (task.owner === peer || task.reviewer === peer) && !["approved"].includes(task.state));
+    const open = board.list().filter((task) => (task.owner === peer || task.reviewer === peer) && !isClosedTaskState(task.state));
     if (!open.length) return;
     const lines = open.map((task) => {
       const view = tasks.publicView(task) as { title?: unknown; detail?: unknown; state?: unknown; owner?: unknown; reviewer?: unknown };
@@ -2335,10 +2336,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const status = (includeAttentionItems = false, includeAttentionInput = false) => {
     const taskNeeds = board.statusTasks();
     const taskStalls = tasks.stalled();
-    const pendingTaskOffers = tasks.pendingOffers().filter(offer => {
-      const peer = bus.peers.get(offer.peer);
-      return peer instanceof WsPeer && peer.pullOnly;
-    });
+    const pendingTaskOffers = tasks.pendingOffers().filter(offer => offer.pullOnly === true);
     const peerIds = statusPeerIds(taskNeeds);
     const view = {
     ...(crashReport.length ? { crash: crashReport } : {}),

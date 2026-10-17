@@ -451,6 +451,7 @@ let boardViewState = null, showAllDone = false;
 const BOARD_FOCUS_COLUMNS = ['backlog','todo','progress','review','done'];
 let columnFocus, taskDetailId = null;
 let planningEdit = null, releaseEdit = null;
+function isClosedTaskState(state) { return state === 'approved' || state === 'cancelled'; }
 const loadedPlanningDates = new Map();
 const localDateInput = value => {
   if(!Number.isSafeInteger(value) || value<=0 || value>8_640_000_000_000_000)return '';
@@ -494,18 +495,18 @@ function renderPlanning(snapshot) {
   const releases=Array.isArray(snapshot.releases)?snapshot.releases:[], releaseRows=releases.map(release=>({id:release.id,label:'#'+release.id+' '+release.name}));
   for(const id of ['task-release-filter','planning-release','release-edit'])planningOptions($(id),releaseRows,id==='task-release-filter'?'All releases':'No release',$(id).value);
   if(releaseEdit && (!sameBoardContext(releaseEdit.context) || releases.find(release=>release.id===releaseEdit.id)?.revision!==releaseEdit.revision)){releaseEdit=null;$('release-version').textContent='Release changed. Reload before saving.';}
-  const selection=$('planning-task').value;planningOptions($('planning-task'),snapshot.tasks.filter(task=>task.state!=='approved').map(task=>({id:task.id,label:'#'+task.id+' '+task.title})),'Select task',selection);
-  if(planningEdit && (!sameBoardContext(planningEdit.context) || !snapshot.tasks.some(task=>task.id===planningEdit.id)))planningEdit=null;
+  const selection=$('planning-task').value;planningOptions($('planning-task'),snapshot.tasks.filter(task=>!isClosedTaskState(task.state)).map(task=>({id:task.id,label:'#'+task.id+' '+task.title})),'Select task',selection);
+  if(planningEdit && (!sameBoardContext(planningEdit.context) || !snapshot.tasks.some(task=>task.id===planningEdit.id && !isClosedTaskState(task.state))))planningEdit=null;
   if(planningEdit && snapshot.tasks.find(task=>task.id===planningEdit.id)?.planningRevision!==planningEdit.revision)$('planning-version').textContent='Task changed. Reload before saving.';
   const states=new Map(snapshot.tasks.map(task=>[task.id,task.state]));
   update('releases',{releases,taskStates:[...states]},target=>{
     if(!releases.length)return empty(target,'No releases planned.');
     const auditIds=(ids,count)=>ids.map(id=>'#'+id).join(', ')+(Number.isSafeInteger(count)&&count>ids.length?' (showing '+ids.length+' of '+count+')':'');
     for(const release of releases){const row=el('div',undefined,'row');row.append(el('strong','#'+release.id+' '+release.name),badge(release.state),el('p',release.goal));
-      const scope=Array.isArray(release.tasks)?release.tasks:null, remaining=scope?.filter(task=>task.state!=='approved');
+      const scope=Array.isArray(release.tasks)?release.tasks:null, remaining=scope?.filter(task=>!isClosedTaskState(task.state));
       const blocking=remaining?.filter(task=>(task.deps || []).some(id=>states.get(id)!=='approved'));
       row.append(el('p',scope?remaining.length+' remaining of '+scope.length+' / '+blocking.length+' blocked':'Scope unknown','meta'));
-      if(scope){const progress=el('progress');progress.max=Math.max(1,scope.length);progress.value=scope.length-remaining.length;progress.setAttribute('aria-label','Approved tasks in '+release.name);row.append(progress)}
+      if(scope){const progress=el('progress');progress.max=Math.max(1,scope.length);progress.value=scope.length-remaining.length;progress.setAttribute('aria-label','Closed tasks in '+release.name);row.append(progress)}
       row.append(el('p','Start '+dateText(release.plannedStart)+' / cut '+dateText(release.cut)+' / ship '+dateText(release.ship),'meta'));
       row.append(el('p','Actual: active '+dateText(release.activatedAt)+' / frozen '+dateText(release.frozenAt)+' / shipped '+dateText(release.shippedAt),'meta'));
       if(Array.isArray(release.afterCutUnknown) && release.afterCutUnknown.length)row.append(el('p','Timing relative to release cut unknown: '+auditIds(release.afterCutUnknown,release.afterCutUnknownCount),'meta'));
@@ -635,7 +636,7 @@ function refreshTaskDetail() {
   if (!task || !card) return closeTaskDetail();
   const stage = taskProgress(snapshot.tasks).stages.find(stage => stage.id === taskDetailId);
   const ids = boardViewState.ids.filter(id => ['idle','busy'].includes(boardViewState.peers[id]?.state) && boardViewState.peers[id]?.attached !== false && boardViewState.peers[id]?.rostered !== false);
-  const overdue = task.due != null && task.due < Date.now() && task.state !== 'approved';
+  const overdue = task.due != null && task.due < Date.now() && !isClosedTaskState(task.state);
   $('task-detail-title').textContent = 'Task #' + task.id;
   update('task-detail-content', [task, card, stage, ids, overdue, boardContext()], target => target.append(taskDetail(task, card, stage, ids, overdue)));
 }
@@ -654,7 +655,7 @@ function renderBoard(snapshot, peers, ids) {
   renderTaskProgress(progress);
   const stages = new Map(progress.stages.map(stage=>[stage.id,stage])), byId = new Map(snapshot.tasks.map(task=>[task.id,task]));
   const cards = new Map(model.columns.flatMap(column=>[...column.ready,...column.waiting]).map(card=>[card.id,card]));
-  const now = Date.now(), overdue = new Set(snapshot.tasks.filter(task=>task.due != null && task.due<now && task.state!=='approved').map(task=>task.id));
+  const now = Date.now(), overdue = new Set(snapshot.tasks.filter(task=>task.due != null && task.due<now && !isClosedTaskState(task.state)).map(task=>task.id));
   boardViewState={snapshot,peers,ids,cards};
   renderPlanning(snapshot);
   const staged=$('backlog-proposal');staged.disabled=snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext());

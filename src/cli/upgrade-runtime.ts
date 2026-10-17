@@ -532,7 +532,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (liveTestPeer && (!existsSync(identityPath) || !readFileSync(identityPath, "utf8").includes("export const LIVE_TEST_SUPPORTED = true;"))) {
         throw new FinalRefusal("target does not support live-test delegation; choose a supporting target before retrying; runtimes unchanged");
       }
-      // Capabilities are read from these verified target bytes on every resume, including cached staging.
+      // Reuse capability proof only after verifying the cached root and digest still identify these exact bytes.
+      const cached = op.targetDigest === target.digest && op.targetRoot === target.root;
+      if (cached && op.targetFeatures !== undefined) return { ...target, targetFeatures: [...op.targetFeatures] };
+      // A legacy cached operation already past commit needs no capability proof to finish restoration (#215).
+      // A prepared commitSent receipt remains uncertain and must still obtain proof before a possible commit.
+      if (cached && op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase))) return target;
+      // Legacy uncommitted receipts acquire verified feature evidence before source compatibility checks.
       const probe = await run([process.execPath, "-e", `import * as target from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(JSON.stringify({protocol: target.PROTOCOL, features: target.DAEMON_FEATURES ?? []}))`]);
       let metadata: { protocol?: unknown; features?: unknown } | undefined;
       try { if (probe.code === 0) metadata = JSON.parse(probe.stdout); } catch { /* Unknown metadata refuses before effects. */ }

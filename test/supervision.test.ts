@@ -185,3 +185,15 @@ test("#438 Tasks stall hook emits one ids-only supervision item per cause within
     expect(JSON.stringify(notices)).not.toContain("PRIVATE");
   } finally { board.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("supervision closes mixed approved and cancelled rounds with accurate separate outcomes", () => {
+  const f = fixture([task(1, "claude", "approved"), task(2, "claude", "cancelled")]);
+  expect(f.feed.checkRound()).toBe(true);
+  const body = f.notices.at(-1)!.body;
+  expect(body).toContain("2 tasks closed"); expect(body).toContain("1 approved"); expect(body).toContain("1 cancelled");
+  expect(body).not.toContain("2 tasks approved"); expect(f.feed.checkRound()).toBe(false);
+  f.tasks.push(task(3, "claude", "cancelled"));
+  expect(f.feed.checkRound()).toBe(true); expect(f.notices.at(-1)!.body).toContain("1 task closed");
+  expect(f.notices.at(-1)!.body).toContain("0 approved"); expect(f.notices.at(-1)!.body).toContain("1 cancelled");
+});

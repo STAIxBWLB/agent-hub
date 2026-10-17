@@ -1882,7 +1882,9 @@ function featureStageFixture(controlSource: string) {
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: "0.0.0" }));
   writeFileSync(join(root, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: "0.0.0" }));
   writeFileSync(join(root, "src/cli/main.js"), ""); writeFileSync(join(root, "src/hub/control-client.ts"), controlSource);
-  const op = { sourceRoot: root, plan: { kind: "restart", version: "0.0.0", sourceDigest: packageDigest(root), projects: [] } } as unknown as RecoveryOperation;
+  const project = { id: "feature", root, stateDir: join(root, "state"), instanceId: "source", pid: null, basePort: 4600 };
+  const op = { sourceRoot: root, projects: [{ id: project.id, phase: "pending", terminals: {} }],
+    plan: { kind: "restart", version: "0.0.0", sourceDigest: packageDigest(root), projects: [{ project, source: { state: "running", peers: [], blockers: [] }, terminals: [], blockers: [] }] } } as unknown as RecoveryOperation;
   return { root, op, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 for (const supported of [false, true]) test(`#438 direct restart probes verified target features with ${supported ? "task_cancel" : "a legacy missing export"}`, async () => {
@@ -1916,4 +1918,38 @@ test("#438 production recovery driver transmits verified features on readonly in
     expect(recovery.map(message => message.op)).toEqual(["inspect", "prepare", "commit"]);
     expect(recovery.every(message => JSON.stringify(message.targetFeatures) === '["task_cancel"]')).toBe(true);
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+});
+for (const features of [[], ["task_cancel"]]) test(`#117 P3-5 cached verified ${features.length ? "task_cancel" : "empty"} features avoid target probing before commit`, async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root), targetFeatures: features });
+  const driver = makeRecoveryDriver(async () => { probes++; throw new Error("transient target probe must not run"); });
+  try {
+    expect(await driver.stage(f.op)).toMatchObject({ root: f.root, digest: f.op.targetDigest, targetFeatures: features });
+    expect(probes).toBe(0);
+  } finally { f.cleanup(); }
+});
+test("#117 P3-5 a fully committed legacy cached receipt needs no target feature probe", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root) });
+  f.op.projects[0]!.phase = "peers-restored"; f.op.projects[0]!.commitSent = true;
+  try {
+    const target = await makeRecoveryDriver(async () => { probes++; throw new Error("no feature probe after commit"); }).stage(f.op);
+    expect(target).toMatchObject({ root: f.root, digest: f.op.targetDigest }); expect(target.targetFeatures).toBeUndefined(); expect(probes).toBe(0);
+  } finally { f.cleanup(); }
+});
+test("#117 P3-5 legacy prepared commitSent still requires feature evidence before a possible commit", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: packageDigest(f.root) });
+  f.op.projects[0]!.phase = "prepared"; f.op.projects[0]!.commitSent = true;
+  try {
+    await expect(makeRecoveryDriver(async () => { probes++; return { code: 1, stdout: "", stderr: "" }; }).stage(f.op)).rejects.toThrow("control protocol could not be read"); expect(probes).toBe(1);
+  } finally { f.cleanup(); }
+});
+test("#117 P3-5 cached feature evidence cannot authorize changed target bytes", async () => {
+  const f = featureStageFixture(`export const PROTOCOL = ${PROTOCOL};`); let probes = 0;
+  Object.assign(f.op, { targetRoot: f.root, targetDigest: "different-digest", targetFeatures: ["task_cancel"] });
+  try {
+    const target = await makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }; }).stage(f.op);
+    expect(target.targetFeatures).toEqual([]); expect(probes).toBe(1);
+  } finally { f.cleanup(); }
 });

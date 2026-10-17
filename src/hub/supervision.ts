@@ -149,13 +149,16 @@ export class SupervisionFeed {
     const peer = this.recipient();
     if (!peer) return false;
     const tasks = this.d.tasks().filter((t) => this.includes(t));
-    if (!tasks.length || tasks.some((t) => t.state !== "approved")) return false;
+    if (!tasks.length || tasks.some((t) => !isClosedTaskState(t.state))) return false;
     const signature = tasks.map((t) => t.id).sort((a, b) => a - b).join(",");
     const previous = this.d.readRound?.(peer) ?? this.rounds.get(peer);
     const completed = new Set(previous?.split(",") ?? []);
     const newlyJoined = tasks.filter((t) => !completed.has(String(t.id)));
     if (!newlyJoined.length) return false;
-    const sent = this.send("round", `Supervision round complete: ${newlyJoined.length} task${newlyJoined.length === 1 ? "" : "s"} approved; report the results and open decisions to the person.`);
+    const count = `${newlyJoined.length} task${newlyJoined.length === 1 ? "" : "s"}`;
+    const cancelled = newlyJoined.filter(t => t.state === "cancelled").length;
+    const outcome = cancelled ? `${count} closed (${newlyJoined.length - cancelled} approved, ${cancelled} cancelled)` : `${count} approved`;
+    const sent = this.send("round", `Supervision round complete: ${outcome}; report the results and open decisions to the person.`);
     if (sent) {
       this.rounds.set(peer, signature);
       this.d.writeRound?.(peer, signature);

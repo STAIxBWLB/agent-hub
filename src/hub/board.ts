@@ -11,7 +11,7 @@ export type TaskClass = (typeof CLASSES)[number];
 export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested" | "cancelled";
 
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
-export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number }
+export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
 export const TASK_STALL_CODES = ["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable"] as const;
 export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
@@ -134,6 +134,19 @@ export class Board {
     return result;
   }
 
+  /** Keep the generation and business write atomic without changing Bun's reported row count. */
+  private taskWrite<T extends { changes: number }>(write: () => T): T {
+    return this.db.transaction(() => {
+      const result = { ...write() };
+      if (result.changes) this.db.run("UPDATE board_status_revision SET revision=revision+1 WHERE id=1");
+      return result;
+    })();
+  }
+
+  statusRevision(): number {
+    return (this.db.query("SELECT revision FROM board_status_revision WHERE id=1").get() as { revision: number }).revision;
+  }
+
   constructor(path: string) {
     this.db = new Database(path, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
@@ -158,6 +171,9 @@ export class Board {
     // And from before issue #207: existing rows reserve nobody.
     for (const col of ["offer", "cancelled"]) if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN ${col} TEXT`);
     this.db.run("CREATE TABLE IF NOT EXISTS task_stalls (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
+    // Derived status-cache generation: only Board task/stall writes advance it, never journal writes.
+    this.db.run("CREATE TABLE IF NOT EXISTS board_status_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)");
+    this.db.run("INSERT OR IGNORE INTO board_status_revision VALUES (1,0)");
     if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
     if (!have.has("external_repo")) this.db.run("ALTER TABLE tasks ADD COLUMN external_repo TEXT");
     if (!have.has("external_issue")) this.db.run("ALTER TABLE tasks ADD COLUMN external_issue INTEGER");
@@ -181,9 +197,9 @@ export class Board {
   propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; external?: GitHubSource }): Task {
     const now = Date.now();
     const history: HistoryEntry[] = [{ at: now, by, event: t.backlog ? "backlogged" : "proposed" }];
-    const { lastInsertRowid } = this.db
+    const { lastInsertRowid } = this.taskWrite(() => this.db
       .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null);
+      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null));
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;
@@ -221,16 +237,16 @@ export class Board {
   recordTaskOffer(id: number, offer: TaskOffer, expectedFlowRevision: number): void {
     const task = this.get(id);
     if (!task || task.owner !== offer.owner || isClosedTaskState(task.state) || task.history.length !== expectedFlowRevision || offer.assignmentFlowRevision !== expectedFlowRevision) throw new Error("task offer changed");
-    const changed = this.db.query("UPDATE tasks SET offer=? WHERE id=? AND owner=? AND history=?").run(JSON.stringify(offer), id, offer.owner, JSON.stringify(task.history));
+    const changed = this.taskWrite(() => this.db.query("UPDATE tasks SET offer=? WHERE id=? AND owner=? AND history=?").run(JSON.stringify(offer), id, offer.owner, JSON.stringify(task.history)));
     if (!changed.changes) throw new Error("task offer changed");
   }
   recordStall(stall: TaskStall): boolean {
     const old = this.stalls().find(row => row.task === stall.task);
     if (old?.signature === stall.signature && old.replanRevision === stall.replanRevision) return false;
-    this.db.query("INSERT INTO task_stalls(task,payload) VALUES(?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload").run(stall.task, JSON.stringify(stall));
+    this.taskWrite(() => this.db.query("INSERT INTO task_stalls(task,payload) VALUES(?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload").run(stall.task, JSON.stringify(stall)));
     return true;
   }
-  clearStall(task: number): void { this.db.query("DELETE FROM task_stalls WHERE task=?").run(task); }
+  clearStall(task: number): void { this.taskWrite(() => this.db.query("DELETE FROM task_stalls WHERE task=?").run(task)); }
   stalls(): TaskStall[] {
     return (this.db.query("SELECT payload FROM task_stalls ORDER BY task").all() as { payload: string }[]).flatMap(row => {
       try {
@@ -266,9 +282,9 @@ export class Board {
     if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
     if (patch.state === "backlog" && taskHasStarted(task)) throw new Error(`task #${id}: started work cannot return to backlog`);
     const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
-    this.db
+    this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
-      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id);
+      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;
@@ -284,8 +300,8 @@ export class Board {
     if (next.release != null && !this.release(next.release)) throw new Error("no such release");
     const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, task[key] ?? (key === "pinned" ? false : key === "deps" ? [] : null)])) as PlanningFields;
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
-    const result = this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
-      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
+    const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
+      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision));
     if (result.changes !== 1) throw new Error("planning revision changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
@@ -295,8 +311,8 @@ export class Board {
     const task = this.get(id);
     if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || taskHasStarted(task)) throw new Error("planner pull changed or already started");
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
-    const result = this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
-      .run(reserved, JSON.stringify([...task.history, entry]), now, id, revision);
+    const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
+      .run(reserved, JSON.stringify([...task.history, entry]), now, id, revision));
     if (result.changes !== 1) throw new Error("planner pull changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
@@ -306,8 +322,8 @@ export class Board {
     const task = this.get(id), pull = task ? planningUndoEntry(task)?.planning : undefined;
     if (!task || task.state !== "proposed" || task.owner || taskHasStarted(task) || (task.planningRevision ?? 0) !== revision || !pull?.pull || pull.revision !== revision) throw new Error("planner pull undo changed or already offered");
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog returned", note: `undo planner pull revision ${revision}` };
-    const result = this.db.query("UPDATE tasks SET state='backlog',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='proposed' AND owner IS NULL")
-      .run(pull.previous.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision);
+    const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='backlog',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='proposed' AND owner IS NULL")
+      .run(pull.previous.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision));
     if (result.changes !== 1) throw new Error("planner pull undo changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
@@ -329,7 +345,7 @@ export class Board {
       const updated = this.plan(id, by, { deps }, revision, note, withheld);
       const entry = updated.history.at(-1)!;
       entry.planning!.split = { children: children.map(child => ({ id: child.id, revision: child.planningRevision ?? 0, history: child.history.length })) };
-      this.db.query("UPDATE tasks SET history=? WHERE id=?").run(JSON.stringify(updated.history), id);
+      this.taskWrite(() => this.db.query("UPDATE tasks SET history=? WHERE id=?").run(JSON.stringify(updated.history), id));
       const notification = this.pendingChanges?.findLast(change => change.task.id === id && change.entry.planning?.revision === revision + 1);
       if (notification) { notification.task = updated; notification.entry = entry; }
       return { parent: this.get(id)!, children };
@@ -347,7 +363,7 @@ export class Board {
       }
       if (this.list().some(task => task.id !== id && !ids.has(task.id) && (task.deps?.some(dep => ids.has(dep)) || task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))))) throw new Error("split children are referenced by other work");
       const restored = this.plan(id, by, { deps: entry!.planning!.previous.deps ?? [] }, revision, `undo split revision ${revision}`);
-      for (const child of ids) this.db.query("DELETE FROM tasks WHERE id=?").run(child);
+      for (const child of ids) this.taskWrite(() => this.db.query("DELETE FROM tasks WHERE id=?").run(child));
       return restored;
     });
   }

@@ -81,6 +81,7 @@ export interface TasksDeps {
   capabilities?: () => Record<PeerId, PeerCapabilities>;
   repository?: string;
   offerRead?: (peer: PeerId, envelopeId: string) => boolean;
+  offerPullOnly?: (peer: PeerId) => boolean;
   cancellationHeld?: () => boolean;
   stallNotice?: (stall: TaskStall) => void;
   failing?: () => Record<PeerId, string>;
@@ -314,6 +315,7 @@ export class Tasks {
     try {
       for (const task of this.d.board.list()) {
         if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) break;
+        if (!task.owner && this.personUnassigned(task)) continue;
         const finding = nextSweep(task, this.sweepConfig, now, this.waitsFor(task).length === 0);
         if (!finding || this.waitsFor(task).length || this.isChecking(task.id) || this.silentFor(task.id)) continue;
         if (finding.kind === "ready-unassigned") {
@@ -325,9 +327,12 @@ export class Tasks {
             if (finding.step === 2 || !planners.length) this.releaseNotice(text);
             for (const peer of planners) this.releaseNotice(`task #${task.id}: sweep notice unavailable`, () => this.sweepNotice(task, peer, `${text} Check the board and assign, re-plan or cancel it.`, "planner"));
           } else {
-            const admission = assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class) });
+            const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() });
             this.releaseNotice(`${text} Owner reassignment suggestion: ${admission.owner ?? "no eligible peer"}.`);
-            if (admission.owner && this.sweepConfig.auto_reassign && this.sweepAvailable(admission.owner)) await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [admission.owner], event: "reassigned", reason: "idle", note: "ready-unassigned idle sweep" });
+            if (admission.owner && this.sweepConfig.auto_reassign && this.sweepAvailable(admission.owner)) {
+              try { await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [admission.owner], event: "reassigned", reason: "idle", note: "ready-unassigned idle sweep" }); }
+              catch (e) { if (!(e instanceof AssignmentUndeliveredError)) throw e; }
+            }
           }
           continue;
         }
@@ -1596,7 +1601,7 @@ export class Tasks {
     const owner = task.owner!;
     const idle = this.d.bus.stateOf(owner) === "idle";
     const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id), taskRecipient: "owner", taskOffer: task.history.length }, ...(pii ? { private: true } : {}) });
-    this.d.board.recordTaskOffer(task.id, { envelopeId: env.id, owner, assignmentFlowRevision: task.history.length }, task.history.length);
+    this.d.board.recordTaskOffer(task.id, { envelopeId: env.id, owner, assignmentFlowRevision: task.history.length, ...(this.d.offerPullOnly ? { pullOnly: this.d.offerPullOnly(owner) } : {}) }, task.history.length);
     this.d.bus.publish(env);
     if (idle && this.d.bus.stateOf(owner) === "busy" && !this.d.bus.queueIds(owner).includes(env.id)) this.sent.set(handOver(task, owner), owner);
   }
@@ -1654,24 +1659,36 @@ export class Tasks {
    * each such task is offered once an attached peer can take it (peers attach one by one). Only an assignment uses
    * up its offer for this hub run; a failed or ownerless offer stays eligible, after approval and on the timer alike.
    */
-  pendingOffers(): { task: number; peer: PeerId; envelopeId: string; assignmentFlowRevision: number }[] {
-    return this.d.board.list("proposed").flatMap(task => {
+  private offerCandidates?: { revision: number; offers: { task: number; peer: PeerId; envelopeId: string; assignmentFlowRevision: number; pullOnly?: boolean }[] };
+  private stallCandidates?: { revision: number; rows: { stall: TaskStall; task: Task; planned: boolean }[] };
+  private stallView?: { key: string; stalls: TaskStall[] };
+
+  pendingOffers(): { task: number; peer: PeerId; envelopeId: string; assignmentFlowRevision: number; pullOnly?: boolean }[] {
+    const revision = this.d.board.statusRevision();
+    if (this.offerCandidates?.revision !== revision) this.offerCandidates = { revision, offers: this.d.board.list("proposed").flatMap(task => {
       const offer = task.offer;
       if (!offer || task.owner !== offer.owner || task.history.slice(offer.assignmentFlowRevision).some(h => ["accepted", "declined", "assigned", "reassigned", "escalated", "unassigned", "reserved", "backlog returned"].includes(h.event) || h.owner !== undefined && h.owner !== offer.owner)) return [];
-      let read = false;
-      try { read = this.d.offerRead?.(offer.owner, offer.envelopeId) === true; } catch { /* unavailable evidence is unread */ }
-      return read ? [] : [{ task: task.id, peer: offer.owner, envelopeId: offer.envelopeId, assignmentFlowRevision: offer.assignmentFlowRevision }];
-    });
+      return [{ task: task.id, peer: offer.owner, envelopeId: offer.envelopeId, assignmentFlowRevision: offer.assignmentFlowRevision, ...(offer.pullOnly === undefined ? {} : { pullOnly: offer.pullOnly }) }];
+    }) };
+    return this.offerCandidates.offers.filter(offer => {
+      try { return this.d.offerRead?.(offer.peer, offer.envelopeId) !== true; } catch { return true; }
+    }).map(offer => ({ ...offer }));
   }
   stalled(): TaskStall[] {
-    return this.d.board.stalls().filter(stall => {
+    const revision = this.d.board.statusRevision();
+    if (this.stallCandidates?.revision !== revision) this.stallCandidates = { revision, rows: this.d.board.stalls().flatMap(stall => {
       const task = this.d.board.get(stall.task);
-      if (task?.state !== "proposed" || task.owner || (task.planningRevision ?? 0) !== stall.replanRevision) return false;
-      if (stall.cause.kind === "cancelled-dependency") return task.deps?.includes(stall.cause.dependency!) === true && this.d.board.get(stall.cause.dependency!)?.state === "cancelled";
-      if (this.waitsFor(task).length) return false;
-      const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() });
-      return !admission.owner;
-    });
+      if (task?.state !== "proposed" || task.owner || (task.planningRevision ?? 0) !== stall.replanRevision) return [];
+      if (stall.cause.kind === "cancelled-dependency") return task.deps?.includes(stall.cause.dependency!) === true && this.d.board.get(stall.cause.dependency!)?.state === "cancelled" ? [{ stall, task, planned: false }] : [];
+      return this.waitsFor(task).length ? [] : [{ stall, task, planned: this.plannerPullRecord(task)?.pull === true }];
+    }) };
+    // Eligibility inputs are live; queue journal writes alone do not re-decode board histories.
+    const key = JSON.stringify([revision, this.states(), this.d.routing(), this.health(), [...this.d.bus.peers.keys()].map(peer => {
+      const queue = this.d.bus.queueSummary(peer);
+      return [peer, this.wipLimit(peer), queue.heldBy, queue.needsReview];
+    })]);
+    if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() })).owner).map(({ stall }) => stall) };
+    return structuredClone(this.stallView.stalls);
   }
   private ownerStallCause(task: Task, admission: Assignment): TaskStall["cause"] {
     const refusal = admission.refusals?.find(row => row.role === "owner" && row.peer === task.reserved);
@@ -1708,11 +1725,13 @@ export class Tasks {
     if (task.history.length !== revision) throw new PreEffectToolRefusal("task flow revision changed");
     const cancelled = { reason: input.reason.trim(), ...(input.supersededBy ? { supersededBy: input.supersededBy.trim() } : {}), flowRevision: revision + 1, ...(withheld ? { withheld: true as const } : {}) };
     const next = this.d.board.update(task.id, by, "cancelled", { state: "cancelled", reserved: null, cancelled }, cancelled.reason, { ...(withheld ? { withheld: true as const } : {}) }, revision);
-    this.cohorts.leave(task.id);
+    this.releaseNotice(`task #${task.id}: cancellation cohort cleanup unavailable`, () => this.cohorts.leave(task.id));
     this.offered.delete(task.id);
-    this.d.board.clearStall(task.id);
+    this.releaseNotice(`task #${task.id}: cancellation stall cleanup unavailable`, () => this.d.board.clearStall(task.id));
     for (const peer of new Set([task.owner, task.reviewer])) if (peer && peer !== USER) this.releaseNotice(`task #${task.id}: cancellation notice unavailable`, () => this.d.bus.publish(newEnvelope(HUB, sanitize(`Task #${task.id} cancelled. Stop working on it. No native turn or working tree was changed.`), { to: [peer], kind: "task", priority: "important", refs: { task: String(task.id), taskCancelled: cancelled.flowRevision }, ...(this.isPii(next) ? { private: true } : {}) })));
-    for (const dependent of this.d.board.list()) if (!isClosedTaskState(dependent.state) && !dependent.owner && dependent.deps?.includes(task.id)) this.reportStall(dependent, { kind: "cancelled-dependency", dependency: task.id, code: "cancelled" });
+    this.releaseNotice(`task #${task.id}: cancellation dependent advice unavailable`, () => {
+      for (const dependent of this.d.board.list()) if (!isClosedTaskState(dependent.state) && !dependent.owner && dependent.deps?.includes(task.id)) this.releaseNotice(`task #${dependent.id}: cancellation stall advice unavailable`, () => this.reportStall(dependent, { kind: "cancelled-dependency", dependency: task.id, code: "cancelled" }));
+    });
     return next;
   }
 

@@ -303,3 +303,37 @@ test("compact card activation rejects stopped sessions (#391)",()=>{
  card.emit("click");card.emit("keydown",{key:"Enter",preventDefault(){}});
  expect(get("task-detail-dialog").open).toBe(false);expect(get("task-detail-content").children).toHaveLength(0);
 });
+
+test("cancelled release work is closed in planning while its open child remains blocked (#438)", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const source = html.slice(html.indexOf("let planningEdit ="), html.indexOf("function peerMark("));
+  const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
+  const tasks = [
+    { id: 1, title: "approved", state: "approved" },
+    { id: 2, title: "cancelled", state: "cancelled", deps: [99] },
+    { id: 3, title: "open child", state: "proposed", deps: [2] },
+  ];
+  const snapshot = { tasks, releases: [{ id: 1, name: "phase", goal: "safe", state: "planning", revision: 0, tasks, afterCut: [], afterCutUnknown: [] }], planningCapabilities: { enabled: true } };
+  const el = (tag: string, text?: string) => { const node = new Node(tag); node.textContent = text ?? ""; return node; };
+  const api = runInNewContext(`const $=get;let boardViewState={snapshot};${source};({render:renderPlanning})`, { get, snapshot, el, badge: (text: string) => el("span", text), boardContext: () => ({ projectId: "a" }), sameBoardContext: () => true, update: (id: string, _value: unknown, render: (node: Node) => void) => render(get(id)), empty: () => {}, boardButton: () => new Node() });
+  api.render(snapshot);
+  const children = get("releases").children.flatMap(row => row.children), text = children.map(node => node.textContent).join("\n");
+  expect(text).toContain("1 remaining of 3 / 1 blocked");
+  const progress = children.find(node => node.tag === "progress")!;
+  expect(Number(progress.value)).toBe(2);
+  expect(progress.attrs["aria-label"]).toBe("Closed tasks in phase");
+  expect(get("planning-task").children.slice(1).map(node => node.value)).toEqual(["3"]);
+});
+
+test("cancelled and approved cards and details are never overdue while the open child stays overdue (#438)", () => {
+  const { api, get, all, peers, snapshot } = page({ now: () => 10_000 });
+  const tasks = [
+    { id: 1, title: "cancelled work", state: "cancelled", class: "implement", due: 1 },
+    { id: 2, title: "approved work", state: "approved", class: "implement", due: 1 },
+    { id: 3, title: "open child", state: "proposed", class: "implement", due: 1, deps: [1] },
+  ];
+  api.draw({ ...snapshot, tasks }, peers, Object.keys(peers));
+  expect(all(get("tasks")).filter(node => node.textContent === "Overdue")).toHaveLength(1);
+  api.open(1);
+  expect(all(get("task-detail-content")).some(node => node.textContent === "Overdue")).toBe(false);
+});

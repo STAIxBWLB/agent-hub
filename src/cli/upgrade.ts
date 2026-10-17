@@ -88,6 +88,8 @@ export interface RecoveryOperation {
   sourceRoot: string;
   targetRoot?: string;
   targetDigest?: string;
+  /** Verified capability evidence bound to targetRoot/targetDigest; absence is legacy unknown, not an empty list. */
+  targetFeatures?: readonly string[];
   projects: ProjectProgress[];
   pluginInstalled?: boolean;
   globalInstalled?: boolean;
@@ -344,6 +346,7 @@ function abandoned(op: RecoveryOperation): boolean {
 
 function validateReceipt(id: string, op: RecoveryOperation): void {
   if (!(op.schema === 1 || (op.schema === 2 && op.disposition)) || op.id !== id) throw new Error("unsupported operation receipt");
+  if (op.targetFeatures !== undefined && (!Array.isArray(op.targetFeatures) || !op.targetFeatures.every(feature => typeof feature === "string" && feature.length > 0) || !op.targetRoot || !op.targetDigest)) throw new Error("invalid target features");
   const { fingerprint, ...reviewed } = op.plan;
   if (fingerprint !== planFingerprint(reviewed) || op.projects.length !== op.plan.projects.length ||
       op.projects.some((p, i) => p.id !== op.plan.projects[i]?.project.id)) throw new Error("reviewed operation plan or project scope changed");
@@ -456,12 +459,15 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     step("stage");
     const target = await driver.stage(op);
     if (op.targetDigest && (target.root !== op.targetRoot || target.digest !== op.targetDigest)) throw new FinalRefusal("staged target changed since operation started");
-    targetFeatures = target.targetFeatures ?? [];
-    op.targetRoot = target.root; op.targetDigest = target.digest; save();
+    targetFeatures = target.targetFeatures ?? op.targetFeatures ?? [];
+    op.targetRoot = target.root; op.targetDigest = target.digest;
+    if (target.targetFeatures !== undefined) op.targetFeatures = [...target.targetFeatures];
+    save();
 
-    // Every source receives the verified target's features before any hold, terminal close or runtime effect.
+    // Sources still eligible for commit receive the verified target features before holds or terminal/runtime effects.
     for (let i = 0; i < op.projects.length; i++) {
       const progress = op.projects[i]!, planned = op.plan.projects[i]!;
+      if (progress.phase !== "pending" && progress.phase !== "prepared") continue;
       const live = await driver.inspect(planned.project, targetFeatures);
       if (progress.phase !== "pending") continue;
       if (!["running", "stopped", "missing"].includes(live.state)) throw new Error(`${planned.project.id}: the source reads as ${live.state}; wait until it answers`);

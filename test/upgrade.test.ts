@@ -976,8 +976,8 @@ test("a final staging refusal is recorded and next no longer offers resume", asy
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
 });
 
-// #438: capability evidence comes from the verified bytes on every staging, including cached-target resumes.
-test("a failing target metadata probe is retried on every staging, including cached bytes", async () => {
+// #215: verified staged bytes remain usable after a transient probe failure on resume.
+test("a failing staging probe is retried, and never run again once the target was staged", async () => {
   const f = fixture("restart");
   const version = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
   f.operation.sourceRoot = PACKAGE_ROOT;
@@ -994,7 +994,7 @@ test("a failing target metadata probe is retried on every staging, including cac
   expect(first.final).toBeUndefined();
   expect(nextActions(first, undefined, await liveProjects(first, f.driver.inspect)).some((line) => line.startsWith(`${C} resume `))).toBe(true);
 
-  // Staged bytes stay retained, but a killed capability probe cannot authorize a cached-target resume.
+  // Staged once (the runner records the digest), and a project is far along: a killed probe cannot refuse it now.
   probe = answered;
   const target = await real.stage(first);
   Object.assign(first, { targetRoot: target.root, targetDigest: target.digest });
@@ -1005,10 +1005,9 @@ test("a failing target metadata probe is retried on every staging, including cac
   probe = killed;
   const before = probes;
   const done = await runRecovery(f.operation.id, f.driver, f.home);
-  expect(done.phase).toBe("blocked");
-  expect(done.error).toContain("the staged target's control protocol could not be read");
+  expect(done.phase).toBe("completed");
   expect(done.final).toBeUndefined();
-  expect(probes).toBe(before + 1);
+  expect(probes).toBe(before);
 });
 
 // #215 review: a failed receipt whose planned session is attached again lost nothing: resume records it as restored, so
@@ -1363,4 +1362,32 @@ test("#438 staged target features propagate through expired-lease reprepare and 
   const result = await runRecovery(f.operation.id, f.driver, f.home);
   expect(result.phase).toBe("completed"); expect(prepared.length).toBeGreaterThan(0); expect(committed.length).toBeGreaterThan(0);
   expect(prepared.every(features => features?.includes("task_cancel"))).toBe(true); expect(committed.every(features => features?.includes("task_cancel"))).toBe(true);
+});
+test("#117 P3-5 verified target features are durable in the receipt before preparation and read back unchanged", async () => {
+  const f = fixture(); let beforePrepare = 0;
+  f.driver.stage = async () => ({ root: PACKAGE_ROOT, digest: "target-digest", targetFeatures: ["task_cancel"] });
+  const prepare = f.driver.prepare;
+  f.driver.prepare = async (project, id, instance, features) => {
+    const stored = readOperation<RecoveryOperation>(id, f.home);
+    expect(stored).toMatchObject({ targetRoot: PACKAGE_ROOT, targetDigest: "target-digest", targetFeatures: ["task_cancel"] }); beforePrepare++;
+    await prepare(project, id, instance, features);
+  };
+  const completed = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(completed.phase).toBe("completed"); expect(beforePrepare).toBe(2);
+  expect(readOperation<RecoveryOperation>(f.operation.id, f.home)).toHaveProperty("targetFeatures", ["task_cancel"]);
+});
+test("#117 P3-5 fully committed resumes omit feature-aware source compatibility inspection", async () => {
+  const f = fixture(); Object.assign(f.operation, { targetRoot: PACKAGE_ROOT, targetDigest: "target-digest" });
+  Object.assign(f.operation.projects[0]!, { phase: "peers-restored", commitSent: true, instanceId: "new-alpha" });
+  f.operation.projects[1]!.phase = "verified";
+  f.states.set("alpha", { state: "running", instanceId: "new-alpha", version: "0.5.0", protocol: 10, peers: [], blockers: [], recovery: { operationId: f.operation.id, phase: "restored", ready: true } });
+  writeOperation(f.operation.id, f.operation, f.home);
+  const inspect = f.driver.inspect;
+  f.driver.inspect = async (project, features) => { if (features !== undefined) throw new Error("feature compatibility is irrelevant after commit"); return inspect(project); };
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).phase).toBe("completed");
+});
+test("#117 P3-5 malformed persisted feature evidence is rejected before staging or source effects", async () => {
+  const f = fixture(); Object.assign(f.operation, { targetRoot: PACKAGE_ROOT, targetDigest: "target-digest", targetFeatures: ["task_cancel", 123] });
+  writeOperation(f.operation.id, f.operation, f.home);
+  await expect(runRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("invalid target features"); expect(f.calls).toEqual([]);
 });

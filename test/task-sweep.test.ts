@@ -217,3 +217,58 @@ test("assignment notices identify their authoritative owner audience (#434)", as
   await drain();
   expect(f.peers.codex!.got.find(env => env.refs?.task === String(task.id))).toMatchObject({ kind: "task", refs: { taskRecipient: "owner" } });
 });
+
+test("ready-unassigned sweep preserves a person's unassignment before recording any ladder step", async () => {
+  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
+  const task = f.board.propose("user", { title: "person-controlled", class: "implement" });
+  f.board.update(task.id, "user", "assigned", { owner: "codex" }); await f.tasks.unassign(task.id, "user");
+  const before = f.board.get(task.id)!; const at = before.history.at(-1)!.at;
+  for (const delay of [61_000, 122_000, 183_000]) expect(await f.tasks.sweep(at + delay)).toEqual([]);
+  expect(f.board.get(task.id)).toEqual(before);
+});
+
+test("ready-unassigned planner sweep keeps its reserved worker and WIP admission", async () => {
+  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
+  f.peers.local!.set("offline"); f.peers.kimi!.set("offline");
+  const task = await f.tasks.propose("user", { title: "planned ready work", class: "implement", backlog: true });
+  await f.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "ready" });
+  const pulled = f.board.get(task.id)!; expect(pulled.owner).toBeNull(); expect(pulled.reserved).toBe("codex");
+  const occupied = f.board.propose("user", { title: "codex at capacity", class: "implement" });
+  f.board.update(occupied.id, HUB, "assigned", { owner: "codex", state: "in_progress" });
+  f.peers.local!.set("idle"); // An alternative worker cannot bypass a planner pull's reservation.
+  const at = pulled.history.at(-1)!.at;
+  for (const delay of [61_000, 122_000, 183_000]) await f.tasks.sweep(at + delay);
+  expect(f.board.get(task.id)?.owner).toBeNull(); expect(f.board.get(task.id)?.reserved).toBe("codex");
+  expect(f.notices.at(-1)).toContain("Owner reassignment suggestion: no eligible peer.");
+});
+
+for (const unavailable of ["offline", "paused"] as const) test(`ready-unassigned planner sweep does not replace its ${unavailable} reservation with another eligible worker`, async () => {
+  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
+  f.peers.local!.set("offline"); f.peers.kimi!.set("offline");
+  const task = await f.tasks.propose("user", { title: "reserved ready work", class: "implement", backlog: true });
+  await f.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "ready" });
+  const pulled = f.board.get(task.id)!;
+  expect(pulled.owner).toBeNull(); expect(pulled.reserved).toBe("codex");
+  f.peers.codex!.set(unavailable); f.peers.local!.set("idle");
+  const at = pulled.history.at(-1)!.at;
+  for (const delay of [61_000, 122_000, 183_000]) await f.tasks.sweep(at + delay);
+  expect(f.board.get(task.id)?.owner).toBeNull();
+  expect(f.board.get(task.id)?.reserved).toBe("codex");
+  expect(f.notices.at(-1)).toContain("Owner reassignment suggestion: no eligible peer.");
+});
+
+test("ready-unassigned sweep continues after a saved assignment delivery failure", async () => {
+  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
+  const first = f.board.propose("user", { title: "ready one", class: "implement", refs: { paths: ["one.ts"] } });
+  const second = f.board.propose("user", { title: "ready two", class: "implement", refs: { paths: ["two.ts"] } });
+  const at = Math.max(first.created, second.created) + 61_000;
+  await f.tasks.sweep(at); await f.tasks.sweep(at + 61_000);
+  const publish = f.bus.publish.bind(f.bus);
+  f.bus.publish = env => { if (env.kind === "task" && env.refs?.paths && env.refs.task === String(first.id)) throw new Error("injected assignment delivery failure"); return publish(env); };
+  try {
+    const result = await f.tasks.sweep(at + 122_000);
+    expect(result.some(row => row.task === second.id && row.finding.step === 3)).toBe(true);
+    expect(f.board.get(first.id)?.owner).not.toBeNull(); expect(f.board.get(second.id)?.owner).not.toBeNull();
+    expect(f.notices.filter(line => line.includes("delivery is not confirmed"))).toHaveLength(1);
+  } finally { f.bus.publish = publish; }
+});
