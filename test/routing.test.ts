@@ -267,7 +267,7 @@ test("#418 a project without GitHub origin does not require spec for unreference
   const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-no-spec-")));
   const opts = { repository: "path:/project", capabilities: { pi: { tests: true, spec: false } } };
   expect(assign({ ...task("implement"), title: "ordinary change" }, { pi: "idle" }, routing, opts).owner).toBe("pi");
-  expect(assign({ ...task("implement"), title: "change #418" }, { pi: "idle" }, routing, opts).owner).toBeUndefined();
+  expect(assign({ ...task("implement"), title: "change #418" }, { pi: "idle" }, routing, opts).owner).toBe("pi");
 });
 
 test("#418 imported GitHub tasks require spec capability without textual references", () => {
@@ -320,5 +320,23 @@ test("#418 reviewers do not need owner-only bounded tests or spec capabilities",
     expect(assign(work, states, routing, opts).reviewer).toBe(peer);
     expect(assign(work, states, routing, { ...opts, namedReviewer: peer }).reviewer).toBe(peer);
     expect(assign(work, states, routing, { ...opts, namedReviewer: peer, offRoster: [peer] }).reviewer).not.toBe(peer);
+  }
+});
+
+test("#146R4 non-GitHub project keys do not turn bare title numbers into GitHub spec requirements", () => {
+  const routing = loadRouting("/tmp/no-project");
+  for (const cls of ["review", "plan"] as const) routing.classes[cls]!.local_allowed = true;
+  for (const repository of [undefined, "k-project@12345678", "gitlab.com/~/x/y", "path:/project"]) {
+    for (const cls of ["review", "plan"] as const) for (const peer of ["local", "pi"]) {
+      const work = { class: cls, signals: [], title: "Review #12", detail: "after hub task #4", refs: {} };
+      const result = assign(work, { [peer]: "idle" }, routing, { repository, candidates: [peer], namedOwner: peer, capabilities: { [peer]: { tests: true, spec: false } } });
+      expect(result.owner, `${repository}/${cls}/${peer}`).toBe(peer);
+      expect(result.trace.some(line => line.includes("missing spec"))).toBe(false);
+    }
+  }
+  for (const peer of ["local", "pi"]) {
+    const result = assign({ class: "review", signals: [], title: "Review #12", refs: {} }, { [peer]: "idle" }, routing,
+      { repository: "owner/project", candidates: [peer], namedOwner: peer, capabilities: { [peer]: { tests: true, spec: false } } });
+    expect(result.owner).toBeUndefined(); expect(result.trace.join("\n")).toContain("missing spec");
   }
 });

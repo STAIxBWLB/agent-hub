@@ -9,7 +9,7 @@ export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | 
 export interface StatusOutput {
   taskStalls?: readonly { task: number; cause: { kind: string; peer?: string; dependency?: number; code: string } }[];
   pendingTaskOffers?: readonly { task: number; peer: string }[];
-  isolatedChecks?: { pending?: number; orphans?: string[] };
+  isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
   memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string };
   taskWip?: Record<string, { wip: number; wipLimit: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
@@ -200,6 +200,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   for (const pending of data.permissionDefaults ?? []) out.push(...detail("permission default", `${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`, columns, "attention"));
   for (const crash of data.crash ?? []) out.push(...detail("crash recovery", crash, columns, "attention"));
   for (const warning of data.isolatedChecks?.orphans ?? []) out.push(...detail("isolated check warning", warning, columns, "attention"));
+  for (const id of data.isolatedChecks?.unknownReceipts ?? []) out.push(...detail("check receipt", `${id}: unknown; receipt storage unavailable`, columns, "attention"));
+  if (data.isolatedChecks?.maintenanceUnavailable) out.push(...detail("check maintenance", "unavailable; saved run outcomes are unchanged", columns, "attention"));
   const s = initialConsoleState(); s.panel = 1; s.peers = data.peers; s.budget = data.budget ?? {};
   const head = Object.values(data.peers).some(p => p.permissionMode && p.permissionMode !== "ask") ? ["PEER", "STATE", "MODE", ...TABLES[1]!.slice(2)] : [...TABLES[1]!];
   head.push("CONTEXT");
