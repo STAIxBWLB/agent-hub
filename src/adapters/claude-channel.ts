@@ -13,6 +13,7 @@ import { ControlClient, stateDirFor } from "../hub/control-client.ts";
 import { VERSION } from "../version.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
+import { renderHeldHint } from "../hub/delivery-hints.ts";
 
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
 // its MCP server must not silently move to another hub (including while offline).
@@ -146,11 +147,21 @@ const offline = () => detached ?? "hub is not running for this project (start it
  */
 let pendingQueued: { queued: number; important: number } | undefined;
 /** Appends the pending-important indicator to a pull-only session's tool results. */
-function withPendingHint<T>(result: T): T {
-  if (channel || toolsMode || !pendingQueued || pendingQueued.important < 1) return result;
+async function withPendingHint<T>(result: T, includeQueued = true): Promise<T> {
   const r = result as { content?: { type: string; text?: string }[] };
-  const last = r.content?.[r.content.length - 1];
-  if (last?.type === "text" && typeof last.text === "string") last.text += `\n\n(${pendingQueued.important} important hub message(s) waiting: call hub_inbox before starting long local work)`;
+  if (includeQueued && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
+    const last = r.content?.[r.content.length - 1];
+    if (last?.type === "text" && typeof last.text === "string") last.text += `\n\n(${pendingQueued.important} important hub message(s) waiting: call hub_inbox before starting long local work)`;
+  }
+  // A hold blocks prefaced deliveries too. Fresh metadata on every result works for channel and tools-mode peers,
+  // without requiring another important enqueue. Older daemons answer this optional request as unknown.
+  if (hub && r.content) {
+    try {
+      const response = await hub.request({ t: "delivery_holds" }, 1000);
+      const hint = response?.ok ? renderHeldHint(response.held) : "";
+      if (hint) r.content.push({ type: "text", text: hint });
+    } catch { /* advisory metadata can never change a saved tool result or its effect classification */ }
+  }
   return result;
 }
 
@@ -337,7 +348,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
 }
 
 // hub_inbox reports its own waiting count, and a refused read must not be told to read again.
-server.setRequestHandler(CallToolRequestSchema, async (req) => req.params.name === "hub_inbox" ? callTool(req) : withPendingHint(await callTool(req)));
+server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox"));
 
 await server.connect(new StdioServerTransport());
 // The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.

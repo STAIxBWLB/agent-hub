@@ -2,7 +2,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import type { BusSnapshot } from "./bus.ts";
-import type { Envelope } from "./envelope.ts";
+import type { Envelope, Kind } from "./envelope.ts";
+import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
@@ -249,7 +250,7 @@ export class DeliveryJournal {
     if (!meta)
       this.db
         .query(
-          "INSERT INTO delivery_meta (project_id, project_root, revision, instance_id, operation_id) VALUES (?, ?, 0, ?, ?)",
+          "INSERT INTO delivery_meta (project_id, project_root, revision, instance_id, operation_id, retry_history_cursor) VALUES (?, ?, 0, ?, ?, 0)",
         )
         .run(
           this.projectId,
@@ -273,6 +274,7 @@ export class DeliveryJournal {
           );
         // A new daemon cannot infer completion of an old process's handoffs, including
         // controlled restarts with silent native/bridge receipts still outstanding.
+        this.recoverRetryHistory(meta);
         this.recoverInterrupted();
       })();
     }
@@ -296,6 +298,8 @@ export class DeliveryJournal {
       ["project_root", "TEXT"],
       ["schema_version", "INTEGER NOT NULL DEFAULT 1"],
       ["operation_id", "TEXT"],
+      ["retry_unknown_ids", "TEXT NOT NULL DEFAULT '{}'"],
+      ["retry_history_cursor", "INTEGER NOT NULL DEFAULT 0"],
     ] as const) {
       const columns = this.db
         .query("PRAGMA table_info(delivery_meta)")
@@ -311,8 +315,26 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS resolution_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, delivery_id TEXT NOT NULL, observed_revision INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, result_revision INTEGER NOT NULL, result_state TEXT NOT NULL, UNIQUE(project_id, delivery_id, observed_revision, action, reason))`,
     );
-    const resolutionColumns = this.db.query("PRAGMA table_info(resolution_history)").all() as { name: string }[];
-    if (!resolutionColumns.some((column) => column.name === "actor")) this.db.run("ALTER TABLE resolution_history ADD COLUMN actor TEXT NOT NULL DEFAULT 'user'");
+    this.db.transaction(() => {
+      const resolutionColumns = this.db.query("PRAGMA table_info(resolution_history)").all() as { name: string }[];
+      if (!resolutionColumns.some((column) => column.name === "actor")) this.db.run("ALTER TABLE resolution_history ADD COLUMN actor TEXT NOT NULL DEFAULT 'user'");
+      if (!resolutionColumns.some((column) => column.name === "peer")) this.db.run("ALTER TABLE resolution_history ADD COLUMN peer TEXT NOT NULL DEFAULT ''");
+      if (!resolutionColumns.some((column) => column.name === "original_ids")) this.db.run("ALTER TABLE resolution_history ADD COLUMN original_ids TEXT NOT NULL DEFAULT '[]'");
+      this.db.run("CREATE INDEX IF NOT EXISTS resolution_retry_peer ON resolution_history(project_id, peer, action)");
+      this.db.run("CREATE INDEX IF NOT EXISTS deliveries_peer ON deliveries(project_id, peer, state)");
+    })();
+  }
+  private recoverRetryHistory(meta: Record<string, unknown>): void {
+    const cursor = Number(meta.retry_history_cursor ?? 0);
+    const latest = Number((this.db.query("SELECT COALESCE(MAX(id), 0) AS n FROM resolution_history WHERE project_id = ?").get(this.projectId) as { n: number }).n);
+    if (latest > cursor) {
+      this.db.query("UPDATE resolution_history SET peer = COALESCE((SELECT peer FROM deliveries d WHERE d.id = delivery_id AND d.project_id = resolution_history.project_id), ''), original_ids = COALESCE((SELECT json_group_array(json_extract(e.value, '$.id')) FROM deliveries d, json_each(d.originals) e WHERE d.id = delivery_id AND d.project_id = resolution_history.project_id), '[]') WHERE project_id = ? AND peer = '' AND id > ?").run(this.projectId, cursor);
+      // A pruned pre-feature retry cannot be mapped back to its originals. Fence current legacy work only.
+      if (this.db.query("SELECT 1 FROM resolution_history WHERE project_id = ? AND action = 'retry' AND peer = '' AND id > ? LIMIT 1").get(this.projectId, cursor)) {
+        this.markRetryUnknown(this.list(), JSON.parse(String(meta.bus_snapshot || '{}')));
+      }
+      this.db.query("UPDATE delivery_meta SET retry_history_cursor = ? WHERE project_id = ?").run(latest, this.projectId);
+    }
   }
   private readMeta(): Record<string, unknown> | null {
     return this.db
@@ -538,11 +560,13 @@ export class DeliveryJournal {
       updatedAt: delivery.createdAt,
     });
     return this.db.transaction(() => {
+      if (this.retryEvidence(delivery.peer, delivery.originals) === "used") delivery = { ...delivery, attempt: Math.max(1, delivery.attempt ?? 0) };
       const ids = new Set(delivery.originals.map((env) => env.id));
       for (const row of this.list(delivery.peer)) {
         if (row.state !== "queued" || !row.originals.some((env) => ids.has(env.id))) continue;
         this.transition(row.id, "discarded", `grouped into delivery ${delivery.id}`);
         delivery = { ...delivery, previousId: delivery.previousId ?? row.id };
+        if ((row.attempt ?? 0) > 0) delivery = { ...delivery, attempt: Math.max(delivery.attempt ?? 0, row.attempt!) };
       }
       const revision = this.bump();
       const now = Date.now();
@@ -665,13 +689,68 @@ export class DeliveryJournal {
     const rows = this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(this.projectId, peer) as Record<string, unknown>[];
     return rows.map(parseDelivery);
   }
+  heldDeliveryHints(peer: string) {
+    this.ensureOpen();
+    const count = Number((this.db.query("SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state = 'needs_review'").get(this.projectId, peer) as { n: number }).n);
+    const rows = this.db.query("SELECT d.id, d.created_at, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state = 'needs_review' ORDER BY d.created_at, d.id LIMIT 33").all(this.projectId, peer) as { id: string; created_at: number; senders: string; kinds: string }[];
+    return heldDeliveryHints(rows.map(row => ({ id: row.id, createdAt: row.created_at, senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
+  }
+  /** Explicit resolutions, not automatic safe failures, consume the immutable originals' retry lineage. */
+  retryEvidence(peer: string, originals: readonly Envelope[]): "unused" | "used" | "unknown" {
+    this.ensureOpen();
+    const ids = JSON.stringify([...new Set(originals.map(env => env.id))]);
+    if (this.db.query("SELECT 1 FROM resolution_history r, json_each(r.original_ids) old, json_each(?) current WHERE r.project_id = ? AND r.peer = ? AND r.action = 'retry' AND old.value = current.value LIMIT 1").get(ids, this.projectId, peer)) return "used";
+    const wanted = new Set(originals.map(env => env.id));
+    type Ancestor = { id: string; peer: string; attempt: number | null; previous_id: string | null };
+    const related = this.db.query("SELECT d.id, d.peer, d.attempt, d.previous_id FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state IN ('queued','dispatching','accepted','needs_review') AND EXISTS (SELECT 1 FROM json_each(d.originals) env, json_each(?) ids WHERE json_extract(env.value, '$.id') = ids.value)").all(this.projectId, peer, ids) as Ancestor[];
+    const retried = (id: string) => !!this.db.query("SELECT 1 FROM resolution_history WHERE project_id = ? AND delivery_id = ? AND action = 'retry' LIMIT 1").get(this.projectId, id);
+    const inspected = new Set<string>();
+    let unknown = false;
+    for (const row of related) {
+      const chain = new Set<string>();
+      let current: Ancestor | undefined = row;
+      while (current) {
+        if (chain.has(current.id)) { unknown = true; break; }
+        if (inspected.has(current.id)) break;
+        chain.add(current.id); inspected.add(current.id);
+        if ((current.attempt ?? 0) > 0 || retried(current.id)) return "used";
+        if (!current.previous_id) break;
+        const parent = current.previous_id;
+        if (retried(parent)) return "used";
+        current = this.db.query("SELECT id, peer, attempt, previous_id FROM deliveries WHERE project_id = ? AND id = ?").get(this.projectId, parent) as Ancestor | undefined;
+        if (!current || current.peer !== peer) { unknown = true; break; }
+      }
+    }
+    try {
+      const map = JSON.parse(String(this.readMeta()?.retry_unknown_ids ?? '{}')) as Record<string, string[]>;
+      if (!map || typeof map !== "object" || Array.isArray(map)) return "unknown";
+      const own = Object.hasOwn(map, peer) ? map[peer] : [];
+      if (!Array.isArray(own)) return "unknown";
+      if (own.some(id => wanted.has(id))) unknown = true;
+    } catch { return "unknown"; }
+    return unknown ? "unknown" : "unused";
+  }
+  private markRetryUnknown(deliveries: readonly JournalDelivery[], bus: Partial<BusSnapshot>): void {
+    const map: Record<string, Set<string>> = Object.create(null);
+    const existing = JSON.parse(String(this.readMeta()?.retry_unknown_ids ?? '{}')) as Record<string, unknown>;
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) throw new Error("retry lineage metadata unavailable");
+    for (const [peer, ids] of Object.entries(existing)) {
+      if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new Error("retry lineage metadata unavailable");
+      map[peer] = new Set(ids as string[]);
+    }
+    const add = (peer: string, envs: readonly Envelope[]) => { for (const env of envs) (map[peer] ??= new Set()).add(env.id); };
+    for (const row of deliveries) add(row.peer, row.originals);
+    for (const [peer, envs] of Object.entries(bus.queues ?? {})) add(peer, envs);
+    for (const [peer, env] of Object.entries(bus.prefaces ?? {})) add(peer, [env]);
+    this.db.query("UPDATE delivery_meta SET retry_unknown_ids = ? WHERE project_id = ?").run(JSON.stringify(Object.fromEntries(Object.entries(map).map(([peer, ids]) => [peer, [...ids]]))), this.projectId);
+  }
   resolve(
     id: string,
     revision: number,
     action: JournalResolution,
     reason: string,
     requestRevision = revision,
-    actor: "user" | "hub" = "user",
+    actor: string = "user",
   ): JournalDelivery {
     this.ensureOpen();
     text(reason, "resolution reason", 1_000_000);
@@ -694,6 +773,7 @@ export class DeliveryJournal {
       if (prior) return this.get(id)!;
       const current = this.get(id);
       if (!current) throw new Error(`unknown delivery ${id}`);
+      if (actor.startsWith("peer:") && (action !== "retry" || current.peer !== actor.slice(5) || current.state !== "needs_review" || this.retryEvidence(current.peer, current.originals) !== "unused")) throw new Error("recipient retry unavailable; inspect the held delivery or ask the person");
       if (current.revision !== revision)
         throw new Error(`stale delivery revision for ${id}`);
       if (
@@ -718,7 +798,7 @@ export class DeliveryJournal {
       }
       this.db
         .query(
-          "INSERT INTO resolution_history (project_id, delivery_id, observed_revision, action, reason, result_revision, result_state, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO resolution_history (project_id, delivery_id, observed_revision, action, reason, result_revision, result_state, actor, peer, original_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           this.projectId,
@@ -729,13 +809,15 @@ export class DeliveryJournal {
           result.revision,
           result.state,
           actor,
+          current.peer,
+          JSON.stringify(current.originals.map(env => env.id)),
         );
       this.pruneTerminal();
       return result;
     })();
   }
-  resolution(id: string): { action: JournalResolution; reason: string; observedRevision: number; actor: "user" | "hub" } | undefined {
-    const row = this.db.query("SELECT action,reason,observed_revision,actor FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number; actor: "user" | "hub" } | null;
+  resolution(id: string): { action: JournalResolution; reason: string; observedRevision: number; actor: string } | undefined {
+    const row = this.db.query("SELECT action,reason,observed_revision,actor FROM resolution_history WHERE project_id=? AND delivery_id=? ORDER BY id DESC LIMIT 1").get(this.projectId, id) as { action: JournalResolution; reason: string; observed_revision: number; actor: string } | null;
     return row ? { action: row.action, reason: row.reason, observedRevision: row.observed_revision, actor: row.actor } : undefined;
   }
   private pruneTerminal(): void {
@@ -805,6 +887,8 @@ export class DeliveryJournal {
             row.attempt ?? null,
             row.previousId ?? null,
           );
+      // Snapshots deliberately omit resolution history; only these imported originals have unknown retry rights.
+      this.markRetryUnknown(snapshot.deliveries, snapshot.bus);
       return true;
     })();
   }

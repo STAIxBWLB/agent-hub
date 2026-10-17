@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Let a peer explicitly retry its own uncertain delivery once, with an effects-check warning, durable lineage limits and ids-only hold hints (#434).
 - Safely return unseen Claude pushes, settle superseded hub-only holds with hub audit identity, list every hold and explain inherited agent command markers (#434).
 
 ## 0.12.30
