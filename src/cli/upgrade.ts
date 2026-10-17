@@ -464,12 +464,11 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     if (target.targetFeatures !== undefined) op.targetFeatures = [...target.targetFeatures];
     save();
 
-    // Sources still eligible for commit receive the verified target features before holds or terminal/runtime effects.
+    // Pending sources receive the verified target features before holds or terminal/runtime effects.
     for (let i = 0; i < op.projects.length; i++) {
       const progress = op.projects[i]!, planned = op.plan.projects[i]!;
-      if (progress.phase !== "pending" && progress.phase !== "prepared") continue;
-      const live = await driver.inspect(planned.project, targetFeatures);
       if (progress.phase !== "pending") continue;
+      const live = await driver.inspect(planned.project, targetFeatures);
       if (!["running", "stopped", "missing"].includes(live.state)) throw new Error(`${planned.project.id}: the source reads as ${live.state}; wait until it answers`);
       if (live.state !== "running" || live.instanceId !== planned.source.instanceId || live.version !== planned.source.version) {
         throw new Error(`${planned.project.id}: source runtime changed`);
@@ -497,7 +496,14 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       }
       if (progress.phase === "prepared") {
         step(`commit:${project.id}`);
-        let live = await driver.inspect(project);
+        let live: Inspection;
+        try { live = await driver.inspect(project); }
+        catch (error) {
+          if (!progress.commitSent || !isDatabaseBusy(error)) throw error;
+          live = { state: "unavailable", peers: [], blockers: ["database_busy"] };
+        }
+        const resumedShutdown = progress.commitSent && live.state === "unavailable";
+        let awaitShutdown = resumedShutdown;
         if (live.state === "running" && live.instanceId === planned.source.instanceId) {
           if (live.recovery?.operationId !== id || !live.recovery.ready) {
             const other = live.recovery?.operationId;
@@ -515,7 +521,21 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
           // Durable, unlike `step`: from here the source may have committed, which status and abort must not forget.
           progress.commitSent = true; save();
           await driver.commit(project, id, planned.source.instanceId!, targetFeatures);
+          awaitShutdown = true;
+        } else if (live.state === "running") {
+          throw new Error(`${project.id}: the source daemon was replaced by instance ${live.instanceId ?? "unknown"}; refusing to prepare, close or stop it (ending this operation leaves that daemon running)`);
+        } else if (live.state === "stopped" && !progress.commitSent && (!op.sourceRoot || coordinatorCurrent(op.sourceRoot))) {
+          // #215: this coordinator records a commit request before sending it, so a stopped source with none crashed while
+          // prepared: no snapshot was committed and there is nothing to start from. The phase stays `prepared`.
+          throw new Error(`${project.id}: the source stopped while prepared and no commit was requested, so there is nothing to restore`);
+        }
+        if (awaitShutdown) {
           const deadline = driver.now() + 30_000;
+          // An already-sent commit can be between its final reply and the source closing its control server.
+          if (resumedShutdown) {
+            if (live.instanceId && live.instanceId !== planned.source.instanceId) throw new Error(`${project.id}: another daemon started during shutdown`);
+            await driver.sleep(100);
+          }
           do {
             try { live = await driver.inspect(project); }
             catch (error) {
@@ -528,12 +548,6 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
             if (live.instanceId && live.instanceId !== planned.source.instanceId) throw new Error(`${project.id}: another daemon started during shutdown`);
             await driver.sleep(100);
           } while (driver.now() < deadline);
-        } else if (live.state === "running") {
-          throw new Error(`${project.id}: the source daemon was replaced by instance ${live.instanceId ?? "unknown"}; refusing to prepare, close or stop it (ending this operation leaves that daemon running)`);
-        } else if (live.state === "stopped" && !progress.commitSent && (!op.sourceRoot || coordinatorCurrent(op.sourceRoot))) {
-          // #215: this coordinator records a commit request before sending it, so a stopped source with none crashed while
-          // prepared: no snapshot was committed and there is nothing to start from. The phase stays `prepared`.
-          throw new Error(`${project.id}: the source stopped while prepared and no commit was requested, so there is nothing to restore`);
         }
         if (live.state === "missing") throw new Error(`${project.id}: the project directory is missing`);
         if (live.state !== "stopped") throw new Error(`${project.id}: old shutdown is not verified (the source reads as ${live.state}); not starting a second daemon; check ${recoveryCommand(op, "status")} once it answers`);
