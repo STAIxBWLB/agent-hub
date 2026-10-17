@@ -640,10 +640,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     let operation: RecoveryOperation;
     try { operation = readOperation<RecoveryOperation>(id); }
     catch (error) {
-      if (delegatedFresh) { audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL); }
+      if (delegatedFresh !== undefined) { audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL); }
       throw error;
     }
-    if (delegatedFresh) {
+    if (delegatedFresh !== undefined) {
       const repairedFresh = repairedFreshSession(operation, delegatedFresh);
       if (repairedFresh === undefined || liveTestRefusal("recovery", display.args, { repairedFresh })) {
         audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL);

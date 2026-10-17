@@ -129,7 +129,7 @@ test("#168 status and a final unknown-store refusal show the exact path that was
 });
 
 
-for (const kind of ["missing", "parse", "peer-absent", "invalid-plan", "ordinary"] as const) test(`#168 delegated CLI classification is fail-closed for ${kind} and preserves ordinary refusal behavior`, async () => {
+for (const kind of ["missing", "parse", "peer-absent", "empty-peer", "invalid-plan", "ordinary"] as const) test(`#168 delegated CLI classification is fail-closed for ${kind} and preserves ordinary refusal behavior`, async () => {
   const f = fixture("codex");
   if (kind === "missing") rmSync(operationPath(f.op.id, f.home));
   if (kind === "parse") writeFileSync(operationPath(f.op.id, f.home), "{");
@@ -137,7 +137,7 @@ for (const kind of ["missing", "parse", "peer-absent", "invalid-plan", "ordinary
   if (kind === "ordinary") { delete f.op.missingRecordedSession; delete f.op.projects[0]!.repairedSessions; writeOperation(f.op.id, f.op, f.home); }
   releaseRecoveryLock(f.op.id, f.home); acquireRecoveryLock(randomUUID(), f.home);
   const home = join(f.home, "person-home"), amem = join(f.home, "amem"); mkdirSync(home); mkdirSync(amem);
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", f.home, "--live-test", "recovery", "dispose", f.op.id, "--fresh-session", kind === "peer-absent" ? "claude" : "codex", "--reason", "fixture reason"], {
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", f.home, "--live-test", "recovery", "dispose", f.op.id, "--fresh-session", kind === "peer-absent" ? "claude" : kind === "empty-peer" ? "" : "codex", "--reason", "fixture reason"], {
     cwd: f.home, env: { PATH: process.env.PATH, HOME: home, AMEM_HOME: amem, AGENTHUB_HOME: f.home, AGENTHUB_PEER_ID: "codex", TERM: "dumb" }, stdout: "pipe", stderr: "pipe",
   });
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
