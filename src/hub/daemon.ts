@@ -773,7 +773,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // A controlled restart's source may have been cut short before it removed its record: this run is not a crash, and
   // a record left now would make the next ordinary start look like one.
   if (recoveryOperation || restartFilePresent) try { removeSessions(opts.stateDir); } catch { /* nothing to remove */ }
-  const autoResume = config.recovery.auto_resume_after_crash === true; // a string "false" is not a yes
+  const autoResume = () => config.recovery.auto_resume_after_crash === true; // a string "false" is not a yes
   const piAutoStart = () => onRoster("pi") && config.pi.auto_start;
   const startedAt = Date.now();
   /** What crash recovery did or asks the user to do, for `ahub status`. */
@@ -2646,7 +2646,7 @@ export async function startDaemon(opts: DaemonOptions) {
         report(fresh.ok ? `pi.auto_start started a fresh session${back}` : `pi.auto_start could not start Pi either (${String(fresh.error)})`);
         continue;
       }
-      if (!step.resume || !autoResume) {
+      if (!step.resume || !autoResume()) {
         report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}`);
         continue;
       }
