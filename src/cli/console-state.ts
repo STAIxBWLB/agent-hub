@@ -386,6 +386,15 @@ export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 4) return s.queue.filter(q => q.state === "needs_review" || q.state === "queued");
   return s.events.filter(e => (!s.peerFilter || e.peer === s.peerFilter) && (!s.kindFilter || e.kind === s.kindFilter));
 }
+/** #441: Events follow the newest row while the selection is on the last one; a row the person moved to stays put. */
+export function appendEvent(s: ConsoleState, event: ConsoleEvent, cap = 1000): void {
+  if (s.panel !== 5) { s.events = [...s.events, event].slice(-cap); return; }
+  const before = panelRows(s), held = before[s.selection], following = !held || s.selection >= before.length - 1;
+  s.events = [...s.events, event].slice(-cap);
+  const rows = panelRows(s);
+  s.selection = following ? Math.max(0, rows.length - 1) : Math.max(0, rows.indexOf(held));
+}
+const newestEvent = (s: ConsoleState) => Math.max(0, panelRows(s).length - 1);
 export const selectedApproval = (s: ConsoleState) => s.approvals.find(a => a.id === s.approvalId);
 /** The selected row: approvals and refreshed Tasks/Queue rows are bound by id, never by a replacement row. */
 const selection = (s: ConsoleState) => {
@@ -530,7 +539,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   }
   if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
-  const switchPanel = (panel: number) => { s.panel = panel; s.selection = 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
+  const switchPanel = (panel: number) => { s.panel = panel; s.selection = panel === 5 ? newestEvent(s) : 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
   if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
   // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
@@ -624,7 +633,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     const values = [...new Set(s.events.map(e => e[field]).filter((x): x is string => !!x))];
     const next = values[values.indexOf(current ?? "") + 1];
     if (key === "f") s.peerFilter = next; else s.kindFilter = next;
-    s.selection = 0; return done();
+    s.selection = newestEvent(s); return done();
   }
   if (s.mode === "stream" && !key.startsWith("\x1b")) { s.editing = true; s.input = terminalText(key).replace(/\n/g, ""); }
   return done();

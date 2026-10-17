@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow } from "../src/cli/console-state.ts";
+import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow, appendEvent } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderBoard, renderStatus } from "../src/cli/output.ts";
@@ -1593,4 +1593,21 @@ test("custom lifecycle board rows show base actor and entry exit readiness as te
   s.tasks = [{ ...plain, lifecycle: { ...plain.lifecycle, definition: { base: "implement" }, entry: [], exit: ["local gate missing"] } }];
   const custom = renderConsole(s, 260, 30, NOW).join("\n"); expect(custom).toContain("base implement"); expect(custom).toContain("next: owner"); expect(custom).toContain("entry: ready / exit: blocked");
   for (const width of [40, 80, 120]) for (const line of renderConsole(s, width, 30, NOW)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(width);
+});
+
+test("#441 the Events panel follows new events at the last row and holds a row the person moved to", () => {
+  let s = state(true);
+  s = reduceConsole(s, "5", NOW).state;
+  for (const n of [1, 2, 3]) appendEvent(s, { text: `e${n}` });
+  expect(selectedPanelRow(s)?.text).toBe("e3"); // follows while on the newest row
+  s = reduceConsole(s, "k", NOW).state;
+  expect(selectedPanelRow(s)?.text).toBe("e2");
+  appendEvent(s, { text: "e4" }, 3); // the cap drops e1; the held row stays e2
+  expect(s.events.map(e => e.text)).toEqual(["e2", "e3", "e4"]);
+  expect(selectedPanelRow(s)?.text).toBe("e2");
+  s = reduceConsole(reduceConsole(s, "j", NOW).state, "j", NOW).state;
+  appendEvent(s, { text: "e5" }, 3);
+  expect(selectedPanelRow(s)?.text).toBe("e5"); // back on the last row, following again
+  s = reduceConsole(reduceConsole(s, "1", NOW).state, "5", NOW).state;
+  expect(selectedPanelRow(s)?.text).toBe("e5"); // opening the panel selects the newest row
 });

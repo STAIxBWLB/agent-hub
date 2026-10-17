@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow } from "./console-state.ts";
+import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 import { consoleNeeds, attentionFacts } from "./attention.ts";
@@ -103,7 +103,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   /** `record: false` is for the console's own prints (the key table, a request viewed again): not events, so not in Events. */
   const stream = (event: ConsoleEvent, record = true) => {
     if (event.kind === "command") event = { ...event, text: terminalText(event.text).replace(/\t/g, " ") };
-    if (record) state.events = [...state.events, { ...event, text: terminalText(event.text) }].slice(-1000);
+    if (record) appendEvent(state, { ...event, text: terminalText(event.text) });
     if (plain) {
       const [header, ...body] = terminalText(event.text).split("\n");
       terminal.write(paint([...(color ? streamTokens(header ?? "", event.tone, event.kind) : [{ text: header ?? "" }]), ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
