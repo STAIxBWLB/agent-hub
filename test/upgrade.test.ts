@@ -1435,3 +1435,28 @@ for (const outcome of ["unavailable", "replacement"] as const) test(`#150 resume
   expect(f.calls).not.toContain("prepare:alpha"); expect(f.calls).not.toContain("close:alpha");
   expect(f.calls).not.toContain("commit:alpha"); expect(f.calls).not.toContain("start:alpha");
 });
+
+for (const outcome of ["busy then stopped", "always busy", "ordinary error"] as const) test(`#150 first resumed commitSent inspection handles ${outcome}`, async () => {
+  const f = fixture("restart", ["alpha"]), inspect = f.driver.inspect;
+  Object.assign(f.operation, { targetRoot: PACKAGE_ROOT, targetDigest: "target-digest", targetFeatures: ["task_cancel"] });
+  Object.assign(f.operation.projects[0]!, { phase: "prepared", commitSent: true });
+  writeOperation(f.operation.id, f.operation, f.home);
+  let reads = 0;
+  f.driver.inspect = async (project, features) => {
+    if (features !== undefined) throw new Error("unexpected feature-aware inspection after commit");
+    if (readOperation<RecoveryOperation>(f.operation.id, f.home).projects[0]!.phase === "prepared") {
+      reads++;
+      if (outcome === "ordinary error") throw new Error("ordinary inspection failure");
+      if (outcome === "always busy" || reads === 1) throw new RecoveryDatabaseBusy();
+      f.states.set(project.id, { state: "stopped", peers: [], blockers: [] });
+    }
+    return inspect(project);
+  };
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe(outcome === "busy then stopped" ? "completed" : "blocked");
+  expect(f.driver.now()).toBe(outcome === "busy then stopped" ? 100 : outcome === "always busy" ? 30_000 : 0);
+  if (outcome === "always busy") { expect(result.error).toContain("old shutdown is not verified"); expect(result.failure).toBeUndefined(); }
+  if (outcome === "ordinary error") expect(result.error).toContain("ordinary inspection failure");
+  expect(f.calls).not.toContain("prepare:alpha"); expect(f.calls).not.toContain("close:alpha"); expect(f.calls).not.toContain("commit:alpha");
+  expect(f.calls.filter(call => call === "start:alpha")).toHaveLength(outcome === "busy then stopped" ? 1 : 0);
+});

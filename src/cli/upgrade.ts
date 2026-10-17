@@ -496,7 +496,12 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       }
       if (progress.phase === "prepared") {
         step(`commit:${project.id}`);
-        let live = await driver.inspect(project);
+        let live: Inspection;
+        try { live = await driver.inspect(project); }
+        catch (error) {
+          if (!progress.commitSent || !isDatabaseBusy(error)) throw error;
+          live = { state: "unavailable", peers: [], blockers: ["database_busy"] };
+        }
         const resumedShutdown = progress.commitSent && live.state === "unavailable";
         let awaitShutdown = resumedShutdown;
         if (live.state === "running" && live.instanceId === planned.source.instanceId) {
