@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Preserve bridged legacy settlements during start-time approval reconciliation without adding generation settle rows (#432).
+
 ## 0.12.31
 
 After upgrade, Jcode projects need the one-time MCP rewrite below. Cancellation requires a daemon advertising `task_cancel`; controlled downgrades refuse while cancelled rows exist (an old binary started by hand remains outside that protection). The repository now requires the `seeded guards` check. Installed managed-Pi #418 AC8 (#142), cancellation/sweep #438 AC7 and the native legs in #273/#1 remain unverified by this release preparation. Installation and the person's restart require separate receipts.
