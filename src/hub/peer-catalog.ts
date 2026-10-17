@@ -26,3 +26,6 @@ const PEER_ROLES: Record<KnownPeer, readonly string[]> = {
 export function defaultPeerRoles(includeOptional = false): Record<string, string[]> {
   return Object.fromEntries(Object.entries(PEER_ROLES).filter(([peer]) => includeOptional || !(OPTIONAL_PEERS as readonly string[]).includes(peer)).map(([peer, roles]) => [peer, [...roles]]));
 }
+
+/** #455: who may hold the planner role, in the order automatic assignment tries them; the hub-sandboxed pi and local never plan. */
+export const PLANNER_PEERS = ["claude", "codex", "kimi", "qwen", "jcode"] as const;

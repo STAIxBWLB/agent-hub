@@ -128,7 +128,8 @@ Home/End sequences is that many key presses, so a held key repeats its move. Hom
 or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
 follows new events while the last row is selected and stays on a row you moved to.
 `w` opens the dashboard and `o` the pet window; `:ui --all` and `:pet --window --close`
-work on the command line too. In the Events
+work on the command line too. In the Peers tab the planner's row reads `(planner)`, and
+`l` then `y` makes the selected peer the planner (`ahub settings set planner <peer>`). In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; only the header is tab-flattened before tokenizing. Body lines retain
 the previous rendering and stay plain, as does command output; colour never changes
@@ -1418,6 +1419,7 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
 | Start | `pi.auto_start` | `config.local.json` | next hub start |
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled`, `coordination` | `config.local.json` | next hub start |
+| Roles | `planner` (the one peer that plans) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared
@@ -1717,6 +1719,28 @@ gracefully is terminated by its verified process identity (never a bare PID),
 so a restarted hub never launches beside a survivor. A hub whose project root
 or state directory was deleted stops itself within about 10 seconds; the
 dashboard manager does the same when its home directory vanishes.
+
+## The planner (#455)
+
+One peer plans: it proposes and splits tasks, grooms the backlog and gets the
+backlog and sweep notices. `ahub status` prints it with its source, the
+dashboard's Agents view shows a Planner badge, and the console marks its row.
+
+- `setting`: `planner` in `.agenthub/config.json` or `config.local.json` (the
+  machine's file wins). That peer is the only planner; every other peer loses
+  the role. It is one of `claude`, `codex`, `kimi`, `qwen` or `jcode`: the
+  hub-sandboxed `pi` and `local` never plan.
+- `roles`: with no `planner` key, the `roles` planners stand. That is `claude`
+  by default.
+- `automatic`: when no rostered peer holds the role, the hub gives it to the
+  first rostered peer of that list. It recomputes this at start and after
+  each roster change, and writes nothing to disk.
+
+Change it with `ahub settings set planner codex`, the dashboard Settings row
+(a settings session, `ahub ui --settings`) or `l` in the console. Planning
+authority and the backlog notices move at once. The new planner's role text
+updates at its next start. `ahub settings undo` puts the previous planner
+back. Agents cannot change it.
 
 ## Resetting a project's hub
 

@@ -606,7 +606,9 @@ export class Tasks {
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
-    this.planningAuthority(by);
+    // #455: one authority check, made before the screen and again after it (a person may move the planner meanwhile).
+    const authorized = () => this.planningAuthority(by);
+    authorized();
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
     const validate = () => {
       const task = this.d.board.get(input.id);
@@ -631,6 +633,7 @@ export class Tasks {
       return { task, owner: assignment.owner };
     };
     const initial = validate(), withheld = await this.withholds("note", input.reason, initial.task);
+    authorized();
     const current = validate();
     const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld);
     this.planningRecorded({ by, task: pulled.id, fields: ["pull", "reserved"], revision: pulled.planningRevision! });
@@ -773,6 +776,7 @@ export class Tasks {
       return task;
     };
     const task = validate(), withheld = await this.withholds("note", input.reason, task);
+    this.planningAuthority(by); // #455: or moved the planner
     validate(); // a person may have changed planning or frozen a release while the screen ran
     const updated = this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld);
     this.planningRecorded({ by, task: task.id, fields: Object.keys(patch), revision: updated.planningRevision! });
@@ -886,6 +890,7 @@ export class Tasks {
     let screened: Awaited<typeof attempt>;
     try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), BACKLOG_SPLIT_SCREEN_TIMEOUT_MS); })]); }
     finally { if (deadline !== undefined) clearTimeout(deadline); }
+    this.planningAuthority(by); // #455: a person may have moved the planner while the screen ran
     const [screenedVerdicts, withheld] = screened, current = validate();
     const finalSignals = current.drafts.map(part => this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }));
     const deterministicPrivate = finalSignals.map((signals, index) => initialPrivate[index] || this.isPii({ signals }));
@@ -906,6 +911,7 @@ export class Tasks {
     if (typeof input.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.name) || typeof input.goal !== "string" || !input.goal.trim() || input.goal.length > 1000 || !Number.isSafeInteger(input.order) || input.order < 0) throw new PreEffectToolRefusal("invalid release name, goal or order");
     const text = input.name + "\n" + input.goal;
     if (!this.nameable(text) || this.screenOn() && (await this.screenCall(text)).label !== "clear") throw new PreEffectToolRefusal("release text was not cleared for public planning");
+    this.planningAuthority(by); // #455: a person may have moved the planner while the screen ran
     if (this.d.board.releases().some(release => release.name === input.name)) throw new PreEffectToolRefusal("release name already exists");
     const release = this.d.board.newRelease(input.name, input.goal.trim(), input.order);
     this.planningRecorded({ by, release: release.id, fields: ["created"], revision: release.revision });
