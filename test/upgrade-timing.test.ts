@@ -24,3 +24,17 @@ test("#466 public receipts add actual timing and typed presentation data only wh
   const { waits: _waits, presentationCause: _cause, ...unchanged } = publicOperation(op) as any;
   expect(unchanged).toEqual(old);
 });
+
+test("#466 native recovery errors retain their guard message and closed typed metadata", async () => {
+  const path = "../src/cli/upgrade-presentation-data.ts", module = await import(path);
+  expect(typeof module.RecoveryPresentationError).toBe("function");
+  const cause = { kind: "native_recovery", reason: "session_changed", projectId: "fixture-project", peer: "codex", expectedSession: "recorded-id", observedSession: "attached-id" };
+  const error = new module.RecoveryPresentationError("original guard message", cause);
+  expect(error).toBeInstanceOf(Error);
+  expect(error.message).toBe("original guard message");
+  expect(error.presentationCause).toEqual(cause);
+  const preservation = new module.RecoveryPreservationError("queues", "fixture-project");
+  expect(preservation).toBeInstanceOf(module.RecoveryPresentationError);
+  expect(preservation.message).toBe("queue, manual pause, task board or budget preservation was not verified");
+  expect(preservation.presentationCause).toEqual({ kind: "preservation", check: "queues", projectId: "fixture-project" });
+});

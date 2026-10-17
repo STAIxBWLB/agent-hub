@@ -1,6 +1,8 @@
+import { planLines } from "../src/cli/upgrade-interactive.ts";
 import { expect, test } from "bun:test";
 import { renderBlocked, renderMenu, renderOperation, renderPlan, renderStep, renderSummary, renderWait, type RecoveryPresentationOptions } from "../src/cli/upgrade-presentation.ts";
 import { PALETTE, terminalText } from "../src/cli/console-state.ts";
+import { recordedPeerGuidance } from "../src/cli/recovery-guidance.ts";
 import type { Inspection, NextChoice, RecoveryOperation, UpgradePlan } from "../src/cli/upgrade.ts";
 
 const id = "00000000-0000-4000-8000-000000000466";
@@ -21,7 +23,7 @@ function bounded(lines: string[], columns: number, color: boolean) {
 for (const columns of [80, 120]) for (const color of [false, true]) test(`#466 all human views fit ${columns} columns with color ${color}`, () => {
   const op = fixture(), opts = options(columns, color), before = JSON.stringify(op);
   const menus = [{ key: "r", label: "resume 한국어 프로젝트", recommended: true }, { key: "e", label: "stop and archive", destructive: true }, { key: "f", label: "fresh session", disabledReason: "recorded conversation must be retained" }];
-  for (const lines of [renderPlan(op.plan, "0.12.31", opts), renderOperation(op, undefined, opts), renderBlocked(op, choices, opts), renderSummary(op, {}, opts), renderWait(op, op.step, ["pi is busy", "pending approvals"], opts), renderStep("긴 한국어 단계 " + "설명 ".repeat(100), "waiting", undefined, opts), renderMenu(menus, opts)]) bounded(lines, columns, color);
+  for (const lines of [renderPlan(op.plan, "0.12.31", opts, planLines(op.plan, "0.12.31")), renderOperation(op, undefined, opts), renderBlocked(op, choices, opts), renderSummary(op, {}, opts), renderWait(op, op.step, ["pi is busy", "pending approvals"], opts), renderStep("긴 한국어 단계 " + "설명 ".repeat(100), "waiting", undefined, opts), renderMenu(menus, opts)]) bounded(lines, columns, color);
   expect(JSON.stringify(op)).toBe(before);
 });
 
@@ -88,4 +90,43 @@ test("#466 human operation view hides raw effect keys and exposes them only when
   const op = fixture(); op.projects[0]!.terminals["closed:codex"] = true;
   expect(renderOperation(op, undefined, options(120)).join("\n")).not.toContain("closed:codex");
   expect(renderOperation(op, undefined, { ...options(120), verbose: true }).join("\n")).toContain("closed:codex");
+});
+
+for (const [reason, observation, happened, evidence] of [
+  ["terminal_unverified", { handle: "terminal-fixture", expectedSession: "saved-thread" }, "terminal could not be verified", "terminal-fixture"],
+  ["session_changed", { expectedSession: "saved-thread", observedSession: "other-thread" }, "different conversation", "other-thread"],
+  ["launcher_unverified", { handle: "terminal-fixture", launcherState: "older-instance" }, "launcher could not be verified", "older"],
+  ["target_unavailable", { targetState: "stopped" }, "target hub is unavailable", "stopped"],
+  ["attachment_timeout", { handle: "terminal-fixture", expectedSession: "saved-thread", timeoutMs: 600_000 }, "attachment timed out", "10m"],
+] as const) test(`#466 typed native recovery ${reason} names its evidence and the recorded conversation guidance`, () => {
+  const op = fixture(); op.plan.projects[0]!.project.root = "/fixture/project";
+  op.error = "unrelated legacy error without a diagnosis";
+  Object.assign(op, { presentationCause: { kind: "native_recovery", reason, projectId: project.id, peer: "codex", ...observation } });
+  const expectedCommand = recordedPeerGuidance(op.plan.projects[0]!, op.projects[0]!).find(row => row.peer === "codex")!.command!;
+  const before = JSON.stringify(op);
+  for (const columns of [80, 120]) for (const color of [false, true]) {
+    const rendered = renderBlocked(op, choices, options(columns, color));
+    bounded(rendered, columns, color);
+    const text = rendered.map(terminalText).join("\n").replace(/\s+/g, " ");
+    expect(text).toContain("What happened:"); expect(text).toContain("Why:"); expect(text).toContain("What to do:");
+    expect(text).toContain(happened); expect(text).toContain(evidence); expect(text).toContain(expectedCommand);
+    expect(text).not.toContain("unrelated legacy error without a diagnosis");
+  }
+  expect(JSON.stringify(op)).toBe(before);
+});
+
+test("#466 a running replacement target is an identity failure, never described as stopped or absent", () => {
+  const op = fixture();
+  Object.assign(op, { presentationCause: { kind: "native_recovery", reason: "target_unavailable", projectId: project.id, peer: "codex", targetState: "running" } });
+  const text = renderBlocked(op, choices, options(120)).join("\n");
+  expect(text).toContain("identity"); expect(text).toContain("running");
+  expect(text).not.toContain("target hub is unavailable");
+});
+
+test("#466 equal session ids with a failed session-file gate do not claim a different conversation was observed", () => {
+  const op = fixture();
+  Object.assign(op, { presentationCause: { kind: "native_recovery", reason: "session_changed", projectId: project.id, peer: "pi", expectedSession: "same-session", observedSession: "same-session" } });
+  const text = renderBlocked(op, choices, options(120)).join("\n");
+  expect(text).toContain("identity"); expect(text).toContain("same-session");
+  expect(text).not.toContain("different conversation was observed");
 });

@@ -13,12 +13,29 @@ export interface RecoveryPreservationCause {
   readonly projectId?: string;
 }
 
-/** The failing integrity comparison supplies the cause; presentation never parses the error text. */
-export class RecoveryPreservationError extends Error {
-  readonly presentationCause: RecoveryPreservationCause;
+export interface RecoveryNativeCause {
+  readonly kind: "native_recovery";
+  readonly reason: "terminal_unverified" | "session_changed" | "launcher_unverified" | "target_unavailable" | "attachment_timeout";
+  readonly projectId: string;
+  readonly peer: string;
+  readonly handle?: string;
+  readonly expectedSession?: string;
+  readonly observedSession?: string;
+  readonly targetState?: string;
+  readonly launcherState?: string;
+  readonly timeoutMs?: number;
+}
 
+export type RecoveryPresentationCause = RecoveryPreservationCause | RecoveryNativeCause;
+
+/** Only a guard with observed evidence constructs this error; messages are never classification input. */
+export class RecoveryPresentationError extends Error {
+  constructor(message: string, readonly presentationCause: RecoveryPresentationCause) { super(message); }
+}
+
+/** The failing integrity comparison supplies the cause; presentation never parses the error text. */
+export class RecoveryPreservationError extends RecoveryPresentationError {
   constructor(check: RecoveryPreservationCheck, projectId?: string) {
-    super("queue, manual pause, task board or budget preservation was not verified");
-    this.presentationCause = { kind: "preservation", check, ...(projectId === undefined ? {} : { projectId }) };
+    super("queue, manual pause, task board or budget preservation was not verified", { kind: "preservation", check, ...(projectId === undefined ? {} : { projectId }) });
   }
 }

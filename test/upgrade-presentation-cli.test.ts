@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planFingerprint, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
-import { writeOperation } from "../src/hub/recovery-store.ts";
+import { claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
 import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { VERSION } from "../src/version.ts";
@@ -22,7 +22,7 @@ function fixture() {
   const main = join(PACKAGE_ROOT, "src/cli/main.js"), wrapper = join(temp, "cli.ts"), calls = join(temp, "external-calls.jsonl");
   // Freeze only the child clock so repeated disposal of the same reset receipt is byte-comparable, including audit
   // timestamps. The actual CLI parser, recovery driver and filesystem claim/receipt paths remain in use.
-  writeFileSync(wrapper, `Date.now = () => ${NOW};\nprocess.argv = [process.execPath, ${JSON.stringify(main)}, ...JSON.parse(process.env.FIXTURE_ARGV!)];\nawait import(${JSON.stringify(main)});\n`);
+  writeFileSync(wrapper, `Date.now = () => ${NOW};\nif(process.env.FIXTURE_TTY==='1'){Object.defineProperty(process.stdin,'isTTY',{value:true});Object.defineProperty(process.stdout,'isTTY',{value:true});Object.defineProperty(process.stdout,'columns',{value:80});}\nprocess.argv = [process.execPath, ${JSON.stringify(main)}, ...JSON.parse(process.env.FIXTURE_ARGV!)];\nawait import(${JSON.stringify(main)});\n`);
   for (const name of ["npm", "claude"]) {
     const allowed = name === "npm" ? ["view", `@staix/agent-hub@${VERSION}`, "version", "dist.integrity", "--json"] : ["--version"];
     const output = name === "npm" ? JSON.stringify({ version: VERSION, "dist.integrity": "sha512-fixture-only" }) : "fixture Claude 1.0.0";
@@ -36,8 +36,8 @@ function fixture() {
     AGENTHUB_PEER_ID: undefined, AGENTHUB_DELIVERY_ONLY: undefined, AGENTHUB_PROJECT_DIR: undefined, AGENTHUB_STATE_DIR: undefined,
     AGENTHUB_INSTANCE_ID: undefined, AGENTHUB_LAUNCH_ID: undefined, AGENTHUB_RECOVERY_OPERATION: undefined,
     CLAUDECODE: undefined, CLAUDE_CODE_SESSION_ID: undefined, CODEX_THREAD_ID: undefined };
-  const cli = async (args: string[]) => {
-    const child = Bun.spawn([process.execPath, wrapper], { cwd: root, env: { ...env, FIXTURE_ARGV: JSON.stringify(args) }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const cli = async (args: string[], tty = false) => {
+    const child = Bun.spawn([process.execPath, wrapper], { cwd: root, env: { ...env, FIXTURE_ARGV: JSON.stringify(args), FIXTURE_TTY: tty ? "1" : "0" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     return { code, out, err };
   };
@@ -166,4 +166,29 @@ test("#466 explicit JSON preflight abort returns only the saved cancelled receip
   expect(projection.phase).toBe("cancelled"); expect(projection.next).toEqual([]);
   expect(f.readReceipt().phase).toBe("cancelled");
   expect(result.out).toBe(JSON.stringify(projection, null, 2) + "\n");
+}, 15_000);
+
+test("#466 reattach handover carries resolved colour and verbose to a capable retained coordinator", async () => {
+  const f = fixture(), coordinator = join(f.temp, "retained coordinator with a long path"), folder = join(coordinator, "src/cli"), recorded = join(f.temp, "handover-args.json");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "upgrade.ts"), "export async function disposeRecovery() {}\nexport async function reattachRecovery() {}\n");
+  writeFileSync(join(folder, "upgrade-presentation-flags.ts"), "// fixture parser capability\n");
+  writeFileSync(join(folder, "main.js"), `require('node:fs').writeFileSync(${JSON.stringify(recorded)},JSON.stringify(process.argv.slice(2)));\n`);
+  const op = f.reset("blocked"); op.sourceRoot = coordinator; writeOperation(OPERATION, op, f.home);
+  const result = await f.cli(["recovery", "reattach", OPERATION, "pi", "--color=never", "--verbose"], true);
+  expect(result.code, result.err).toBe(0);
+  expect(JSON.parse(readFileSync(recorded, "utf8"))).toEqual(["recovery", "reattach", OPERATION, "pi", "--color=never", "--verbose"]);
+}, 15_000);
+
+test("#466 TTY resume with an existing runner hides internal paths unless verbose while pipe bytes stay exact", async () => {
+  const f = fixture(); f.reset("blocked"); cleanup.push(claimRunner(OPERATION, f.home));
+  const pipe = await f.cli(["recovery", "resume", OPERATION, "--color=never"]);
+  expect(pipe.code, pipe.err).toBe(0);
+  expect(pipe.out).toBe(`runner ${process.pid} is still working on this operation; bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery status ${OPERATION}\n`);
+  const tty = await f.cli(["recovery", "resume", OPERATION, "--color=never"], true);
+  expect(tty.code, tty.err).toBe(0); expect(tty.out).toContain(`ahub recovery status ${OPERATION}`); expect(tty.out).not.toContain("bun "); expect(tty.out).not.toMatch(ANSI);
+  for (const line of tty.out.trimEnd().split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+  const verbose = await f.cli(["recovery", "resume", OPERATION, "--color=never", "--verbose"], true);
+  expect(verbose.code, verbose.err).toBe(0); expect(verbose.out).toContain("bun "); expect(verbose.out).toContain("main.js");
+  for (const line of verbose.out.trimEnd().split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 }, 15_000);

@@ -1,6 +1,6 @@
 import { paint, wrap, type Tone } from "./console-state.ts";
-import { operationLines, planLines, stepLabel } from "./upgrade-labels.ts";
-import { stopAndArchiveSummary } from "./recovery-guidance.ts";
+import { operationLines, stepLabel } from "./upgrade-labels.ts";
+import { recordedPeerGuidance, stopAndArchiveSummary, type RecordedPeerGuidance } from "./recovery-guidance.ts";
 import { restoreReceiptStatus } from "./upgrade-restore-state.ts";
 import type { Inspection, NextChoice, RecoveryOperation, UpgradePlan } from "./upgrade.ts";
 
@@ -19,7 +19,10 @@ export interface MenuPresentationItem {
   destructive?: boolean;
 }
 
-/** Human output only. Raw receipt JSON must bypass this module. */
+/** Human output only. Raw receipt JSON must bypass this module.
+ * ponytail: long command previews wrap as prose; raw JSON retains the copyable command.
+ * A shell-token continuation formatter can replace this if copying wrapped commands is required.
+ */
 function lines(value: string, tone: Tone, options: RecoveryPresentationOptions): string[] {
   const columns = Number.isFinite(options.columns) ? Math.max(2, Math.floor(options.columns)) : 80;
   return wrap(value, columns).map(text => paint([{ text, tone }], options.color));
@@ -38,11 +41,12 @@ export function renderStep(label: string, status: StepPresentationStatus, elapse
   return lines(`[${status}] ${label} (${time})`, tones[status], options);
 }
 
-export function renderPlan(plan: UpgradePlan, current: string, options: RecoveryPresentationOptions): string[] {
+/** Policy rows come from the existing plan helper; this renderer adds no peer-kind policy. */
+export function renderPlan(plan: UpgradePlan, current: string, options: RecoveryPresentationOptions, rows: readonly string[]): string[] {
   return [
     ...lines(`${plan.kind} to ${plan.version}: plan`, "strong", options),
     ...lines(`Coordinator version ${current}`, "muted", options),
-    ...planLines(plan, current).slice(1).flatMap(line => lines(line, line.trimStart().startsWith("blocker:") ? "failure" : line.trimStart().startsWith("in progress:") ? "attention" : "info", options)),
+    ...rows.slice(1).flatMap(line => lines(line, line.trimStart().startsWith("blocker:") ? "failure" : line.trimStart().startsWith("in progress:") ? "attention" : "info", options)),
   ];
 }
 
@@ -80,14 +84,66 @@ export function renderOperation(op: RecoveryOperation, runner: number | "unknown
 }
 
 const preservation = { queues: "message queues", manualPaused: "manual pauses", boardDigest: "task board", budgetDigest: "budget records" } as const;
+const nativeRecovery = {
+  terminal_unverified: { happened: "terminal could not be verified", action: "Review the recorded terminal before retrying; keep its recorded conversation." },
+  session_changed: { happened: "different conversation was observed", action: "Return to the recorded conversation; do not accept the different one as its replacement." },
+  launcher_unverified: { happened: "launcher could not be verified", action: "Review launcher ownership before retrying; unknown ownership does not authorize another launch." },
+  target_unavailable: { happened: "target hub is unavailable", action: "Use an offered coordinator action for this target; do not start a replacement daemon by hand." },
+  attachment_timeout: { happened: "attachment timed out", action: "Check the recorded launch and its attachment state, then use an offered coordinator action." },
+} as const;
+const launcherEvidence: Readonly<Record<string, string>> = {
+  unknown: "launcher ownership is unknown",
+  "older-instance": "an older target's launcher may still run",
+  replaced: "the launcher identity differs from the saved binding",
+  gone: "no current launcher was confirmed",
+  "no-record-yet": "no current launch record was available",
+  live: "a launcher was live, but its saved binding was not verified",
+};
 
 export function renderBlocked(op: RecoveryOperation, choices: readonly NextChoice[], options: RecoveryPresentationOptions): string[] {
   let happened = "The recovery coordinator blocked this operation.";
   let why = "The detailed cause is unknown in this receipt; no missing evidence is treated as success.";
+  let action = "read [j] or use --verbose for the recorded error, then choose an action offered by the coordinator.";
+  let guidance: RecordedPeerGuidance | undefined;
   const cause = op.presentationCause;
   if (cause?.kind === "preservation" && Object.hasOwn(preservation, cause.check)) {
     happened = `The ${preservation[cause.check]} preservation check did not pass.`;
     why = `${cause.projectId ? `${cause.projectId}: ` : ""}the recorded expected state and the target's readback did not match, or the comparison was unavailable.`;
+  } else if (cause?.kind === "native_recovery") {
+    if (Object.hasOwn(nativeRecovery, cause.reason)) {
+      const description = nativeRecovery[cause.reason];
+      happened = `${cause.peer}: ${description.happened}.`;
+      action = `${description.action} Read [j] or use --verbose for the recorded error.`;
+      const terminal = cause.handle ? ` Recorded terminal: ${cause.handle}.` : "";
+      const session = cause.expectedSession ? ` Expected conversation: ${cause.expectedSession}.` : "";
+      switch (cause.reason) {
+        case "terminal_unverified":
+          why = `The coordinator could not confirm that the recorded terminal was valid and ready.${terminal}${session}`;
+          break;
+        case "session_changed":
+          if (!cause.expectedSession || !cause.observedSession || cause.expectedSession === cause.observedSession) {
+            happened = `${cause.peer}: the recorded session identity could not be verified.`;
+            action = "Review the recorded conversation and session-file identity before retrying; do not substitute a new conversation. Read [j] or use --verbose for the recorded error.";
+          }
+          why = `Expected conversation: ${cause.expectedSession ?? "unknown"}; observed conversation: ${cause.observedSession ?? "unknown"}.${terminal}`;
+          break;
+        case "launcher_unverified":
+          why = `${cause.launcherState && Object.hasOwn(launcherEvidence, cause.launcherState) ? launcherEvidence[cause.launcherState] : "launcher evidence is unknown"}.${terminal}${session}`;
+          break;
+        case "target_unavailable":
+          if (cause.targetState === "running") happened = `${cause.peer}: the recorded target identity could not be verified.`;
+          why = `The recorded target state was ${cause.targetState ?? "unknown"}; this is the coordinator's observation, not a new live check.${terminal}`;
+          break;
+        case "attachment_timeout":
+          why = `The recorded attachment wait ended${typeof cause.timeoutMs === "number" && Number.isFinite(cause.timeoutMs) && cause.timeoutMs > 0 ? ` after ${elapsed(cause.timeoutMs)}` : "; its exact duration is unknown"}.${terminal}${session}`;
+          break;
+      }
+      const planned = op.plan.projects.find(project => project.project.id === cause.projectId);
+      const progress = op.projects.find(project => project.id === cause.projectId);
+      if (planned && progress) guidance = recordedPeerGuidance(planned, progress, {
+        recorded: Object.fromEntries(Object.entries(progress.reattachments ?? {}).flatMap(([peer, marker]) => marker ? [[peer, marker.binding]] : [])),
+      }).find(row => row.peer === cause.peer);
+    }
   } else if (op.blockedReattachment) {
     const { projectId, peer } = op.blockedReattachment;
     const marker = op.projects.find(project => project.id === projectId)?.reattachments?.[peer];
@@ -97,10 +153,14 @@ export function renderBlocked(op: RecoveryOperation, choices: readonly NextChoic
     happened = "The recovery database could not complete this step yet.";
     why = "The coordinator recorded database contention as retryable; its saved recovery state is retained.";
   }
-  const output = [...lines(`What happened: ${happened}`, "failure", options), ...lines(`Why: ${why}`, "muted", options), ...lines("What to do: read [j] or use --verbose for the recorded error, then choose an action offered by the coordinator.", "attention", options)];
+  const output = [...lines(`What happened: ${happened}`, "failure", options), ...lines(`Why: ${why}`, "muted", options), ...lines(`What to do: ${action}`, "attention", options)];
   for (const choice of choices) {
     const instruction = choice.kind === "wait" && !options.verbose ? `Check ahub recovery status ${op.id} again after the reported condition changes.` : choice.text;
     output.push(...lines(`  ${instruction}`, choice.kind === "stop" || choice.kind === "fresh" ? "failure" : "info", options));
+  }
+  if (guidance) {
+    if (guidance.command) output.push(...lines(`Recorded conversation command, for use when permitted by the recovery hold: ${guidance.command}`, "info", options));
+    output.push(...lines(guidance.note, "muted", options));
   }
   if (options.verbose && op.error) output.push(...lines(`Recorded error: ${op.error}`, "muted", options));
   return output;

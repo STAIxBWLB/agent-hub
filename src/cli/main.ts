@@ -408,6 +408,19 @@ function recoveryDisplay() {
 }
 const humanRecovery = (json: boolean) => !json && !!process.stdin.isTTY && !!process.stdout.isTTY;
 const printRecovery = (lines: readonly string[]) => { for (const line of lines) console.log(line); };
+function recoveryFormatting(entry: string, presentation: RecoveryPresentationOptions): string[] {
+  // ponytail: old retained coordinators have no presentation parser; capability metadata can replace this display-only module-presence check.
+  return existsSync(join(dirname(entry), "upgrade-presentation-flags.ts"))
+    ? [`--color=${presentation.color ? "always" : "never"}`, ...(presentation.verbose ? ["--verbose"] : [])] : [];
+}
+function printRecoveryStatus(op: RecoveryOperation, message: string, presentation: RecoveryPresentationOptions): void {
+  printRecovery(wrap(message, presentation.columns));
+  printRecovery(wrap(`ahub recovery status ${op.id}`, presentation.columns));
+  if (presentation.verbose) {
+    printRecovery(wrap("Retained bun coordinator (main.js), wrapped command:", presentation.columns));
+    printRecovery(wrap(recoveryCommand(op, "status"), presentation.columns));
+  }
+}
 async function recoveryEndInspection(op: RecoveryOperation): Promise<Record<string, Inspection | undefined>> {
   const driver = makeRecoveryDriver(undefined, delegatedPeer);
   return Object.fromEntries(await Promise.all(op.plan.projects.map(async planned => [planned.project.id, await driver.inspect(planned.project).catch(() => undefined)] as const)));
@@ -455,9 +468,7 @@ async function onTerminal(screens: (io: ScreenIO) => Promise<void>, presentation
         // The command owns the terminal while it runs; a reader whose input already ended has nothing to pause.
         if (!ended) rl.pause();
         const done = (code: number) => { if (!ended) rl.resume(); resolve(code); };
-        // ponytail: old retained coordinators have no presentation parser; keep their plain output until capability metadata replaces this module-presence check.
-        const formatting = presentation && argv[1] === "recovery" && existsSync(join(dirname(argv[0]!), "upgrade-presentation-flags.ts"))
-          ? [`--color=${presentation.color ? "always" : "never"}`, ...(presentation.verbose ? ["--verbose"] : [])] : [];
+        const formatting = presentation && argv[1] === "recovery" ? recoveryFormatting(argv[0]!, presentation) : [];
         const child = spawn(process.execPath, [argv[0]!, ...liveTestArgs, ...argv.slice(1), ...formatting], { cwd, stdio: "inherit" });
         child.on("error", () => done(1));
         child.on("close", (code) => done(code ?? 1));
@@ -585,9 +596,13 @@ const commands: Record<string, () => Promise<void> | void> = {
       try { coordinatorIsCurrent = realPath(coordinator) === realPath(join(import.meta.dir, "main.js")); }
       catch { fail(`the retained coordinator for ${selected.id} cannot be resolved; inspect ahub recovery status ${selected.id} before retrying; no session was started`); }
       if (supportsAction(operation.sourceRoot, "reattach") && !coordinatorIsCurrent) {
-        console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, "reattach", selected.peer)}`);
+        if (humanRecovery(display.json)) {
+          for (const line of wrap("ahub: using the operation's retained coordinator for reattachment", display.options.columns)) console.error(line);
+          if (display.options.verbose) for (const line of wrap(recoveryCommand(operation, "reattach", selected.peer), display.options.columns)) console.error(line);
+        } else console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, "reattach", selected.peer)}`);
+        const formatting = recoveryFormatting(coordinator, display.options);
         const code = await new Promise<number>(resolve => {
-          const child = spawn(process.execPath, [coordinator, "recovery", "reattach", selected.id, selected.peer], { cwd, stdio: display.json ? ["inherit", "ignore", "inherit"] : "inherit", env: process.env });
+          const child = spawn(process.execPath, [coordinator, "recovery", "reattach", selected.id, selected.peer, ...formatting], { cwd, stdio: display.json ? ["inherit", "ignore", "inherit"] : "inherit", env: process.env });
           child.on("error", () => { console.error(`ahub: coordinator could not start; ${recoveryCommand(operation, "status")}`); resolve(1); });
           child.on("close", status => resolve(status ?? 1));
         });
@@ -649,8 +664,16 @@ const commands: Record<string, () => Promise<void> | void> = {
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(display.json ? JSON.stringify(publicOperation(operation, runner), null, 2) : `recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
     else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect))}`);
-    else if (runner === "unknown") console.log(display.json ? JSON.stringify(publicOperation(operation, runner), null, 2) : `whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
-    else if (runner) console.log(display.json ? JSON.stringify(publicOperation(operation, runner), null, 2) : `runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
+    else if (runner === "unknown") {
+      if (display.json) console.log(JSON.stringify(publicOperation(operation, runner), null, 2));
+      else if (humanRecovery(false)) printRecoveryStatus(operation, "Runner ownership is unknown; nothing was started.", display.options);
+      else console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
+    }
+    else if (runner) {
+      if (display.json) console.log(JSON.stringify(publicOperation(operation, runner), null, 2));
+      else if (humanRecovery(false)) printRecoveryStatus(operation, `runner ${runner} is still working on this operation`, display.options);
+      else console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
+    }
     else if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
     else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
   },

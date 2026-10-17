@@ -1,17 +1,5 @@
 import { restoreReceiptStatus } from "./upgrade-restore-state.ts";
-import type { Inspection, PlannedProject, RecoveryOperation, RecoveryPeer, UpgradePlan } from "./upgrade.ts";
-
-/**
- * How an attached peer runs, which decides how it can be ended: a TUI agent in a terminal the plan could bind, a
- * headless agent the hub owns, or `unmanaged` (shown as `own`): a session the hub did not launch, or one it launched
- * whose terminal the plan could not bind (a person ends that one where it runs).
- */
-export function peerKind(planned: PlannedProject, peer: RecoveryPeer): "tui" | "headless" | "unmanaged" | "offline" {
-  if (peer.state === "offline") return "offline";
-  if ((planned.terminals as { peer: string }[]).some((t) => t.peer === peer.id)) return "tui";
-  if (peer.id === "claude" || peer.id === "codex" || (peer.id === "pi" && peer.args?.mode === "tui")) return "unmanaged";
-  return "headless";
-}
+import type { RecoveryOperation } from "./upgrade.ts";
 
 const STEPS: Record<string, string> = {
   stage: "staging the release", prepare: "holding deliveries and waiting until the hub is quiet", reprepare: "preparing the source again after an expired hold",
@@ -24,35 +12,6 @@ const STEPS: Record<string, string> = {
 export function stepLabel(step: string): string {
   const at = step.indexOf(":"), name = at < 0 ? step : step.slice(0, at);
   return STEPS[name] ? `${at < 0 ? "" : `${step.slice(at + 1)}: `}${STEPS[name]}` : step;
-}
-
-function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
-  if (peer.state === "offline") return "offline, left as it is";
-  if (planned.reconnectOnly?.includes(peer.id)) return "reconnects by itself (unmanaged session; its terminal is left alone)";
-  if (planned.freshStart?.includes(peer.id)) return "restarts as a new session (no turn to lose)";
-  const terminal = (planned.terminals as { peer: string; handle: string }[]).find((t) => t.peer === peer.id);
-  if (terminal) return `resumes its session in a new terminal (replaces ${terminal.handle})`;
-  return peer.id === "pi" ? "restarts headless on its recorded session" : "restarts headless as a new session";
-}
-
-const KINDS = { tui: "TUI", headless: "headless", unmanaged: "own", offline: "-" } as const;
-
-/** What the source says keeps it from being quiet; an older hub names only its busy peers. */
-const inProgress = (source: Inspection): string[] => source.recovery?.waiting ?? source.peers.filter((p) => p.state === "busy").map((p) => `${p.id} is busy`);
-
-export function planLines(plan: UpgradePlan, current: string): string[] {
-  const lines = [plan.kind === "upgrade" ? `upgrade to ${plan.version} (coordinator ${current})` : `restart on ${plan.version}`];
-  for (const p of plan.projects) {
-    lines.push("", `${p.project.id}  ${p.project.root}  hub ${p.source.version ?? "unknown"} (${p.source.state})`);
-    const width = Math.max(0, ...p.source.peers.map((peer) => peer.id.length));
-    for (const peer of p.source.peers) lines.push(`  ${peer.id.padEnd(width)}  ${peer.state.padEnd(7)}  ${KINDS[peerKind(p, peer)].padEnd(8)}  ${peerAction(p, peer)}`);
-    const waiting = inProgress(p.source);
-    if (waiting.length) lines.push(`  in progress: ${waiting.join(", ")} (apply waits up to 10 minutes for it, then leaves this hub running)`);
-    for (const blocker of p.blockers) lines.push(`  blocker: ${blocker}`);
-  }
-  if (plan.blockers.length) lines.push("");
-  for (const blocker of plan.blockers) lines.push(`blocker: ${blocker}`);
-  return lines;
 }
 
 const ago = (ms: number): string => ms < 90_000 ? `${Math.max(0, Math.round(ms / 1000))}s` : ms < 5_400_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3_600_000)}h`;

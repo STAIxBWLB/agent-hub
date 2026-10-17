@@ -1519,3 +1519,35 @@ test("#466 a resumed attempt never presents an earlier attempt's completed wait 
   expect(result.phase).toBe("completed"); expect(observed).toBeUndefined();
   expect(result.waits?.["prepare:alpha"]?.waitEndedAt).toBeDefined();
 });
+
+for (const wrapped of [false, true]) test(`#466 coordinator persists a proven ${wrapped ? "repair-wrapped" : "direct"} native cause but never a plain error's lookalike DTO`, async () => {
+  const dataPath = "../src/cli/upgrade-presentation-data.ts", data = await import(dataPath);
+  const upgradePath = "../src/cli/upgrade.ts", upgrade = await import(upgradePath);
+  expect(typeof data.RecoveryPresentationError).toBe("function");
+  const cause = { kind: "native_recovery", reason: "launcher_unverified", projectId: "alpha", peer: "codex", handle: "fixture-terminal", launcherState: "unknown" };
+  const f = fixture("restart", ["alpha"]);
+  f.driver.verify = async (_planned, progress, _operation, save) => {
+    if (wrapped) {
+      const launch = { packageEntrypoint: "/fixture/main.js", command: "fixture only", argv: [], env: {} };
+      progress.reattachments = { codex: { state: "attempted", at: 0, cause: "detached after restore", binding: {
+        peer: "codex", handle: "fixture-terminal", incarnationId: "fixture-incarnation", worktreeId: "fixture-worktree", projectRoot: "/alpha", sessionId: "fixture-session", launch, launchMetadata: launch,
+      } } };
+      save?.(); // The real repair path saves its attempted marker before a failure can select it.
+    }
+    const typed = new data.RecoveryPresentationError("unchanged native guard", cause);
+    throw wrapped ? new upgrade.ReattachmentRequired("alpha", "codex", "unchanged repair wrapper", typed) : typed;
+  };
+  const blocked = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(blocked.phase).toBe("blocked"); expect(blocked.presentationCause).toEqual(cause);
+  expect(blocked.blockedReattachment).toEqual(wrapped ? { projectId: "alpha", peer: "codex" } : undefined);
+  expect(blocked.error).toContain(wrapped ? "unchanged repair wrapper" : "unchanged native guard");
+  expect(readOperation<RecoveryOperation>(f.operation.id, f.home).presentationCause).toEqual(cause);
+  if (wrapped) expect(readOperation<RecoveryOperation>(f.operation.id, f.home).projects[0]?.reattachments?.codex?.state).toBe("attempted");
+  f.driver.verify = async () => {
+    const plain = Object.assign(new Error("unknown unrelated failure"), { presentationCause: cause });
+    throw wrapped ? new upgrade.ReattachmentRequired("alpha", "codex", "ordinary repair failure", plain) : plain;
+  };
+  const later = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(later.phase).toBe("blocked"); expect(later.presentationCause).toBeUndefined();
+  expect(later.error).toContain(wrapped ? "ordinary repair failure" : "unknown unrelated failure");
+});

@@ -2199,6 +2199,8 @@ per-peer session commands. An optional fresh read-only inspection names the
 current hub version; a failed reading says `runtime unknown`, never a guessed
 version from the plan. The summary performs no lifecycle action. Use `j` or
 `--json` for the full receipt; JSON is intentionally exempt from human wrapping.
+For a long command, copy the exact single-line value from `j` or the status JSON;
+the width-wrapped human preview is for reading.
 
 While a runner is only waiting for its source to get quiet (step `prepare`, no
 effect recorded), `c` stops that runner and then aborts. It is offered only for

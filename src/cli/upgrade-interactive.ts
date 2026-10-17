@@ -1,7 +1,7 @@
 import { renderPlan, renderOperation, renderBlocked, renderSummary, renderStep, renderWait, renderMenu, type RecoveryPresentationOptions, type MenuPresentationItem } from "./upgrade-presentation.ts";
 import { wrap } from "./console-state.ts";
-import { peerKind, planLines, operationLines, stepLabel } from "./upgrade-labels.ts";
-export { peerKind, planLines, operationLines, stepLabel } from "./upgrade-labels.ts";
+import { operationLines, stepLabel } from "./upgrade-labels.ts";
+export { operationLines, stepLabel } from "./upgrade-labels.ts";
 import { recoveryArgv } from "../hub/recovery-store.ts";
 import { cancellableWait, nextChoices, publicOperation, type Inspection, type PlannedProject, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 
@@ -74,6 +74,47 @@ const yes = async (io: ScreenIO, question: string): Promise<boolean> => /^y(es)?
 /** The way back after Ctrl+C: the operation's own coordinator, since the installed `ahub` may still be the older release (#215). */
 const left = (op: { id: string; sourceRoot?: string }, io: ScreenIO): string => io.presentation && !io.presentation.verbose
   ? `left: the runner keeps working; ahub recovery status ${op.id} shows the operation (use --verbose for its retained coordinator path)` : `left: the runner keeps working; \`bun ${recoveryArgv(op, "status")[0]} recovery\` shows the operation and what can be done`;
+
+/**
+ * How an attached peer runs, which decides how it can be ended: a TUI agent in a terminal the plan could bind, a
+ * headless agent the hub owns, or `unmanaged` (shown as `own`): a session the hub did not launch, or one it launched
+ * whose terminal the plan could not bind (a person ends that one where it runs).
+ */
+export function peerKind(planned: PlannedProject, peer: RecoveryPeer): "tui" | "headless" | "unmanaged" | "offline" {
+  if (peer.state === "offline") return "offline";
+  if ((planned.terminals as { peer: string }[]).some((t) => t.peer === peer.id)) return "tui";
+  if (peer.id === "claude" || peer.id === "codex" || (peer.id === "pi" && peer.args?.mode === "tui")) return "unmanaged";
+  return "headless";
+}
+
+function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
+  if (peer.state === "offline") return "offline, left as it is";
+  if (planned.reconnectOnly?.includes(peer.id)) return "reconnects by itself (unmanaged session; its terminal is left alone)";
+  if (planned.freshStart?.includes(peer.id)) return "restarts as a new session (no turn to lose)";
+  const terminal = (planned.terminals as { peer: string; handle: string }[]).find((t) => t.peer === peer.id);
+  if (terminal) return `resumes its session in a new terminal (replaces ${terminal.handle})`;
+  return peer.id === "pi" ? "restarts headless on its recorded session" : "restarts headless as a new session";
+}
+
+const KINDS = { tui: "TUI", headless: "headless", unmanaged: "own", offline: "-" } as const;
+
+/** What the source says keeps it from being quiet; an older hub names only its busy peers. */
+const inProgress = (source: Inspection): string[] => source.recovery?.waiting ?? source.peers.filter((p) => p.state === "busy").map((p) => `${p.id} is busy`);
+
+export function planLines(plan: UpgradePlan, current: string): string[] {
+  const lines = [plan.kind === "upgrade" ? `upgrade to ${plan.version} (coordinator ${current})` : `restart on ${plan.version}`];
+  for (const p of plan.projects) {
+    lines.push("", `${p.project.id}  ${p.project.root}  hub ${p.source.version ?? "unknown"} (${p.source.state})`);
+    const width = Math.max(0, ...p.source.peers.map((peer) => peer.id.length));
+    for (const peer of p.source.peers) lines.push(`  ${peer.id.padEnd(width)}  ${peer.state.padEnd(7)}  ${KINDS[peerKind(p, peer)].padEnd(8)}  ${peerAction(p, peer)}`);
+    const waiting = inProgress(p.source);
+    if (waiting.length) lines.push(`  in progress: ${waiting.join(", ")} (apply waits up to 10 minutes for it, then leaves this hub running)`);
+    for (const blocker of p.blockers) lines.push(`  blocker: ${blocker}`);
+  }
+  if (plan.blockers.length) lines.push("");
+  for (const blocker of plan.blockers) lines.push(`blocker: ${blocker}`);
+  return lines;
+}
 
 /**
  * Print steps and readiness waits until the operation completes, blocks or loses its runner ("open"), the person
@@ -266,7 +307,7 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
     const plan = await host.plan();
     if (io.interrupted()) return;
     human(io, "");
-    if (io.presentation) emit(io, renderPlan(plan, host.version, io.presentation));
+    if (io.presentation) emit(io, renderPlan(plan, host.version, io.presentation, planLines(plan, host.version)));
     else for (const line of planLines(plan, host.version)) human(io, line);
     const blocked = plan.blockers.length > 0 || plan.projects.some((p) => p.blockers.length > 0);
     if (!plan.projects.length) human(io, plan.kind === "upgrade" ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");

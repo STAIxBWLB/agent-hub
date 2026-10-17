@@ -759,3 +759,10 @@ error string. A read-only end-inspection port may supply current runtime state t
 the human summary; a failed readback is unknown. Summary rendering performs no
 lifecycle action and distinguishes recorded installation effects from current
 runtime observations. Older readers ignore the optional presentation metadata.
+
+Current native terminal, session, launcher, target and attachment-timeout guards
+may record a closed presentation cause containing only the actual IDs, states
+and wait window observed at that guard. A repair wrapper retains only a proven
+inner presentation error. Generic errors and lookalike objects remain untyped;
+their messages are never classification input. This metadata changes no guard,
+error message, restoration receipt transition or permission to create a terminal.

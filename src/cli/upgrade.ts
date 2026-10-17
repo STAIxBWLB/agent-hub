@@ -9,7 +9,7 @@ import { hubHome } from "../hub/project.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 import { recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
-import { RecoveryPreservationError, type RecoveryPreservationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
+import { RecoveryPresentationError, type RecoveryPresentationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
 
 export interface RecoveryPeer {
   id: string;
@@ -107,7 +107,7 @@ export interface RecoveryOperation {
   error?: string;
   /** Presentation observations only: old receipts without these fields have unknown timings and cause. */
   waits?: Record<string, RecoveryWaitTiming>;
-  presentationCause?: RecoveryPreservationCause;
+  presentationCause?: RecoveryPresentationCause;
   failure?: { code: "database_busy"; retryable: true; site?: string[] };
   /** A typed verify outcome, never inferred from an error message or a peer's current state. */
   blockedReattachment?: { projectId: string; peer: RecoveryNativePeer };
@@ -122,7 +122,7 @@ export interface RecoveryOperation {
 export class FinalRefusal extends Error {}
 
 export class ReattachmentRequired extends Error {
-  constructor(public readonly projectId: string, public readonly peer: RecoveryNativePeer, message: string) { super(message); }
+  constructor(public readonly projectId: string, public readonly peer: RecoveryNativePeer, message: string, public readonly presentationError?: RecoveryPresentationError) { super(message); }
 }
 
 export { recoveryCommand };
@@ -668,7 +668,9 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     releaseRecoveryLock(id, home); op.phase = "completed"; step("completed");
   } catch (error) {
     // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
-    if (error instanceof RecoveryPreservationError) op.presentationCause = error.presentationCause;
+    const presentationError = error instanceof RecoveryPresentationError ? error
+      : error instanceof ReattachmentRequired && error.presentationError instanceof RecoveryPresentationError ? error.presentationError : undefined;
+    if (presentationError) op.presentationCause = presentationError.presentationCause;
     else delete op.presentationCause;
     if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
     else delete op.blockedReattachment;
@@ -751,7 +753,10 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
     return op;
   } catch (error) {
     if (attempted) {
-      delete op.presentationCause;
+      const presentationError = error instanceof RecoveryPresentationError ? error
+        : error instanceof ReattachmentRequired && error.presentationError instanceof RecoveryPresentationError ? error.presentationError : undefined;
+      if (presentationError) op.presentationCause = presentationError.presentationCause;
+      else delete op.presentationCause;
       if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
       else delete op.blockedReattachment;
       if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }

@@ -2403,3 +2403,105 @@ test("#466 an interrupted managed wait records its actual end but keeps the save
     expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", binding: { handle: "term-new" } });
   } finally { f.cleanup(); }
 });
+
+test("#466 a saved terminal identity rejection exposes only its actual native recovery metadata", async () => {
+  const f = delayedManagedFixture("codex");
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    f.replaceTerminal();
+    const error = await f.driver.verify(f.planned, f.progress, f.op).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe("codex: saved terminal identity changed or is not verified; manual-required");
+    expect(error.presentationCause).toEqual({ kind: "native_recovery", reason: "terminal_unverified", projectId: "p-215", peer: "codex", handle: "term-new" });
+    expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { handle: "term-new" } });
+    expect(JSON.stringify(error.presentationCause)).not.toContain("PRIVATE-TERMINAL-TEXT");
+  } finally { f.cleanup(); }
+});
+
+for (const at of ["attachment", "verification"] as const) test(`#466 a wrong session during ${at} exposes the actual recorded and attached identities`, async () => {
+  const f = delayedManagedFixture("codex");
+  try {
+    if (at === "verification") await f.driver.restore(f.planned, f.progress, f.op, "native", () => {});
+    f.control.wrongSession = true;
+    const error = await (at === "attachment" ? f.driver.restore(f.planned, f.progress, f.op, "native", () => {}) : f.driver.verify(f.planned, f.progress, f.op)).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe(at === "attachment" ? "codex: a different conversation attached while awaiting session-414" : "Codex resumed a different conversation");
+    expect(error.presentationCause).toMatchObject({ kind: "native_recovery", reason: "session_changed", projectId: "p-215", peer: "codex", expectedSession: "session-414", observedSession: "different-session" });
+    expect(f.creates()).toBe(1); expect(f.progress.fresh).toBeUndefined();
+  } finally { f.cleanup(); }
+});
+
+for (const evidence of ["unknown", "replacement"] as const) test(`#466 a chosen ${evidence} launcher exposes a typed block without changing its waiting receipt`, async () => {
+  const f = delayedManagedFixture("codex", "pending");
+  f.control.attachAfterRead = false; f.control.interruptAtMs = 1000;
+  try {
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "native", () => {})).rejects.toThrow("fixture coordinator interrupted");
+    f.control.interruptAtMs = Infinity;
+    const file = join(f.stateDir, "terminal-recovery.json");
+    if (evidence === "unknown") writeFileSync(file, "not JSON");
+    else {
+      const rows = JSON.parse(readFileSync(file, "utf8")); rows[0].handle = "term-replacement"; rows[0].incarnationId = "inc-replacement";
+      writeFileSync(file, JSON.stringify(rows));
+    }
+    const error = await f.driver.restore(f.planned, f.progress, f.op, "native", () => {}).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain(evidence === "unknown" ? "identity cannot be verified" : "saved terminal identity changed");
+    expect(error.presentationCause).toEqual({ kind: "native_recovery", reason: "launcher_unverified", projectId: "p-215", peer: "codex", handle: "term-new", launcherState: evidence === "unknown" ? "unknown" : "replaced" });
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new" } });
+    expect(f.elapsed()).toBe(1000); expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+
+test("#466 a target becoming unavailable during attachment exposes its actual state without treating it as gone", async () => {
+  const f = delayedManagedFixture("codex", "pending");
+  f.control.attachAfterRead = false; f.control.unavailableAtMs = 1000; f.control.interruptAtMs = 2000;
+  try {
+    const error = await f.driver.restore(f.planned, f.progress, f.op, "native", () => {}).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe("codex: target hub reads as unavailable while awaiting attachment; saved terminal retained");
+    expect(error.presentationCause).toEqual({ kind: "native_recovery", reason: "target_unavailable", projectId: "p-215", peer: "codex", handle: "term-new", targetState: "unavailable" });
+    expect(f.elapsed()).toBe(1000); expect(f.creates()).toBe(0);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending" });
+  } finally { f.cleanup(); }
+});
+
+test("#466 a managed timeout exposes its exact 600-second bound and retains the chosen terminal", async () => {
+  const f = delayedManagedFixture("codex"); f.control.attachAfterRead = false;
+  try {
+    const error = await f.driver.restore(f.planned, f.progress, f.op, "native", () => {}).catch(error => error);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("attachment not verified within 600 s");
+    expect(error.presentationCause).toEqual({ kind: "native_recovery", reason: "attachment_timeout", projectId: "p-215", peer: "codex", handle: "term-new", timeoutMs: 600_000 });
+    expect(f.elapsed()).toBe(600_000); expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending", binding: { handle: "term-new" } });
+  } finally { f.cleanup(); }
+});
+
+test("#466 an unmanaged reconnect timeout names its exact 90-second window without inventing a terminal or session", async () => {
+  const f = delayedManagedFixture("claude");
+  f.planned.terminals = []; f.planned.reconnectOnly = ["claude"];
+  try {
+    const error = await f.driver.restore(f.planned, f.progress, f.op, "claude", () => {}).catch(error => error);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("unmanaged session did not reconnect within 90 s");
+    expect(error.presentationCause).toEqual({ kind: "native_recovery", reason: "attachment_timeout", projectId: "p-215", peer: "claude", timeoutMs: 90_000 });
+    expect(f.elapsed()).toBe(90_000); expect(f.creates()).toBe(0);
+    expect(f.progress.terminals["restored:claude"]).toBeUndefined();
+  } finally { f.cleanup(); }
+});
+
+test("#466 an interrupted repair preserves its actual wrong-session cause inside the existing repair wrapper", async () => {
+  const f = detachedAfterRestoreFixture("codex");
+  try {
+    await expect(f.verify()).rejects.toThrow("detached after restore");
+    f.control.attachAfterCreate = false; f.control.interruptWait = true;
+    await expect(f.restore()).rejects.toThrow("fixture repair interrupted");
+    f.control.interruptWait = false; f.control.sessionId = "wrong-attached-session"; f.control.attached = true;
+    const error = await f.restore().catch(error => error);
+    expect(error).toBeInstanceOf(Error); expect(error.constructor.name).toBe("ReattachmentRequired");
+    expect(error.message).toContain("a different conversation attached while awaiting recorded-codex");
+    expect(error.presentationError?.presentationCause).toMatchObject({ kind: "native_recovery", reason: "session_changed", projectId: "p-215", peer: "codex", expectedSession: "recorded-codex", observedSession: "wrong-attached-session" });
+    expect(f.progress.reattachments?.codex?.state).toBe("attempted");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "waiting", origin: "pending" });
+    expect(f.creates()).toBe(1);
+  } finally { f.cleanup(); }
+});
