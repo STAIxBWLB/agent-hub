@@ -1,7 +1,9 @@
+import { QWEN_DISPLAY } from "./native-display.ts";
+import { QWEN_RECOVERY_SESSION } from "./native-recovery.ts";
 import { AcpPeer } from "../acp.ts";
 import type { AdapterDefinition } from "../registry-types.ts";
 import { buildQwenLaunch, qwenNativeIdentity, qwenSessionId, QWEN_MODE_IDS } from "./qwen-native.ts";
-import { shellQuote } from "../../cli/terminal-recovery.ts";
+import { shellQuote } from "../../cli/shell-quote.ts";
 
 /** Production Qwen policy. Legacy AcpPeer callers opt in separately through qwen025. */
 export const QWEN_DEFINITION: AdapterDefinition = {
@@ -15,6 +17,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
   defaultOnRoster: false,
   trust: { onPrem: false, hubSandboxed: false },
   start: {
+    daemonPort: "acp",
     forms: ["headless"],
     defaultForm: "headless",
     ownsTerminal: () => false,
@@ -55,6 +58,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
       const sessionId = peer.recoveryMetadata?.().sessionId;
       return typeof sessionId === "string" ? sessionId : undefined;
     },
+    ...QWEN_RECOVERY_SESSION,
     launchKind: "acp",
     resumeById: true,
     crashIdentity: row => {
@@ -66,6 +70,6 @@ export const QWEN_DEFINITION: AdapterDefinition = {
   budget: { account: "qwen" },
   capabilities: { watch: true },
   cli: { command: "qwen", startWords: () => ["qwen"] },
-  display: { palette: { fg: "#8a8f99", bg: "transparent" } },
+  display: QWEN_DISPLAY,
   hooks: { agentIdentity: init => { qwenNativeIdentity("qwen", true, init); }, recallPlatform: "qwen" },
 };

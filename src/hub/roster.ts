@@ -1,8 +1,7 @@
 import { isSupportedPeer, type KnownPeer } from "./peer-catalog.ts";
+import { defaultRosterEnabled } from "../adapters/registry.ts";
 
 export type PeerRoster = Partial<Record<KnownPeer, boolean>>;
-// Default participation policy, not another catalog. New catalog members default off.
-const DEFAULT_ON: Partial<Record<KnownPeer, boolean>> = { claude: true, codex: true, kimi: true, local: true };
 
 export function peerRosterConfig(value: unknown): PeerRoster {
   if (value === undefined) return {};
@@ -19,5 +18,5 @@ export function peerRosterConfig(value: unknown): PeerRoster {
 /** External ids keep their existing admission rules; Pi's legacy switch is only its default. */
 export function rosterAllows(roster: PeerRoster, peer: string, piEnabled: boolean): boolean {
   if (!isSupportedPeer(peer)) return true;
-  return roster[peer] ?? (peer === "pi" ? piEnabled : DEFAULT_ON[peer] ?? false);
+  return roster[peer] ?? defaultRosterEnabled(peer, piEnabled);
 }

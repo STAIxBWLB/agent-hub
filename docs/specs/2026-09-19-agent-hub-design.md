@@ -3237,8 +3237,8 @@ The guard inventories AST comparisons, closed-list imports and vendor literals,
 including inline dashboard scripts, under stable file/symbol scopes. Its reviewed
 A1 baseline records the current source, rather than claiming the old A0 grep's
 265 line matches equal AST node counts. A new group, count growth or stale entry
-fails; later phases may only shrink this baseline. Only real, unshadowed registry
-resolver imports exempt kind-aware comparisons. Native adapter implementations and
+fails; later phases may only shrink this baseline. A1 originally exempted kind-aware comparisons from real, unshadowed registry
+resolver imports; the A2 amendment below counts them instead. Native adapter implementations and
 explicit non-peer config semantics remain the narrow exceptions. Existing literal
 catalog exports used by older recovery source probes are retained until their
 replacement compatibility proof is available; a refactor must not silently make a
@@ -3279,3 +3279,65 @@ daemon restores recorded startup options before automatic startup (Pi). Neither
 flag proves that a conversation can be resumed or permits a fresh replacement.
 Crash recovery tests `resumeById` and uses `crashIdentity`; transport choice or the
 presence of a factory does not establish that capability.
+
+A2 preserves literal `KNOWN_PEERS` and `OPTIONAL_PEERS` exports in
+`peer-catalog.ts` for released coordinators that inspect their source. The guard
+records these exact file/symbol exceptions separately with the reason
+"cross-release source probe", and tests their values against the typed registry
+catalog. The same exception preserves `start-mode.ts`'s literal `START_MODE_PEERS`, which released coordinators inspect before restoring Kimi headlessly. The three probes are counted separately (5 + 2 + 3 sites). The native vendor baseline is otherwise empty. A retained coordinator's
+existing source probe must accept the A2 target; no unsupported-target ceiling is
+introduced. ponytail: retire these compatibility literals only after a separately
+approved minimum supported upgrade source no longer reads them.
+
+Native recovery hooks return read-only facts over the existing narrow DTOs.
+`zeroTurn({ stateDir, binding, phase })` reads Codex's existing event proof only
+for planning, and Claude's existing transcript absence only for attachment or
+verification. `restoreArgs(peer)` and `recoveryRefusal(peer)` are pure over the
+captured peer. `personFresh` and `missingEvidence` are policy data, not authority.
+`resumeArgv(binding, fresh)` returns the CLI tail; the coordinator supplies the
+interpreter, entrypoint and project prefix and retains all receipt, repair,
+waiver and unknown-state decisions. The restore oracle, supplemental matrix and
+transition code remain byte-unchanged.
+
+Quota and context readers are pure normalizers:
+`QuotaReader.read(value: unknown): UsageWindow[]` and
+`ContextReader.read(value: unknown, sessionId: string, measuredAt: number): ContextReading`.
+They preserve the existing malformed-input results. The coordinator still binds
+transport generation, native session and measurement time before reporting.
+Palette data additionally carries optional `tone` and `ansi`, preserving the
+existing terminal palette and rendered CSS bytes.
+
+P4 conformance is transport-specific. Delivery-only native drivers set busy
+synchronously at admission; pull-only WebSocket peers receive no unsolicited
+delivery or busy mutation; Claude push keeps its existing receipt/native-start
+busy contract. Native production behavior does not change to satisfy a generic
+conformance case. The kit also covers the existing generation fences, process
+groups, approvals, quota refusals, mode acknowledgement/timeout and recovery
+contracts for each applicable transport, with explicit unsupported outcomes.
+
+`resumeArgv` accepts the existing `SessionRef` (session id/file, backend and model),
+which withholds terminal and launch identity from a pure argument formatter.
+`recoveryRefusal(peer, phase?: "plan" | "restore")` defaults to planning and keeps
+both existing phase-specific native messages. Fixed private compatibility data
+`legacyTargetSupport` and `legacyHeadlessArgv` name only the existing catalog or
+start-mode literal exports; their old read points and regexes are unchanged.
+
+`start.daemonPort` is a closed, data-only engine tag (`codex-appserver`, `acp`,
+`owned-acp`, `pi-rpc`, `local-worker`), required when `start.create` exists. Unknown
+values are refused at registry load. Channel/pull definitions without a factory
+leave it absent. Typed registry-owned wrappers retain the existing `DaemonPorts`
+union; core selects the engine and retains lifecycle/authentication closures,
+while the definition factory remains the only native constructor.
+
+The trusted CLI host may supply `LaunchContext.pi` using the existing Pi builder
+options, extension path and live bridge port/token. A redacted preview supplies
+only redacted placeholders; bridge tokens never reach previews, logs or events.
+`LaunchPlan.env` preserves Pi's existing child environment. Definitions never
+load daemon config or infer executable commands from environment text.
+`VersionContext` adds `observedVersion`, `nativeCommand` and `projectRoot` once:
+the host still performs each probe, while definitions validate or display it.
+`cli.authority` and `cli.personOnlyFlags` can only restrict existing authority;
+identity.ts stays authoritative and missing/unknown metadata retains today's
+rule. `start.passthrough` is data only. The MCP hook is a pure plan over the
+existing project/state/server-entrypoint/form tuple; every write, ordering fence
+and finally cleanup remains in the CLI host.

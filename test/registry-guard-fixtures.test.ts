@@ -48,11 +48,11 @@ test("registry guard fixture refuses stale, reduced and duplicate baseline entri
   expect(compareRegistryBaseline([entry], [entry, entry]).join("\n")).toContain("duplicate");
 });
 
-test("registry guard fixture excludes native adapter implementation and kind-aware comparisons only", () => {
+test("registry guard fixture excludes native adapter implementation while counting kind-aware comparisons", () => {
   const body = `function choose(peer: string) { return peer === "qwen"; }`;
   expect(inventory(body, "src/adapters/acp.ts")).toEqual([]);
   expect(inventory(body, "src/adapters/registry.ts")).toEqual([]);
-  expect(inventory(`import { kindOf, definitionOf } from "../adapters/registry.ts"; function choose(peer: string) { return kindOf(peer) === "qwen" || definitionOf(peer)?.kind === "kimi"; }`)).toEqual([]);
+  expect(inventory(`import { kindOf, definitionOf } from "../adapters/registry.ts"; function choose(peer: string) { return kindOf(peer) === "qwen" || definitionOf(peer)?.kind === "kimi"; }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 2 }]);
   expect(inventory(`function choose(peer: string) { return fakeKindOf(peer) === "qwen" || object.kind === "kimi"; }`)[0]?.count).toBe(2);
 });
 
@@ -81,6 +81,6 @@ test("registry guard fixture trusts only imported registry resolvers without loc
   expect(inventory(`function choose(peer: string) { return kindOf(peer) === "qwen" || definitionOf(peer)?.kind === "kimi"; }`)[0]?.count).toBe(2);
   expect(inventory(`import { kindOf } from "../adapters/registry.ts"; function choose(peer: string, kindOf: (id: string) => string) { return kindOf(peer) === "qwen"; }`)[0]?.count).toBe(1);
   expect(inventory(`import { definitionOf } from "../adapters/registry.ts"; function choose(peer: string) { const definitionOf = (id: string) => ({kind:id}); return definitionOf(peer)?.kind === "kimi"; }`).reduce((count, group) => count + group.count, 0)).toBe(1);
-  expect(inventory(`import { kindOf as resolveKind, definitionOf as resolveDefinition } from "../adapters/registry.ts"; function choose(peer: string) { return resolveKind(peer) === "qwen" || resolveDefinition(peer)?.kind === "kimi"; }`)).toEqual([]);
+  expect(inventory(`import { kindOf as resolveKind, definitionOf as resolveDefinition } from "../adapters/registry.ts"; function choose(peer: string) { return resolveKind(peer) === "qwen" || resolveDefinition(peer)?.kind === "kimi"; }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 2 }]);
   expect(inventory(`import { kindOf } from "./fake-registry.ts"; function choose(peer: string) { return kindOf(peer) === "qwen"; }`)[0]?.count).toBe(1);
 });

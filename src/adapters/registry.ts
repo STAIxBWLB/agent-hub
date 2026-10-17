@@ -1,9 +1,19 @@
+import { DAEMON_PORTS } from "./definitions/native-factories.ts";
+export { DAEMON_PORTS };
 import { BUILTIN_DEFINITIONS_WITHOUT_QWEN } from "./definitions/builtin-metadata.ts";
 import { QWEN_DEFINITION } from "./definitions/qwen.ts";
 import type { AdapterDefinition } from "./registry-types.ts";
 
 export type * from "./registry-types.ts";
 export const ADAPTER_API = 1;
+
+/** Ordered compatibility projections stay typed independently of definition implementation inference. */
+export const KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
+export const OPTIONAL_PEERS = ["qwen", "jcode"] as const;
+export const SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS] as const;
+export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
+export const OFFICE_PEER_ORDER: readonly string[] = KNOWN_PEERS;
+
 
 function immutable<T>(value: T, seen = new WeakSet<object>()): T {
   if (!value || typeof value !== "object" || seen.has(value)) return value;
@@ -20,6 +30,7 @@ export const ADAPTERS: readonly AdapterDefinition[] = immutable([
 ]);
 const definitions = new Map<string, AdapterDefinition>();
 for (const definition of ADAPTERS) {
+  assertDaemonEngine(definition);
   if (definition.api !== ADAPTER_API || definitions.has(definition.kind)) throw new Error("invalid builtin adapter registry");
   definitions.set(definition.kind, definition);
 }
@@ -51,3 +62,16 @@ export const CONDUCTOR_START_PEERS = [
   ...CONDUCTOR_START_PRIORITY,
   ...ADAPTERS.filter(adapter => !(CONDUCTOR_START_PRIORITY as readonly string[]).includes(adapter.kind)).map(adapter => adapter.kind),
 ];
+
+/** A missing definition retains external-id admission; Pi's legacy enabled switch controls its default only. */
+export function defaultRosterEnabled(peer: string, piEnabled: boolean): boolean {
+  const definition = definitionOf(peer);
+  if (!definition) return true;
+  return definition.kind === "pi" ? piEnabled : definition.defaultOnRoster ?? false;
+}
+
+/** A factory must name one existing engine; metadata never creates a caller-controlled port. */
+export function assertDaemonEngine(definition: Pick<AdapterDefinition, "start">): void {
+  const engine = definition.start.daemonPort;
+  if (definition.start.create && engine === undefined || engine !== undefined && !Object.hasOwn(DAEMON_PORTS, engine)) throw new Error("invalid adapter daemon engine");
+}

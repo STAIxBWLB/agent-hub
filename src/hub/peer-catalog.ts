@@ -1,4 +1,5 @@
-import { definitionOf } from "../adapters/registry.ts";
+import { definitionOf, SUPPORTED_PEERS } from "../adapters/registry.ts";
+export { SUPPORTED_PEERS } from "../adapters/registry.ts";
 
 // ponytail: older staged coordinators read these literal declarations to probe target support.
 // A2 replaces that source probe with a published capability before deleting the compatibility exports.
@@ -6,7 +7,6 @@ import { definitionOf } from "../adapters/registry.ts";
 export const KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
 /** Optional production peers are added explicitly; legacy defaults remain stable. */
 export const OPTIONAL_PEERS = ["qwen", "jcode"] as const;
-export const SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS] as const;
 export type KnownPeer = typeof SUPPORTED_PEERS[number];
 
 export const isKnownPeer = (value: unknown): value is KnownPeer =>

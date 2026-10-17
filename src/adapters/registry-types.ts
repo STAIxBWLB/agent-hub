@@ -1,5 +1,6 @@
+import type { RecoveryPeer } from "../cli/upgrade.ts";
 import type { Launch, StatusLineTee, FactsHook } from "../cli/launch.ts";
-import type { LaunchMetadata, TerminalBinding } from "../cli/terminal-recovery.ts";
+import type { LaunchMetadata, TerminalBinding, SessionRef } from "../cli/terminal-recovery.ts";
 import type { UsageWindow } from "../hub/budget.ts";
 import type { ContextReading } from "../hub/context-window.ts";
 import type { PeerAdapter } from "../hub/peers.ts";
@@ -11,6 +12,7 @@ import type { LocalOptions } from "./local-worker.ts";
 import type { PiOptions } from "./pi.ts";
 
 export type StartForm = "tui" | "headless";
+export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker";
 
 /** Existing buildLaunch inputs plus the startup-bound instance and project identity. */
 export interface LaunchContext {
@@ -31,9 +33,16 @@ export interface LaunchContext {
   env: Readonly<Record<string, string>>;
   /** Existing validated config argv (or the existing redacted preview), never model input. */
   nativeCommand?: readonly string[];
+  /** Existing trusted Pi builder inputs; never populated from a request or model. */
+  pi?: {
+    options: Pick<PiOptions, "stateDir" | "cmd" | "mode" | "backend" | "model" | "relay" | "tools" | "preamble" | "maxSteps" | "sessionFile" | "sessionId">;
+    extension: string;
+    bridgePort: number | string;
+    bridgeToken: string;
+  };
 }
 
-export type LaunchPlan = Launch & { metadata: LaunchMetadata; mcpFile?: { path: string; entry: unknown } };
+export type LaunchPlan = Launch & { env?: NodeJS.ProcessEnv; metadata: LaunchMetadata; mcpFile?: { path: string; entry: unknown } };
 
 /** A factory receives exactly its existing transport options, with no cross-transport callback widening. */
 export type DaemonPorts =
@@ -65,6 +74,9 @@ export interface StartRequest {
 
 export interface VersionContext {
   instance: string;
+  observedVersion?: string;
+  nativeCommand?: readonly string[];
+  projectRoot?: string;
   peer?: PeerAdapter;
   env: Readonly<Record<string, string>>;
 }
@@ -78,13 +90,13 @@ export type NativeModeSpec =
 
 export interface QuotaReader {
   source: string;
-  read(peer: PeerAdapter): UsageWindow[] | undefined;
+  read(value: unknown): UsageWindow[];
   resetOnWindow?: boolean;
 }
 
 export interface ContextReader {
   source: ContextReading["source"];
-  read(peer: PeerAdapter): ContextReading | undefined;
+  read(value: unknown, sessionId: string, measuredAt: number): ContextReading;
 }
 
 export interface CapabilityManifest {
@@ -127,9 +139,11 @@ export interface AdapterDefinition {
     ownsTerminal(form: StartForm): boolean;
     launch(ctx: LaunchContext): LaunchPlan;
     create?(ctx: CreateContext): PeerAdapter;
+    daemonPort?: DaemonEngine;
     preflight?(ctx: StartRequest): string | undefined;
     version?(ctx: VersionContext): string | undefined;
     conductorStartable: boolean;
+    passthrough?: boolean;
     autoStart?: "pi.auto_start";
     unattended?: boolean;
     hubSwitches: readonly string[];
@@ -150,10 +164,18 @@ export interface AdapterDefinition {
     idField: "sessionId" | "threadId";
     currentId(peer: PeerAdapter): string | undefined;
     configDirEnv?: "CODEX_HOME" | "CLAUDE_CONFIG_DIR";
-    resumeArgv?(binding: TerminalBinding, fresh: boolean): string[];
+    resumeArgv?(binding: SessionRef, fresh: boolean): string[];
     transcriptPath?(binding: TerminalBinding): string | undefined;
     transcriptExists?(binding: TerminalBinding): boolean | "unknown";
     zeroTurnFresh?: boolean;
+    zeroTurn?(ctx: { stateDir: string; binding: TerminalBinding; phase: "plan" | "attach" | "verify" }): boolean;
+    restoreArgs?(peer: RecoveryPeer): Record<string, string>;
+    recoveryRefusal?(peer: RecoveryPeer, phase?: "plan" | "restore"): string | undefined;
+    personFresh?: boolean;
+    missingEvidence?: "rollout" | "transcript";
+    /** Fixed source-only compatibility reads used by released recovery coordinators. */
+    legacyTargetSupport?: { file: "src/hub/peer-catalog.ts"; exportName: "OPTIONAL_PEERS"; refusal: string };
+    legacyHeadlessArgv?: { file: "src/hub/start-mode.ts"; exportName: "START_MODE_PEERS"; argv: readonly string[] };
     freshOnRestore?: boolean;
     /** The daemon restores recorded startup options before auto-starting this kind. */
     restoreOnStart?: boolean;
@@ -166,12 +188,20 @@ export interface AdapterDefinition {
   turnEnd: "adapter" | "native-hook";
   budget?: { account: string; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean };
   capabilities?: { manifest?(peer: PeerAdapter): Promise<CapabilityManifest>; watch?: boolean };
-  init?: { templateFragment?: string; mcpFile?: string };
+  init?: {
+    templateFragment?: string;
+    mcpFile?: string;
+    /** Pure planner; the CLI host owns every write and cleanup. */
+    mcpPlan?(ctx: { projectRoot: string; stateDir: string; entrypoint: string; form: StartForm }): { file: string; tracked: boolean; changed: boolean; action: string };
+  };
   cli: {
     command: string;
+    /** Restrictions only; core identity remains authoritative. */
+    authority?: "person" | "conductor";
+    personOnlyFlags?: readonly string[];
     startWords(form: StartForm): string[];
     stopNotice?(form: StartForm, owner: PeerAdapter | undefined): string;
   };
-  display: { palette: { fg: string; bg: string } };
+  display: { palette: { fg: string; bg: string; tone?: string; ansi?: string } };
   hooks?: Partial<NativeHooks>;
 }

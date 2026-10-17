@@ -3180,41 +3180,6 @@ export async function startDaemon(opts: DaemonOptions) {
       catch { await jcode.stop().catch(() => {}); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
       return { ok: true, policy: "unmanaged" };
     }
-    if (adapter?.transport === "acp" && adapter.start.create) {
-      // ponytail: A1 migrates one ACP factory; A2 generalizes its native config and activity ports before adding another.
-      const launch = adapter.start.launch({ instance: peer, form: "headless", projectRoot: opts.cwd, stateDir: opts.stateDir, entrypoint: CLI_ENTRY,
-        userArgs: [], unattended: false, env: {}, nativeCommand: config.qwen_cmd, model: args.model });
-      const mcpServers = [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv(peer, true)).map(([name, value]) => ({ name, value })) }];
-      const permission = permissionMode(peer);
-      const owner = adapter.start.create({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: undefined, permission, mcpServers, daemon: { acp: {
-        onActivity: item => activityRings[peer as keyof typeof activityRings].append(item),
-        isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
-        cmd: [launch.cmd, ...launch.args], permissionMode: permission,
-        ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
-        cwd: opts.cwd, watchdogMs: config.watchdog_ms, onPermission,
-        autoApprove: title => !stopping && HUB_TOOL_TITLES.has(title),
-        log: () => log("Qwen runtime diagnostic: details withheld"),
-        onUsageDiagnostic: (observation, sessionId) => {
-          if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
-          const current = contextSession(peer); if (!current) return;
-          contexts.report(peer, observation.contextUsed !== undefined && observation.contextCapacity !== undefined
-            ? acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now())
-            : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null }, current);
-        },
-        onTurnFailure: () => { supervisionTurns.delete(peer); },
-        mcpServers,
-        preamble: sessionRoleContract(peer),
-      } } });
-      if (!(owner instanceof AcpPeer)) throw new Error("ACP factory did not return its native transport");
-      recoveryTaskPreface(peer); await ensurePreface(peer);
-      try { await owner.start(); await reconcileNativeStart(peer, owner); }
-      catch (error) {
-        await owner.stop().catch(() => log("Qwen stop after failed startup was not confirmed"));
-        if (error instanceof QwenIdentityError) throw error;
-        throw new Error("Qwen could not reach its provider or complete its startup handshake; verify the provider connection and Qwen Code 0.25.0 (details withheld)");
-      }
-      return { ok: true };
-    }
     if (peer === "kimi") {
       const launch = buildKimiLaunch(config.kimi_cmd, args.model);
       const cmd = [launch.cmd, ...launch.args];
@@ -3264,6 +3229,41 @@ export async function startDaemon(opts: DaemonOptions) {
         await kimi.start();
         await reconcileNativeStart(peer, kimi);
       } catch (error) { await kimi.stop().catch(stop => log(`kimi stop after a failed start: ${(stop as Error).message}`)); throw error; }
+      return { ok: true };
+    }
+    if (adapter?.transport === "acp" && adapter.start.create) {
+      // ponytail: A1 migrates one ACP factory; A2 generalizes its native config and activity ports before adding another.
+      const launch = adapter.start.launch({ instance: peer, form: "headless", projectRoot: opts.cwd, stateDir: opts.stateDir, entrypoint: CLI_ENTRY,
+        userArgs: [], unattended: false, env: {}, nativeCommand: config.qwen_cmd, model: args.model });
+      const mcpServers = [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv(peer, true)).map(([name, value]) => ({ name, value })) }];
+      const permission = permissionMode(peer);
+      const owner = adapter.start.create({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: undefined, permission, mcpServers, daemon: { acp: {
+        onActivity: item => activityRings[peer as keyof typeof activityRings].append(item),
+        isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
+        cmd: [launch.cmd, ...launch.args], permissionMode: permission,
+        ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
+        cwd: opts.cwd, watchdogMs: config.watchdog_ms, onPermission,
+        autoApprove: title => !stopping && HUB_TOOL_TITLES.has(title),
+        log: () => log("Qwen runtime diagnostic: details withheld"),
+        onUsageDiagnostic: (observation, sessionId) => {
+          if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
+          const current = contextSession(peer); if (!current) return;
+          contexts.report(peer, observation.contextUsed !== undefined && observation.contextCapacity !== undefined
+            ? acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now())
+            : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null }, current);
+        },
+        onTurnFailure: () => { supervisionTurns.delete(peer); },
+        mcpServers,
+        preamble: sessionRoleContract(peer),
+      } } });
+      if (!(owner instanceof AcpPeer)) throw new Error("ACP factory did not return its native transport");
+      recoveryTaskPreface(peer); await ensurePreface(peer);
+      try { await owner.start(); await reconcileNativeStart(peer, owner); }
+      catch (error) {
+        await owner.stop().catch(() => log("Qwen stop after failed startup was not confirmed"));
+        if (error instanceof QwenIdentityError) throw error;
+        throw new Error("Qwen could not reach its provider or complete its startup handshake; verify the provider connection and Qwen Code 0.25.0 (details withheld)");
+      }
       return { ok: true };
     }
     if (peer === "codex") {

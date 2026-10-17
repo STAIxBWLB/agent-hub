@@ -194,3 +194,37 @@ export function compareRegistryBaseline(actual: readonly BaselineEntry[], baseli
   for (const [key, entry] of expected) if (!seen.has(key)) issues.push(`stale baseline: ${entry.file} ${entry.symbol}`);
   return issues;
 }
+
+/** Released coordinators read these exact top-level literal exports before any effects. */
+export const REGISTRY_COMPATIBILITY_PROBES = [
+  { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", count: 5, reason: "cross-release source probe" },
+  { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 2, reason: "cross-release source probe" },
+  { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 3, reason: "cross-release source probe" },
+] as const;
+
+/** Keep compatibility evidence visible and separate from the native policy baseline. */
+export function splitRegistryInventory(sources: Readonly<Record<string, string>>) {
+  const sites = scanRegistrySources(sources), accepted = new Set<InventorySite>();
+  const compatibility: { file: string; symbol: string; count: number; reason: string; values: string[] }[] = [];
+  const issues: string[] = [];
+  for (const probe of REGISTRY_COMPATIBILITY_PROBES) {
+    const text = sources[probe.file];
+    const parsed = text === undefined ? undefined : ts.createSourceFile(probe.file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declarations: ts.VariableDeclaration[] = [];
+    for (const statement of parsed?.statements ?? []) {
+      if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const) || !statement.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+      for (const declaration of statement.declarationList.declarations) if (ts.isIdentifier(declaration.name) && declaration.name.text === probe.symbol) declarations.push(declaration);
+    }
+    const initializer = declarations.length === 1 && declarations[0]!.initializer ? unwrap(declarations[0]!.initializer!) : undefined;
+    const values = initializer && ts.isArrayLiteralExpression(initializer) && initializer.elements.every(ts.isStringLiteral)
+      ? initializer.elements.map(element => (element as ts.StringLiteral).text) : undefined;
+    const matches = sites.filter(site => site.file === probe.file && site.symbol === probe.symbol && site.pattern === "vendor-literal");
+    if (!values || values.length !== probe.count || matches.length !== probe.count || values.some(value => !VENDORS.has(value))) {
+      issues.push(`invalid compatibility probe: ${probe.file} ${probe.symbol}`);
+      continue;
+    }
+    for (const site of matches) accepted.add(site);
+    compatibility.push({ ...probe, count: matches.length, values });
+  }
+  return { policy: sites.filter(site => !accepted.has(site)), compatibility, issues };
+}

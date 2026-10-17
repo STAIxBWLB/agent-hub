@@ -27,3 +27,9 @@ export function acpContext(usage: { used: number; size: number }, sessionId: str
   // If a report ever shows used > size, the fraction clamps so a bar renders; tokens keeps the reported number.
   return { source: "acp_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
+
+/** The coordinator supplies validated occupancy; malformed public input remains unknown. */
+export function acpContextValue(value: unknown, sessionId: string, measuredAt: number): ContextReading {
+  const raw = object(value);
+  return acpContext({ used: raw.used as number, size: raw.size as number }, sessionId, measuredAt);
+}

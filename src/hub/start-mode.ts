@@ -1,4 +1,5 @@
-import { SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
+import { definitionOf, SUPPORTED_PEERS } from "../adapters/registry.ts";
+import { isSupportedPeer } from "./peer-catalog.ts";
 
 /**
  * #269: how a peer comes up when the hub starts it: its own TUI in a terminal, or headless. A person who types
@@ -8,6 +9,8 @@ import { SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
 export const PEER_START_RETRY_MS = 30_000;
 export const START_MODES = ["tui", "headless"] as const;
 export type StartMode = typeof START_MODES[number];
+// ponytail: released coordinators source-probe this exact literal before restoring headless Kimi.
+// Keep it until those readers negotiate the registry capability.
 /** The peers with both forms. Kimi's TUI is pull-only; Claude has only a TUI and local only headless. */
 export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
 /** Every peer the hub can start itself. */
@@ -33,9 +36,8 @@ export function peerStartConfig(value: unknown): PeerStartConfig {
 
 /** The mode a start of `peer` takes when nothing more specific was asked: `tui` wherever the peer has one. */
 export function startModeOf(peers: PeerStartConfig | undefined, peer: string): StartMode {
-  if (peer === "claude") return "tui";
   if ((START_MODE_PEERS as readonly string[]).includes(peer)) return peers?.[peer]?.start_mode ?? "tui";
-  return "headless";
+  return definitionOf(peer)?.start.defaultForm ?? "headless";
 }
 
 /**
