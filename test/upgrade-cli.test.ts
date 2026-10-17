@@ -256,7 +256,7 @@ test("an agent shell cannot dispose of a recovery operation", async () => {
     const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "recovery", "dispose", "00000000-0000-4000-8000-000000000000", "--stop-and-archive", "--reason", "test"],
       { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     const [code, , err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
-    expect({ code, err: err.trim() }).toEqual({ code: 1, err: "ahub: claude cannot run ahub recovery dispose; the person runs it in ahub console or a terminal. Refused because inherited agent markers identify this shell as an agent. A ! command in an agent session runs as that agent; use a separate terminal outside the agent session" });
+    expect({ code, err: err.trim() }).toEqual({ code: 1, err: "ahub: claude cannot run ahub recovery dispose; the person runs it in ahub console or a terminal. Refused because inherited agent markers (CLAUDECODE) identify this shell as an agent. A ! command in an agent session runs as that agent; use a separate terminal outside the agent session" });
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
