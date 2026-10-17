@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "56ae16dfd69d3c72bcc1f4efdabbda1905f75b9c",
+      "verifiedAgainst": "6637a383c3f46ae173b14268d29c8b0d306eac95",
       "paths": [
         "package.json",
         "src/",
