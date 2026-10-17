@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Safely return unseen Claude pushes, settle superseded hub-only holds with hub audit identity, list every hold and explain inherited agent command markers (#434).
+
 ## 0.12.30
 
 Memory now uses the exact-pinned first-party `@staix/agent-mem` 0.3.0. Do not migrate a memory home until every hub using it runs 0.12.30; run `ahub memory profile-check`, then quiesce and close all consumers before changing profiles. Shared v1 stays the default, with no automatic data migration.

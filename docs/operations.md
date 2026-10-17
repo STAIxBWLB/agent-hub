@@ -193,6 +193,8 @@ In Tasks, `a` assigns the owner in ordinary open states and the reviewer in
 the corresponding role, and `r` reviews only in `in_review`. In Queue, `r`
 prefills `discard` for a queued row and `retry` for a needs_review row, with the
 action still editable before confirmation. `completed` is never the default.
+Status, console notices and `route explain` show every held row with its id, sender, kind and age. The hub completes rows made entirely of superseded hub workflow notices or presence items, recording an ids-only reason and the hub actor. Mixed messages, live task notices and unknown references remain held. A Claude session without channel support safely returns unseen pushes for `hub_inbox`; a thrown notification write remains uncertain.
+
 Every resolution needs a reason. Queue `discard` removes queued originals or
 settles a needs_review receipt; it never cancels a task or native turn.
 
