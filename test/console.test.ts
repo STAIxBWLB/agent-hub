@@ -1661,3 +1661,25 @@ test("#441 navigation reads split into presses only when made of known sequences
   appendEvent(s, { text: "e5" }, 4);
   expect([s.events.map(e => e.text), s.selection, selectedPanelRow(s)?.text]).toEqual([["e2", "e3", "e4", "e5"], 0, "e2"]);
 });
+
+test("#452 w opens the web UI and o the pet window as console commands, never while editing, confirming or under the key table", () => {
+  let s = reduceConsole(state(true), "1", NOW).state;
+  expect(reduceConsole(s, "w", NOW).effects).toEqual([{ type: "command", args: ["ui"] }]);
+  expect(reduceConsole(s, "o", NOW).effects).toEqual([{ type: "command", args: ["pet", "--window"] }]);
+  const editing = { ...s, editing: true, input: "" };
+  const help = reduceConsole(s, "?", NOW).state;
+  const confirming = reduceConsole({ ...s, editing: true, input: "task assign 9 kimi" }, "\r", NOW).state;
+  expect(renderConsole(confirming, 80, 24, NOW).join("\n")).toContain("y/N"); // a confirmation is pending
+  for (const key of ["w", "o"]) {
+    expect(reduceConsole(editing, key, NOW).effects).toEqual([]); // typed into the command line instead
+    expect(reduceConsole(help, key, NOW).effects).toEqual([]); // the key table is modal
+    const answered = reduceConsole(confirming, key, NOW);
+    expect(answered.effects).toEqual([]); // any key but y cancels the confirmation; it never opens a window
+    expect(answered.state.confirm).toBeUndefined();
+  }
+  const stream = reduceConsole(state(false), "w", NOW);
+  expect(stream.effects).toEqual([]); // stream mode: a letter starts the command line
+  expect(parseConsoleCommand("ui --all")).toEqual(["ui", "--all"]);
+  expect(parseConsoleCommand("pet --window --close")).toEqual(["pet", "--window", "--close"]);
+  expect(() => parseConsoleCommand("kill")).toThrow("use another shell for this command");
+});
