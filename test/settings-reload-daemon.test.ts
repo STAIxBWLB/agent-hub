@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startDaemon } from "../src/hub/daemon.ts";
+import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -23,7 +23,7 @@ class IdlePeer extends BasePeer {
 }
 
 /** Real four-file loader, git trust and WS requests; never pass opts.config, which would bypass the reload baseline. */
-async function fixture(initial: { local?: unknown; trackedLocal?: boolean } = {}) {
+async function fixture(initial: { local?: unknown; trackedLocal?: boolean; embedded?: boolean } = {}) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-reload-daemon-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -50,7 +50,7 @@ async function fixture(initial: { local?: unknown; trackedLocal?: boolean } = {}
   if (initial.trackedLocal) git("add", "-f", ".agenthub/config.local.json");
   let ticks = 0;
   const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
-    taskSweepNow: () => { ticks++; return Date.now(); }, researchGraceMs: 1 });
+    ...(initial.embedded ? { config: loadConfig(dir) } : {}), taskSweepNow: () => { ticks++; return Date.now(); }, researchGraceMs: 1 });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(state, { role: "console" }); cleanup.push(() => client.close());
   const pushes: Record<string, any>[] = []; client.onPush = value => pushes.push(value);
@@ -267,5 +267,19 @@ test("#439 relay changes stay pending across reloads while watchdog changes reac
   expect((await f.reload()).pendingRestart).toEqual(result.pendingRestart);
   writeFileSync(f.file("routing.toml"), f.routing);
   writeFileSync(f.file("config.local.json"), JSON.stringify({ watchdog_ms: 120_000 }));
+  expect((await f.reload()).pendingRestart).toEqual([]);
+}, 15_000);
+
+test("#439 embedded callers retain desired restart values across unchanged and unrelated reloads", async () => {
+  const f = await fixture({ embedded: true });
+  writeFileSync(f.file("config.local.json"), JSON.stringify({ memory: { enabled: true } }));
+  const first = await f.reload();
+  expect(first.ok).toBe(true);
+  expect(first.pendingRestart.map((x: {key: string}) => x.key)).toContain("memory.enabled");
+  expect((await f.reload()).pendingRestart).toEqual(first.pendingRestart);
+  writeFileSync(f.file("config.local.json"), JSON.stringify({ memory: { enabled: true }, research: { enabled: true } }));
+  expect((await f.reload()).pendingRestart).toEqual(first.pendingRestart);
+  expect((await f.row("research.enabled")).value).toBe(true);
+  writeFileSync(f.file("config.local.json"), JSON.stringify({ research: { enabled: true } }));
   expect((await f.reload()).pendingRestart).toEqual([]);
 }, 15_000);

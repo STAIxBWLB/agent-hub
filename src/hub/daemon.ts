@@ -589,6 +589,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let acceptedFileConfig: HubConfig;
   try { acceptedFileConfig = loadConfig(opts.cwd, acceptedSources.layers); }
   catch { acceptedFileConfig = structuredClone(config); } // explicit embedding remains usable with broken files
+  let desiredConfig = structuredClone(config);
   let pendingRestart: { key: string; reason: string }[] = [];
   let lastReloadFailure: string | undefined;
   let reloadDebounce: ReturnType<typeof setTimeout> | undefined;
@@ -3769,8 +3770,10 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     const fileConfig = loadConfig(opts.cwd, sources.layers);
     validateEffectiveConfig(fileConfig);
-    const candidate = opts.config ? structuredClone({ ...config, roles: policyRoles }) : fileConfig;
+    const candidate = opts.config ? structuredClone(desiredConfig) : fileConfig;
     if (opts.config) for (const change of configChanges(acceptedFileConfig, fileConfig)) putConfig(candidate, change.key, change.after);
+    // Roster confirmation authorizes one peer only; unrelated membership edits stay unapplied.
+    if (rosterPeer) candidate.roster = { ...config.roster, [rosterPeer]: fileConfig.roster[rosterPeer] };
     const changes = configChanges({ ...config, roles: policyRoles }, candidate);
     // Raw bytes alone do not prove authority: Git provenance can change while a declaration stays identical.
     const before = { ...config, roles: policyRoles };
@@ -3855,6 +3858,7 @@ export async function startDaemon(opts: DaemonOptions) {
       runningRouting = { ...prepared.sources.routing, pi: runningRouting.pi };
       acceptedSources = prepared.sources;
       acceptedFileConfig = prepared.fileConfig;
+      desiredConfig = structuredClone(candidate);
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
       storedConfigCache = undefined;
