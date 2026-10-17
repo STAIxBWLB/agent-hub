@@ -1340,7 +1340,10 @@ export class Tasks {
 
   /** Public read path: every generated line is screened, including profile/config-derived trace fields. */
   publicExplain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }, routing?: Routing): string[] {
-    return this.explain(target, routing).map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
+    const trace = this.explain(target, routing);
+    const holds = Object.entries(this.d.held?.() ?? {}).flatMap(([peer, hold]) =>
+      trace.some(line => line.startsWith(`  hold: ${peer}'s queue is held:`)) ? [] : [`${peer} queue: ${hold}`]);
+    return [...trace, ...holds].map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
   }
 
   /**
@@ -2264,7 +2267,8 @@ export class Tasks {
         ? `Task ${this.publicTitle(next)} is no longer assigned to you${next.owner ? `; its owner is now ${next.owner}` : "; it is unassigned"}. Do not accept or complete it; late calls under your former assignment are refused.`
         : `Review request for task #${previous.id} ${this.publicTitle(next)} is withdrawn: ${next.reviewer ? `its reviewer is now ${next.reviewer}` : "the task has no reviewer"}. Do not review this task; a late verdict from the previous reviewer is refused.`;
       if (peer === USER) this.d.notify(body);
-      else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "status", priority: "important", refs: { task: String(previous.id) }, ...(this.isPii(next) ? { private: true } : {}) }));
+      // An untagged task notice remains needed by a former role until approval; kind review would look moved already.
+      else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", priority: "important", refs: { task: String(previous.id) }, ...(this.isPii(next) ? { private: true } : {}) }));
     });
   }
 

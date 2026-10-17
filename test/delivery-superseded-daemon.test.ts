@@ -163,3 +163,16 @@ test("route explain lists an already represented peer hold only once (#434 follo
     expect(result.text.split("\n").filter((line: string) => line.includes("queue") && line.includes("dedupe-review"))).toHaveLength(1);
   } finally { client.close(); await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
+for (const role of ["peer", "tools"] as const) test(`#434 ${role} route explanation lists every hold with ids-only context`, async () => {
+  const f = await fixture(); f.board.update(f.task.id, "user", "privacy", { signals: ["pii"] });
+  f.held("agent-held-review", [f.notice("review")]);
+  f.held("agent-held-chat", [newEnvelope("pi", "private peer words", { refs: { task: String(f.task.id) } })], "pi");
+  f.journal.close(); f.board.close();
+  const daemon = await start(f), client = await ControlClient.connect(f.dir, { role, peer: role === "peer" ? "reader" : "codex" });
+  try {
+    const route = await client.request({ t: "task", op: "route_explain", args: { id: f.task.id } });
+    expect(route.ok).toBe(true);
+    for (const id of ["agent-held-review", "agent-held-chat"]) expect(route.text.split("\n").filter((line: string) => line.includes(id))).toHaveLength(1);
+    expect(route.text).not.toContain("private title"); expect(route.text).not.toContain("private peer words");
+  } finally { client.close(); await daemon.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
