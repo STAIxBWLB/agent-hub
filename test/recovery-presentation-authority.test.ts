@@ -31,3 +31,25 @@ test("#466 real CLI refuses live-test reattach before reading a receipt regardle
     expect(err).not.toContain("recovery operation unavailable");
   }
 });
+
+test("#466 every flag consumed by the parser is the same shared prefix recognized by authority", async () => {
+  const path = "../src/cli/recovery-presentation-options.ts";
+  const { recoveryPresentationFlag } = await import(path);
+  const { readRecoveryPresentationFlags } = await import("../src/cli/upgrade-presentation-flags.ts");
+  const candidates = ["--json", "--verbose", "--color=auto", "--color=always", "--color=never", "--color=invalid", "--color", "--full", "--unknown"];
+  const accepted = candidates.filter(flag => {
+    try { return readRecoveryPresentationFlags([flag], { isTTY: false }).flags.includes(flag); }
+    catch { return false; }
+  });
+  expect(accepted).toEqual(["--json", "--verbose", "--color=auto", "--color=always", "--color=never"]);
+  for (const flag of accepted) {
+    expect(recoveryPresentationFlag(flag)).toBeDefined();
+    const args = [flag, "reattach", "00000000-0000-4000-8000-000000000466", "pi"];
+    expect(readRecoveryPresentationFlags(args, { isTTY: false }).args).toEqual(args.slice(1));
+    expect(classifyPeerCommand("recovery", args)).toBe("console");
+    expect(liveTestRefusal("recovery", args)).toBe(true);
+  }
+  // Recognition and value validation remain separate, preserving refusal order for invalid colours.
+  expect(recoveryPresentationFlag("--color=invalid")).toEqual({ kind: "color", value: "invalid" });
+  for (const flag of ["--color", "--full", "--unknown", "reattach"]) expect(recoveryPresentationFlag(flag)).toBeUndefined();
+});

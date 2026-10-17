@@ -1,14 +1,15 @@
+import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
 import { isSupportedPeer } from "../hub/peer-catalog.ts";
 
 /** Recovery reads this declaration before delegating to another package's CLI. */
 export const LIVE_TEST_SUPPORTED = true;
 
-/** Person verdicts and user-authored workflow content are never delegated. */
 /** Presentation prefixes cannot hide a person's recovery action from authorization. */
 function recoveryAction(args: readonly string[]): string | undefined {
-  return args.find(arg => arg !== "--json" && arg !== "--verbose" && !arg.startsWith("--color="));
+  return args.find(arg => !recoveryPresentationFlag(arg));
 }
 
+/** Person verdicts and user-authored workflow content are never delegated. */
 export function liveTestRefusal(command: string, args: readonly string[]): boolean {
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");

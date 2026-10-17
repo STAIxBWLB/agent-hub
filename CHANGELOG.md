@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Keep recovery authorization and option parsing aligned through one shared presentation-flag contract (#466).
+
 - Make upgrade and recovery screens use shared colours, measured wrapping, typed failure guidance, exact wait timing and recommended actions, while preserving machine output (#466).
 - Centralize adapter metadata and migrate Qwen startup, permissions and recovery behind its definition while preserving existing peer defaults (#451).
 - Reattach a recorded session once after its restored terminal disappears, preserve Pi continuity after stop and archive, and show the remaining upgrade steps (#463).

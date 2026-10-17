@@ -1,3 +1,4 @@
+import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
 import { resolveColor } from "./console-state.ts";
 import type { RecoveryPresentationOptions } from "./upgrade-presentation.ts";
 
@@ -10,17 +11,17 @@ export function readRecoveryPresentationFlags(
   const args: string[] = [], flags: string[] = [];
   let color: string | undefined, json = false, verbose = false;
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i]!, flag = recoveryPresentationFlag(arg);
     if (["--reason", "--fresh-session", "--to"].includes(arg)) {
       args.push(arg);
       if (i + 1 < argv.length) args.push(argv[++i]!);
     } else if (arg === "--color") {
       throw new Error("usage: ahub <command> [--color=auto|always|never]");
-    } else if (arg.startsWith("--color=")) {
+    } else if (flag?.kind === "color") {
       if (color !== undefined) throw new Error("usage: ahub <command> [--color=auto|always|never]");
-      color = arg.slice("--color=".length); flags.push(arg);
-    } else if (arg === "--json") { json = true; flags.push(arg); }
-    else if (arg === "--verbose") { verbose = true; flags.push(arg); }
+      color = flag.value; flags.push(arg);
+    } else if (flag?.kind === "json") { json = true; flags.push(arg); }
+    else if (flag?.kind === "verbose") { verbose = true; flags.push(arg); }
     else args.push(arg);
   }
   const resolved = resolveColor(color, terminal);

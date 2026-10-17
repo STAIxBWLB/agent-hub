@@ -783,7 +783,8 @@ renderer values containing line breaks or controls are visibly quoted before
 wrapping; they cannot become new column-zero guidance. Colour flags follow the
 console grammar exactly: a single `--color=<mode>`, never a bare or repeated flag.
 
-Recovery authorization identifies the action after skipping the accepted one-shot
-presentation flags (`--json`, `--verbose`, `--color=<mode>`). Such flags never hide
+Recovery authorization and the presentation parser share the pure
+`recoveryPresentationFlag` classifier. Authorization identifies the action after
+skipping the accepted one-shot presentation flags (`--json`, `--verbose`, `--color=<mode>`). Such flags never hide
 person-only reattachment from agent or live-test refusal checks; normalization
 confers no authority and unknown flags still fail the command parser.
