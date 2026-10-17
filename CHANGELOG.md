@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Keep repaired recovery conversations strict across target restarts, retire stale Pi bookmark caches without session-file churn, and distinguish inconsistent bookmarks (#463).
+- Preserve accepted recovery sessions across restarts and archives, allow audited explicit replacement of positively missing repaired Codex/Claude history, back off Pi bookmark storage retries, and distinguish inconsistent bookmarks (#463).
 
 - Make upgrade and recovery screens use shared colours, measured wrapping, typed failure guidance, exact wait timing and recommended actions, while preserving machine output (#466).
 - Centralize adapter metadata and migrate Qwen startup, permissions and recovery behind its definition while preserving existing peer defaults (#451).

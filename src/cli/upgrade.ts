@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
-import { recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
+import { resolveAcceptedBinding, recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
 import { RecoveryPresentationError, type RecoveryPresentationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
 
@@ -71,7 +71,7 @@ export interface ProjectProgress {
   }>;
   releaseRequested?: boolean;
   /** #215: peers the operator moved to a fresh session, with the session or thread id whose continuity is lost. */
-  fresh?: Record<string, { lost: string; reason: string; at: number }>;
+  fresh?: Record<string, { lost: string; reason: string; at: number; repaired?: true }>;
   /** #215: set before the commit request is sent; from then on the source may have committed (abort is not offered). */
   commitSent?: boolean;
   /**
@@ -113,6 +113,9 @@ export interface RecoveryOperation {
   failure?: { code: "database_busy"; retryable: true; site?: string[] };
   /** A typed verify outcome, never inferred from an error message or a peer's current state. */
   blockedReattachment?: { projectId: string; peer: RecoveryNativePeer };
+  /** Positive typed store observation; disposal rechecks it before accepting a repaired-session loss. */
+  missingRecordedSession?: { projectId: string; peer: RecoveryNativePeer; sessionId: string; kind: "rollout" | "transcript" };
+  freshOverride?: { peer: RecoveryNativePeer; evidence: NonNullable<RecoveryOperation["missingRecordedSession"]>; checked: "missing"; at: number };
   /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
   audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string>; continuity?: Record<string, "not-archived" | "unavailable"> };
@@ -127,6 +130,12 @@ export class ReattachmentRequired extends Error {
   constructor(public readonly projectId: string, public readonly peer: RecoveryNativePeer, message: string, public readonly presentationError?: RecoveryPresentationError) { super(message); }
 }
 
+export class MissingRecordedSession extends Error {
+  readonly code = "recorded_session_missing";
+  constructor(readonly evidence: NonNullable<RecoveryOperation["missingRecordedSession"]>) {
+    super(`${evidence.peer}: recorded session ${evidence.sessionId} has no resumable transcript (positively missing ${evidence.kind}); choose dispose --fresh-session ${evidence.peer} --reason <text> to accept its loss, or stop-and-archive`);
+  }
+}
 export { recoveryCommand };
 const STOP = "--stop-and-archive --reason <text>";
 /**
@@ -309,6 +318,13 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
   return Object.fromEntries(await Promise.all(open.map(async (p) => [p.project.id, await inspect(p.project).catch(() => undefined)] as const)));
 }
 
+function missingRepair(op: RecoveryOperation, progress: ProjectProgress, peer: string): boolean {
+  const evidence = op.missingRecordedSession;
+  if (!evidence || evidence.projectId !== progress.id || evidence.peer !== peer || (!progress.repairedSessions?.[evidence.peer] && !Object.hasOwn(progress.reattachments ?? {}, peer))) return false;
+  const planned = op.plan.projects.find(project => project.project.id === progress.id);
+  if (!planned) return false;
+  try { return resolveAcceptedBinding(planned, progress, evidence.peer)?.sessionId === evidence.sessionId; } catch { return false; }
+}
 /**
  * Peers of a project whose restoration failed and for which a fresh session is a real choice: not Pi (a restored hub
  * resumes its recorded session), not one already chosen, and not a planned fresh start (nothing to lose; resume
@@ -317,7 +333,7 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
 function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
   return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && canChooseFresh(value)).map(([key]) => key.slice("restored:".length))
-    .filter((peer) => peer !== "pi" && !Object.hasOwn(progress.reattachments ?? {}, peer) && !Object.hasOwn(progress.repairedSessions ?? {}, peer) && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
+    .filter((peer) => peer !== "pi" && ((!Object.hasOwn(progress.reattachments ?? {}, peer) && !Object.hasOwn(progress.repairedSessions ?? {}, peer)) || missingRepair(op, progress, peer)) && !progress.fresh?.[peer] && (!planned?.freshStart?.includes(peer) || missingRepair(op, progress, peer)) && !plannedAttached(op, progress, peer, live));
 }
 
 function repairWaiting(op: RecoveryOperation, projectId: string, peer: RecoveryNativePeer): boolean {
@@ -328,7 +344,10 @@ function repairWaiting(op: RecoveryOperation, projectId: string, peer: RecoveryN
 /** #215: the inspection shows the planned session attached for `peer`, so resume records it as restored: nothing is lost. */
 function plannedAttached(op: RecoveryOperation, progress: ProjectProgress, peer: string, live: Record<string, Inspection | undefined>): boolean {
   const state = live[progress.id];
-  const binding = (op.plan.projects.find((p) => p.project.id === progress.id)?.terminals as { peer: string; sessionId: string }[] | undefined)?.find((t) => t.peer === peer);
+  const planned = op.plan.projects.find((p) => p.project.id === progress.id);
+  const binding = planned && Object.hasOwn(progress.repairedSessions ?? {}, peer)
+    ? resolveAcceptedBinding(planned, progress, peer as RecoveryNativePeer)
+    : (planned?.terminals as { peer: string; sessionId: string }[] | undefined)?.find((t) => t.peer === peer);
   const current = state?.state === "running" ? state.peers.find((p) => p.id === peer && p.state !== "offline") : undefined;
   return !!binding && (peer === "codex" ? current?.threadId : current?.sessionId) === binding.sessionId;
 }
@@ -396,10 +415,17 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
           restored?.state === "done" || restored?.state === "waiting" ? restored.binding : undefined,
           progress.terminals[`retired:${peer}`]];
         if (protectedSession !== true || !bindings.some(binding => {
+          if (binding === undefined) return false;
           const receipt = decodeRestoreReceipt({ state: "done", binding });
           return receipt?.state === "done" && receipt.binding.peer === peer && receipt.binding.projectRoot === op.plan.projects[index]?.project.root;
         })) throw new Error("repaired session provenance does not match its retained peer and project");
       }
+    }
+    for (const [peer, choice] of Object.entries(progress.fresh ?? {})) {
+      if (choice.repaired === undefined) continue;
+      const planned = op.plan.projects[index]!;
+      if (choice.repaired !== true || !progress.repairedSessions?.[peer as RecoveryNativePeer] ||
+          resolveAcceptedBinding(planned, progress, peer as RecoveryNativePeer)?.sessionId !== choice.lost) throw new Error("invalid one-use repaired-session choice");
     }
     if (progress.reattachments === undefined) continue;
     if (!object(progress.reattachments)) throw new Error("invalid reattachment markers");
@@ -409,6 +435,19 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
       const receipt = decodeRestoreReceipt({ state: "done", binding: marker.binding });
       if (receipt?.state !== "done" || receipt.binding.peer !== peer || receipt.binding.projectRoot !== op.plan.projects[index]?.project.root) throw new Error("reattachment binding does not match its peer and project");
     }
+  }
+  if (op.missingRecordedSession !== undefined) {
+    const evidence = op.missingRecordedSession;
+    if (!object(evidence) || Object.keys(evidence).some(key => !["projectId", "peer", "sessionId", "kind"].includes(key)) ||
+        typeof evidence.projectId !== "string" || typeof evidence.peer !== "string" || typeof evidence.sessionId !== "string" ||
+        !["rollout", "transcript"].includes(evidence.kind) || !op.projects.some(progress => missingRepair(op, progress, evidence.peer))) throw new Error("invalid recorded-session missing evidence");
+  }
+  if (op.freshOverride !== undefined) {
+    const override = op.freshOverride, evidence = override.evidence;
+    if (!object(override) || Object.keys(override).some(key => !["peer", "evidence", "checked", "at"].includes(key)) || !object(evidence) ||
+        Object.keys(evidence).some(key => !["projectId", "peer", "sessionId", "kind"].includes(key)) || override.checked !== "missing" ||
+        !Number.isFinite(override.at) || override.at < 0 || override.peer !== evidence.peer || !["rollout", "transcript"].includes(evidence.kind) ||
+        !op.audit?.some(entry => entry.action === "fresh-session" && entry.peer === override.peer && entry.at === override.at && entry.projects.includes(evidence.projectId))) throw new Error("invalid fresh override evidence");
   }
   if (op.blockedReattachment !== undefined) {
     const selected = op.blockedReattachment;
@@ -431,6 +470,8 @@ export interface RecoveryDriver {
   refreshManager?(op: RecoveryOperation): Promise<void>;
   release(project: Project, operation: string, instance: string): Promise<void>;
   verify(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, save?: () => void): Promise<void>;
+  /** Read-only positive store evidence; absence of the port means unknown. */
+  recordedSessionState?(binding: TerminalBinding, kind: "rollout" | "transcript"): Promise<"found" | "missing" | "unknown">;
   /** #215 stop-and-archive: stop this operation's unreleased target (when given) and archive its committed snapshot. */
   stopAndArchive(project: Project, op: RecoveryOperation, targetInstance?: string): Promise<void | { continuity: "not-archived" | "unavailable" }>;
   sleep(ms: number): Promise<void>;
@@ -693,6 +734,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       : error instanceof ReattachmentRequired && error.presentationError instanceof RecoveryPresentationError ? error.presentationError : undefined;
     if (presentationError) op.presentationCause = presentationError.presentationCause;
     else delete op.presentationCause;
+    if (error instanceof MissingRecordedSession) op.missingRecordedSession = error.evidence;
     if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
     else delete op.blockedReattachment;
     if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
@@ -713,7 +755,7 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
     projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(key, value)])) } : {}),
       ...(op.plan.projects.find(planned => planned.project.id === p.id) ? { recordedSessions: recordedPeerGuidance(op.plan.projects.find(planned => planned.project.id === p.id)!, p, {
-        recorded: Object.fromEntries(Object.entries(p.reattachments ?? {}).flatMap(([peer, marker]) => marker ? [[peer, marker.binding]] : [])),
+        ...(op.phase === "blocked" && !op.disposition ? { stopAndArchiveCommand: recoveryCommand(op, "dispose", STOP) } : {}),
         reattachCommand: peer => op.phase === "blocked" && !op.disposition && !op.final && op.targetRoot && op.targetDigest && p.instanceId && ["started", "peers-restored"].includes(p.phase) &&
           op.blockedReattachment?.projectId === p.id && op.blockedReattachment.peer === peer && choices.some(choice => choice.kind === "reattach" && choice.peer === peer)
           ? recoveryCommand(op, "reattach", peer) : undefined,
@@ -722,7 +764,7 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
       ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
     pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
     ...(!targetReadsWaivers(op) && op.projects.some((p) => failedPeers(op, p).length) ? { freshSession: `not offered: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session` } : {}),
-    ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.blockedReattachment ? { blockedReattachment: op.blockedReattachment } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}),
+    ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.blockedReattachment ? { blockedReattachment: op.blockedReattachment } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), ...(op.freshOverride ? { freshOverride: op.freshOverride } : {}),
     ...(op.waits ? { waits: op.waits } : {}), ...(op.presentationCause ? { presentationCause: op.presentationCause } : {}), next };
 }
 
@@ -778,6 +820,7 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
         : error instanceof ReattachmentRequired && error.presentationError instanceof RecoveryPresentationError ? error.presentationError : undefined;
       if (presentationError) op.presentationCause = presentationError.presentationCause;
       else delete op.presentationCause;
+      if (error instanceof MissingRecordedSession) op.missingRecordedSession = error.evidence;
       if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
       else delete op.blockedReattachment;
       if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
@@ -868,12 +911,30 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         throw new Error(`${peer}: its planned session is attached again, so nothing was lost; resume records it as restored; ${next}`);
       }
       if (!failed.length) throw new Error(`${peer}: no failed restoration of it is open to a fresh session (none failed, or one is already chosen); --fresh-session applies only then (${recoveryCommand(op, "status")})`);
+      // Collect every proof before changing any project, so one uncertain read cannot leave a partial choice.
+      const selected = [];
       for (const progress of failed) {
-        const binding = (op.plan.projects.find((p) => p.project.id === progress.id)!.terminals as { peer: string; sessionId: string }[]).find((t) => t.peer === peer)!;
-        (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
+        const repaired = missingRepair(op, progress, peer);
+        const planned = op.plan.projects.find((p) => p.project.id === progress.id)!;
+        const binding = repaired ? resolveAcceptedBinding(planned, progress, peer as RecoveryNativePeer)!
+          : (planned.terminals as TerminalBinding[]).find((t) => t.peer === peer)!;
+        if (repaired && await driver.recordedSessionState?.(binding, op.missingRecordedSession!.kind) !== "missing") throw new Error(`${peer}: recorded conversation is not positively missing; no fresh-session choice was saved`);
+        selected.push({ progress, binding, repaired });
+      }
+      for (const { progress, binding, repaired } of selected) {
+        (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at, ...(repaired ? { repaired: true as const } : {}) };
+        if (repaired) {
+          (progress.repairedSessions ??= {})[peer as RecoveryNativePeer] = true;
+          op.freshOverride = { peer: peer as RecoveryNativePeer, evidence: { ...op.missingRecordedSession! }, checked: "missing", at };
+        }
+        if (repaired && progress.reattachments?.[peer as RecoveryNativePeer]) {
+          progress.terminals[`retired:${peer}`] = binding;
+          delete progress.terminals[`closedRetired:${peer}`];
+          delete progress.reattachments[peer as RecoveryNativePeer];
+        }
       }
       (op.audit ??= []).push({ at, action: "fresh-session", reason, peer, projects: failed.map((p) => p.id) });
-      delete op.error; delete op.failure; delete op.blockedReattachment; delete op.presentationCause;
+      delete op.error; delete op.failure; delete op.blockedReattachment; delete op.presentationCause; delete op.missingRecordedSession;
       op.updatedAt = at; writeOperation(id, op, home);
       return op;
     }

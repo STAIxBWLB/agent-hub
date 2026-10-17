@@ -693,9 +693,25 @@ accepted conversation and a new target gets its own repair allowance. The additi
 per-peer `repairedSessions: true` provenance survives this fence reset and repeated
 restarts. It authorizes no creation: accepted done/retired bindings remain the
 session source, and fresh-session choices and zero-turn substitutions remain
-excluded for that repaired conversation. An uncertain
+excluded automatically for that repaired conversation. A person may explicitly
+choose `dispose --fresh-session` for a failed repaired Codex or Claude conversation only after
+the coordinator records a typed positive missing-transcript/rollout observation
+bound to the accepted session, and disposal rechecks that same recorded store as
+missing before writing the loss and audit. Found, unreadable, malformed or absent
+evidence never permits this choice. The choice records the accepted conversation
+as lost; it does not run a terminal. The receipt also records
+`freshOverride {peer, evidence, checked, at}`, exposed in person status and the
+archive summary. Resume retains the existing launcher fences,
+close-before-create and waiver rules. An uncertain
 creation with no durable selected binding does not gain a second creation by
 merely losing the target. Database contention retains its typed retryable outcome.
+
+Pi remains excluded from fresh-session under #215. For a positively missing
+accepted Pi session file, blocked guidance prints the operation's
+`recovery dispose <id> --stop-and-archive --reason <text>` command and then
+`ahub --project <root> pi`. The normal Pi start retires a proven-unresumable
+archived bookmark without falling back fresh in that same start; its notice
+guides a subsequent normal start. Unreadable or invalid evidence stays held.
 
 The person-only `ahub recovery reattach <operation> <peer>` is admitted only for
 that operation's current structured reattachment block. It claims the existing
@@ -705,6 +721,13 @@ remaining operation for resume. Agent shells and live-test delegation cannot
 invoke this person decision. Person status and block guidance list the recorded
 Codex thread, Pi session file and Claude session with quoted commands from the
 operation's coordinator.
+
+Status guidance, the archive summary and the Pi continuity bookmark share one
+accepted-binding resolver: restored done/waiting, then a validated reattachment
+marker, then a decoded retired binding for this peer and project, then the plan.
+A malformed retained binding is unavailable, never permission to fall back to an
+older conversation. This includes the accepted Pi file, backend and model after
+a #225 target restart.
 
 Stop and archive retains the operation's accepted session identities. After a
 confirmed owned target stop and snapshot archive, it may write one private,
@@ -743,6 +766,11 @@ forces a redundant write. A header whose session id disagrees with the selected
 bookmark is `bookmark_mismatch` (bookmark inconsistent), not evidence that the
 session itself cannot resume. Archival remains non-destructive and never starts
 a fresh session.
+
+Repeated Pi continuity settlement storage failures back off for 30 seconds for
+the same bookmark digest and authenticated peer generation/metadata. A new
+digest or authenticated identity can retry immediately; successful settlement
+clears the failure. An unchanged failure logs once, without session-file churn.
 
 ## Recovery presentation (#466)
 

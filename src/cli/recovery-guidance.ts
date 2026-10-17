@@ -1,3 +1,4 @@
+import { recordedFileState } from "./recovery-session-file.ts";
 import { decodeRestoreReceipt } from "./upgrade-restore-state.ts";
 import { shellQuote } from "./terminal-recovery.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
@@ -14,6 +15,8 @@ export interface RecordedPeerGuidance {
   note: string;
 }
 export interface RecoveryGuidanceOptions {
+  /** Person-only blocked guidance; no lifecycle action is taken by this projection. */
+  stopAndArchiveCommand?: string;
   /** Caller-validated retained repair bindings, including accepted sessions no longer in a done/waiting receipt. */
   recorded?: Partial<Record<RecoveryNativePeer, RecordedSessionOverride>>;
   /** The caller's fixed formatter for this operation's own coordinator, never model-supplied code. */
@@ -30,6 +33,32 @@ function sourceSession(peer: RecoveryNativePeer, source: RecoveryPeer | undefine
   return { ...(text(sessionId) ? { sessionId } : {}), ...(text(sessionFile) ? { sessionFile } : {}) };
 }
 
+/** Accepted identity outlives an incarnation's repair fence. Malformed evidence never means absence. */
+export function resolveAcceptedBinding(planned: PlannedProject, progress: ProjectProgress, peer: RecoveryNativePeer): TerminalBinding | undefined {
+  if (progress.id !== planned.project.id) throw new Error("recorded binding project mismatch");
+  const binding = (value: unknown): TerminalBinding => {
+    const receipt = decodeRestoreReceipt({ state: "done", binding: value });
+    if (receipt?.state !== "done" || receipt.binding.peer !== peer || receipt.binding.projectRoot !== planned.project.root) throw new Error("recorded binding does not match its peer and project");
+    return receipt.binding;
+  };
+  const restored = decodeRestoreReceipt(progress.terminals[`restored:${peer}`]);
+  if (restored?.state === "done" || restored?.state === "waiting") return binding(restored.binding);
+  if (progress.reattachments !== undefined) {
+    if (!progress.reattachments || typeof progress.reattachments !== "object" || Array.isArray(progress.reattachments)) throw new Error("invalid recorded reattachment markers");
+    if (Object.hasOwn(progress.reattachments, peer)) {
+      const marker = progress.reattachments[peer];
+      if (!marker || typeof marker !== "object" || Array.isArray(marker) || Object.keys(marker).some(key => !["state", "at", "cause", "binding"].includes(key)) ||
+          !["ready", "attempted"].includes(marker.state) || marker.cause !== "detached after restore" || !Number.isFinite(marker.at) || marker.at < 0) throw new Error("invalid recorded reattachment marker");
+      return binding(marker.binding);
+    }
+  }
+  const retiredKey = `retired:${peer}`;
+  if (Object.hasOwn(progress.terminals, retiredKey)) return binding(progress.terminals[retiredKey]);
+  const original = planned.terminals.filter(value => !!value && typeof value === "object" && (value as { peer?: unknown }).peer === peer);
+  if (original.length > 1) throw new Error("ambiguous planned recorded bindings");
+  return original.length ? binding(original[0]) : undefined;
+}
+
 /**
  * Person-only projection of recorded identities, never a peer/tool result or evidence of live attachment.
  * A supplied override must already be validated by the recovery coordinator. It deliberately wins over both
@@ -43,18 +72,9 @@ export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectP
     if (override !== undefined) session = override;
     else {
       try {
-        const receipt = decodeRestoreReceipt(progress.terminals[`restored:${peer}`]);
-        if (receipt?.state === "done" || receipt?.state === "waiting") {
-          if (receipt.binding.peer !== peer) unavailable = true;
-          else session = receipt.binding;
-        }
+        session = resolveAcceptedBinding(planned, progress, peer)
+          ?? sourceSession(peer, planned.source.peers.find(row => row.id === peer));
       } catch { unavailable = true; }
-      if (!session && !unavailable) {
-        const binding = planned.terminals.find(value => !!value && typeof value === "object" && (value as { peer?: unknown }).peer === peer) as { sessionId?: unknown; sessionFile?: unknown } | undefined;
-        session = binding
-          ? { ...(text(binding.sessionId) ? { sessionId: binding.sessionId } : {}), ...(text(binding.sessionFile) ? { sessionFile: binding.sessionFile } : {}) }
-          : sourceSession(peer, planned.source.peers.find(row => row.id === peer));
-      }
     }
     const sessionId = text(session?.sessionId) ? session.sessionId : undefined;
     const sessionFile = peer === "pi" && text(session?.sessionFile) ? session.sessionFile : undefined;
@@ -65,10 +85,13 @@ export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectP
       : peer === "pi"
         ? sessionFile ? argv(...prefix, "pi", "--session-file", sessionFile) : sessionId ? argv(...prefix, "pi", "--session-id", sessionId) : undefined
         : sessionId ? argv(...prefix, "claude", "--resume", sessionId) : undefined;
-    const note = peer === "claude"
+    let note = peer === "claude"
       ? "The existing Claude channel may reconnect while its native session remains open. Transcript availability is unknown; the recorded resume command is guidance, not proof that the transcript can be resumed."
       : peer === "codex" ? "Recorded Codex thread; leave the old native client before resuming this conversation."
         : "Recorded Pi conversation; preserve this session when starting Pi again.";
+    if (sessionFile && options.stopAndArchiveCommand && recordedFileState(sessionFile) === "missing") {
+      note = `Recorded Pi session file is positively missing. Fresh-session is not supported for Pi. Run ${options.stopAndArchiveCommand}, then ${argv(...prefix, "pi")}; the archived missing-session bookmark is retired by the normal Pi start before a later new start.`;
+    }
     const reattachCommand = command ? options.reattachCommand?.(peer) : undefined;
     return { peer, ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}), ...(command ? { command } : {}), ...(reattachCommand ? { reattachCommand } : {}), note };
   });
@@ -89,12 +112,14 @@ export function stopAndArchiveSummary(op: RecoveryOperation, live: Readonly<Reco
     const observed = live[progress.id];
     if (observed) lines.push(`${progress.id}: supplied inspection reported ${observed.state}${observed.version ? ` on ${observed.version}` : ""}; it does not change the recorded disposition.`);
     const planned = op.plan.projects.find(project => project.project.id === progress.id);
-    if (planned) for (const row of recordedPeerGuidance(planned, progress, {
-      recorded: Object.fromEntries(Object.entries(progress.reattachments ?? {}).flatMap(([peer, marker]) => marker ? [[peer, marker.binding]] : [])),
-    })) {
+    if (planned) for (const row of recordedPeerGuidance(planned, progress)) {
       if (row.command) lines.push(`${progress.id} ${row.peer}: ${row.command}`);
       lines.push(`${progress.id} ${row.peer}: ${row.note}`);
     }
+  }
+  if (op.freshOverride) {
+    const { peer, evidence, checked, at } = op.freshOverride;
+    lines.push(`Explicit fresh override: ${peer} in ${evidence.projectId}; accepted session ${shellQuote(evidence.sessionId)}, ${evidence.kind} checked ${checked} at ${at}; missing-history replacement was person-authorized.`);
   }
   lines.push(op.pluginInstalled ? "Claude plugin installation recorded." : "Claude plugin installation not recorded.");
   if (op.globalInstalled) lines.push("global CLI installation recorded.");

@@ -130,18 +130,19 @@ function continuityRecorder() {
   const bookmark = { schema: 1, operationId: OP, projectId: "fixture", projectRoot: "/fixture", at: 1, pi: { sessionId: "recorded" } };
   const ready = { state: "ready", bookmark, digest: "a".repeat(64) };
   class Owner {
-    id = "pi"; state = "idle"; sessionGeneration = 1; recoveryReady = true;
-    recoveryMetadata() { return { sessionId: "recorded" }; }
+    id = "pi"; state = "idle"; sessionGeneration = 1; recoveryReady = true; sessionId = "recorded";
+    recoveryMetadata() { return { sessionId: this.sessionId }; }
   }
   const peers = new Map<string, Owner>();
   const writes: unknown[] = [], calls: unknown[] = [], logs: string[] = [];
-  const state: { disk: unknown; writeFails: boolean } = { disk: ready, writeFails: false };
+  const state: { disk: unknown; writeFails: boolean; settleFails: boolean; settleSucceeds: boolean; now: number; reads: number } = { disk: ready, writeFails: false, settleFails: false, settleSucceeds: false, now: 1000, reads: 0 };
   const context = { piContinuity: ready, stopping: false, recoveryActive: () => false,
     bus: { peers }, PiPeer: Owner, opts: { cwd: "/fixture", stateDir: "/fixture/state" }, projectId: "fixture", instanceId: "current",
-    readRecoveryContinuity: () => state.disk,
+    Date: { now: () => state.now },
+    readRecoveryContinuity: () => { state.reads++; return state.disk; },
     writeSessions: (_directory: string, value: unknown) => { if (state.writeFails) throw new Error("write failed"); writes.push(value); },
-    consumeRecoveryContinuity: (_directory: string, expected: unknown) => { calls.push(expected); return false; },
-    retireRecoveryContinuity: (_directory: string, expected: unknown) => { calls.push(expected); return { retired: false }; },
+    consumeRecoveryContinuity: (_directory: string, expected: unknown) => { calls.push(expected); if (state.settleFails) throw new Error("settlement storage unavailable"); return state.settleSucceeds; },
+    retireRecoveryContinuity: (_directory: string, expected: unknown) => { calls.push(expected); if (state.settleFails) throw new Error("settlement storage unavailable"); return { retired: state.settleSucceeds }; },
     log: (line: string) => logs.push(line),
   };
   const recorder = runInNewContext(`${js}\n({ record: recordSessions, reading: () => piContinuity });`, context) as { record(): void; reading(): { state: string; reason?: string } };
@@ -208,6 +209,40 @@ test("#166 authenticated readiness can settle an already durable identical snaps
   expect(f.writes).toHaveLength(1); expect(f.calls).toHaveLength(0);
   peer.recoveryReady = true; f.state.disk = { state: "absent" }; f.record();
   expect(f.writes).toHaveLength(1); expect(f.calls).toHaveLength(1);
+});
+
+test("#166 settlement storage failures back off repeated events and retry after recovery without snapshot churn", () => {
+  const f = continuityRecorder(); f.peers.set("pi", new f.Owner()); f.state.settleFails = true;
+  f.record();
+  expect(f.calls).toHaveLength(1); expect(f.state.reads).toBe(1);
+  for (let i = 0; i < 20; i++) f.record();
+  expect(f.calls).toHaveLength(1); expect(f.state.reads).toBe(1); expect(f.logs).toHaveLength(1);
+  expect(f.writes).toHaveLength(1); expect(f.reading()).toEqual(f.ready);
+  f.state.now += 30_000; f.record();
+  expect(f.calls).toHaveLength(2); expect(f.state.reads).toBe(2); expect(f.logs).toHaveLength(1);
+  f.state.settleFails = false; f.state.settleSucceeds = true; f.state.now += 30_000; f.record();
+  expect(f.calls).toHaveLength(3); expect(f.reading()).toEqual({ state: "absent" });
+  expect(f.writes).toHaveLength(1); f.record(); expect(f.calls).toHaveLength(3);
+});
+
+test("#166 authenticated Pi generation or metadata change retries settlement immediately during backoff", () => {
+  const f = continuityRecorder(), peer = new f.Owner(); f.peers.set("pi", peer); f.state.settleFails = true;
+  f.record(); peer.sessionGeneration++; f.record();
+  expect(f.calls).toHaveLength(2); expect(f.logs).toHaveLength(2);
+  peer.sessionId = "different-authenticated-session"; f.record();
+  expect(f.calls).toHaveLength(3); expect(f.logs).toHaveLength(3);
+  f.record(); expect(f.calls).toHaveLength(3); expect(f.state.reads).toBe(3);
+  expect(f.writes).toHaveLength(2); // The changed session snapshot is durable before its retirement attempt.
+});
+
+test("#166 settlement failure rereads a newer digest once and permits its next-event attempt", () => {
+  const f = continuityRecorder(); f.peers.set("pi", new f.Owner()); f.state.settleFails = true;
+  const newer = { ...f.ready, digest: "b".repeat(64), bookmark: { ...f.ready.bookmark, at: 2 } };
+  f.state.disk = newer; f.record();
+  expect(f.calls).toHaveLength(1); expect(f.state.reads).toBe(1); expect(f.reading()).toEqual(newer);
+  f.record(); expect(f.calls).toHaveLength(2); expect(f.calls[1]).toMatchObject({ digest: newer.digest });
+  expect(f.state.reads).toBe(2); expect(f.logs).toHaveLength(2);
+  f.record(); expect(f.calls).toHaveLength(2); expect(f.state.reads).toBe(2);
 });
 
 class SessionEventPeer extends BasePeer {

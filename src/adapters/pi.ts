@@ -7,7 +7,7 @@ import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } 
 import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
-import { validatePiSession } from "../pi/session.ts";
+import { PiSessionBookmarkMismatch, validatePiSession } from "../pi/session.ts";
 import { ApprovalWaitStop, toolResultFailed, type ApprovalProvenance } from "../local/tools.ts";
 import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
@@ -346,7 +346,11 @@ export class PiPeer extends BasePeer {
     const sessions = join(this.opts.stateDir, "pi-sessions");
     mkdirSync(sessions, { recursive: true, mode: 0o700 });
     if (this.opts.sessionFile) {
-      validatePiSession(this.opts.stateDir, this.opts.cwd, this.opts.sessionFile, this.opts.sessionId);
+      try { validatePiSession(this.opts.stateDir, this.opts.cwd, this.opts.sessionFile, this.opts.sessionId); }
+      catch (error) {
+        if (error instanceof PiSessionBookmarkMismatch) throw new PiSessionBookmarkMismatch("Pi session header id does not match the requested session", { cause: error });
+        throw error;
+      }
     }
     const token = randomUUID();
     this.tuiExit = new Promise((resolvePromise) => { this.resolveTuiExit = resolvePromise; });

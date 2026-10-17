@@ -2610,16 +2610,21 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // Session identities of the attached peers, kept current for crash recovery (issue #37); a clean stop removes them.
   let sessionsWritten = "";
+  // One bounded failure generation: unchanged events neither contend for the writer lock nor repeat its notice.
+  let piSettlementFailure: { key: string; error: string; retryAfter: number } | undefined;
   function settlePiContinuity(): void {
     if (stopping || recoveryActive() || piContinuity.state !== "ready") return;
     const peer = bus.peers.get("pi");
     if (!(peer instanceof PiPeer) || peer.state === "offline" || !peer.sessionGeneration || !peer.recoveryReady) return;
     const saved = piContinuity.bookmark, actual = peer.recoveryMetadata();
     if (typeof actual.sessionId !== "string" || !actual.sessionId) return;
+    const key = JSON.stringify([piContinuity.digest, peer.sessionGeneration, actual]);
+    if (piSettlementFailure?.key === key && Date.now() < piSettlementFailure.retryAfter) return;
     const matches = actual.sessionId === saved.pi.sessionId && (saved.pi.sessionFile === undefined || actual.sessionFile === saved.pi.sessionFile);
     try {
       const expected = { projectId, projectRoot: opts.cwd, operationId: saved.operationId, digest: piContinuity.digest };
       const settled = matches ? consumeRecoveryContinuity(opts.stateDir, expected) : retireRecoveryContinuity(opts.stateDir, expected, "authenticated_session_changed").retired;
+      piSettlementFailure = undefined;
       if (settled) {
         piContinuity = { state: "absent" };
         if (!matches) log("Pi archived continuity retired after recording a different authenticated session");
@@ -2629,9 +2634,12 @@ export async function startDaemon(opts: DaemonOptions) {
         piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
         if (piContinuity.state !== "absent") log("Pi continuity bookmark changed before attachment settlement; retained for inspection");
       }
-    } catch {
+    } catch (error) {
+      const signature = error instanceof Error ? `${error.name}:${error.message}` : String(error);
+      const report = piSettlementFailure?.key !== key || piSettlementFailure.error !== signature;
+      piSettlementFailure = { key, error: signature, retryAfter: Date.now() + 30_000 };
       piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
-      log("Pi continuity attachment settlement unavailable; bookmark retained");
+      if (report) log("Pi continuity attachment settlement unavailable; bookmark retained");
     }
   }
   const recordSessions = () => {

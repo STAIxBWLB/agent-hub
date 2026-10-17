@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
-import { nextChoices, recordRestart, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
+import { MissingRecordedSession, nextChoices, recordRestart, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 import type { TerminalBinding } from "../src/cli/terminal-recovery.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -30,7 +31,7 @@ function fixture(peer: "claude" | "codex" | "pi") {
     reattachments: { [peer]: { state: "attempted", at: 0, cause: "detached after restore", binding: accepted } } };
   const op = { schema: 1, id: "repair-operation", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
   let instanceId = "i-target", attached = false, attachmentPending = false, terminal: TerminalBinding | undefined = accepted, creates = 0, elapsed = 0;
-  const control = { wrongSession: false, orphaned: false, interrupt: false };
+  const control = { wrongSession: false, orphaned: false, interrupt: false, neverAttach: false, uncertainCreate: false };
   const calls: string[][] = [];
   const server = Bun.serve<any>({ hostname: "127.0.0.1", port: 0,
     fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
@@ -59,12 +60,12 @@ function fixture(peer: "claude" | "codex" | "pi") {
     else if (argv[2] === "wait") result = { wait: { satisfied: true } };
     else if (argv[2] === "close") { terminal = undefined; result = {}; }
     else if (argv[2] === "create") {
-      creates++; attachmentPending = true; terminal = { ...accepted, handle: `term-created-${creates}`, incarnationId: `inc-created-${creates}` }; control.orphaned = false;
-      result = { terminal: shown() };
+      creates++; attachmentPending = !control.neverAttach; terminal = { ...accepted, handle: `term-created-${creates}`, incarnationId: `inc-created-${creates}` }; control.orphaned = false;
+      result = control.uncertainCreate ? {} : { terminal: shown() };
     } else throw new Error("unexpected terminal mutation");
     return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
   }, undefined, { now: () => elapsed, sleep: async ms => { elapsed += ms; if (control.interrupt) throw new Error("fixture coordinator interrupted"); } });
-  return { root, progress, planned, op, control, calls, accepted, creates: () => creates,
+  return { root, driver, progress, planned, op, control, calls, accepted, creates: () => creates,
     removeTranscript: () => rmSync(transcript),
     restart: () => { recordRestart(progress, ++elapsed); instanceId = `i-target-${progress.restarts!.length}`; progress.instanceId = instanceId; progress.phase = "started"; attached = false; attachmentPending = false; status(); },
     restore: () => driver.restore(planned, progress, op, peer === "claude" ? "claude" : "native", () => {}),
@@ -170,5 +171,90 @@ test("#166 repaired Pi restart preserves its accepted file backend and model eve
     expect(outcome).toBeUndefined(); await f.verify();
     expect(f.progress.terminals["restored:pi"]).toMatchObject({ state: "done", binding: { sessionId: "recorded-pi", sessionFile: f.accepted.sessionFile, backend: "accepted-backend", model: "accepted-model" } });
     expect(f.creates()).toBe(1); expect(f.progress.reattachments).toBeUndefined();
+  } finally { f.cleanup(); }
+});
+
+
+test("#166 archive after recordRestart writes the retired accepted Pi file backend and model", async () => {
+  const f = fixture("pi");
+  try {
+    f.accepted.backend = "dgx";
+    f.op.id = randomUUID();
+    f.restart();
+    const archive = join(f.planned.project.stateDir, `restart.abandoned.${createHash("sha256").update(f.op.id).digest("hex")}.json`);
+    writeFileSync(archive, JSON.stringify({ operationId: f.op.id }));
+    await f.driver.stopAndArchive(f.planned.project, f.op);
+    expect(JSON.parse(readFileSync(join(f.planned.project.stateDir, "recovery-continuity.json"), "utf8"))).toMatchObject({
+      operationId: f.op.id, pi: { sessionId: f.accepted.sessionId, sessionFile: f.accepted.sessionFile, backend: "dgx", model: f.accepted.model },
+    });
+    expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+
+
+test("#166 a failed repaired Codex emits typed missing rollout evidence and explicit choice creates only on resume", async () => {
+  const f = fixture("codex");
+  try {
+    f.removeTranscript(); f.restart();
+    let error: unknown;
+    try { await f.restore(); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(MissingRecordedSession);
+    const missing = (error as MissingRecordedSession).evidence;
+    expect(missing).toEqual({ projectId: f.planned.project.id, peer: "codex", sessionId: f.accepted.sessionId, kind: "rollout" });
+    expect(await f.driver.recordedSessionState!(f.accepted, "rollout")).toBe("missing");
+    expect(f.creates()).toBe(0);
+    f.op.missingRecordedSession = missing; f.op.phase = "blocked";
+    expect(nextChoices(f.op).some(choice => choice.kind === "fresh" && choice.peer === "codex")).toBe(true);
+    f.progress.fresh = { codex: { lost: f.accepted.sessionId, reason: "person accepted loss", at: 1, repaired: true } };
+    f.control.wrongSession = true;
+    await f.restore(); await f.verify();
+    expect(f.creates()).toBe(1);
+    const create = f.calls.find(args => args[2] === "create")!;
+    expect(create[create.indexOf("--command") + 1]).not.toContain("'resume'");
+    expect(f.progress.terminals["restored:codex"]).toMatchObject({ state: "done", binding: { sessionId: "different-session" } });
+    expect(f.progress.fresh.codex?.lost).toBe(f.accepted.sessionId);
+    expect(f.progress.fresh.codex?.repaired).toBeUndefined();
+    f.restart();
+    await expect(f.restore()).rejects.toThrow(MissingRecordedSession);
+    expect(f.creates()).toBe(1); // the consumed grant cannot authorize another automatic replacement
+
+  } finally { f.cleanup(); }
+});
+
+
+test("#166 a failed repaired Claude launch with a positively missing transcript retains its chosen terminal for explicit fresh cleanup", async () => {
+  const f = fixture("claude");
+  try {
+    f.removeTranscript(); f.restart(); f.control.neverAttach = true; f.control.interrupt = true;
+    let failure: unknown;
+    try { await f.restore(); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(MissingRecordedSession);
+    expect((failure as MissingRecordedSession).evidence).toMatchObject({ peer: "claude", sessionId: f.accepted.sessionId, kind: "transcript" });
+    expect(f.progress.terminals["restored:claude"]).toEqual({ state: "failed" });
+    expect(f.progress.terminals["retired:claude"]).toMatchObject({ handle: "term-created-1", sessionId: f.accepted.sessionId });
+    expect(f.creates()).toBe(1);
+    f.progress.fresh = { claude: { lost: f.accepted.sessionId, reason: "person accepts missing transcript", at: 2, repaired: true } };
+    f.control.neverAttach = false; f.control.interrupt = false; f.control.wrongSession = true;
+    await f.restore(); await f.verify();
+    expect(f.creates()).toBe(2);
+    const creates = f.calls.filter(args => args[2] === "create");
+    expect(creates[1]![creates[1]!.indexOf("--command") + 1]).not.toContain("'--resume'");
+    const close = f.calls.find(args => args[2] === "close" && args.includes("term-created-1"));
+    expect(close).toBeDefined(); expect(f.calls.indexOf(close!)).toBeLessThan(f.calls.indexOf(creates[1]!));
+  } finally { f.cleanup(); }
+});
+
+
+test("#166 a missing Claude transcript cannot erase the fence of an uncertain unbound terminal create", async () => {
+  const f = fixture("claude");
+  try {
+    f.removeTranscript(); f.restart(); f.control.neverAttach = true; f.control.uncertainCreate = true;
+    let error: unknown;
+    try { await f.restore(); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error); expect(error).not.toBeInstanceOf(MissingRecordedSession);
+    expect(f.progress.terminals["restored:claude"]).toEqual({ state: "pending" });
+    expect(f.creates()).toBe(1);
+    f.op.phase = "blocked";
+    expect(nextChoices(f.op).some(choice => choice.kind === "fresh")).toBe(false);
   } finally { f.cleanup(); }
 });

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
+import { PiPeer } from "../src/adapters/pi.ts";
 import { PiSessionUnresumable, validatePiSession } from "../src/pi/session.ts";
 
 const roots: string[] = [];
@@ -41,4 +42,16 @@ test("#166 an uncertain session read remains an ordinary storage failure", () =>
   expect(failure).toBeInstanceOf(Error);
   expect(failure).not.toBeInstanceOf(PiSessionUnresumable);
   expect(failure).not.toMatchObject({ code: "pi_session_bookmark_mismatch" });
+});
+
+test("#166 ordinary recorded Pi starts report a neutral header mismatch without claiming a bookmark exists", async () => {
+  const f = fixture();
+  let failure: unknown;
+  const peer = new PiPeer("pi", { cwd: f.cwd, stateDir: f.stateDir, sessionFile: f.file, sessionId: "ordinary-requested-id", mode: "headless", backend: "dgx",
+    cmd: ["must-never-spawn-for-invalid-session"], relay: { url: "http://127.0.0.1:9", token: "fixture", models: [] }, tools: [], executeTool: async () => "fixture" });
+  try { await peer.start(); } catch (error) { failure = error; }
+  expect(peer.state).toBe("offline");
+  expect((failure as Error).message).toBe("Pi session header id does not match the requested session");
+  expect((failure as Error).message).not.toContain("bookmark");
+  expect(failure).toMatchObject({ code: "pi_session_bookmark_mismatch", reason: "bookmark_mismatch" });
 });
