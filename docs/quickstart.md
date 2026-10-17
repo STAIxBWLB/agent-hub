@@ -93,7 +93,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.3.0 core. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Generation candidate acceptance is still refused.
+The hub exact-pins the first-party `@staix/agent-mem` 0.3.1 core. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Generation candidate acceptance is still refused.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
