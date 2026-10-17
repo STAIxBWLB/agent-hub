@@ -1667,9 +1667,16 @@ test("#452 w opens the web UI and o the pet window as console commands, never wh
   expect(reduceConsole(s, "w", NOW).effects).toEqual([{ type: "command", args: ["ui"] }]);
   expect(reduceConsole(s, "o", NOW).effects).toEqual([{ type: "command", args: ["pet", "--window"] }]);
   const editing = { ...s, editing: true, input: "" };
-  expect(reduceConsole(editing, "w", NOW).effects).toEqual([]); // typed into the command line instead
   const help = reduceConsole(s, "?", NOW).state;
-  expect(reduceConsole(help, "o", NOW).effects).toEqual([]);
+  const confirming = reduceConsole({ ...s, editing: true, input: "task assign 9 kimi" }, "\r", NOW).state;
+  expect(renderConsole(confirming, 80, 24, NOW).join("\n")).toContain("y/N"); // a confirmation is pending
+  for (const key of ["w", "o"]) {
+    expect(reduceConsole(editing, key, NOW).effects).toEqual([]); // typed into the command line instead
+    expect(reduceConsole(help, key, NOW).effects).toEqual([]); // the key table is modal
+    const answered = reduceConsole(confirming, key, NOW);
+    expect(answered.effects).toEqual([]); // any key but y cancels the confirmation; it never opens a window
+    expect(answered.state.confirm).toBeUndefined();
+  }
   const stream = reduceConsole(state(false), "w", NOW);
   expect(stream.effects).toEqual([]); // stream mode: a letter starts the command line
   expect(parseConsoleCommand("ui --all")).toEqual(["ui", "--all"]);
