@@ -16342,7 +16342,7 @@ function profileTaskTools(profile = "dev", stages) {
 
 // src/hub/delivery-hints.ts
 var DELIVERY_RETRY_WARNING = sanitize("Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.");
-function renderHeldHint(value, now = Date.now()) {
+function renderHeldHint(value, now = Date.now(), recipientRetry = true) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return "";
   const held = value;
@@ -16356,10 +16356,11 @@ function renderHeldHint(value, now = Date.now()) {
     return "";
   }
   const rows = held.rows.map((row) => `${sanitize(row.id)} from ${row.senders.map(sanitize).join(",")} kind ${row.kinds.join(",")} age ${Math.max(0, Math.floor((now - row.createdAt) / 1000))}s`);
+  const action = recipientRetry ? "Use hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person." : "Ask the person to resolve these held deliveries; this delivery-only peer cannot initiate recipient retry.";
   const out = `Held hub deliveries: ${held.count}${held.truncated ? " (metadata truncated)" : ""}
 ${rows.join(`
 `)}
-Use hub_delivery_retry {delivery_id} for one retry of your own uncertain row; check for earlier effects. A repeated uncertain retry needs the person.`;
+${action}`;
   return Buffer.byteLength(out, "utf8") <= 4096 ? out : `Held hub deliveries: ${held.count} (metadata truncated; ask the person to inspect the queue).`;
 }
 
@@ -16368,6 +16369,7 @@ var stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 var peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 var toolsMode = process.env.AGENTHUB_MODE === "tools";
+var deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
 var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles() {
   const read = (name) => {
@@ -16493,7 +16495,7 @@ async function withPendingHint(result, includeQueued = true) {
   if (hub && r.content) {
     try {
       const response = await hub.request({ t: "delivery_holds" }, 1000);
-      const hint = response?.ok ? renderHeldHint(response.held) : "";
+      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (hint)
         r.content.push({ type: "text", text: hint });
     } catch {}
@@ -16647,7 +16649,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           }
         ] : []
       ],
-      ...profileTaskTools(profile, lifecycleStages).filter((tool) => lifecycleStages !== undefined || tool.name !== "hub_sdlc_record"),
+      ...profileTaskTools(profile, lifecycleStages).filter((tool) => (lifecycleStages !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
       ...CONDUCTOR_TOOLS
     ]
   };
