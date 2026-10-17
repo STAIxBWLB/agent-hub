@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
+import { recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
+import type { TerminalBinding } from "./terminal-recovery.ts";
 
 export interface RecoveryPeer {
   id: string;
@@ -54,6 +56,8 @@ export interface ProjectProgress {
   phase: "pending" | "prepared" | "stopped" | "started" | "peers-restored" | "verified";
   instanceId?: string;
   terminals: Record<string, unknown>;
+  /** One durable repair allowance per peer, retained after an attempt to prevent a second relaunch. */
+  reattachments?: Partial<Record<RecoveryNativePeer, ReattachmentMarker>>;
   /** #414: last bounded native-attachment timeout, metadata only; never terminal output or task text. */
   attachmentTimeouts?: Record<string, {
     at: number;
@@ -72,6 +76,12 @@ export interface ProjectProgress {
    * instance and when. Status and audit read it; restore reads the launch records of every instance listed here.
    */
   restarts?: { instanceId: string; at: number }[];
+}
+export interface ReattachmentMarker {
+  state: "ready" | "attempted";
+  at: number;
+  cause: "detached after restore";
+  binding: TerminalBinding;
 }
 export interface RecoveryOperation {
   /**
@@ -95,6 +105,8 @@ export interface RecoveryOperation {
   globalInstalled?: boolean;
   error?: string;
   failure?: { code: "database_busy"; retryable: true; site?: string[] };
+  /** A typed verify outcome, never inferred from an error message or a peer's current state. */
+  blockedReattachment?: { projectId: string; peer: RecoveryNativePeer };
   /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
   audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string> };
@@ -104,6 +116,10 @@ export interface RecoveryOperation {
 
 /** #215: a refusal that holds for every resume of the operation (its staged target or preserved source is fixed). */
 export class FinalRefusal extends Error {}
+
+export class ReattachmentRequired extends Error {
+  constructor(public readonly projectId: string, public readonly peer: RecoveryNativePeer, message: string) { super(message); }
+}
 
 export { recoveryCommand };
 const STOP = "--stop-and-archive --reason <text>";
@@ -220,7 +236,7 @@ export function disposeRefusal(op: RecoveryOperation, live: Record<string, Inspe
 
 /** #272: one entry of `next`. `text` is the line status prints; a screen runs `kind` through `recoveryArgv`. */
 export interface NextChoice {
-  kind: "resume" | "abort" | "fresh" | "stop" | "wait";
+  kind: "resume" | "abort" | "fresh" | "stop" | "wait" | "reattach";
   /** `fresh` only: the peer that starts as a new session. */
   peer?: string;
   text: string;
@@ -245,9 +261,13 @@ export function nextChoices(receipt: RecoveryOperation, runner?: number | "unkno
   const old = !!op.sourceRoot && !coordinatorCurrent(op.sourceRoot);
   const abortable = !abortRefusal(op, live);
   const stuck = resumeBlocked(op, live);
+  const selected = op.blockedReattachment;
+  const repair = selected && op.projects.find(project => project.id === selected.projectId)?.reattachments?.[selected.peer];
+  const reattach = selected && repair && (repair.state === "ready" || repairWaiting(op, selected.projectId, selected.peer));
   return [
     ...(stuck ? [] : [{ kind: "resume" as const, text: `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}${old ? ` (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use ${abortable ? "abort or " : ""}stop-and-archive)` : ""}` }]),
     ...(abortable ? [{ kind: "abort" as const, text: recoveryCommand(op, "abort") }] : []),
+    ...(selected && reattach ? [{ kind: "reattach" as const, peer: selected.peer, text: recoveryCommand(op, "reattach", selected.peer) }] : []),
     ...(targetReadsWaivers(op) && !stuck ? failed.map((peer) => ({ kind: "fresh" as const, peer, text: recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`) })) : []),
     stop,
   ];
@@ -286,7 +306,12 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
 function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
   return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && canChooseFresh(value)).map(([key]) => key.slice("restored:".length))
-    .filter((peer) => peer !== "pi" && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
+    .filter((peer) => peer !== "pi" && !Object.hasOwn(progress.reattachments ?? {}, peer) && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
+}
+
+function repairWaiting(op: RecoveryOperation, projectId: string, peer: RecoveryNativePeer): boolean {
+  try { return decodeRestoreReceipt(op.projects.find(project => project.id === projectId)?.terminals[`restored:${peer}`])?.state === "waiting"; }
+  catch { return false; }
 }
 
 /** #215: the inspection shows the planned session attached for `peer`, so resume records it as restored: nothing is lost. */
@@ -350,6 +375,22 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
   const { fingerprint, ...reviewed } = op.plan;
   if (fingerprint !== planFingerprint(reviewed) || op.projects.length !== op.plan.projects.length ||
       op.projects.some((p, i) => p.id !== op.plan.projects[i]?.project.id)) throw new Error("reviewed operation plan or project scope changed");
+  const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  for (const [index, progress] of op.projects.entries()) {
+    if (progress.reattachments === undefined) continue;
+    if (!object(progress.reattachments)) throw new Error("invalid reattachment markers");
+    for (const [peer, marker] of Object.entries(progress.reattachments)) {
+      if (!["codex", "pi", "claude"].includes(peer) || !object(marker) || Object.keys(marker).some(key => !["state", "at", "cause", "binding"].includes(key)) ||
+          !["ready", "attempted"].includes(String(marker.state)) || marker.cause !== "detached after restore" || typeof marker.at !== "number" || !Number.isFinite(marker.at) || marker.at < 0) throw new Error("invalid reattachment marker");
+      const receipt = decodeRestoreReceipt({ state: "done", binding: marker.binding });
+      if (receipt?.state !== "done" || receipt.binding.peer !== peer || receipt.binding.projectRoot !== op.plan.projects[index]?.project.root) throw new Error("reattachment binding does not match its peer and project");
+    }
+  }
+  if (op.blockedReattachment !== undefined) {
+    const selected = op.blockedReattachment;
+    if (!object(selected) || Object.keys(selected).some(key => !["projectId", "peer"].includes(key)) || typeof selected.projectId !== "string" || !["codex", "pi", "claude"].includes(String(selected.peer)) ||
+        !op.projects.some(project => project.id === selected.projectId && Object.hasOwn(project.reattachments ?? {}, selected.peer))) throw new Error("invalid blocked reattachment selector");
+  }
 }
 
 export interface RecoveryDriver {
@@ -360,12 +401,12 @@ export interface RecoveryDriver {
   commit(project: Project, operation: string, instance: string, targetFeatures?: readonly string[]): Promise<void>;
   closeTerminals(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, save: () => void): Promise<void>;
   start(project: Project, op: RecoveryOperation): Promise<void>;
-  restore(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, group: "native" | "claude", save: () => void): Promise<void>;
+  restore(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, group: "native" | "claude", save: () => void, onlyPeer?: RecoveryNativePeer): Promise<void>;
   installPlugin(op: RecoveryOperation): Promise<void>;
   installGlobal(op: RecoveryOperation): Promise<void>;
   refreshManager?(op: RecoveryOperation): Promise<void>;
   release(project: Project, operation: string, instance: string): Promise<void>;
-  verify(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation): Promise<void>;
+  verify(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, save?: () => void): Promise<void>;
   /** #215 stop-and-archive: stop this operation's unreleased target (when given) and archive its committed snapshot. */
   stopAndArchive(project: Project, op: RecoveryOperation, targetInstance?: string): Promise<void>;
   sleep(ms: number): Promise<void>;
@@ -455,7 +496,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       op.phase = "blocked"; save();
       return op;
     }
-    op.phase = "running"; delete op.error; delete op.failure; save();
+    op.phase = "running"; delete op.error; delete op.failure; delete op.blockedReattachment; save();
     step("stage");
     const target = await driver.stage(op);
     if (op.targetDigest && (target.root !== op.targetRoot || target.digest !== op.targetDigest)) throw new FinalRefusal("staged target changed since operation started");
@@ -586,7 +627,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       }
       step(`restore-claude:${planned.project.id}`);
       await driver.restore(planned, progress, op, "claude", save);
-      await driver.verify(planned, progress, op);
+      await driver.verify(planned, progress, op, save);
       step(`release:${planned.project.id}`);
       progress.releaseRequested = true; save();
       await driver.release(planned.project, id, progress.instanceId!);
@@ -599,6 +640,8 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     releaseRecoveryLock(id, home); op.phase = "completed"; step("completed");
   } catch (error) {
     // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
+    if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
+    else delete op.blockedReattachment;
     if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
     if (error instanceof FinalRefusal) op.final = true;
     const next = nextActionsText(op, await liveProjects(op, driver.inspect));
@@ -615,11 +658,74 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
     runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
     projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(key, value)])) } : {}),
+      ...(op.plan.projects.find(planned => planned.project.id === p.id) ? { recordedSessions: recordedPeerGuidance(op.plan.projects.find(planned => planned.project.id === p.id)!, p, {
+        recorded: Object.fromEntries(Object.entries(p.reattachments ?? {}).flatMap(([peer, marker]) => marker ? [[peer, marker.binding]] : [])),
+        reattachCommand: peer => recoveryCommand(op, "reattach", peer),
+      }) } : {}),
       ...(p.fresh ? { lostContinuity: Object.fromEntries(Object.entries(p.fresh).map(([peer, f]) => [peer, f.lost])) } : {}),
       ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
     pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
     ...(!targetReadsWaivers(op) && op.projects.some((p) => failedPeers(op, p).length) ? { freshSession: `not offered: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session` } : {}),
-    ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), next };
+    ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.blockedReattachment ? { blockedReattachment: op.blockedReattachment } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), next };
+}
+
+/**
+ * Person-command entry: restore one recorded conversation under this operation's existing hold.
+ * The driver settles and records the selected native identity; this entry never performs global verification,
+ * release, installation or completion. A later normal resume owns those steps.
+ */
+export async function reattachRecovery(id: string, peer: string, driver: RecoveryDriver, home = hubHome()): Promise<RecoveryOperation> {
+  let op = readOperation<RecoveryOperation>(id, home);
+  validateReceipt(id, op);
+  const selection = () => {
+    if (!["codex", "pi", "claude"].includes(peer) || op.phase !== "blocked" || op.disposition || op.final || op.blockedReattachment?.peer !== peer) throw new Error("reattach is available only for the peer named by a blocked reattachment receipt");
+    const progress = op.projects.find(project => project.id === op.blockedReattachment!.projectId);
+    const planned = op.plan.projects.find(project => project.project.id === progress?.id);
+    const native = peer as RecoveryNativePeer;
+    const marker = progress?.reattachments?.[native];
+    if (!progress || !planned || !marker || !["started", "peers-restored"].includes(progress.phase) || !progress.instanceId || !op.targetRoot || !op.targetDigest ||
+        (marker.state !== "ready" && !repairWaiting(op, progress.id, native))) throw new Error("recorded reattachment is unavailable or its single relaunch allowance was already used; resume to inspect the saved receipt");
+    return { progress, planned, marker, native };
+  };
+  selection(); // Finished or unrelated operations must not acquire a new lock merely to refuse.
+  acquireRecoveryLock(id, home);
+  const releaseRunner = claimRunner(id, home);
+  let attempted = false;
+  const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
+  try {
+    op = readOperation<RecoveryOperation>(id, home);
+    validateReceipt(id, op);
+    const { progress, planned, marker, native } = selection();
+    const expected = structuredClone(marker.binding);
+    const target = async () => {
+      const observed = await driver.inspect(planned.project);
+      if (observed.state !== "running" || observed.instanceId !== progress.instanceId || observed.version !== op.plan.version || observed.recovery?.operationId !== id || observed.recovery.phase === "released") throw new Error("reattach target changed or is not held by this operation; no replacement runtime is accepted");
+    };
+    await target();
+    attempted = true;
+    await driver.restore(planned, progress, op, native === "claude" ? "claude" : "native", save, native);
+    // A done receipt is written by the runtime only after authenticated attachment and exact settlement.
+    // Inspection peers may be unavailable; do not invent an attachment from a test or a stale status projection.
+    const restored = decodeRestoreReceipt(progress.terminals[`restored:${native}`]);
+    if (restored?.state !== "done" || restored.binding.peer !== native || restored.binding.projectRoot !== expected.projectRoot ||
+        restored.binding.sessionId !== expected.sessionId || restored.binding.sessionFile !== expected.sessionFile) throw new Error(`${native}: recorded session reattachment was not settled with its exact identity`);
+    await target();
+    delete op.blockedReattachment; delete op.failure;
+    op.phase = "blocked";
+    op.error = `${native}: recorded session reattached; resume to finish verification, release and any remaining installation; ${recoveryCommand(op, "resume")}`;
+    save();
+    return op;
+  } catch (error) {
+    if (attempted) {
+      if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
+      else delete op.blockedReattachment;
+      if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
+      op.phase = "blocked";
+      op.error = `${error instanceof Error ? error.message : "reattachment is unconfirmed"}; ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
+      save();
+    }
+    throw error;
+  } finally { releaseRunner(); }
 }
 
 /** Escape a blocked preflight without abandoning a stopped runtime or an uncertain terminal mutation. */
@@ -649,7 +755,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       const state = live[planned.project.id];
       if (state?.recovery?.operationId === id && state.recovery.phase !== "released") await driver.abort(planned.project, id, planned.source.instanceId!);
     }
-    delete op.error; delete op.failure;
+    delete op.error; delete op.failure; delete op.blockedReattachment;
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
   } catch (error) {
@@ -706,7 +812,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
       }
       (op.audit ??= []).push({ at, action: "fresh-session", reason, peer, projects: failed.map((p) => p.id) });
-      delete op.error; delete op.failure;
+      delete op.error; delete op.failure; delete op.blockedReattachment;
       op.updatedAt = at; writeOperation(id, op, home);
       return op;
     }
@@ -733,6 +839,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     }
     // Each outcome is recorded as it happens, so a disposition that stops partway stays true and resume refuses it.
     const disposition = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
+    delete op.blockedReattachment;
     abandoned(op); // #227: in the same write as the disposition
     (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
     // Recorded before the first act: a crash inside a stop leaves a disposition that resume refuses to override.

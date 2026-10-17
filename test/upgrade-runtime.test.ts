@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
@@ -14,6 +14,8 @@ import { VERSION } from "../src/version.ts";
 import { packageDigest } from "../src/cli/recovery-package.ts";
 import { drainCliAudits } from "../src/cli/identity-audit.ts";
 import { liveProjects, nextActions, publicOperation, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
+import type { TerminalBinding } from "../src/cli/terminal-recovery.ts";
+import { realPath } from "../src/hub/project.ts";
 
 test("delegated staging refuses an older target before protocol probes or runtime effects, including cached targets", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-old-live-test-target-"));
@@ -1952,4 +1954,284 @@ test("#117 P3-5 cached feature evidence cannot authorize changed target bytes", 
     const target = await makeRecoveryDriver(async () => { probes++; return { code: 0, stdout: JSON.stringify({ protocol: PROTOCOL, features: [] }), stderr: "" }; }).stage(f.op);
     expect(target.targetFeatures).toEqual([]); expect(probes).toBe(1);
   } finally { f.cleanup(); }
+});
+
+/** #463: only a fake control server and fake Orca argv boundary; no terminal or native agent is opened. */
+function detachedAfterRestoreFixture(peer: "pi" | "codex" | "claude" = "pi", accepted = false) {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-463-detached-"))), stateDir = join(root, "state"); mkdirSync(stateDir);
+  const sessionFile = join(stateDir, "recorded-pi.jsonl"); writeFileSync(sessionFile, '{"type":"session","id":"recorded-pi"}\n');
+  const configDir = join(root, "claude-config"), codexHome = join(root, "codex-home");
+  const transcriptDir = join(configDir, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(transcriptDir, { recursive: true }); mkdirSync(join(codexHome, "sessions"), { recursive: true });
+  for (const id of [`recorded-${peer}`, `accepted-${peer}`]) {
+    writeFileSync(join(transcriptDir, `${id}.jsonl`), "{}\n"); writeFileSync(join(codexHome, "sessions", `${id}.jsonl`), "{}\n");
+  }
+  const launch = { packageEntrypoint: "/old/main.js", command: "unused fixture command", argv: [], env: { CLAUDE_CONFIG_DIR: configDir, CODEX_HOME: codexHome } };
+  const original: TerminalBinding = { peer, handle: "term-original", incarnationId: "inc-original", worktreeId: "wt", projectRoot: root,
+    sessionId: `recorded-${peer}`, ...(peer === "pi" ? { sessionFile, backend: "dgx", model: "dgx/coding" } : {}), launch, launchMetadata: launch };
+  const saved: TerminalBinding = { ...original, ...(accepted ? { sessionId: `accepted-${peer}` } : {}), handle: "term-restored", incarnationId: "inc-restored" };
+  const planned: PlannedProject = { project: { id: "p-215", root, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL,
+      peers: [{ id: peer, state: "idle", ...(peer === "codex" ? { threadId: original.sessionId } : { sessionId: original.sessionId }), ...(peer === "pi" ? { sessionFile, args: { mode: "tui", backend: "dgx", model: "dgx/coding" } } : {}) }], blockers: [] },
+    terminals: [original], blockers: [] };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "peers-restored",
+    terminals: { [`closed:${peer}`]: true, [`restored:${peer}`]: { state: "done", binding: saved } } };
+  const op = { schema: 1, id: "op-463", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT,
+    plan: { version: VERSION, projects: [planned] }, projects: [progress] } as RecoveryOperation;
+  const control = { attached: false, sessionId: saved.sessionId, sessionFile, terminal: "orphaned" as "orphaned" | "missing" | "unknown" | "live" | "replacement", attachAfterCreate: true, interruptWait: false, failCreate: false,
+    targetOperation: op.id, targetVersion: VERSION, allowStop: false };
+  let created = 0, elapsed = 0, postCreateReads = 0;
+  const snapshots: ProjectProgress[] = [], commands: string[][] = [];
+  const save = () => snapshots.push(structuredClone(progress));
+  const view = () => {
+    const attached = control.attached;
+    if (created && !attached && control.attachAfterCreate && ++postCreateReads > 0) queueMicrotask(() => { control.attached = true; });
+    return { operationId: control.targetOperation, phase: "restored", ready: attached,
+      peers: { [peer]: { id: peer, state: attached ? "idle" : "offline", ...(peer === "codex" ? { threadId: control.sessionId } : { sessionId: control.sessionId }), ...(peer === "pi" ? { sessionFile: control.sessionFile,
+        launch: { mode: "tui", backend: "dgx", model: "dgx/coding", sessionFile: control.sessionFile } } : {}) } }, integrity: { expected: {}, current: {} } };
+  };
+  const stopObservations: { instance: unknown; bookmarkPresent: boolean; restartPresent: boolean }[] = [];
+  const server = Bun.serve<any>({ hostname: "127.0.0.1", port: 0,
+    fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t === "hello") ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-215", instanceId: "i-target", cwd: root, protocol: PROTOCOL }));
+      else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-215", instanceId: "i-target", cwd: root, version: control.targetVersion, protocol: PROTOCOL } }));
+      else if (msg.t === "kill") {
+        stopObservations.push({ instance: msg.instanceId, bookmarkPresent: existsSync(join(stateDir, "recovery-continuity.json")), restartPresent: existsSync(join(stateDir, "restart.json")) });
+        if (!control.allowStop || msg.instanceId !== "i-target") { ws.send(JSON.stringify({ rid: msg.rid, ok: false, error: "fixture refuses to stop an unowned target" })); return; }
+        ws.send(JSON.stringify({ rid: msg.rid, ok: true, t: "stopping" })); rmSync(join(stateDir, "status.json"), { force: true });
+      } else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: view() }));
+    } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "token-463\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, projectId: "p-215", instanceId: "i-target", cwd: root }));
+  const shown = () => ({ handle: created ? "term-repair" : control.terminal === "replacement" ? "term-other" : saved.handle,
+    incarnationId: created ? "inc-repair" : control.terminal === "replacement" ? "inc-other" : saved.incarnationId,
+    worktreeId: "wt", worktreePath: root, agentIdentity: peer, sessionId: control.sessionId,
+    sessionFile: control.sessionFile, backend: "dgx", model: "dgx/coding",
+    connected: control.terminal === "live", orphaned: control.terminal === "orphaned", state: control.terminal === "orphaned" ? "exited" : "idle" });
+  const runner = async (argv: string[]) => {
+    commands.push(argv);
+    if (argv[1] !== "terminal") throw new Error("non-terminal execution is forbidden in this fixture");
+    let result: unknown;
+    if (argv[2] === "create") {
+      // Intent must be durable before the first create attempt, even if the runner then fails or is interrupted.
+      expect((snapshots.at(-1) as any)?.reattachments?.[peer]?.state).toBe("attempted");
+      created++;
+      if (control.failCreate) return { code: 1, stdout: "fixture create refused", stderr: "" };
+      control.terminal = "live";
+      result = { terminal: shown() };
+    } else if (argv[2] === "list") {
+      if (control.terminal === "unknown") return { code: 1, stdout: "unreadable fixture inventory", stderr: "" };
+      result = { terminals: control.terminal === "missing" ? [] : [shown()] };
+    } else if (argv[2] === "show") {
+      if (control.terminal === "unknown") return { code: 1, stdout: "unreadable fixture terminal", stderr: "" };
+      if (control.terminal === "missing") return { code: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }), stderr: "" };
+      result = { terminal: shown() };
+    } else if (argv[2] === "wait") result = { wait: { satisfied: true } };
+    else throw new Error("unexpected terminal mutation in detached fixture");
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const driver = makeRecoveryDriver(runner, undefined, { now: () => elapsed, sleep: async ms => { elapsed += ms; if (control.interruptWait) throw new Error("fixture repair interrupted"); } });
+  const verify = () => driver.verify(planned, progress, op, save);
+  const restore = () => driver.restore(planned, progress, op, peer === "claude" ? "claude" : "native", save, peer);
+  const recordLauncher = (instanceId: string, invalid = false) => {
+    if (instanceId !== progress.instanceId) progress.restarts = [{ instanceId, at: 1 }];
+    writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([invalid
+      ? { peer, projectRoot: root, instanceId, launcherPid: "unreadable" }
+      : { peer, projectRoot: root, stateDir, instanceId, launcherPid: process.pid, launcherSignature: processSignature(process.pid),
+        launchId: "fixture-463", handle: saved.handle, incarnationId: saved.incarnationId, worktreeId: "wt", env: {} }]));
+  };
+  return { root, stateDir, planned, progress, op, control, original, saved, driver, stopObservations, commands, snapshots, save, verify, restore, recordLauncher, creates: () => created,
+    cleanup: () => { server.stop(true); rmSync(root, { recursive: true, force: true }); } };
+}
+
+for (const terminal of ["orphaned", "missing"] as const) test(`#463 offline Pi with ${terminal} done terminal is durably armed for one same-session re-restore`, async () => {
+  const f = detachedAfterRestoreFixture(); f.control.terminal = terminal;
+  try {
+    await expect(f.verify()).rejects.toThrow("detached after restore");
+    expect(f.progress.terminals["restored:pi"]).toEqual({ state: "failed" });
+    expect(f.progress.phase).toBe("started");
+    expect((f.progress as any).reattachments.pi).toMatchObject({ state: "ready", cause: "detached after restore", binding: f.saved });
+    expect((f.snapshots.at(-1) as any)?.reattachments?.pi?.state).toBe("ready");
+    await f.restore();
+    expect(f.creates()).toBe(1);
+    const command = f.commands.find(argv => argv[2] === "create")!;
+    const body = command[command.indexOf("--command") + 1]!;
+    for (const expected of ["--session-file", f.saved.sessionFile!, "--backend", "dgx", "--model", "dgx/coding"]) expect(body).toContain(expected);
+    expect(f.snapshots.some(snapshot => (snapshot.terminals["restored:pi"] as any)?.state === "waiting" && (snapshot.terminals["restored:pi"] as any)?.binding.handle === "term-repair")).toBe(true);
+    expect(f.progress.terminals["restored:pi"]).toMatchObject({ state: "done", binding: { handle: "term-repair", incarnationId: "inc-repair", sessionId: f.saved.sessionId, sessionFile: f.saved.sessionFile, backend: "dgx", model: "dgx/coding" } });
+    expect((f.progress as any).reattachments.pi.state).toBe("attempted");
+    await f.verify();
+    expect(f.progress.fresh).toBeUndefined();
+    expect(nextActions(f.op).some(action => action.includes("--fresh-session"))).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+test("#463 a second post-restore detach blocks without rearming or creating another terminal", async () => {
+  const f = detachedAfterRestoreFixture();
+  try {
+    await expect(f.verify()).rejects.toThrow("detached after restore"); await f.restore();
+    f.control.attached = false; f.control.attachAfterCreate = false; f.control.terminal = "orphaned";
+    await expect(f.verify()).rejects.toThrow(/detached after restore|already attempted|reattach/i);
+    expect((f.progress as any).reattachments.pi.state).toBe("attempted");
+    const before = structuredClone(f.progress.terminals["restored:pi"]);
+    await expect(f.restore()).rejects.toThrow();
+    expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:pi"]).toEqual(before);
+  } finally { f.cleanup(); }
+});
+
+test("#463 interrupted repair resumes its durable waiting binding without consuming a second terminal", async () => {
+  const f = detachedAfterRestoreFixture();
+  try {
+    await expect(f.verify()).rejects.toThrow("detached after restore");
+    f.control.attachAfterCreate = false; f.control.interruptWait = true;
+    await expect(f.restore()).rejects.toThrow("fixture repair interrupted");
+    expect(f.creates()).toBe(1);
+    expect((f.snapshots.at(-1) as any)?.reattachments?.pi?.state).toBe("attempted");
+    expect(f.progress.terminals["restored:pi"]).toMatchObject({ state: "waiting", binding: { handle: "term-repair" } });
+    f.control.interruptWait = false; f.control.attachAfterCreate = true;
+    await f.restore(); await f.verify();
+    expect(f.creates()).toBe(1);
+    expect(f.progress.terminals["restored:pi"]).toMatchObject({ state: "done", binding: { handle: "term-repair", sessionId: f.saved.sessionId } });
+  } finally { f.cleanup(); }
+});
+
+test("#463 failed repair creation retains attempted intent and cannot launch a second terminal", async () => {
+  const f = detachedAfterRestoreFixture();
+  try {
+    await expect(f.verify()).rejects.toThrow("detached after restore");
+    f.control.failCreate = true;
+    await expect(f.restore()).rejects.toThrow();
+    expect((f.progress as any).reattachments.pi.state).toBe("attempted");
+    expect(f.creates()).toBe(1);
+    f.control.failCreate = false;
+    await expect(f.restore()).rejects.toThrow();
+    expect(f.creates()).toBe(1);
+    expect(nextActions(f.op).some(action => action.includes("--fresh-session"))).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+for (const condition of ["live-wrong-session", "live-wrong-file", "unknown-terminal", "replacement-terminal", "current-launcher", "older-launcher", "unknown-launcher"] as const) test(`#463 ${condition} cannot arm automatic repair or erase a done receipt`, async () => {
+  const f = detachedAfterRestoreFixture();
+  if (condition === "live-wrong-session") { f.control.attached = true; f.control.sessionId = "different-pi"; f.control.terminal = "live"; }
+  if (condition === "live-wrong-file") { f.control.attached = true; f.control.sessionFile = join(f.stateDir, "different.jsonl"); f.control.terminal = "live"; }
+  if (condition === "unknown-terminal") f.control.terminal = "unknown";
+  if (condition === "replacement-terminal") f.control.terminal = "replacement";
+  if (condition === "current-launcher") f.recordLauncher("i-target");
+  if (condition === "older-launcher") f.recordLauncher("i-older");
+  if (condition === "unknown-launcher") f.recordLauncher("i-target", true);
+  const before = structuredClone(f.progress);
+  try {
+    await expect(f.verify()).rejects.toThrow();
+    expect((f.progress as any).reattachments).toBeUndefined();
+    expect(f.progress.terminals).toEqual(before.terminals);
+    expect(f.progress.phase).toBe(before.phase);
+    expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+
+for (const peer of ["codex", "claude"] as const) test(`#463 ${peer} repairs the last accepted conversation instead of reverting to its original plan`, async () => {
+  const f = detachedAfterRestoreFixture(peer, true);
+  try {
+    expect(f.saved.sessionId).not.toBe(f.original.sessionId);
+    await expect(f.verify()).rejects.toThrow("detached after restore");
+    expect(f.progress.reattachments?.[peer]?.binding.sessionId).toBe(f.saved.sessionId);
+    await f.restore();
+    const argv = f.commands.find(command => command[2] === "create")!;
+    const command = argv[argv.indexOf("--command") + 1]!;
+    expect(command).toContain(f.saved.sessionId);
+    expect(command).not.toContain(f.original.sessionId);
+    expect(f.progress.terminals[`restored:${peer}`]).toMatchObject({ state: "done", binding: { sessionId: f.saved.sessionId } });
+    await f.verify();
+    // Even the originally planned id is now a different conversation: repair has one exact accepted identity.
+    f.control.sessionId = f.original.sessionId;
+    await expect(f.verify()).rejects.toThrow(/different.*conversation/i);
+    expect(f.creates()).toBe(1);
+    expect(f.progress.terminals[`restored:${peer}`]).toMatchObject({ state: "done", binding: { sessionId: f.saved.sessionId } });
+    expect(f.progress.fresh).toBeUndefined();
+  } finally { f.cleanup(); }
+});
+
+for (const changed of ["operation", "version"] as const) test(`#463 a changed target ${changed} cannot arm detached repair`, async () => {
+  const f = detachedAfterRestoreFixture();
+  if (changed === "operation") f.control.targetOperation = "another-operation";
+  else f.control.targetVersion = "0.0.0";
+  const before = structuredClone(f.progress);
+  try {
+    await expect(f.verify()).rejects.toThrow("target identity verification failed");
+    expect(f.progress).toEqual(before);
+    expect(f.snapshots).toEqual([]);
+    expect(f.creates()).toBe(0);
+  } finally { f.cleanup(); }
+});
+
+test("#463 stop-and-archive writes Pi continuity only after its owned target stopped and snapshot archived", async () => {
+  const f = detachedAfterRestoreFixture();
+  const homeBefore = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(f.root, "home");
+  const operation = crypto.randomUUID(); f.op.id = operation; f.control.targetOperation = operation;
+  const bookmark = join(f.stateDir, "recovery-continuity.json");
+  const restart = join(f.stateDir, "restart.json");
+  const archive = join(f.stateDir, `restart.abandoned.${createHash("sha256").update(operation).digest("hex")}.json`);
+  writeFileSync(restart, JSON.stringify({ operationId: operation, projectId: f.planned.project.id, projectRoot: f.root }));
+  try {
+    await expect(f.driver.stopAndArchive(f.planned.project, f.op, "unowned-instance")).rejects.toThrow("unowned target");
+    expect(existsSync(bookmark)).toBe(false); expect(existsSync(restart)).toBe(true); expect(existsSync(archive)).toBe(false);
+    f.control.allowStop = true;
+    await f.driver.stopAndArchive(f.planned.project, f.op, "i-target");
+    expect(f.stopObservations).toEqual([
+      { instance: "unowned-instance", bookmarkPresent: false, restartPresent: true },
+      { instance: "i-target", bookmarkPresent: false, restartPresent: true },
+    ]);
+    expect(existsSync(join(f.stateDir, "status.json"))).toBe(false);
+    expect(existsSync(restart)).toBe(false); expect(existsSync(archive)).toBe(true);
+    const continuity = JSON.parse(readFileSync(bookmark, "utf8"));
+    expect(continuity).toMatchObject({ operationId: operation, projectId: f.planned.project.id, projectRoot: f.root,
+      pi: { sessionId: f.saved.sessionId, sessionFile: f.saved.sessionFile, backend: "dgx", model: "dgx/coding" } });
+    expect(f.creates()).toBe(0);
+  } finally {
+    if (homeBefore === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = homeBefore;
+    f.cleanup();
+  }
+});
+
+test("#463 an archive failure after the owned fake stop cannot leave a continuity bookmark", async () => {
+  const f = detachedAfterRestoreFixture();
+  const homeBefore = process.env.AGENTHUB_HOME; process.env.AGENTHUB_HOME = join(f.root, "home");
+  const operation = crypto.randomUUID(); f.op.id = operation; f.control.targetOperation = operation;
+  const archive = join(f.stateDir, `restart.abandoned.${createHash("sha256").update(operation).digest("hex")}.json`);
+  writeFileSync(join(f.stateDir, "restart.json"), JSON.stringify({ operationId: operation }));
+  mkdirSync(archive); // rename of the snapshot onto a directory is a real archival write failure.
+  f.control.allowStop = true;
+  try {
+    await expect(f.driver.stopAndArchive(f.planned.project, f.op, "i-target")).rejects.toThrow();
+    expect(existsSync(join(f.stateDir, "status.json"))).toBe(false);
+    expect(existsSync(join(f.stateDir, "restart.json"))).toBe(true);
+    expect(existsSync(join(f.stateDir, "recovery-continuity.json"))).toBe(false);
+    expect(f.creates()).toBe(0);
+  } finally {
+    if (homeBefore === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = homeBefore;
+    f.cleanup();
+  }
+});
+
+test("#463 a snapshot owned by another operation cannot authorize a continuity bookmark", async () => {
+  const f = detachedAfterRestoreFixture();
+  const homeBefore = process.env.AGENTHUB_HOME; process.env.AGENTHUB_HOME = join(f.root, "home");
+  const operation = crypto.randomUUID(); f.op.id = operation; f.control.targetOperation = operation;
+  const other = crypto.randomUUID();
+  writeFileSync(join(f.stateDir, "restart.json"), JSON.stringify({ operationId: other }));
+  f.control.allowStop = true;
+  try {
+    await expect(f.driver.stopAndArchive(f.planned.project, f.op, "i-target")).rejects.toThrow(/archive|snapshot|operation/i);
+    expect(existsSync(join(f.stateDir, "status.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(f.stateDir, "restart.json"), "utf8")).operationId).toBe(other);
+    expect(existsSync(join(f.stateDir, "recovery-continuity.json"))).toBe(false);
+  } finally {
+    if (homeBefore === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = homeBefore;
+    f.cleanup();
+  }
 });

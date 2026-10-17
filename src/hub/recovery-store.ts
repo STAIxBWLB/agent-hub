@@ -69,15 +69,21 @@ export function assertLifecycleAvailable(): void {
  * lacks dispose, refuses abort and resume on a lapsed hold and shows no next actions: then the running release is
  * named, which does all of that in-process (its resume still runs the operation's own runner).
  */
-export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags = ""): string {
-  const entry = !op.sourceRoot ? undefined : coordinatorCurrent(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
+export type RecoveryAction = "status" | "resume" | "abort" | "dispose" | "reattach";
+function supportsAction(sourceRoot: string, action: RecoveryAction): boolean {
+  if (!coordinatorCurrent(sourceRoot)) return false;
+  if (action !== "reattach") return true;
+  try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function reattachRecovery"); } catch { return false; }
+}
+export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: RecoveryAction, flags = ""): string {
+  const entry = !op.sourceRoot ? undefined : supportsAction(op.sourceRoot, action) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
   const cli = !entry ? "ahub" : /^[\w./@+-]+$/.test(entry) ? `bun ${entry}` : `bun '${entry.replace(/'/g, `'\\''`)}'`;
   return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
 }
 
 /** #272: the command above as an argv for `bun`, which a screen runs instead of printing; with no coordinator of its own, this release's. */
-export function recoveryArgv(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags: string[] = []): string[] {
-  const entry = op.sourceRoot && coordinatorCurrent(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
+export function recoveryArgv(op: { id: string; sourceRoot?: string }, action: RecoveryAction, flags: string[] = []): string[] {
+  const entry = op.sourceRoot && supportsAction(op.sourceRoot, action) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
   return [entry, "recovery", action, op.id, ...flags];
 }
 

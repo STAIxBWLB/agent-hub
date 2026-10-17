@@ -98,6 +98,8 @@ import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
 import { changedPaths, hasTree, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
+import { consumeRecoveryContinuity, readRecoveryContinuity } from "./recovery-continuity.ts";
+import { shellQuote } from "../cli/terminal-recovery.ts";
 
 import { isStartablePeer, peerStartConfig, PEER_START_RETRY_MS, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
@@ -754,8 +756,11 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // A session record left by a run that never shut down means it crashed (issue #37). A controlled restart has its own.
   const crashed = !recoveryOperation && !restartFilePresent ? readSessions(opts.stateDir) : undefined;
+  let piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
+  // A disposed operation's exact session takes precedence over a stale crash record for this whole startup.
+  const archivedPiContinuity = piContinuity.state !== "absent";
   if (config.mlx.enabled === false) {
-    const launches = [...(restored?.peers ?? []).filter(peer => peer.id === "pi").map(peer => peer.launch), ...(crashed?.peers ?? []).filter(peer => peer.peer === "pi").map(peer => peer.meta.launch)];
+    const launches = [...(restored?.peers ?? []).filter(peer => peer.id === "pi").map(peer => peer.launch), ...(crashed?.peers ?? []).filter(peer => peer.peer === "pi" && !archivedPiContinuity).map(peer => peer.meta.launch)];
     for (const launch of launches) {
       const problem = mlxLaunchProblem(config, (launch ?? {}) as { backend?: unknown; model?: unknown });
       if (problem) throw new Error(`recorded Pi recovery: ${problem}`);
@@ -2604,8 +2609,20 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // Session identities of the attached peers, kept current for crash recovery (issue #37); a clean stop removes them.
   let sessionsWritten = "";
+  function settlePiContinuity(): void {
+    if (stopping || recoveryActive() || piContinuity.state !== "ready") return;
+    const peer = bus.peers.get("pi");
+    if (!(peer instanceof PiPeer) || peer.state === "offline" || !peer.sessionGeneration || !peer.recoveryReady) return;
+    const saved = piContinuity.bookmark, actual = peer.recoveryMetadata();
+    if (actual.sessionId !== saved.pi.sessionId || saved.pi.sessionFile !== undefined && actual.sessionFile !== saved.pi.sessionFile) return;
+    try {
+      if (consumeRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd, operationId: saved.operationId, digest: piContinuity.digest })) piContinuity = { state: "absent" };
+      else log("Pi continuity bookmark changed before attachment settlement; retained for inspection");
+    } catch { log("Pi continuity attachment settlement unavailable; bookmark retained"); }
+  }
   const recordSessions = () => {
     if (stopping) return;
+    settlePiContinuity();
     const peers = [...bus.peers.values()].filter((p) => p.state !== "offline").map((p) => {
       let meta: Record<string, unknown> = {};
       try { meta = (p as { recoveryMetadata?: () => Record<string, unknown> }).recoveryMetadata?.() ?? {}; } catch { /* not ready yet: the id alone */ }
@@ -2622,6 +2639,7 @@ export async function startDaemon(opts: DaemonOptions) {
     report(`the previous hub run stopped without shutting down${lostCount ? `; ${lostCount} deliveries it had in flight are in needs_review (ahub queue list)` : ""}`);
     const start = (peer: string, args: Parameters<typeof startPeer>[1]) => startPeer(peer, args).catch((e: Error) => ({ ok: false, error: e.message }));
     for (const step of crashPlan(prev.peers)) {
+      if (step.peer === "pi" && archivedPiContinuity) { report("pi: archived continuity evidence holds crash-session resume and fresh fallback; pi.auto_start uses only the recorded archived session"); continue; }
       // `pi.auto_start` already asks for Pi (#66): its recorded headless session comes back, auto-resume or not, and a
       // fresh one starts when that fails or there is nothing headless to resume. Pi runs on-prem: no cloud quota.
       if (step.peer === "pi" && piAutoStart()) {
@@ -2883,6 +2901,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const running = startPeerOnce(peer, args).then(async result => {
       if (!result.ok && peer === "codex") unattendedPeers.delete(peer);
       if (!result.ok || result.already) return result;
+      if (peer === "pi") settlePiContinuity();
       return permissionChange(peer, async () => {
         if (peer === "codex") { if (args.unattended) unattendedPeers.add(peer); else unattendedPeers.delete(peer); }
         logPermissionStart(peer); writeStatus(); return result;
@@ -2918,6 +2937,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!membershipAllowed(peer)) return { ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` };
     if (!startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
     if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
+    const continuity = peer === "pi" && by === "pi.auto_start" ? piContinuity : undefined;
+    if (continuity?.state === "invalid") return { ok: false, error: "archived Pi continuity evidence is invalid or unreadable; inspect recovery-continuity.json before starting Pi; no fresh session was started" };
+    const resume = continuity?.state === "ready" ? continuity.bookmark.pi : undefined;
     const mode = startMode(peer);
     if (mode === "tui" && (peer === "pi" || peer === "local")) { await ensureSpec(true); await refreshRunner(); }
     const owner = bus.peers.get(peer);
@@ -2927,23 +2949,25 @@ export async function startDaemon(opts: DaemonOptions) {
       // like one whose terminal was closed, so a headless start in that window replaces it; record when a launch was
       // issued to tell the two apart.
       if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
-      return startPeer(peer, peer === "pi" || peer === "kimi" ? { mode: "headless" } : {});
+      return startPeer(peer, peer === "pi" || peer === "kimi" ? { mode: "headless", ...(resume ?? {}) } : {});
     }
     if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
-    const command = `ahub ${startWords(peer, mode).join(" ")}`;
+    const words = [...startWords(peer, mode), ...(resume ? ["--session-id", resume.sessionId, ...(resume.sessionFile ? ["--session-file", resume.sessionFile] : []), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : [])] : [])];
+    const command = `ahub ${resume ? words.map(shellQuote).join(" ") : words.join(" ")}`;
     const since = Date.now() - (opening.get(peer) ?? 0);
     if (since < PEER_START_RETRY_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };
     // Reserved before the provider is awaited, so starts that arrive together open one terminal, not one each.
     opening.set(peer, Date.now());
+    if (resume && (stopping || recoveryActive() || !membershipAllowed(peer) || rosterChanging === peer || requestedPeerStops.has(peer))) { opening.delete(peer); return { ok: false, error: "Pi lifecycle changed before its continuity terminal opened; bookmark retained" }; }
     // Every word is the hub's own: its runtime, its entry point, this project and a peer from the closed list.
-    const opened = await opener.open(`${peer} (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, ...startWords(peer, mode)]).catch((error: Error) => ({ ok: false as const, why: "the terminal provider failed", detail: error.message }));
+    const opened = await opener.open(`${peer} (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, ...words]).catch((error: Error) => ({ ok: false as const, why: "the terminal provider failed", detail: error.message }));
     if (!opened.ok) {
       opening.delete(peer); // nothing was opened: the next request may try again at once
       if (opened.detail) log(`terminal provider for ${peer}: ${opened.detail}`);
       const headless = peer === "claude" ? "" : `, or set its start mode to headless (ahub settings set peers.${peer}.start_mode headless)`;
       return { ok: false, error: `${peer} starts in its TUI and the hub could not open a terminal for it (${opened.why}). Run ${command} in a terminal${headless}`, command };
     }
-    try { notify(`${peer}: ${by} opened a terminal running ${command} (${opened.via}); it attaches when its TUI is ready`); } catch { /* the terminal is open either way */ }
+    try { notify(resume ? `pi: pi.auto_start opened a terminal for its recorded archived session (${opened.via}); attachment is not yet verified` : `${peer}: ${by} opened a terminal running ${command} (${opened.via}); it attaches when its TUI is ready`); } catch { /* the terminal is open either way */ }
     return { ok: true, mode, opened: opened.via, command };
   }
 
@@ -5231,7 +5255,7 @@ export async function startDaemon(opts: DaemonOptions) {
     });
   }
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
-  const piRecovered = !!crashed?.peers.some((p) => p.peer === "pi");
+  const piRecovered = !archivedPiContinuity && !!crashed?.peers.some((p) => p.peer === "pi");
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {

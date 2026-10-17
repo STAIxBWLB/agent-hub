@@ -10,10 +10,12 @@ export interface RestoreEvidence {
   launcher: "live" | "gone" | "unknown" | "no-record-yet" | "replaced" | "older-instance";
   session: "planned" | "other" | "none";
   allowOther: boolean;
+  /** Positive classification of the saved terminal, independent of launcher/session evidence. */
+  terminal?: "present" | "gone" | "changed" | "unknown";
   /** The original or verified selected terminal when a bare receipt first acquires a binding. */
   binding?: TerminalBinding;
 }
-export type RestoreAction = "poll" | "settle" | "revalidate" | "block" | "fail" | "create";
+export type RestoreAction = "poll" | "settle" | "revalidate" | "block" | "fail" | "create" | "reattach";
 export interface RestoreTransition { next: RestoreReceipt; action: RestoreAction }
 export type RestoreReceiptStatus = "unstarted" | "pending" | "waiting:pending" | "waiting:failed" | "done" | "failed";
 
@@ -75,7 +77,8 @@ export function restoreTransition(receipt: RestoreReceipt, evidence: RestoreEvid
     const binding = receipt.state === "waiting" ? receipt.binding : evidence.binding;
     return binding ? { next: { state: "done", binding }, action: "settle" } : keep("block");
   }
-  if (receipt.state === "done") return keep("block");
+  if (receipt.state === "done") return evidence.terminal === "gone" && evidence.launcher === "gone"
+    ? { next: { state: "failed" }, action: "reattach" } : keep("block");
   if (evidence.launcher === "unknown" || evidence.launcher === "replaced" || evidence.launcher === "older-instance") return keep("block");
   if (receipt.state === "waiting" && (evidence.launcher === "live" || evidence.launcher === "no-record-yet")) return keep("poll");
   const origin = receipt.state === "waiting" ? receipt.origin : receipt.state;
@@ -124,6 +127,7 @@ export function renderRestoreTransitionTable(): string {
     `| Target stopped or changed | ${priority(["stopped", "changed"], allSessions)} |`,
     `| Running target, other session not allowed | ${priority(["running"], [{ session: "other", allowOther: false }])} |`,
     "| Absent receipt | unstarted; initial launch is handled by the runtime outside this receipt table |",
+    "| Done, running target, no attached session, gone launchers and positively gone saved terminal (#463 supplemental evidence) | reattach -> failed; one recorded-session repair, no fresh-session choice |",
     "",
     table("Running target, no attached session (either allowOther value):", [{ session: "none", allowOther: false }, { session: "none", allowOther: true }]),
     "",

@@ -1,0 +1,96 @@
+import { decodeRestoreReceipt } from "./upgrade-restore-state.ts";
+import { shellQuote } from "./terminal-recovery.ts";
+import type { TerminalBinding } from "./terminal-recovery.ts";
+import type { Inspection, PlannedProject, ProjectProgress, RecoveryOperation, RecoveryPeer } from "./upgrade.ts";
+
+export type RecoveryNativePeer = "codex" | "pi" | "claude";
+export type RecordedSessionOverride = Pick<TerminalBinding, "sessionId" | "sessionFile">;
+export interface RecordedPeerGuidance {
+  peer: RecoveryNativePeer;
+  sessionId?: string;
+  sessionFile?: string;
+  command?: string;
+  reattachCommand?: string;
+  note: string;
+}
+export interface RecoveryGuidanceOptions {
+  /** Caller-validated retained repair bindings, including accepted sessions no longer in a done/waiting receipt. */
+  recorded?: Partial<Record<RecoveryNativePeer, RecordedSessionOverride>>;
+  /** The caller's fixed formatter for this operation's own coordinator, never model-supplied code. */
+  reattachCommand?: (peer: RecoveryNativePeer) => string;
+}
+
+const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+const argv = (...words: string[]): string => words.map(shellQuote).join(" ");
+const peers: readonly RecoveryNativePeer[] = ["codex", "pi", "claude"];
+
+function sourceSession(peer: RecoveryNativePeer, source: RecoveryPeer | undefined): { sessionId?: string; sessionFile?: string } {
+  const sessionId = peer === "codex" ? source?.threadId : source?.sessionId;
+  const sessionFile = peer === "pi" ? source?.sessionFile ?? source?.args?.sessionFile : undefined;
+  return { ...(text(sessionId) ? { sessionId } : {}), ...(text(sessionFile) ? { sessionFile } : {}) };
+}
+
+/**
+ * Person-only projection of recorded identities, never a peer/tool result or evidence of live attachment.
+ * A supplied override must already be validated by the recovery coordinator. It deliberately wins over both
+ * current receipts and the original plan. A malformed current receipt otherwise stays unavailable.
+ */
+export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectProgress, options: RecoveryGuidanceOptions = {}): RecordedPeerGuidance[] {
+  return peers.map(peer => {
+    let session: { sessionId?: string; sessionFile?: string } | undefined;
+    let unavailable = false;
+    const override = options.recorded && Object.hasOwn(options.recorded, peer) ? options.recorded[peer] : undefined;
+    if (override !== undefined) session = override;
+    else {
+      try {
+        const receipt = decodeRestoreReceipt(progress.terminals[`restored:${peer}`]);
+        if (receipt?.state === "done" || receipt?.state === "waiting") {
+          if (receipt.binding.peer !== peer) unavailable = true;
+          else session = receipt.binding;
+        }
+      } catch { unavailable = true; }
+      if (!session && !unavailable) {
+        const binding = planned.terminals.find(value => !!value && typeof value === "object" && (value as { peer?: unknown }).peer === peer) as { sessionId?: unknown; sessionFile?: unknown } | undefined;
+        session = binding
+          ? { ...(text(binding.sessionId) ? { sessionId: binding.sessionId } : {}), ...(text(binding.sessionFile) ? { sessionFile: binding.sessionFile } : {}) }
+          : sourceSession(peer, planned.source.peers.find(row => row.id === peer));
+      }
+    }
+    const sessionId = text(session?.sessionId) ? session.sessionId : undefined;
+    const sessionFile = peer === "pi" && text(session?.sessionFile) ? session.sessionFile : undefined;
+    if (unavailable || (!sessionId && !sessionFile)) return { peer, note: `${peer}: recorded session identity unavailable; inspect the retained recovery receipt before choosing a conversation` };
+    const prefix = ["ahub", "--project", planned.project.root];
+    const command = peer === "codex"
+      ? sessionId ? argv(...prefix, "codex", "resume", sessionId) : undefined
+      : peer === "pi"
+        ? sessionFile ? argv(...prefix, "pi", "--session-file", sessionFile) : sessionId ? argv(...prefix, "pi", "--session-id", sessionId) : undefined
+        : sessionId ? argv(...prefix, "claude", "--resume", sessionId) : undefined;
+    const note = peer === "claude"
+      ? "The existing Claude channel may reconnect while its native session remains open. Transcript availability is unknown; the recorded resume command is guidance, not proof that the transcript can be resumed."
+      : peer === "codex" ? "Recorded Codex thread; leave the old native client before resuming this conversation."
+        : "Recorded Pi conversation; preserve this session when starting Pi again.";
+    return { peer, ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}), ...(command ? { command } : {}), ...(options.reattachCommand && command ? { reattachCommand: options.reattachCommand(peer) } : {}), note };
+  });
+}
+
+/** Historical receipt facts only. A stopped/archived target is never described as still running. */
+export function stopAndArchiveSummary(op: RecoveryOperation, live: Readonly<Record<string, Inspection | undefined>> = {}): string[] {
+  const lines = [op.disposition
+    ? `${op.plan.kind} abandoned, not completed; committed transitions were not rolled back.`
+    : "Stop-and-archive is not recorded; no abandonment outcome is claimed."];
+  for (const progress of op.projects) {
+    if (["started", "peers-restored", "verified"].includes(progress.phase) || progress.restarts?.length) lines.push(`${progress.id}: target ${op.plan.version} had started; this is a recorded historical step.`);
+    const outcome = op.disposition?.projects[progress.id];
+    if (outcome) lines.push(`${progress.id}: ${outcome}`);
+    const observed = live[progress.id];
+    if (observed) lines.push(`${progress.id}: supplied inspection reported ${observed.state}${observed.version ? ` on ${observed.version}` : ""}; it does not change the recorded disposition.`);
+  }
+  lines.push(op.pluginInstalled ? "Claude plugin installation recorded." : "Claude plugin installation not recorded.");
+  if (op.globalInstalled) lines.push("global CLI installation recorded.");
+  else if (op.plan.kind === "upgrade") {
+    lines.push("global CLI installation remains; it was not recorded as completed.");
+    const exact = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/.test(op.plan.version);
+    lines.push(exact ? argv("bun", "add", "-g", `@staix/agent-hub@${op.plan.version}`, "--ignore-scripts") : "Exact target version unavailable; review the retained receipt before installing the global CLI.");
+  } else lines.push("global CLI installation not recorded; a restart does not install a new CLI.");
+  return lines;
+}
