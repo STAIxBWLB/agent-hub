@@ -45,7 +45,7 @@ function ghSites(source: string): number[] {
     node = unwrap(node);
     if (ts.isStringLiteralLike(node)) return /^(?:.*\/)?gh(?:\s|$)/.test(node.text);
     if (ts.isArrayLiteralExpression(node)) return ghExecutable(node.elements[0] as ts.Expression | undefined);
-    // spec-read resolves the fixed executable through hostExecutable("gh", ...).
+    // Authenticated call sites resolve the fixed executable through hostExecutable("gh", ...).
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "hostExecutable") return ghExecutable(node.arguments[0]);
     return false;
   };
@@ -72,13 +72,9 @@ test("gh boundary guard recognizes process aliases, Bun argv and exec helpers", 
   expect(ghSites('import { spawn } from "node:child_process"; const label = "gh"; spawn("bun", [label]); unrelated("gh");')).toEqual([]);
 });
 
-test("authenticated gh subprocesses stay in spec-read except the tracked legacy SDLC witness", () => {
+test("#449 authenticated gh subprocesses have exactly two trusted host executable call sites", () => {
   const root = join(import.meta.dir, ".."), sites = sources(join(root, "src")).flatMap(path => ghSites(readFileSync(path, "utf8")).map(line => ({ path: relative(root, path), line })));
-  expect(sites.filter(site => site.path === "src/hub/spec-read.ts")).toHaveLength(1);
-  // Existing SDLC bypass is deliberately visible until FOLLOWUP #449 closes it:
-  // https://github.com/STAIxBWLB/agent-hub/issues/449 . Removing this exception requires fixing that source.
-  const legacy = sites.filter(site => site.path === "src/hub/sdlc.ts");
-  expect(legacy).toHaveLength(1);
-  expect(readFileSync(join(root, legacy[0]!.path), "utf8").split("\n")[legacy[0]!.line - 1]).toContain('spawn("gh", args');
-  expect(sites.filter(site => !["src/hub/spec-read.ts", "src/hub/sdlc.ts"].includes(site.path))).toEqual([]);
+  expect(sites).toHaveLength(2);
+  expect(sites.map(site => site.path).sort()).toEqual(["src/hub/sdlc.ts", "src/hub/spec-read.ts"]);
+  for (const site of sites) expect(readFileSync(join(root, site.path), "utf8").split("\n")[site.line - 1]).toContain('hostExecutable("gh"');
 });
