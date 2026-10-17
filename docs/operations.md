@@ -123,8 +123,10 @@ adds no timer, network request or writable settings path.
 Tabs change with the digits 1 to 5 or with Left and Right (wrapping at both
 ends), never while a command is being edited or a choice is open; under a
 confirmation an arrow dismisses it like any key but y, without moving a tab. A pasted
-chunk can only edit the command line, but a read that holds nothing but arrow
-sequences is that many key presses, so a held key repeats its tab move. In the Events
+chunk can only edit the command line, but a read that holds nothing but arrow or
+Home/End sequences is that many key presses, so a held key repeats its move. Home
+or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
+follows new events while the last row is selected and stays on a row you moved to. In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; only the header is tab-flattened before tokenizing. Body lines retain
 the previous rendering and stay plain, as does command output; colour never changes
@@ -1507,8 +1509,10 @@ The configured `kimi_cmd` must be a single executable or end in exactly `acp`;
 the TUI uses the executable or drops that final word. Other wrappers are refused
 with the headless command rather than guessed.
 
-The TUI is pull-only. Its model reads `hub_inbox` at the start of work and before
-reporting, and shares results explicitly with `hub_send`. Status, the console and
+The TUI is pull-only. Its model reads `hub_inbox` at the start of work, between
+steps of longer work and before reporting, and shares results, and mid-work
+blockers or changed contracts, explicitly with `hub_send` addressed with `to`
+(progress-only notes `[FYI]`). Status, the console and
 the dashboard show `pull-only`, the waiting count and the last inbox read. Messages
 and important markers do not push or interrupt it. There is no hub busy state,
 watchdog, console approval, hub permission mode, context reading, automatic quota
