@@ -55,12 +55,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin-assets-${{ github.sha }}
           include-hidden-files: true
@@ -87,9 +87,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version-file: .bun-version
       - name: Gate (typecheck, bundle and manifest freshness, package contents, tests)
         env:
           # The expanded suite was still progressing at 600 s on hosted macOS (#378).
@@ -124,20 +124,25 @@ jobs:
           retention-days: 1
       - name: Retain failed restart fixture diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: restart-diagnostics-${{ matrix.os }}-${{ github.sha }}
           path: ${{ runner.temp }}/ahub-restart-diagnostics
           if-no-files-found: ignore
           retention-days: 7
 
-  seeded:
-    name: seeded guards
-    needs: [decision, check]
+  seeded-shard:
+    # #457: the sequential seed pairs, split into four Linux shards that run beside check; each shard stays sequential.
+    name: seeded guards (${{ matrix.shard }}/4)
+    needs: decision
     if: needs.decision.outputs.run_gate == 'true'
     runs-on: ubuntu-latest
-    # 255 guards run in about 590 s, about 2.1 s each, sequentially: 20 minutes leaves room for the set to grow.
-    timeout-minutes: 20
+    # 419 guards take about 16 min in one job (about 2.3 s each): a quarter takes about 4 min.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -145,17 +150,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - name: Sequential green and seeded guard pairs
-        run: bun scripts/seeded-check.ts
+        run: bun scripts/seeded-check.ts --shard ${{ matrix.shard }}/4
       - name: Retain failed seeded-guard phase diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: seeded-diagnostics-${{ github.sha }}
+          name: seeded-diagnostics-${{ matrix.shard }}-${{ github.sha }}
           if-no-files-found: ignore
           retention-days: 5
           path: |
@@ -164,6 +169,20 @@ jobs:
             /tmp/ahub-seed-*/green/leaks.txt
             /tmp/ahub-seed-*/seeded/leaks.txt
 
+  seeded:
+    # The one name branch protection and scripts/ci-gates.mjs read: green only when every shard passed.
+    name: seeded guards
+    needs: [decision, seeded-shard]
+    if: always() && needs.decision.outputs.run_gate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every seeded shard passed
+        env:
+          SHARDS: ${{ needs.seeded-shard.result }}
+        run: |
+          test "$SHARDS" = success || { echo "seeded shards: $SHARDS"; exit 1; }
+
   macos-timing:
     # Explicit #287 evidence only; never adds work to the ordinary PR/push path.
     if: github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20'
@@ -171,9 +190,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - name: Twenty consecutive affected-file runs (stop at first failure)
         shell: bash
