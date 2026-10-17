@@ -33,6 +33,11 @@ function sourceSession(peer: RecoveryNativePeer, source: RecoveryPeer | undefine
   return { ...(text(sessionId) ? { sessionId } : {}), ...(text(sessionFile) ? { sessionFile } : {}) };
 }
 
+/** Fixed person commands for the existing Pi archive exit; this helper performs no lifecycle action. */
+export function piArchiveExit(planned: PlannedProject, stopAndArchiveCommand: string): string {
+  return `Run ${stopAndArchiveCommand}; after stop-and-archive, run ${argv("ahub", "--project", planned.project.root, "pi")}. A proven missing archived bookmark is retired by the normal Pi start without a fresh fallback in that same call; repeat the normal start as its notice directs.`;
+}
+
 /** Accepted identity outlives an incarnation's repair fence. Malformed evidence never means absence. */
 export function resolveAcceptedBinding(planned: PlannedProject, progress: ProjectProgress, peer: RecoveryNativePeer): TerminalBinding | undefined {
   if (progress.id !== planned.project.id) throw new Error("recorded binding project mismatch");
@@ -90,7 +95,7 @@ export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectP
       : peer === "codex" ? "Recorded Codex thread; leave the old native client before resuming this conversation."
         : "Recorded Pi conversation; preserve this session when starting Pi again.";
     if (sessionFile && options.stopAndArchiveCommand && recordedFileState(sessionFile) === "missing") {
-      note = `Recorded Pi session file is positively missing. Fresh-session is not supported for Pi. Run ${options.stopAndArchiveCommand}, then ${argv(...prefix, "pi")}; the archived missing-session bookmark is retired by the normal Pi start before a later new start.`;
+      note = `Recorded Pi session file is positively missing. Fresh-session is not supported for Pi. ${piArchiveExit(planned, options.stopAndArchiveCommand)}`;
     }
     const reattachCommand = command ? options.reattachCommand?.(peer) : undefined;
     return { peer, ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}), ...(command ? { command } : {}), ...(reattachCommand ? { reattachCommand } : {}), note };
@@ -119,7 +124,7 @@ export function stopAndArchiveSummary(op: RecoveryOperation, live: Readonly<Reco
   }
   if (op.freshOverride) {
     const { peer, evidence, checked, at } = op.freshOverride;
-    lines.push(`Explicit fresh override: ${peer} in ${evidence.projectId}; accepted session ${shellQuote(evidence.sessionId)}, ${evidence.kind} checked ${checked} at ${at}; missing-history replacement was person-authorized.`);
+    lines.push(`Explicit fresh override: ${peer} in ${evidence.projectId}; accepted session ${shellQuote(evidence.sessionId)}, ${evidence.kind}${evidence.checkedPath ? ` at ${shellQuote(evidence.checkedPath)}` : ""} checked ${checked} at ${at}; missing-history replacement was person-authorized.`);
   }
   lines.push(op.pluginInstalled ? "Claude plugin installation recorded." : "Claude plugin installation not recorded.");
   if (op.globalInstalled) lines.push("global CLI installation recorded.");

@@ -46,7 +46,7 @@ import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
@@ -69,7 +69,7 @@ import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, label
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
-import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
+import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
@@ -142,7 +142,7 @@ function audit(outcome: "run" | "refused" | "invalid"): void {
   }
 }
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
-if (delegationRefused) { audit("refused"); fail("live-test cannot write person-attributed content; use peer tools or a person's terminal"); }
+if (delegationRefused) { audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL); }
 if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
 if (identity.role === "tools" || delegatedPeer) audit("run");
 // Forward only to ahub's own continuation commands, never to native agent argv or an environment flag.
@@ -636,7 +636,19 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (!["status", "resume", "abort", "dispose"].includes(action ?? "") || (action !== "dispose" && rest.length)) fail(usage);
     if (!id) fail("no recovery operation holds the lock; name one by its id");
-    const operation = readOperation<RecoveryOperation>(id);
+    const delegatedFresh = delegatedPeer && action === "dispose" ? takeFlags(rest, ["--fresh-session", "--reason"], []).one["--fresh-session"] : undefined;
+    let operation: RecoveryOperation;
+    try { operation = readOperation<RecoveryOperation>(id); }
+    catch (error) {
+      if (delegatedFresh) { audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL); }
+      throw error;
+    }
+    if (delegatedFresh) {
+      const repairedFresh = repairedFreshSession(operation, delegatedFresh);
+      if (repairedFresh === undefined || liveTestRefusal("recovery", display.args, { repairedFresh })) {
+        audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL);
+      }
+    }
     const runner = recoveryRunner(id);
     if (action === "status") {
       // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.
@@ -649,7 +661,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       else console.log("preflight cancelled; no committed transition was rolled back");
     }
     else if (action === "dispose") {
-      // Console authority (including explicit --live-test delegation); the reason is kept in the operation's audit.
+      // Console authority; #408 live-test delegation remains for ordinary fresh choices, never repaired loss.
       const { one, rest: flags } = takeFlags(rest, ["--fresh-session", "--reason"], []);
       const stop = flags.length === 1 && flags[0] === "--stop-and-archive";
       const reason = one["--reason"]?.trim() ?? "";

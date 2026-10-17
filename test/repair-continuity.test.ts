@@ -8,6 +8,7 @@ import { PROTOCOL } from "../src/hub/control-client.ts";
 import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 import { MissingRecordedSession, nextChoices, recordRestart, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 import type { TerminalBinding } from "../src/cli/terminal-recovery.ts";
+import { checkedSessionPath } from "../src/cli/recovery-session-file.ts";
 import { VERSION } from "../src/version.ts";
 
 /** Fake control and terminal-command boundaries only; no native peer or Orca process is opened. */
@@ -200,7 +201,7 @@ test("#166 a failed repaired Codex emits typed missing rollout evidence and expl
     try { await f.restore(); } catch (caught) { error = caught; }
     expect(error).toBeInstanceOf(MissingRecordedSession);
     const missing = (error as MissingRecordedSession).evidence;
-    expect(missing).toEqual({ projectId: f.planned.project.id, peer: "codex", sessionId: f.accepted.sessionId, kind: "rollout" });
+    expect(missing).toEqual({ projectId: f.planned.project.id, peer: "codex", sessionId: f.accepted.sessionId, kind: "rollout", checkedPath: checkedSessionPath(f.accepted, "rollout") });
     expect(await f.driver.recordedSessionState!(f.accepted, "rollout")).toBe("missing");
     expect(f.creates()).toBe(0);
     f.op.missingRecordedSession = missing; f.op.phase = "blocked";

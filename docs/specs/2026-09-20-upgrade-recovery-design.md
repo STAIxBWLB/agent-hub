@@ -702,17 +702,32 @@ missing before writing the loss and audit. Found, unreadable, malformed or absen
 evidence never permits this choice. The choice records the accepted conversation
 as lost; it does not run a terminal. The receipt also records
 `freshOverride {peer, evidence, checked, at}`, exposed in person status and the
-archive summary. Resume retains the existing launcher fences,
+archive summary. New missing observations and overrides include `checkedPath`: the
+exact Claude transcript file or recursively searched Codex sessions directory.
+The lookup and display share the same captured-environment/default-home path
+resolver; this is evidence of that checked location, not proof of every native
+store layout. Refusals name the checked location as well. Resume retains the existing launcher fences,
 close-before-create and waiver rules. An uncertain
 creation with no durable selected binding does not gain a second creation by
 merely losing the target. Database contention retains its typed retryable outcome.
+
+Repaired missing-history disposal is never delegated under `--live-test`.
+Because ordinary #408 fresh disposal uses the same argv and remains delegable,
+the CLI first classifies the already-loaded receipt read-only. An unreadable,
+unparseable or unclassifiable receipt, including a peer absent from its projects,
+refuses delegation. A repaired override is refused before runner/lock acquisition
+or coordinator mutation. Core repeats the trusted per-invocation delegation
+check before the lock and after its under-claim read. No model/request field
+can grant person authority, and no new public waiver flag is introduced.
 
 Pi remains excluded from fresh-session under #215. For a positively missing
 accepted Pi session file, blocked guidance prints the operation's
 `recovery dispose <id> --stop-and-archive --reason <text>` command and then
 `ahub --project <root> pi`. The normal Pi start retires a proven-unresumable
 archived bookmark without falling back fresh in that same start; its notice
-guides a subsequent normal start. Unreadable or invalid evidence stays held.
+guides a subsequent normal start. The Pi fresh-session refusal itself prints
+the same stop-and-archive and project-scoped start commands. Unreadable or invalid
+evidence stays held.
 
 The person-only `ahub recovery reattach <operation> <peer>` is admitted only for
 that operation's current structured reattachment block. It claims the existing

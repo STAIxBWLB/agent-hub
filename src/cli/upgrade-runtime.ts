@@ -1,10 +1,9 @@
-import { recordedFileState } from "./recovery-session-file.ts";
+import { checkedSessionPath, recordedFileState } from "./recovery-session-file.ts";
 import { resolveAcceptedBinding } from "./recovery-guidance.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
@@ -40,9 +39,7 @@ const orcaExecutable = () => process.env.ORCA_CLI_COMMAND || (process.env.ORCA_D
  * every non-alphanumeric character of the project root with '-'.
  */
 function claudeTranscriptState(binding: TerminalBinding): "found" | "missing" | "unknown" {
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
-  const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return recordedFileState(join(config, "projects", slug, `${binding.sessionId}.jsonl`));
+  return recordedFileState(checkedSessionPath(binding, "transcript"));
 }
 function claudeTranscriptExists(binding: TerminalBinding): boolean { return claudeTranscriptState(binding) === "found"; }
 
@@ -52,7 +49,7 @@ function claudeTranscriptExists(binding: TerminalBinding): boolean { return clau
  * ponytail: a `.jsonl` under sessions/ whose name carries the thread id is the evidence; ask Codex itself once it offers
  * a supported resumability query, or when its store layout changes.
  */
-const codexSessions = (binding: TerminalBinding) => join(binding.launch.env.CODEX_HOME ?? join(homedir(), ".codex"), "sessions");
+const codexSessions = (binding: TerminalBinding) => checkedSessionPath(binding, "rollout");
 function codexTranscript(binding: TerminalBinding): "found" | "missing" | "unknown" {
   try { return readdirSync(codexSessions(binding), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename(String(name)).includes(binding.sessionId)) ? "found" : "missing"; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unknown"; } // no store has no rollout; an unreadable one says nothing
@@ -581,6 +578,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     }
   };
   return {
+    ...(liveTestPeer === undefined ? {} : { liveTestPeer }),
     now, sleep, inspect: inspectRecovery,
     recordedSessionState: async (binding, kind) => kind === "rollout" ? codexTranscript(binding) : claudeTranscriptState(binding),
     stage: async (op) => {
@@ -854,7 +852,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           if (transcript() === "unknown") throw new Error(`${unresumable(original)}; no terminal was created; make that store readable first`);
           if (transcript() === "missing" && !fresh()) {
             progress.terminals[key] = { state: "failed" } satisfies RestoreReceipt; save();
-            if (recordedOnly) throw new MissingRecordedSession({ projectId: planned.project.id, peer: original.peer, sessionId: original.sessionId, kind: "rollout" });
+            if (recordedOnly) throw new MissingRecordedSession({ projectId: planned.project.id, peer: original.peer, sessionId: original.sessionId, kind: "rollout", checkedPath: checkedSessionPath(original, "rollout") });
             throw notRestored(unresumable(original).slice("codex: ".length));
           }
           if (fresh()) {
@@ -917,7 +915,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
               const marker = progress.reattachments?.[plannedBinding.peer];
               if (marker) marker.binding = binding;
               progress.terminals[key] = { state: "failed" } satisfies RestoreReceipt; save();
-              throw new MissingRecordedSession({ projectId: planned.project.id, peer: plannedBinding.peer, sessionId: binding.sessionId, kind: "transcript" });
+              throw new MissingRecordedSession({ projectId: planned.project.id, peer: plannedBinding.peer, sessionId: binding.sessionId, kind: "transcript", checkedPath: checkedSessionPath(binding, "transcript") });
             }
           }
           if (error instanceof ReattachmentRequired || isDatabaseBusy(error)) throw error;
