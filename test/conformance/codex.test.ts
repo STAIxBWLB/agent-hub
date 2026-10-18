@@ -10,8 +10,8 @@ import { processTable } from "../../src/hub/child-process.ts";
 import { until } from "./kit.ts";
 
 class WatchdogCodex extends CodexPeer { expire(): void { this.onWatchdog(); } }
-async function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), "conformance-codex-")), fake = startFakeAppServer(), messages: string[] = [], receipts: DeliveryReceipt[] = [], usage: boolean[] = [];
+async function fixture(fake: Pick<ReturnType<typeof startFakeAppServer>, "url" | "requests" | "stop"> = startFakeAppServer()) {
+  const dir = mkdtempSync(join(tmpdir(), "conformance-codex-")), messages: string[] = [], receipts: DeliveryReceipt[] = [], usage: boolean[] = [];
   const peer = new WatchdogCodex("codex", { cwd: dir, upstreamUrl: fake.url, appPort: 0, proxyPort: 0, onUsage: (_reading, hard) => { usage.push(hard); } });
   peer.onMessage = text => { messages.push(text); }; peer.onDelivery = receipt => { receipts.push(receipt); };
   await peer.start();
@@ -85,3 +85,100 @@ test("P4 Codex: stopping owns the launcher's group and its native app-server chi
     expect(after!.some(row => row.pid === child || row.pid === leader || row.pgid === leader)).toBe(false);
   } finally { await peer.stop(); rmSync(dir, { recursive: true, force: true }); }
 }, 20_000);
+
+/** Every release and the consuming-proxy barrier are controlled by the test, never by wall-clock sleeps. */
+function controlledAppServer() {
+  const requests: any[] = [];
+  let socket: { send(data: string): unknown } | undefined;
+  const send = (message: unknown) => { if (!socket) throw new Error("controlled app-server not attached"); socket.send(JSON.stringify(message)); };
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response("not a websocket", { status: 400 }); },
+    websocket: { message(ws, raw) {
+      socket = ws;
+      const request = JSON.parse(String(raw)); requests.push(request);
+      if (request.method === "initialize") send({ id: request.id, result: { userAgent: "fake-codex/0.154.0" } });
+      else if (request.method === "thread/start" || request.method === "thread/resume") send({ id: request.id, result: { thread: { id: request.params.threadId ?? "th1" }, approvalPolicy: "untrusted" } });
+      else if (request.method === "account/rateLimits/read") send({ id: request.id, result: { rateLimits: {} } });
+      else if (request.method === "conformance/barrier") send({ id: request.id, result: {} });
+    } },
+  });
+  return { url: `ws://127.0.0.1:${server.port}`, requests, stop: () => server.stop(true), send,
+    note(method: string, params: Record<string, unknown>) { send({ method, params: { threadId: "th1", ...params } }); },
+  };
+}
+async function barrier(f: Awaited<ReturnType<typeof fixture>>, id: number): Promise<void> {
+  f.tui.send(JSON.stringify({ id, method: "conformance/barrier", params: {} }));
+  await until(() => f.seen.some(row => row.id === id), "ordered controlled-app-server barrier consumed");
+}
+
+test("P4 Codex: accepted-before-start watchdog tombstone survives delayed native start until exact completion", async () => {
+  const native = controlledAppServer(), f = await fixture(native);
+  try {
+    const delivery = f.peer.deliver([newEnvelope("user", "old accepted prompt")], "old-accepted");
+    await until(() => native.requests.some(row => row.method === "turn/start"), "native turn request observed");
+    const request = native.requests.find(row => row.method === "turn/start");
+    native.send({ id: request.id, result: { turn: { id: "retired" } } });
+    await delivery; // The fake has deliberately emitted no turn/started.
+    f.peer.expire();
+    native.note("turn/started", { turn: { id: "retired" } });
+    native.note("item/completed", { turnId: "retired", item: { id: "old-answer", type: "agentMessage", text: "must not publish" } });
+    await barrier(f, 50);
+    expect(f.peer.state).toBe("idle"); expect(f.messages).toEqual([]);
+    expect(f.receipts.map(receipt => receipt.state)).toEqual(["accepted", "needs_review"]);
+    native.note("turn/completed", { turn: { id: "retired", status: "completed" } });
+    await barrier(f, 51);
+    expect(f.messages).toEqual([]); expect(f.receipts).toHaveLength(2);
+  } finally { await f.close(); }
+});
+
+for (const acceptance of [true, false]) test(`P4 Codex: invalidated pending ${acceptance ? "acceptance" : "refusal"} never contaminates a newer personal turn or duplicates uncertainty`, async () => {
+  const native = controlledAppServer(), f = await fixture(native);
+  try {
+    const delivery = f.peer.deliver([newEnvelope("user", "cancelled audience")], "pending").catch(error => error as Error);
+    await until(() => native.requests.some(row => row.method === "turn/start"), "pending start observed");
+    const request = native.requests.find(row => row.method === "turn/start");
+    native.note("turn/started", { turn: { id: "old-pending" } });
+    await barrier(f, 60);
+    f.peer.expire();
+    expect((await delivery as Error).message).toContain("watchdog");
+    expect(f.receipts.map(receipt => receipt.state)).toEqual(["needs_review"]);
+    native.note("turn/started", { turn: { id: "personal-current" } });
+    await barrier(f, 61);
+    expect(f.peer.state).toBe("busy");
+    native.send(acceptance ? { id: request.id, result: { turn: { id: "old-pending" } } } : { id: request.id, error: { message: "turn rejected" } });
+    native.note("item/completed", { turnId: "old-pending", item: { id: "old-answer", type: "agentMessage", text: "stale answer" } });
+    native.note("turn/completed", { turn: { id: "old-pending", status: "completed" } });
+    await barrier(f, 62);
+    expect(f.peer.state).toBe("busy"); expect(f.messages).toEqual([]);
+    expect(f.receipts.map(receipt => receipt.state)).toEqual(["needs_review"]);
+    const replies: unknown[] = [];
+    f.peer.onMessage = (text, options) => { f.messages.push(text); replies.push(options?.inReplyTo); };
+    native.note("item/completed", { turnId: "personal-current", item: { id: "current-answer", type: "agentMessage", text: "current personal answer" } });
+    native.note("turn/completed", { turn: { id: "personal-current", status: "completed" } });
+    await barrier(f, 63);
+    expect(f.messages).toEqual(["current personal answer"]); expect(replies).toEqual([undefined]);
+    expect(f.peer.state).toBe("idle"); expect(f.receipts).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test("P4 Codex: legacy unnamed turn works until cancellation makes its identity ambiguous", async () => {
+  const native = controlledAppServer(), f = await fixture(native);
+  try {
+    native.note("turn/started", { turn: {} });
+    native.note("item/completed", { turnId: "legacy", item: { id: "legacy-answer", type: "agentMessage", text: "legacy answer" } });
+    native.note("turn/completed", { turn: { id: "legacy", status: "completed" } });
+    await barrier(f, 70);
+    expect(f.messages).toEqual(["legacy answer"]); expect(f.peer.state).toBe("idle");
+    native.note("turn/started", { turn: {} }); await barrier(f, 71);
+    f.peer.expire(); expect(f.peer.state).toBe("offline");
+    native.note("turn/started", { turn: { id: "unattributable-late" } });
+    native.note("item/completed", { item: { id: "late", type: "agentMessage", text: "unattributable answer" } });
+    native.note("turn/completed", { turn: { id: "unattributable-late", status: "completed" } });
+    await barrier(f, 72);
+    expect(f.messages).toEqual(["legacy answer"]); expect(f.peer.state).toBe("offline");
+    // Adopting a verified session again is the explicit boundary that clears the attribution ceiling.
+    f.tui.send(JSON.stringify({ id: 73, method: "thread/resume", params: { threadId: "th1" } }));
+    await until(() => f.seen.some(row => row.id === 73), "session reattachment consumed");
+    expect(f.peer.state).toBe("idle");
+  } finally { await f.close(); }
+});

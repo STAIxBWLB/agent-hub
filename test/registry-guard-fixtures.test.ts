@@ -84,3 +84,18 @@ test("registry guard fixture trusts only imported registry resolvers without loc
   expect(inventory(`import { kindOf as resolveKind, definitionOf as resolveDefinition } from "../adapters/registry.ts"; function choose(peer: string) { return resolveKind(peer) === "qwen" || resolveDefinition(peer)?.kind === "kimi"; }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 2 }]);
   expect(inventory(`import { kindOf } from "./fake-registry.ts"; function choose(peer: string) { return kindOf(peer) === "qwen"; }`)[0]?.count).toBe(1);
 });
+
+test("registry guard fixture distinguishes local provider and lifecycle enums from native identity", () => {
+  const apply = `function authorizeConfigLeaf(key:string,after:unknown){ if(key === "routing.signals.pii_screen" && after === "local") return true; }`;
+  expect(inventory(apply, "src/hub/config-apply.ts")).toEqual([]);
+  expect(inventory(apply.replace('key === "routing.signals.pii_screen" && ', ""), "src/hub/config-apply.ts")[0]?.count).toBe(1);
+  expect(inventory(apply.replace('key ===', 'key !=='), "src/hub/config-apply.ts")[0]?.count).toBe(1);
+  expect(inventory(apply.replace('after ===', 'after !=='), "src/hub/config-apply.ts")[0]?.count).toBe(1);
+  const reload = `function validateRoutingRaw(){return {signals:(v:any,k:string)=>closed(v,k,{pii_screen:(x:any,p:string)=>choice(x,p,["off","local"])})};}`;
+  expect(inventory(reload, "src/hub/config-reload.ts")).toEqual([]);
+  expect(inventory(reload.replace('"off","local"', '"codex","local"'), "src/hub/config-reload.ts")[0]?.count).toBe(2);
+  const gates = `const STAGE_GATES=["issue","pr","local","review","checks","phase"];`;
+  expect(inventory(gates, "src/hub/sdlc.ts")).toEqual([]);
+  expect(inventory(gates + ` function route(peer:string){return peer === "local"}`, "src/hub/sdlc.ts")[0]?.count).toBe(1);
+  expect(inventory(`const STAGE_GATES=["local","codex"];`, "src/hub/sdlc.ts")[0]?.count).toBe(2);
+});

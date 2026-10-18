@@ -108,6 +108,27 @@ function falsePositive(file: string, symbol: string, node: ts.Node): boolean {
     const other = literal(node.left) === "local" ? unwrap(node.right) : literal(node.right) === "local" ? unwrap(node.left) : undefined;
     if (other && ts.isPropertyAccessExpression(other) && other.name.text === "pii_screen") return true;
   }
+  // These exact local values name a screening provider or lifecycle gate, never a peer.
+  if (file === "src/hub/config-apply.ts" && symbol === "authorizeConfigLeaf" && ts.isBinaryExpression(node)
+    && node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+    && ts.isIdentifier(node.left) && node.left.text === "after" && literal(node.right) === "local") {
+    const hasScreenKey = (part: ts.Node): boolean => ts.isBinaryExpression(part) && part.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      ? hasScreenKey(part.left) || hasScreenKey(part.right)
+      : ts.isBinaryExpression(part) && part.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken && ts.isIdentifier(part.left)
+        && part.left.text === "key" && literal(part.right) === "routing.signals.pii_screen";
+    let owner: ts.Node = node;
+    while (owner.parent && !ts.isIfStatement(owner.parent) && !ts.isBlock(owner.parent)) owner = owner.parent;
+    if (ts.isIfStatement(owner.parent) && owner.parent.expression === owner && hasScreenKey(owner)) return true;
+  }
+  if (ts.isStringLiteralLike(node) && ts.isArrayLiteralExpression(node.parent)) {
+    const array = node.parent;
+    const values = array.elements.map(value => literal(value));
+    if (file === "src/hub/config-reload.ts" && symbol === "validateRoutingRaw.signals.pii_screen"
+      && values.length === 2 && values[0] === "off" && values[1] === "local"
+      && ts.isCallExpression(array.parent) && ts.isIdentifier(array.parent.expression) && array.parent.expression.text === "choice") return true;
+    if (file === "src/hub/sdlc.ts" && symbol === "STAGE_GATES"
+      && values.length === 6 && values.join(",") === "issue,pr,local,review,checks,phase") return true;
+  }
   if (file === "src/hub/sdlc.ts" && symbol === "stageGates.select.matching" && ts.isBinaryExpression(node)) {
     return ts.isIdentifier(node.left) && node.left.text === "gate" && literal(node.right) === "local";
   }
