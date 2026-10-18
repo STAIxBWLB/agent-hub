@@ -2223,7 +2223,7 @@ export class Tasks {
   private acceptanceCapacity(task: Pick<Task, "id" | "owner" | "reserved" | "state"> & Partial<Pick<Task, "history">>, excludePending = 0): void {
     const owner = task.owner ?? task.reserved;
     if (!owner) return;
-    if (task.state === "in_progress" && task.history) {
+    if ((task.state === "in_progress" || task.state === "changes_requested") && task.history) {
       let boundary = 0, previous: PeerId | null | undefined;
       task.history.forEach((entry, index) => {
         if (entry.owner !== undefined) {

@@ -129,3 +129,37 @@ test("reassigning the same owner does not turn its existing acceptance into a ne
   expect(tasks.accept("codex", active.id).state).toBe("in_progress");
   expect(() => tasks.accept("codex", queued.id)).toThrow("limit 1");
 });
+
+for (const mode of ["off", "advise"] as const) for (const action of ["accept", "done"] as const) {
+  test(`accepted redo retains its WIP slot with an unaccepted offer: ${mode}, ${action} (#481 S9)`, async () => {
+    const { board, tasks } = rig(mode);
+    const redo = board.propose("user", { title: "reviewer sent this back", class: "summarize" });
+    board.update(redo.id, "user", "assigned", { owner: "codex", reviewer: "user" });
+    tasks.accept("codex", redo.id);
+    await tasks.done("codex", redo.id, "first pass");
+    const offer = board.propose("user", { title: "unaccepted offer", class: "summarize" });
+    board.update(offer.id, "user", "assigned", { owner: "codex" });
+    board.update(redo.id, "user", "changes_requested", { state: "changes_requested" }, "fix the first pass");
+    const before = board.get(offer.id);
+    const result = action === "accept" ? tasks.accept("codex", redo.id) : await tasks.done("codex", redo.id, "fixed");
+    expect(result.state).toBe(action === "accept" ? "in_progress" : "in_review");
+    expect(board.get(offer.id)).toEqual(before);
+    expect(() => tasks.accept("codex", offer.id)).toThrow("limit 1");
+  });
+}
+
+test("a redo cannot reuse acceptance from before an ownership change (#481 S9)", async () => {
+  const { board, tasks } = rig("off");
+  const active = board.propose("user", { title: "already active", class: "summarize" });
+  board.update(active.id, "user", "accepted", { owner: "codex", state: "in_progress" });
+  const redo = board.propose("user", { title: "former owner's redo", class: "summarize" });
+  board.update(redo.id, "user", "assigned", { owner: "claude" });
+  board.update(redo.id, "claude", "accepted", { state: "in_progress" });
+  board.update(redo.id, "user", "reassigned", { owner: "codex" });
+  board.update(redo.id, "codex", "done", { state: "in_review" });
+  board.update(redo.id, "user", "changes_requested", { state: "changes_requested" });
+  const before = board.get(redo.id);
+  expect(() => tasks.accept("codex", redo.id)).toThrow("limit 1");
+  await expect(tasks.done("codex", redo.id, "fixed")).rejects.toThrow("limit 1");
+  expect(board.get(redo.id)).toEqual(before);
+});

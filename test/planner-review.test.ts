@@ -371,3 +371,29 @@ test("quiet reviewer or bookkeeping changes do not cancel an owner assignment du
     expect(assigned.history.some(entry => entry.event === event)).toBe(true);
   }
 });
+
+test("enforce redo after an issue edit requires current spec acceptance and plan review (#481 S9)", async () => {
+  let editedAt = "2026-10-18T01:00:00Z";
+  const r = reviewRig(async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: {
+    number: 481, state: "OPEN", createdAt: "2026-10-18T00:00:00Z", lastEditedAt: editedAt, updatedAt: editedAt,
+  } } } }) }), "enforce");
+  r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex" });
+  const acceptSpec = () => r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: editedAt, updatedAt: editedAt } });
+  acceptSpec();
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "initial review" });
+  await r.tasks.acceptReviewed("codex", r.task.id);
+  r.board.update(r.task.id, "codex", "done", { state: "in_review" });
+  r.board.update(r.task.id, "user", "changes_requested", { state: "changes_requested" }, "fix it");
+  const offer = r.board.propose("user", { title: "unaccepted offer", class: "implement" });
+  r.board.update(offer.id, "user", "assigned", { owner: "codex" });
+  editedAt = "2026-10-18T02:00:00Z";
+  const beforeSpec = r.board.get(r.task.id);
+  await expect(r.tasks.done("codex", r.task.id, "fixed")).rejects.toThrow("spec changed after acceptance");
+  expect(r.board.get(r.task.id)).toEqual(beforeSpec);
+  acceptSpec();
+  const beforePlan = r.board.get(r.task.id);
+  await expect(r.tasks.done("codex", r.task.id, "fixed")).rejects.toThrow("issue edit");
+  expect(r.board.get(r.task.id)).toEqual(beforePlan);
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed edited issue before redo" });
+  expect((await r.tasks.acceptReviewed("codex", r.task.id)).state).toBe("in_progress");
+});
