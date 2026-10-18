@@ -1696,7 +1696,11 @@ distinct from the completed-message baseline recorded at that start. Later tool
 activity does not move this turn-start boundary. Missing start evidence or a
 start from another session, launch or channel claim leaves completion unknown.
 Accepted completion consumes that start before the peer becomes idle, so another
-message cannot reuse it. A valid bound Stop request receives one prompt
+message cannot reuse it. The completion and the baseline are read from the last
+4 MiB of the transcript, whatever its size (#517): the 32 MiB cap applies only to
+usage accounting, so a long session still ends its turns. A Stop refused because
+no completion is found tells the console once per turn start that the peer stays
+busy and its messages wait in its queue. A valid bound Stop request receives one prompt
 acknowledgement with pending=true, within the existing two-second hook deadline.
 The acknowledgement records observation only, never completion. After the hook
 can return, a deferred observer waits up to 1200 monotonic milliseconds for its
