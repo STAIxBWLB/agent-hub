@@ -135,14 +135,14 @@ import type { SdlcGh } from "../src/hub/sdlc.ts";
 function admissionRig(mode: "off" | "advise" | "enforce", ready = true, answered = true) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-review-admission-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   let reads = 0;
-  const roles: Record<string, string[]> = { codex: ["implementer"], claude: ["reviewer"], director: ["conductor"] }, hooks: { onRead?: (args: string[]) => void; reply?: unknown; prReply?: unknown } = {};
+  const roles: Record<string, string[]> = { codex: ["implementer"], claude: ["reviewer"], director: ["conductor"] }, hooks: { onRead?: (args: string[]) => void; reply?: unknown; prReply?: unknown; privateTurn?: boolean } = {};
   const notices: string[] = [];
   const gh: SdlcGh = async args => {
     reads++; hooks.onRead?.(args);
     if (args[0] === "pr") return { code: 0, stdout: JSON.stringify(hooks.prReply ?? { headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
     return { code: 0, stdout: JSON.stringify(hooks.reply ?? readinessReply(ready ? "SUCCESS" : "PENDING", answered)) };
   };
-  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode }), gh } });
+  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), privateTurn: () => hooks.privateTurn === true, notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode }), gh } });
   const task = board.propose("user", { title: "finished implementation", class: "implement" });
   board.update(task.id, "user", "accepted", { owner: "codex", reviewer: "user", state: "in_progress", refs: { commit: head }, sdlc: { stage: "build", repo: "o/r", issue: 1, pr: 1, head, localHead: head, localResult: "passed" } });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
@@ -162,6 +162,20 @@ test("advise reports premature review while off does no admission read (#481 S10
   expect(off.reads()).toBe(0);
 });
 
+test("advise lets a private turn finish its own PII task without reading remote metadata (#481 S10)", async () => {
+  const r = admissionRig("advise"); r.roles.local = ["implementer"]; r.hooks.privateTurn = true;
+  r.board.update(r.task.id, "user", "assigned", { owner: "local", signals: ["pii"] });
+  const done = await r.tasks.done("local", r.task.id, "PRIVATE_RESULT_CANARY");
+  expect(done.state).toBe("in_review");
+  expect(r.reads()).toBe(0);
+  expect(r.notices.join("\n")).toContain("private review readiness unavailable");
+  expect(r.notices.join("\n")).not.toContain(r.task.title);
+  expect(r.notices.join("\n")).not.toContain("PRIVATE_RESULT_CANARY");
+  const ordinary = admissionRig("advise"); ordinary.hooks.privateTurn = true;
+  await expect(ordinary.tasks.done("codex", ordinary.task.id, "ordinary result")).rejects.toThrow("task or authority changed during review admission");
+  expect(ordinary.board.get(ordinary.task.id)?.state).toBe("in_progress");
+});
+
 test("review admission honours a successful full gate of the identical tree, never skipped jobs alone (#481 S10)", async () => {
   const response = readinessReply("SKIPPED");
   const run: SdlcGh = async args => {
@@ -172,6 +186,17 @@ test("review admission honours a successful full gate of the identical tree, nev
   };
   expect(await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, run)).toMatchObject({ ready: true, reusedRun: 7 });
   expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async args => args.includes("graphql") ? run(args) : { code: 1, stdout: "" })).ready).toBe(false);
+});
+
+test("review readiness never treats successful reuse reporting jobs as a fresh full proof (#481 S10)", async () => {
+  const response = readinessReply("SKIPPED");
+  const run: SdlcGh = async args => {
+    if (args.includes("graphql")) return { code: 0, stdout: JSON.stringify(response) };
+    if (args[1]?.includes("/runs?")) return { code: 0, stdout: JSON.stringify({ workflow_runs: [{ id: 7, event: "pull_request", conclusion: "success", head_sha: "d".repeat(40) }] }) };
+    if (args[1]?.includes("git/commits")) return { code: 0, stdout: JSON.stringify({ tree: { sha: "b".repeat(40) } }) };
+    return { code: 0, stdout: JSON.stringify({ total_count: 3, jobs: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, conclusion: "success", reused: true })) }) };
+  };
+  expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, run)).ready).toBe(false);
 });
 
 import { readPrCostHistory } from "../src/hub/sdlc.ts";

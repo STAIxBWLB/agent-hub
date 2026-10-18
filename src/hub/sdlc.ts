@@ -459,12 +459,12 @@ async function identicalTreeGate(repository: string, tree: string, run: SdlcGh, 
       if (!id(candidate?.id) || candidate.conclusion !== "success" || !["pull_request", "push"].includes(candidate.event) || !sha(candidate.head_sha)) continue;
       const commit = await run(["api", `repos/${repository}/git/commits/${candidate.head_sha}`, "--jq", "{tree:{sha:.tree.sha}}"], 10_000, undefined, 4096);
       if (commit.code !== 0 || JSON.parse(commit.stdout)?.tree?.sha !== tree) continue;
-      const jobs = await run(["api", `repos/${repository}/actions/runs/${candidate.id}/jobs?per_page=100`, "--jq", "{total_count,jobs:[.jobs[]|{name,conclusion}]}"], 10_000, undefined, 32 * 1024);
+      const jobs = await run(["api", `repos/${repository}/actions/runs/${candidate.id}/jobs?per_page=100`, "--jq", '{total_count,jobs:[.jobs[]|{name,conclusion,reused:any(.steps[]?; .name=="Reuse verified identical-tree full gate" and .conclusion=="success")}]}'], 10_000, undefined, 32 * 1024);
       if (jobs.code !== 0) continue;
       const proof = JSON.parse(jobs.stdout);
       if (!Array.isArray(proof.jobs) || proof.jobs.length > 100 || proof.total_count !== proof.jobs.length) continue;
       if (required.every(name => {
-        const found = proof.jobs.filter((job: { name?: string }) => job?.name === name); return found.length === 1 && found[0]?.conclusion === "success";
+        const found = proof.jobs.filter((job: { name?: string }) => job?.name === name); return found.length === 1 && found[0]?.conclusion === "success" && found[0]?.reused !== true;
       })) return candidate.id;
     }
   } catch { return; }

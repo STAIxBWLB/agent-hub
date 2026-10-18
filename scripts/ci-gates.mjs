@@ -1,3 +1,6 @@
+export const REUSE_MARKER = "Reuse verified identical-tree full gate";
+const reusedJob = job => Array.isArray(job.steps) && job.steps.some(step => step.name === REUSE_MARKER && step.conclusion === "success");
+
 export async function findVerifiedRun(api, tree) {
   const { workflow_runs: runs } = await api("actions/workflows/check.yml/runs?status=success&per_page=100");
   for (const run of runs) {
@@ -5,7 +8,7 @@ export async function findVerifiedRun(api, tree) {
     const commit = await api(`git/commits/${run.head_sha}`);
     if (commit.tree.sha !== tree) continue;
     const { jobs } = await api(`actions/runs/${run.id}/jobs?per_page=100`);
-    if (["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].every(name => jobs.some(job => job.name === name && job.conclusion === "success"))) return run;
+    if (["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].every(name => jobs.some(job => job.name === name && job.conclusion === "success" && !reusedJob(job)))) return run;
   }
 }
 
@@ -16,7 +19,7 @@ const successfulFullGate = run => run.status === "completed" && run.conclusion =
   && ["pull_request", "push"].includes(run.event) && run.jobsComplete === true && Array.isArray(run.jobs)
   && FULL_GATES.every(name => {
     const matches = run.jobs.filter(job => job.name === name);
-    return matches.length === 1 && matches[0].conclusion === "success";
+    return matches.length === 1 && matches[0].conclusion === "success" && !reusedJob(matches[0]);
   });
 
 /** Pure decision over host-read evidence; a full scope means gate jobs, not merely a workflow controller, were admitted. */

@@ -2717,7 +2717,7 @@ export class Tasks {
       const current = this.need(task.id, false, preEffect);
       if ((this.d.sdlc?.config().mode ?? "off") !== mode || current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer
         || this.isPii(current) !== this.isPii(task) || JSON.stringify(current.sdlc ?? null) !== JSON.stringify(task.sdlc ?? null)
-        || actor !== USER && this.d.privateTurn?.(actor)) throw new (preEffect ? PreEffectToolRefusal : Error)("task or authority changed during review admission");
+        || actor !== USER && this.d.privateTurn?.(actor) && !this.isPii(current)) throw new (preEffect ? PreEffectToolRefusal : Error)("task or authority changed during review admission");
       return current;
     };
     guard();

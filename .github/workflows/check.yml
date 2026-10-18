@@ -33,6 +33,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       run_gate: ${{ steps.reuse.outputs.run_gate }}
+      admission: ${{ steps.reuse.outputs.admission }}
+      verified_run: ${{ steps.reuse.outputs.verified_run }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -67,7 +69,7 @@ jobs:
 
   check:
     needs: decision
-    if: needs.decision.outputs.run_gate == 'true'
+    if: needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse'
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -77,17 +79,28 @@ jobs:
         # macOS runs the seatbelt sandbox tests; Ubuntu proves the rest does not depend on macOS.
         os: [ubuntu-latest, macos-latest]
     steps:
+      - name: Reuse verified identical-tree full gate
+        if: needs.decision.outputs.admission == 'reuse'
+        env:
+          VERIFIED_RUN: ${{ needs.decision.outputs.verified_run }}
+        run: |
+          test -n "$VERIFIED_RUN" || { echo "missing verified full-gate proof"; exit 1; }
+          echo "Reused identical-tree full gate run $VERIFIED_RUN"
       - uses: actions/checkout@v7
+        if: needs.decision.outputs.run_gate == 'true'
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v7
+        if: needs.decision.outputs.run_gate == 'true'
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: needs.decision.outputs.run_gate == 'true'
         with:
           bun-version-file: .bun-version
       - name: Gate (typecheck, bundle and manifest freshness, package contents, tests)
+        if: needs.decision.outputs.run_gate == 'true'
         env:
           # The expanded suite was still progressing at 600 s on hosted macOS (#378).
           # Keep the per-test bound and 15-minute job ceiling; Linux retains the default.
@@ -95,7 +108,7 @@ jobs:
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
       - name: Capture macOS fsmonitor readback diagnostics after a failed gate
-        if: failure() && runner.os == 'macOS'
+        if: failure() && needs.decision.outputs.run_gate == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
           diagnostic_dir="$RUNNER_TEMP/ahub-docs-git-diagnostics"
@@ -112,7 +125,7 @@ jobs:
             fi
           done
       - name: Retain macOS fsmonitor readback diagnostics
-        if: failure() && runner.os == 'macOS'
+        if: failure() && needs.decision.outputs.run_gate == 'true' && runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
           name: docs-git-diagnostics-${{ github.sha }}
@@ -120,7 +133,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
       - name: Retain failed restart fixture diagnostics
-        if: failure()
+        if: failure() && needs.decision.outputs.run_gate == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: restart-diagnostics-${{ matrix.os }}-${{ github.sha }}
@@ -167,14 +180,22 @@ jobs:
             /tmp/ahub-seed-*/seeded/leaks.txt
 
   seeded:
-    # The one name branch protection and scripts/ci-gates.mjs read: green only when every shard passed.
+    # The required name: success means every shard passed or an identical-tree full proof was reused.
     name: seeded guards
     needs: [decision, seeded-shard]
-    if: always() && needs.decision.outputs.run_gate == 'true'
+    if: always() && needs.decision.result == 'success' && (needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Reuse verified identical-tree full gate
+        if: needs.decision.outputs.admission == 'reuse'
+        env:
+          VERIFIED_RUN: ${{ needs.decision.outputs.verified_run }}
+        run: |
+          test -n "$VERIFIED_RUN" || { echo "missing verified full-gate proof"; exit 1; }
+          echo "Reused identical-tree full gate run $VERIFIED_RUN"
       - name: Every seeded shard passed
+        if: needs.decision.outputs.run_gate == 'true'
         env:
           SHARDS: ${{ needs.seeded-shard.result }}
         run: |

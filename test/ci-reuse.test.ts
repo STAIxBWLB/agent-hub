@@ -107,3 +107,23 @@ test("API admission reuses full success without querying running work and refuse
   const truncated = async (path: string) => ({ total_count: path.includes("status=in_progress") ? 101 : 0, workflow_runs: [] });
   expect(await fn(truncated, "expected", { currentRunId: 99 })).toMatchObject({ kind: "unknown" });
 });
+
+test("successful reused required checks cannot become a fresh full-gate proof", async () => {
+  const marker = "Reuse verified identical-tree full gate";
+  const reused = fullJobs().map(job => ({ ...job, steps: [{ name: marker, conclusion: "success" }] }));
+  const genuine = fullJobs().map(job => ({ ...job, steps: [{ name: marker, conclusion: "skipped" }] }));
+  expect(admission([{ ...gateRun(1, "expected", "completed"), jobs: reused }])).toEqual({ kind: "run" });
+  expect(admission([{ ...gateRun(2, "expected", "completed"), jobs: genuine }])).toMatchObject({ kind: "reuse", run: { id: 2 } });
+  const api = async (path: string) => {
+    if (path.startsWith("actions/workflows/")) return { workflow_runs: [1, 2].map(id => ({ id, head_sha: String(id), conclusion: "success", event: "pull_request" })) };
+    if (path.startsWith("git/")) return { tree: { sha: "expected" } };
+    return { jobs: path.includes("/1/") ? reused : genuine };
+  };
+  expect((await findVerifiedRun(api, "expected"))?.id).toBe(2);
+  const read = gates.readFullGateAdmission;
+  const boundedApi = async (path: string) => {
+    const value = await api(path);
+    return "workflow_runs" in value ? { ...value, total_count: value.workflow_runs!.length } : "jobs" in value ? { ...value, total_count: value.jobs!.length } : value;
+  };
+  expect(await read(boundedApi, "expected", { currentRunId: 99 })).toMatchObject({ kind: "reuse", run: { id: 2 } });
+});
