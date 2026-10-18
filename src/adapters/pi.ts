@@ -33,6 +33,8 @@ class PiPromptNotStarted extends Error {
 }
 class PiPromptUncertain extends Error {}
 export interface PiOptions {
+  /** stateDir owns this native instance; hubStateDir retains the canonical daemon binding. */
+  hubStateDir?: string;
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
   relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string, signal?: AbortSignal, context?: PiToolContext) => Promise<string | PiToolResult>; tools: PiToolSchema[];
@@ -385,7 +387,7 @@ export class PiPeer extends BasePeer {
     const extension = resolve(join(import.meta.dir, "../pi/extension.ts"));
     const inherited: NodeJS.ProcessEnv = {};
     for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"]) if (process.env[key]) inherited[key] = process.env[key];
-    this._tuiLaunch = buildPiLaunch(this.opts, inherited, extension, bridge.port!, token);
+    this._tuiLaunch = buildPiLaunch({ ...this.opts, instance: this.id }, inherited, extension, bridge.port!, token);
     const { cmd: bin, args, env } = this._tuiLaunch;
     if (this.opts.mode === "tui") { return; }
     // Its own process group, stopped as a whole (#115, as Codex's in #113).

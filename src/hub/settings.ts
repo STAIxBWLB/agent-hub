@@ -1,5 +1,6 @@
-import { definitionOf, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
+import { definitionOf, type KindMap, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -70,12 +71,37 @@ export const SETTINGS: readonly SettingDef[] = [
  * Never editable from settings, whatever the session: these choose what the hub executes or where secrets and task
  * text go. A key equal to an entry, or below it, is refused by name.
  */
-export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal"] as const;
+export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "instances"] as const;
+
+/** Derive project-bound rows from the same builtin templates used by lookup, without registering aliases globally. */
+export function projectSettings(instances?: KindMap): readonly SettingDef[] {
+  if (!instances || typeof instances !== "object" || types.isProxy(instances) || Array.isArray(instances)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)) || Object.getOwnPropertySymbols(instances).length) return SETTINGS;
+  const extra: SettingDef[] = [];
+  for (const peer of Object.keys(instances)) {
+    if (definitionOf(peer)) continue; // An explicit declaration never changes a builtin's setting definition.
+    const adapter = definitionOf(peer, instances);
+    if (!adapter) continue;
+    const copy = (base: SettingDef, key: string): SettingDef => Object.freeze({ ...base, key,
+      label: base.label.replace(`${adapter.kind}:`, `${peer}:`),
+      path: Object.freeze(base.path.map(part => part === adapter.kind ? peer : part)),
+      ...(base.values ? { values: Object.freeze([...base.values]) } : {}),
+    });
+    for (const prefix of ["roster", "permission", "permission_modes"]) {
+      const base = SETTINGS.find(def => def.key === `${prefix}.${adapter.kind}`);
+      if (base) extra.push(copy(base, `${prefix}.${peer}`));
+    }
+    // I2 declarations select the headless engine; settings cannot opt an extra into a native TUI.
+    extra.push(Object.freeze({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (headless only)`,
+      type: "enum", values: Object.freeze(["headless"]), store: "config", applies: "next use", risk: "raises", floor: "headless", path: Object.freeze(["peers", peer, "start_mode"]) } satisfies SettingDef));
+  }
+  return extra.length ? Object.freeze([...SETTINGS, ...extra]) : SETTINGS;
+}
 
 /** The definition of a key, or why there is none. */
-export function settingDef(key: unknown): SettingDef | string {
+export function settingDef(key: unknown, instances?: KindMap): SettingDef | string {
   if (typeof key !== "string" || key.length > 80) return "unknown setting";
-  const found = SETTINGS.find((s) => s.key === key);
+  const found = projectSettings(instances).find((s) => s.key === key);
   if (found) return found;
   if (NEVER_EDITABLE.some((never) => key === never || key.startsWith(`${never}.`))) return `${key} chooses what the hub runs or where secrets and task text go: it is never editable from settings; edit .agenthub/config.local.json in your editor`;
   return "unknown setting; run ahub settings list";
@@ -390,6 +416,8 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === 
  */
 export function settingRows(input: {
   cwd: string; routing: Routing;
+  /** Captured trusted declarations for this daemon/project, never taken from a settings request. */
+  instances?: KindMap;
   running: (path: readonly string[]) => unknown;
   next: ((path: readonly string[]) => unknown) | undefined;
   mode: (peer: string) => { value?: string; note?: string };
@@ -404,9 +432,9 @@ export function settingRows(input: {
   const projectRouting = existsSync(join(input.cwd, ".agenthub", "routing.toml"));
   const routes = [...Object.keys(input.routing.routes), ...Object.keys(input.routing.hub_routes ?? {})];
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
-  return SETTINGS.map((def): SettingRow => {
+  return projectSettings(input.instances).map((def): SettingRow => {
     const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
-      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!) } : {}) };
+      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances) } : {}) };
     if (def.store === "runtime") {
       const mode = input.mode(def.path[0]!);
       return { ...base, values: def.values!, file: "this hub run", value: mode.value ?? null, fileValue: mode.value ?? null, source: "this hub run", ...(mode.note ? { note: mode.note } : {}) };

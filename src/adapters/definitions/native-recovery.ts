@@ -33,10 +33,10 @@ export const CODEX_RECOVERY_SESSION: SessionPolicy = {
     if (phase !== "plan") return false;
     let current: string | undefined, started = false, turned = false;
     for (const e of readEvents(join(stateDir, "events.jsonl"))) {
-      if (e.type === "native_thread" && e.peer === "codex") {
+      if (e.type === "native_thread" && e.peer === binding.peer) {
         current = e.thread;
         if (e.thread === binding.sessionId && e.fresh) started = true;
-      } else if (e.type === "turn_start" && e.peer === "codex" && current === binding.sessionId) turned = true;
+      } else if (e.type === "turn_start" && e.peer === binding.peer && current === binding.sessionId) turned = true;
     }
     return started && !turned;
   },

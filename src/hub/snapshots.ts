@@ -216,6 +216,7 @@ export class Turns {
     // ponytail: rows of finished tasks stay (a few per file per task); prune by task state if hub.db ever grows.
     this.db.run("CREATE TABLE IF NOT EXISTS touches (task INTEGER NOT NULL, peer TEXT NOT NULL, path TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (task, peer, path))");
     this.db.run("CREATE INDEX IF NOT EXISTS touches_path ON touches (path)"); // the PreToolUse hook looks up one path
+    this.db.run("CREATE TABLE IF NOT EXISTS turn_workspaces (turn TEXT PRIMARY KEY, root TEXT NOT NULL, start_tree TEXT, end_tree TEXT, changed TEXT NOT NULL DEFAULT '[]')");
     this.db.run("CREATE TABLE IF NOT EXISTS task_snapshots (task INTEGER NOT NULL, proposed_at INTEGER NOT NULL, start_tree TEXT, PRIMARY KEY (task, proposed_at))");
   }
   /** A proposal's original project snapshot; task ids may be reused after reset. Never repair a missing baseline later. */
@@ -231,27 +232,55 @@ export class Turns {
       throw error;
     }
   }
-  begin(id: string, peer: string, startTree: string | undefined): void {
-    this.db.query("INSERT OR REPLACE INTO turns (id, peer, started, start_tree) VALUES (?, ?, ?, ?)").run(id, peer, Date.now(), startTree ?? null);
+  begin(id: string, peer: string, startTree: string | undefined, workspace?: string): void {
+    this.db.transaction(() => {
+      this.db.query("INSERT OR REPLACE INTO turns (id, peer, started, start_tree) VALUES (?, ?, ?, ?)").run(id, peer, Date.now(), workspace === undefined ? startTree ?? null : null);
+      this.db.query("DELETE FROM turn_workspaces WHERE turn = ?").run(id);
+      if (workspace !== undefined) this.db.query("INSERT INTO turn_workspaces (turn, root, start_tree) VALUES (?, ?, ?)").run(id, workspace, startTree ?? null);
+    })();
+  }
+  /** Only new extra-instance turns carry this evidence; absence preserves legacy external-peer workspace semantics. */
+  workspace(id: string): string | undefined {
+    try {
+      const row = this.db.query("SELECT root FROM turn_workspaces WHERE turn = ?").get(id) as { root: string } | null;
+      if (row && (typeof row.root !== "string" || !row.root)) throw new Error("invalid turn workspace evidence");
+      return row?.root;
+    } catch (error) {
+      if (/no such table/.test((error as Error).message)) return undefined;
+      throw error;
+    }
+  }
+  private snapshotFields<T extends { id: string; start_tree: string | null; end_tree: string | null; changed: string }>(row: T): T {
+    if (this.workspace(row.id) === undefined) return row;
+    const fields = this.db.query("SELECT start_tree, end_tree, changed FROM turn_workspaces WHERE turn = ?").get(row.id) as { start_tree: string | null; end_tree: string | null; changed: string };
+    return { ...row, ...fields };
   }
   /** The first native turn of a hub turn: reverting the conversation drops it and every later one. */
   native(id: string, native: string): void {
     this.db.query("UPDATE turns SET native = ? WHERE id = ? AND native IS NULL").run(native, id);
   }
   end(id: string, endTree: string | undefined, changed: string[], keep: number): void {
-    this.db.query("UPDATE turns SET ended = ?, end_tree = ?, changed = ? WHERE id = ?").run(Date.now(), endTree ?? null, JSON.stringify(changed), id);
+    this.db.transaction(() => {
+      const scoped = this.workspace(id) !== undefined;
+      // Older CLIs do not know workspace receipts. Leave their canonical-checkout snapshot view unknown.
+      this.db.query("UPDATE turns SET ended = ?, end_tree = ?, changed = ? WHERE id = ?").run(Date.now(), scoped ? null : endTree ?? null, scoped ? "[]" : JSON.stringify(changed), id);
+      if (scoped) this.db.query("UPDATE turn_workspaces SET end_tree = ?, changed = ? WHERE turn = ?").run(endTree ?? null, JSON.stringify(changed), id);
+    })();
     const peer = (this.db.query("SELECT peer FROM turns WHERE id = ?").get(id) as { peer: string } | null)?.peer;
     if (peer) this.db.query("DELETE FROM turns WHERE peer = ? AND id NOT IN (SELECT id FROM turns WHERE peer = ? ORDER BY started DESC, rowid DESC LIMIT ?)").run(peer, peer, keep);
+    this.db.run("DELETE FROM turn_workspaces WHERE turn NOT IN (SELECT id FROM turns)");
   }
   list(peer?: string, limit = 20): TurnRecord[] {
     const rows = (peer
       ? this.db.query("SELECT * FROM turns WHERE peer = ? ORDER BY started DESC, rowid DESC LIMIT ?").all(peer, limit)
       : this.db.query("SELECT * FROM turns ORDER BY started DESC, rowid DESC LIMIT ?").all(limit)) as (Omit<TurnRecord, "changed"> & { changed: string })[];
-    return rows.map((r) => ({ ...r, changed: JSON.parse(r.changed) as string[] }));
+    return rows.map(row => this.snapshotFields(row)).map((r) => ({ ...r, changed: JSON.parse(r.changed) as string[] }));
   }
   get(id: string): TurnRecord | undefined {
     const r = this.db.query("SELECT * FROM turns WHERE id = ?").get(id) as (Omit<TurnRecord, "changed"> & { changed: string }) | null;
-    return r ? { ...r, changed: JSON.parse(r.changed) as string[] } : undefined;
+    if (!r) return undefined;
+    const record = this.snapshotFields(r);
+    return { ...record, changed: JSON.parse(record.changed) as string[] };
   }
   /**
    * Other peers' turns that overlapped this one in time: their changes are in this turn's diff too. `unknown` lists
@@ -263,21 +292,23 @@ export class Turns {
   // before" time in Turns.end if that ever matters.
   overlapping(turn: TurnRecord, keep: number): { paths: string[]; unknown: string[] } {
     const rows = this.db.query("SELECT id, changed, ended, start_tree, end_tree FROM turns WHERE id != ? AND peer != ? AND started < ? AND (ended IS NULL OR ended > ?)").all(turn.id, turn.peer, turn.ended ?? Date.now(), turn.started) as { id: string; changed: string; ended: number | null; start_tree: string | null; end_tree: string | null }[];
-    const known = rows.filter((r) => r.ended !== null && r.start_tree !== null && r.end_tree !== null);
+    const scopedRows = rows.map(row => this.snapshotFields(row));
+    const known = scopedRows.filter((r) => r.ended !== null && r.start_tree !== null && r.end_tree !== null);
     const pruned = (this.db.query("SELECT peer, MIN(started) AS oldest FROM turns WHERE peer != ? GROUP BY peer HAVING COUNT(*) >= ?").all(turn.peer, keep) as { peer: string; oldest: number }[])
       .filter((p) => p.oldest > turn.started)
       .map((p) => `${p.peer} (its turns from then were pruned)`);
-    return { paths: [...new Set(known.flatMap((r) => JSON.parse(r.changed) as string[]))], unknown: [...rows.filter((r) => !known.includes(r)).map((r) => r.id), ...pruned] };
+    return { paths: [...new Set(known.flatMap((r) => JSON.parse(r.changed) as string[]))], unknown: [...scopedRows.filter((r) => !known.includes(r)).map((r) => r.id), ...pruned] };
   }
 
   /** Other peers' completed, snapshotted turns that overlapped this turn and changed at least one of the same files. */
   concurrentWith(turn: TurnRecord): TurnRecord[] {
     if (turn.ended === null || turn.start_tree === null || turn.end_tree === null || !turn.changed.length) return [];
     const rows = this.db.query(`SELECT * FROM turns WHERE id != ? AND peer != ? AND started < ? AND ended > ?
-      AND start_tree IS NOT NULL AND end_tree IS NOT NULL ORDER BY started, rowid`)
+      ORDER BY started, rowid`)
       .all(turn.id, turn.peer, turn.ended, turn.started) as (Omit<TurnRecord, "changed"> & { changed: string })[];
     const changed = new Set(turn.changed);
-    return rows.map((r) => ({ ...r, changed: JSON.parse(r.changed) as string[] }))
+    return rows.map(row => this.snapshotFields(row)).filter(row => row.start_tree !== null && row.end_tree !== null)
+      .map((r) => ({ ...r, changed: JSON.parse(r.changed) as string[] }))
       .filter((other) => other.changed.some((path) => changed.has(path)));
   }
 

@@ -1,4 +1,5 @@
 import { definitionOf } from "../adapters/registry.ts";
+import { readInstanceConfig } from "../hub/instance-config.ts";
 import { LIVE_TEST_PERSON_REFUSAL } from "./identity.ts";
 import { checkedSessionPath } from "./recovery-session-file.ts";
 import { canChooseFresh, decodeRestoreReceipt, restoreReceiptStatus } from "./upgrade-restore-state.ts";
@@ -13,6 +14,13 @@ import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, re
 import { resolveAcceptedBinding, piArchiveExit, recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
 import { RecoveryPresentationError, type RecoveryPresentationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
+
+const projectDefinition = (peer: string, root?: string) => {
+  const builtin = definitionOf(peer);
+  if (builtin || !root) return builtin;
+  try { return definitionOf(peer, readInstanceConfig(root).instances); } catch { return undefined; }
+};
+
 
 export interface RecoveryPeer {
   id: string;
@@ -288,7 +296,8 @@ export function nextChoices(receipt: RecoveryOperation, runner?: number | "unkno
   const stuck = resumeBlocked(op, live);
   const selected = op.phase === "blocked" ? op.blockedReattachment : undefined;
   const repair = selected && op.projects.find(project => project.id === selected.projectId)?.reattachments?.[selected.peer];
-  const reattach = selected && repair && (repair.state === "ready" || repairWaiting(op, selected.projectId, selected.peer));
+  const reattach = selected && repair && projectDefinition(selected.peer, op.plan.projects.find(project => project.project.id === selected.projectId)?.project.root)?.session.launchRecord === true &&
+    (repair.state === "ready" || repairWaiting(op, selected.projectId, selected.peer));
   return [
     ...(stuck ? [] : [{ kind: "resume" as const, text: `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}${old ? ` (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use ${abortable ? "abort or " : ""}stop-and-archive)` : ""}` }]),
     ...(abortable ? [{ kind: "abort" as const, text: recoveryCommand(op, "abort") }] : []),
@@ -323,12 +332,12 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
   return Object.fromEntries(await Promise.all(open.map(async (p) => [p.project.id, await inspect(p.project).catch(() => undefined)] as const)));
 }
 
-function missingRepair(op: RecoveryOperation, progress: ProjectProgress, peer: string): boolean {
+function missingRepair(op: RecoveryOperation, progress: ProjectProgress, peer: string, options: { authority?: "current" | "historical" } = {}): boolean {
   const evidence = op.missingRecordedSession;
   if (!evidence || evidence.projectId !== progress.id || evidence.peer !== peer || (!progress.repairedSessions?.[evidence.peer] && !Object.hasOwn(progress.reattachments ?? {}, peer))) return false;
   const planned = op.plan.projects.find(project => project.project.id === progress.id);
   if (!planned) return false;
-  try { return resolveAcceptedBinding(planned, progress, evidence.peer)?.sessionId === evidence.sessionId; } catch { return false; }
+  try { return resolveAcceptedBinding(planned, progress, evidence.peer, options)?.sessionId === evidence.sessionId; } catch { return false; }
 }
 /**
  * Peers of a project whose restoration failed and for which a fresh session is a real choice: not Pi (a restored hub
@@ -337,8 +346,8 @@ function missingRepair(op: RecoveryOperation, progress: ProjectProgress, peer: s
  */
 function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
-  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && canChooseFresh(value)).map(([key]) => key.slice("restored:".length))
-    .filter((peer) => definitionOf(peer)?.session.personFresh === true && ((!Object.hasOwn(progress.reattachments ?? {}, peer) && !Object.hasOwn(progress.repairedSessions ?? {}, peer)) || missingRepair(op, progress, peer)) && !progress.fresh?.[peer] && (!planned?.freshStart?.includes(peer) || missingRepair(op, progress, peer)) && !plannedAttached(op, progress, peer, live));
+  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && (() => { try { return canChooseFresh(value); } catch { return false; } })()).map(([key]) => key.slice("restored:".length))
+    .filter((peer) => projectDefinition(peer, planned?.project.root)?.session.personFresh === true && ((!Object.hasOwn(progress.reattachments ?? {}, peer) && !Object.hasOwn(progress.repairedSessions ?? {}, peer)) || missingRepair(op, progress, peer)) && !progress.fresh?.[peer] && (!planned?.freshStart?.includes(peer) || missingRepair(op, progress, peer)) && !plannedAttached(op, progress, peer, live));
 }
 
 /** Read-only scope classification; it confers no delegation authority. */
@@ -364,7 +373,7 @@ function plannedAttached(op: RecoveryOperation, progress: ProjectProgress, peer:
     ? resolveAcceptedBinding(planned, progress, peer as RecoveryNativePeer)
     : (planned?.terminals as { peer: string; sessionId: string }[] | undefined)?.find((t) => t.peer === peer);
   const current = state?.state === "running" ? state.peers.find((p) => p.id === peer && p.state !== "offline") : undefined;
-  return !!binding && current?.[definitionOf(peer)?.session.idField ?? "sessionId"] === binding.sessionId;
+  return !!binding && current?.[projectDefinition(peer, planned?.project.root)?.session.idField ?? "sessionId"] === binding.sessionId;
 }
 
 /** Registry reads for planning must not create a registry or run migrations. */
@@ -414,7 +423,10 @@ function abandoned(op: RecoveryOperation): boolean {
   return true;
 }
 
-function validateReceipt(id: string, op: RecoveryOperation): void {
+function validateReceipt(id: string, op: RecoveryOperation, historical = false): void {
+  // Cleanup validates owned historical facts; this mode never authorizes restore, fresh or reattach.
+  const options = historical ? { authority: "historical" as const } : {};
+  const decode = (value: unknown) => decodeRestoreReceipt(value, options);
   if (!(op.schema === 1 || (op.schema === 2 && op.disposition)) || op.id !== id) throw new Error("unsupported operation receipt");
   if (op.targetFeatures !== undefined && (!Array.isArray(op.targetFeatures) || !op.targetFeatures.every(feature => typeof feature === "string" && feature.length > 0) || !op.targetRoot || !op.targetDigest)) throw new Error("invalid target features");
   const { fingerprint, ...reviewed } = op.plan;
@@ -425,13 +437,13 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
     if (progress.repairedSessions !== undefined) {
       if (!object(progress.repairedSessions)) throw new Error("invalid repaired session provenance");
       for (const [peer, protectedSession] of Object.entries(progress.repairedSessions)) {
-        const restored = decodeRestoreReceipt(progress.terminals[`restored:${peer}`]);
+        const restored = decode(progress.terminals[`restored:${peer}`]);
         const bindings = [progress.reattachments?.[peer as RecoveryNativePeer]?.binding,
           restored?.state === "done" || restored?.state === "waiting" ? restored.binding : undefined,
           progress.terminals[`retired:${peer}`]];
         if (protectedSession !== true || !bindings.some(binding => {
           if (binding === undefined) return false;
-          const receipt = decodeRestoreReceipt({ state: "done", binding });
+          const receipt = decode({ state: "done", binding });
           return receipt?.state === "done" && receipt.binding.peer === peer && receipt.binding.projectRoot === op.plan.projects[index]?.project.root;
         })) throw new Error("repaired session provenance does not match its retained peer and project");
       }
@@ -440,14 +452,14 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
       if (choice.repaired === undefined) continue;
       const planned = op.plan.projects[index]!;
       if (choice.repaired !== true || !progress.repairedSessions?.[peer as RecoveryNativePeer] ||
-          resolveAcceptedBinding(planned, progress, peer as RecoveryNativePeer)?.sessionId !== choice.lost) throw new Error("invalid one-use repaired-session choice");
+          resolveAcceptedBinding(planned, progress, peer as RecoveryNativePeer, options)?.sessionId !== choice.lost) throw new Error("invalid one-use repaired-session choice");
     }
     if (progress.reattachments === undefined) continue;
     if (!object(progress.reattachments)) throw new Error("invalid reattachment markers");
     for (const [peer, marker] of Object.entries(progress.reattachments)) {
-      if (definitionOf(peer)?.session.launchRecord !== true || !object(marker) || Object.keys(marker).some(key => !["state", "at", "cause", "binding"].includes(key)) ||
+      if ((!historical && projectDefinition(peer, op.plan.projects[index]?.project.root)?.session.launchRecord !== true) || !object(marker) || Object.keys(marker).some(key => !["state", "at", "cause", "binding"].includes(key)) ||
           !["ready", "attempted"].includes(String(marker.state)) || marker.cause !== "detached after restore" || typeof marker.at !== "number" || !Number.isFinite(marker.at) || marker.at < 0) throw new Error("invalid reattachment marker");
-      const receipt = decodeRestoreReceipt({ state: "done", binding: marker.binding });
+      const receipt = decode({ state: "done", binding: marker.binding });
       if (receipt?.state !== "done" || receipt.binding.peer !== peer || receipt.binding.projectRoot !== op.plan.projects[index]?.project.root) throw new Error("reattachment binding does not match its peer and project");
     }
   }
@@ -456,7 +468,7 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
     if (!object(evidence) || Object.keys(evidence).some(key => !["projectId", "peer", "sessionId", "kind", "checkedPath"].includes(key)) ||
         typeof evidence.projectId !== "string" || typeof evidence.peer !== "string" || typeof evidence.sessionId !== "string" ||
         evidence.checkedPath !== undefined && (typeof evidence.checkedPath !== "string" || !evidence.checkedPath) ||
-        !["rollout", "transcript"].includes(evidence.kind) || !op.projects.some(progress => missingRepair(op, progress, evidence.peer))) throw new Error("invalid recorded-session missing evidence");
+        !["rollout", "transcript"].includes(evidence.kind) || !op.projects.some(progress => missingRepair(op, progress, evidence.peer, options))) throw new Error("invalid recorded-session missing evidence");
   }
   if (op.freshOverride !== undefined) {
     const override = op.freshOverride, evidence = override.evidence;
@@ -467,14 +479,14 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
   }
   if (op.blockedReattachment !== undefined) {
     const selected = op.blockedReattachment;
-    if (!object(selected) || Object.keys(selected).some(key => !["projectId", "peer"].includes(key)) || typeof selected.projectId !== "string" || definitionOf(String(selected.peer))?.session.launchRecord !== true ||
+    if (!object(selected) || Object.keys(selected).some(key => !["projectId", "peer"].includes(key)) || typeof selected.projectId !== "string" || typeof selected.peer !== "string" || (!historical && projectDefinition(selected.peer, op.plan.projects.find(project => project.project.id === selected.projectId)?.project.root)?.session.launchRecord !== true) ||
         !op.projects.some(project => project.id === selected.projectId && Object.hasOwn(project.reattachments ?? {}, selected.peer))) throw new Error("invalid blocked reattachment selector");
   }
 }
 
 export interface RecoveryDriver {
   stage(op: RecoveryOperation): Promise<{ root: string; digest: string; targetFeatures?: readonly string[] }>;
-  inspect(project: Project, targetFeatures?: readonly string[]): Promise<Inspection>;
+  inspect(project: Project, targetFeatures?: readonly string[], purpose?: "cleanup"): Promise<Inspection>;
   prepare(project: Project, operation: string, instance: string, targetFeatures?: readonly string[]): Promise<void>;
   abort(project: Project, operation: string, instance: string): Promise<void>;
   commit(project: Project, operation: string, instance: string, targetFeatures?: readonly string[]): Promise<void>;
@@ -766,7 +778,11 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
 export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown", live: Record<string, Inspection | undefined> = {}) {
-  const effect = (key: string, value: unknown) => key.startsWith("restored:") ? restoreReceiptStatus(value) : value === "pending" || value === "failed" ? value : "done";
+  const effect = (key: string, value: unknown) => {
+    if (!key.startsWith("restored:")) return value === "pending" || value === "failed" ? value : "done";
+    const receipt = decodeRestoreReceipt(value, { authority: "historical" });
+    return !receipt ? "unstarted" : receipt.state === "waiting" ? `waiting:${receipt.origin}` : receipt.state;
+  };
   const choices = nextChoices(op, runnerPid, live), next = choices.map(choice => choice.text);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
     runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
@@ -795,7 +811,7 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op);
   const selection = () => {
-    if (definitionOf(peer)?.session.launchRecord !== true || op.phase !== "blocked" || op.disposition || op.final || op.blockedReattachment?.peer !== peer) throw new Error("reattach is available only for the peer named by a blocked reattachment receipt");
+    if (projectDefinition(peer, op.plan.projects.find(project => project.project.id === op.blockedReattachment?.projectId)?.project.root)?.session.launchRecord !== true || op.phase !== "blocked" || op.disposition || op.final || op.blockedReattachment?.peer !== peer) throw new Error("reattach is available only for the peer named by a blocked reattachment receipt");
     const progress = op.projects.find(project => project.id === op.blockedReattachment!.projectId);
     const planned = op.plan.projects.find(project => project.project.id === progress?.id);
     const native = peer as RecoveryNativePeer;
@@ -820,7 +836,7 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
     };
     await target();
     attempted = true;
-    await driver.restore(planned, progress, op, definitionOf(native)?.transport === "claude-channel" ? "claude" : "native", save, native);
+    await driver.restore(planned, progress, op, projectDefinition(native, planned.project.root)?.transport === "claude-channel" ? "claude" : "native", save, native);
     // A done receipt is written by the runtime only after authenticated attachment and exact settlement.
     // Inspection peers may be unavailable; do not invent an attachment from a test or a stale status projection.
     const restored = decodeRestoreReceipt(progress.terminals[`restored:${native}`]);
@@ -853,14 +869,14 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
 /** Escape a blocked preflight without abandoning a stopped runtime or an uncertain terminal mutation. */
 export async function abortRecovery(id: string, driver: RecoveryDriver, home = hubHome()): Promise<void> {
   let op = readOperation<RecoveryOperation>(id, home);
-  validateReceipt(id, op);
+  validateReceipt(id, op, true);
   acquireRecoveryLock(id, home);
   const releaseRunner = claimRunner(id, home);
   try {
     // Re-read after the exclusive runner claim so cancellation cannot act on a
     // stale pending/prepared receipt after another runner advanced it.
     op = readOperation<RecoveryOperation>(id, home);
-    validateReceipt(id, op);
+    validateReceipt(id, op, true);
     if (op.phase === "completed" || op.phase === "cancelled") {
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
@@ -868,7 +884,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
     if (abandoned(op)) writeOperation(id, op, home);
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
-    const live = await liveProjects(op, driver.inspect);
+    const live = await liveProjects(op, project => driver.inspect(project, undefined, "cleanup"));
     const refusal = abortRefusal(op, live);
     if (refusal) throw new Error(`abort refused: ${refusal}; ${nextActionsText(op, live)}`);
     // Only this operation's own uncommitted holds are aborted; a lapsed hold, a replacement daemon or another
@@ -893,7 +909,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
  */
 export async function disposeRecovery(id: string, choice: { fresh: string } | { stop: true }, reason: string, driver: RecoveryDriver, home = hubHome()): Promise<RecoveryOperation> {
   let op: RecoveryOperation;
-  try { op = readOperation<RecoveryOperation>(id, home); validateReceipt(id, op); }
+  try { op = readOperation<RecoveryOperation>(id, home); validateReceipt(id, op, "stop" in choice); }
   catch (error) { if (driver.liveTestPeer && "fresh" in choice) throw new Error(LIVE_TEST_PERSON_REFUSAL); throw error; }
   if (driver.liveTestPeer && "fresh" in choice && repairedFreshSession(op, choice.fresh) !== false) throw new Error(LIVE_TEST_PERSON_REFUSAL);
   // A finished operation owns no lock: never take one only to refuse.
@@ -901,7 +917,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
   acquireRecoveryLock(id, home);
   const releaseRunner = claimRunner(id, home);
   try {
-    try { op = readOperation<RecoveryOperation>(id, home); validateReceipt(id, op); }
+    try { op = readOperation<RecoveryOperation>(id, home); validateReceipt(id, op, "stop" in choice); }
     catch (error) { if (driver.liveTestPeer && "fresh" in choice) throw new Error(LIVE_TEST_PERSON_REFUSAL); throw error; }
     if (driver.liveTestPeer && "fresh" in choice && repairedFreshSession(op, choice.fresh) !== false) throw new Error(LIVE_TEST_PERSON_REFUSAL);
     if (op.phase === "completed" || op.phase === "cancelled") {
@@ -912,11 +928,11 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     if (abandoned(op)) writeOperation(id, op, home);
     const at = driver.now();
     // Read once, as status and the runner do: every choice and refusal below is decided on it.
-    const live = await liveProjects(op, driver.inspect);
+    const live = await liveProjects(op, project => driver.inspect(project, undefined, "stop" in choice ? "cleanup" : undefined));
     const next = nextActionsText(op, live);
     if ("fresh" in choice) {
       // `ahub pi` sends no fresh flag, and a restored hub refills a Pi start from its recorded resume (daemon startPeer).
-      if (definitionOf(choice.fresh)?.session.personFresh === false) throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; ${op.plan.projects.map(planned => piArchiveExit(planned, recoveryCommand(op, "dispose", STOP))).join("; ")}; ${next}`);
+      if (op.plan.projects.some(planned => projectDefinition(choice.fresh, planned.project.root)?.session.personFresh === false)) throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; ${op.plan.projects.filter(planned => projectDefinition(choice.fresh, planned.project.root)?.session.personFresh === false).map(planned => piArchiveExit(planned, recoveryCommand(op, "dispose", STOP), choice.fresh)).join("; ")}; ${next}`);
       if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; ${next}`);
       if (!targetReadsWaivers(op)) throw new Error(`--fresh-session is not available: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session; ${next}`);
       // The new session is launched by resume, so it helps only where resume can get past what is live.
@@ -997,7 +1013,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         else if (act === "stopped" || act === "target stopped") {
           const outcome = await driver.stopAndArchive(planned.project, op, act === "target stopped" ? live!.instanceId : undefined);
           if (outcome && outcome.continuity) (disposition.continuity ??= {})[planned.project.id] = outcome.continuity;
-          if ((await driver.inspect(planned.project)).state !== "stopped") throw new Error(`${planned.project.id}: shutdown of instance ${live!.instanceId ?? "unknown"} is not verified`);
+          if ((await driver.inspect(planned.project, undefined, "cleanup")).state !== "stopped") throw new Error(`${planned.project.id}: shutdown of instance ${live!.instanceId ?? "unknown"} is not verified`);
         }
         disposition.projects[planned.project.id] ??= act;
         op.updatedAt = driver.now(); writeOperation(id, op, home);
@@ -1005,7 +1021,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     } catch (error) {
       if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
       op.phase = "blocked"; op.updatedAt = driver.now();
-      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"} (a committed source stops by itself); ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
+      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"} (a committed source stops by itself); ${nextActionsText(op, await liveProjects(op, project => driver.inspect(project, undefined, "cleanup")))}`;
       writeOperation(id, op, home);
       throw error;
     }

@@ -1,3 +1,4 @@
+import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
@@ -18,7 +19,7 @@ import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasSta
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, detectSignals, peerEntry, predictSplit, relayCandidates, type Assignment, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, detectSignals, peerEntry, predictSplit, relayCandidates, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -36,6 +37,10 @@ export interface TasksDeps {
   board: Board;
   bus: Bus;
   routing: () => Routing;
+  /** Startup-bound project declarations; routing never discovers instances from peer names. */
+  instances?: () => InstancesConfig;
+  /** Host proof of each live extra runtime's actual isolated execution root; config paths alone are not proof. */
+  ownerIsolation?: () => Readonly<Record<string, boolean>>;
   cwd: string;
   project: string;
   profile?: ProfileName;
@@ -508,19 +513,31 @@ export class Tasks {
     return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested").map((h) => h.by));
   }
 
+  /** Workload is board/queue data only: wip() never calls health() or weights(). */
+  private instanceRouting(): InstanceRoutingOptions {
+    const instances = this.d.instances?.();
+    if (!instances || !Object.keys(instances).length) return {};
+    const peers = [...new Set([...ADAPTERS.map(adapter => adapter.kind), ...Object.keys(instances), ...this.d.bus.peers.keys()])];
+    return { instances, ownerIsolation: this.d.ownerIsolation?.() ?? {}, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
+  }
+
   /** Peer health and roles the daemon feeds routing (issues #89, #90, #92): failing peers are skipped, held queues explained. */
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    return { ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => definitionOf(peer.id)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: ADAPTERS.map(adapter => adapter.kind).filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    const workload = this.instanceRouting();
+    const peers = workload.instances ? [...new Set([...ADAPTERS.map(adapter => adapter.kind), ...Object.keys(workload.instances), ...this.d.bus.peers.keys()])] : ADAPTERS.map(adapter => adapter.kind);
+    return { ...workload, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => definitionOf(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
   private requireCapabilities(task: Parameters<typeof assign>[0], peer: PeerId, role: TaskAssignmentRole = "owner", preEffect = true): void {
-    if (!this.d.capabilities || this.isPii(task)) return;
+    const instances = this.d.instances?.(), adapter = definitionOf(peer, instances);
+    const declaredExtra = !!adapter && adapter.kind !== peer;
+    if ((!this.d.capabilities || this.isPii(task)) && !declaredExtra) return;
     const { state: _state, ...draft } = task; // backlog/readiness must not bypass an explicit reservation's admission
     const admission = assign(draft, this.states(), this.d.routing(), { candidates: role === "owner" ? [peer] : [], ...(role === "owner" ? { namedOwner: peer } : { namedReviewer: peer }), ...this.weights(task.class) });
-    const missing = (admission.refusals ?? []).filter(row => row.peer === peer && row.role === role && (row.code === "tests" || row.code === "spec")).map(row => `  ${role} candidate ${peer}: skipped, ${row.reason}`);
+    const missing = (admission.refusals ?? []).filter(row => row.peer === peer && row.role === role && (row.code === "tests" || row.code === "spec" || declaredExtra && role === "owner" && row.code === "owner-admission")).map(row => `  ${role} candidate ${peer}: skipped, ${row.reason}`);
     if (missing.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot assign ${peer}: ${missing.join("; ")}`);
   }
 
@@ -802,7 +819,7 @@ export class Tasks {
       if (by !== USER && Object.hasOwn(patch, "reserved") && this.hasPersonReservation(task)) throw new PreEffectToolRefusal("a person's reservation is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
         if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
-        if (patch.reserved && !definitionOf(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
+        if (patch.reserved && !definitionOf(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
         if (patch.reserved) this.requireCapabilities(task, patch.reserved);
         const rows = new Map(this.d.board.list().map(row => [row.id, row]));
@@ -1461,6 +1478,10 @@ export class Tasks {
     if (hold) this.d.notify(`task ${this.publicTitle(task)}: ${a.owner}'s queue is held (${hold}); the task arrives once the hold is resolved`);
   }
 
+  private assignmentNote(note: string, assignment: Assignment): string {
+    return assignment.sameFamilyFallback ? `${note}; sameFamilyFallback=true` : note;
+  }
+
   /** A later move to another owner means the caller's assignment was superseded, so its success tail is not authoritative. */
   private ownOwnerMove(before: Task, after: Task, by: PeerId, event: string): boolean {
     const moves = (task: Task) => task.history.filter(entry => ["assigned", "reassigned", "escalated", "unassigned"].includes(entry.event));
@@ -1499,7 +1520,7 @@ export class Tasks {
     // A person's explicit assign replaces an agent's reservation (#207). Only a refusal keeps the owner it moves away from
     // out for good: a reviewer's rejections or an escalation by hand, never the hub's own move after a failed delivery.
     const lasting = opts.event === "escalated" && task.owner && (opts.reason === "rejections" || opts.reason === "manual");
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) }, opts.expectedFlowRevision);
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a), { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) }, opts.expectedFlowRevision);
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -1599,7 +1620,7 @@ export class Tasks {
     const pii = this.isPii(task), delivery = { ...a, reviewer: task.reviewer ?? undefined };
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", delivery.owner, h.withheld)}`);
     const handoff = context && !pii ? this.screen(task, context, "handoff", delivery.owner, contextWithheld).slice(0, 3000) : "";
-    const facts = [`class ${profileTaskLabel(task)}`, delivery.owner && definitionOf(delivery.owner)?.routing?.backendLabel ? `backend ${definitionOf(delivery.owner)!.routing!.backendLabel}/${delivery.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", delivery.reviewer ? `reviewer ${delivery.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(delivery)].filter(Boolean).join("; ");
+    const facts = [`class ${profileTaskLabel(task)}`, delivery.owner && definitionOf(delivery.owner, this.d.instances?.())?.routing?.backendLabel ? `backend ${definitionOf(delivery.owner, this.d.instances?.())!.routing!.backendLabel}/${delivery.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", delivery.reviewer ? `reviewer ${delivery.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(delivery)].filter(Boolean).join("; ");
     const plan = planText(task.plan);
     const body = [
       `Task #${task.id} [${profileTaskLabel(task)}] ${task.title}`,
@@ -1713,7 +1734,9 @@ export class Tasks {
   }
   private ownerStallCause(task: Task, admission: Assignment): TaskStall["cause"] {
     const refusal = admission.refusals?.find(row => row.role === "owner" && row.peer === task.reserved);
-    return refusal ? { kind: "reservation", peer: refusal.peer, code: refusal.code } : { kind: "no-eligible-peer", code: "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
+    // Persist the existing stall vocabulary; the assignment/explain keeps the precise instance/family refusal.
+    const persisted = (code: NonNullable<Assignment["refusals"]>[number]["code"]): TaskStall["cause"]["code"] => code === "instance" || code === "family" ? "policy" : code;
+    return refusal ? { kind: "reservation", peer: refusal.peer, code: persisted(refusal.code) } : { kind: "no-eligible-peer", code: "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code: persisted(code) })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
   }
   private reportStall(task: Task, cause: TaskStall["cause"], now = Date.now()): void {
     const stall: TaskStall = { task: task.id, cause, signature: JSON.stringify(cause), replanRevision: task.planningRevision ?? 0, at: now };
@@ -2445,7 +2468,7 @@ export class Tasks {
       this.ready(task, preEffect);
       const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
-      const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, `named reviewer ${peer}`, { reason: "manual" }, expectedFlowRevision);
+      const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, this.assignmentNote(`named reviewer ${peer}`, a), { reason: "manual" }, expectedFlowRevision);
       if (next.state === "in_review" && task.reviewer && task.reviewer !== peer) {
         this.withdrawRoleRequest(task, next, "reviewer");
       }
@@ -2497,7 +2520,7 @@ export class Tasks {
       const owner = task.owner === peer;
       const weights = this.weights(task.class);
       const pii = this.isPii(task);
-      const candidates = owner ? relayCandidates(routing.classes[task.class]?.peers ?? [], pii) : [];
+      const candidates = owner ? relayCandidates(routing.classes[task.class]?.peers ?? [], pii, { ...this.instanceRouting(), states: this.states() }) : [];
       const a = assign(task, this.states(), routing, { ...weights, offRoster: [...(weights.offRoster ?? []), peer], exclude: [peer], excludeOwners: owner && this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], candidates, ...(owner ? { waitsFor: this.waitsFor(task) } : task.owner ? { notReviewer: task.owner } : {}) });
       return { id: task.id, title: this.publicTitle(task), role: owner ? "owner" : "reviewer", to: (owner ? a.owner : a.reviewer) ?? null };
     });
@@ -2518,7 +2541,7 @@ export class Tasks {
       if (urgentOnly && !task.signals.includes("urgent")) continue;
       if (task.owner === peer && (OPEN.includes(task.state) || roster && task.state === "in_review")) {
         const pii = this.isPii(task);
-        const candidates = relayCandidates(routing.classes[task.class]?.peers ?? [], pii);
+        const candidates = relayCandidates(routing.classes[task.class]?.peers ?? [], pii, { ...this.instanceRouting(), states: this.states() });
         if (this.plannerPullRecord(task)?.pull && !assign(task, this.states(), routing, { candidates, exclude: [...this.excluded(task), peer], excludeOwners: this.plannerFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).owner) continue;
         // Budget keeps its original release/unassign behaviour for ordinary work. Roster changes the state in
         // assignOwner's same owner write only after routing has found somebody to take it.
@@ -2546,7 +2569,7 @@ export class Tasks {
           this.releaseNotice(`task ${this.publicTitle(task)}: its reviewer ${peer} is off roster and nobody else can review; the reviewer stays ${peer}; use ahub review ${task.id}`);
           continue;
         }
-        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, why);
+        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote(why, a));
         moved.push({ id: task.id, title: this.publicTitle(task), to: reviewer, role: "reviewer" });
         if (next.state === "in_review" && reviewer && reviewer !== USER) {
           if (roster) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, `(${peer} was reviewing this and is off roster.)`));

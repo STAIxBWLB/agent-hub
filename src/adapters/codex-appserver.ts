@@ -391,7 +391,7 @@ export class CodexPeer extends BasePeer {
       throw new Error(`port ${port} already answers /healthz: an app-server the hub does not own is running (orphan from a crashed hub?)`);
     }
     let gone = "";
-    const env = peerChildEnv("codex", { ...process.env, ...(this.opts.env ?? {}) });
+    const env = peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) });
     this.proc = spawn(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...(this.opts.extraArgs ?? [])], {
       cwd: this.opts.cwd,
       env,
