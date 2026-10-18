@@ -2,6 +2,7 @@ import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
+import { MAX_DEFERRED_HUB, RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 
 export type { DeliveryReceipt } from "./peers.ts";
@@ -64,6 +65,8 @@ export interface BusSnapshot {
   attempts: Record<string, number>;
   withdrawn: string[];
   manualPaused?: string[];
+  /** Hub notices accepted during recovery, durable but outside the carried delivery queues. */
+  deferredHub?: Envelope[];
   journal?: ReturnType<DeliveryJournal["snapshot"]>;
 }
 
@@ -142,6 +145,12 @@ export class Bus {
   /** Synchronous native failure observation, before queue callbacks can finish turn metrics. */
   onDeliveryFailed?: (peer: PeerId) => void;
   private recoveryHeld = false;
+  private deferHub = false;
+  private readonly deferredHub = new Map<string, Envelope>();
+  private flushingHub = false;
+  private replayingHub = false;
+  private deferredEvents: BusEvent[] = [];
+  private deferredNudges: (() => void)[] = [];
   private steering = 0;
   private condensing = 0;
   private closed = false;
@@ -273,10 +282,61 @@ export class Bus {
   }
 
   /** Stop new deliveries while a coordinator takes a stable snapshot. Existing adapter turns are left alone. */
-  setRecoveryHold(held: boolean): void {
-    this.recoveryHeld = held;
-    if (!held) this.onQueues?.(); // restored holds need classification even when no peer is attached
-    if (!held) for (const id of this.peers.keys()) void this.drain(id);
+  setRecoveryHold(held: boolean, deferHub = false): void {
+    if (this.replayingHub) throw new RecoveryDeferredHubError("recovery notice release is already in progress");
+    if (held) {
+      this.recoveryHeld = true;
+      this.deferHub = deferHub;
+      // An older target cannot carry this additive field: materialize before commit's expected integrity.
+      if (!deferHub) this.flushDeferredHub();
+      return;
+    }
+    // Persist each deferred -> queued transition while deliveries are still fenced. A failed checkpoint
+    // leaves the hold and the original pending head intact; a crash after it resumes from the journal.
+    this.flushDeferredHub();
+    this.recoveryHeld = false;
+    this.onQueues?.();
+    for (const id of this.peers.keys()) void this.drain(id);
+  }
+
+  private flushDeferredHub(): void {
+    if (this.flushingHub) return;
+    if (this.storageError) this.persist();
+    this.replayingHub = true;
+    try { while (this.deferredHub.size) {
+      const env = this.deferredHub.values().next().value!;
+      const beforeDeferred = [...this.deferredHub], beforeSeen = [...this.seen], beforeWithdrawn = [...this.withdrawn];
+      const affected = new Map(this.audience(env).map(peer => {
+        const queue = this.queues.get(peer);
+        return [peer, queue ? { queue, contents: [...queue] } : undefined] as const;
+      }));
+      const outcomes = this.pendingOutcomes.length;
+      this.flushingHub = true;
+      this.deferredEvents = []; this.deferredNudges = [];
+      try {
+        this.deferredHub.delete(env.id);
+        this.publishNow(env);
+      } catch (error) {
+        // Only publication state is transactional. A live peer's preface, pauses, attempts and
+        // recovery mode are independent state, not something a failed checkpoint may reload.
+        this.deferredHub.clear(); for (const [id, pending] of beforeDeferred) this.deferredHub.set(id, pending);
+        this.seen.clear(); for (const [id, seen] of beforeSeen) this.seen.set(id, seen);
+        this.withdrawn.clear(); for (const id of beforeWithdrawn) this.withdrawn.add(id);
+        for (const [peer, queue] of affected) {
+          if (queue) { queue.queue.splice(0, queue.queue.length, ...queue.contents); this.queues.set(peer, queue.queue); }
+          else this.queues.delete(peer);
+        }
+        this.pendingOutcomes.length = outcomes;
+        this.deferredEvents = []; this.deferredNudges = [];
+        throw new RecoveryDeferredHubError("deferred hub notice checkpoint failed; recovery remains held; restore delivery storage, then retry release or abort");
+      } finally { this.flushingHub = false; }
+      // Publication observers run only after the durable transition. Reentrant notices join the FIFO tail.
+      const events = this.deferredEvents; this.deferredEvents = [];
+      for (const event of events) this.emit(event);
+      const nudges = this.deferredNudges; this.deferredNudges = [];
+      for (const nudge of nudges) nudge();
+      this.onQueues?.();
+    } } finally { this.replayingHub = false; }
   }
 
   get isRecoveryHeld(): boolean {
@@ -296,7 +356,7 @@ export class Bus {
     let delay = 1;
     while (this.draining.size || this.steering || this.condensing) {
       if (Date.now() >= deadline) {
-        this.recoveryHeld = heldBefore;
+        if (!heldBefore) this.setRecoveryHold(false);
         throw new Error(`recovery fence timed out after ${timeoutMs} ms with ${this.draining.size + this.steering + this.condensing} deliveries still in flight; retry the operation`);
       }
       await Bun.sleep(delay);
@@ -314,6 +374,7 @@ export class Bus {
       attempts: Object.fromEntries(this.attempts),
       withdrawn: [...this.withdrawn],
       manualPaused: [...this.manualPaused],
+      ...(this.deferredHub.size ? { deferredHub: structuredClone([...this.deferredHub.values()]) } : {}),
     };
     if (includeJournal && this.journal) out.journal = this.journal.snapshot();
     return out;
@@ -341,6 +402,10 @@ export class Bus {
   }
 
   private loadSnapshot(snapshot: BusSnapshot): void {
+    const deferred = validateDeferredHub(snapshot.deferredHub, undefined, new Set([...snapshot.seen.map(e => e.id), ...Object.values(snapshot.queues).flat().map(e => e.id)]));
+    if (deferred.length) { this.recoveryHeld = true; this.deferHub = true; }
+    this.deferredHub.clear();
+    for (const env of deferred) this.deferredHub.set(env.id, structuredClone(env));
     this.queues.clear();
     for (const [id, queue] of Object.entries(snapshot.queues ?? {})) this.queues.set(id, queue.map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) })));
     this.prefaces.clear();
@@ -532,7 +597,7 @@ export class Bus {
 
   queuedBacklogIds(id: PeerId): Set<number> {
     const ids = new Set<number>();
-    const retained = [...(this.queues.get(id) ?? []), ...(this.journal?.unresolved(id).filter(row => row.state !== "queued").flatMap(row => row.originals) ?? [])];
+    const retained = [...this.pendingEnvelopes(id), ...(this.journal?.unresolved(id).filter(row => row.state !== "queued").flatMap(row => row.originals) ?? [])];
     for (const env of retained) {
       const backlog = env.refs?.backlog;
       if (env.from !== HUB || env.kind !== "task" || !Array.isArray(backlog) || backlog.length > 64) continue;
@@ -602,8 +667,52 @@ export class Bus {
     this.prefaces.set(id, !now ? { ...env, body: uniqueMemoryLines(env.body) } : now.id === env.id ? { ...now, body: uniqueMemoryLines(now.body) } : { ...env, body: keepNotes(mergePrefaces(env.body, now.body), NOTES_KEPT) });
   }
 
-  /** Returns the peers the envelope was queued for. */
+  /** Stopped-runtime reset only: audit every deferred recipient without publishing or releasing work. */
+  discardDeferredHub(reason: string): string[] {
+    if (this.peers.size || this.flushingHub || this.replayingHub || !this.journal || this.storageError) throw new Error("deferred reset requires a stopped, readable delivery journal");
+    const pending = [...this.deferredHub];
+    const settled: string[] = [];
+    try {
+      this.journal.transaction(() => {
+        for (const [, env] of pending) for (const peer of new Set(env.to ?? [])) {
+          const id = `q:${peer}:${env.id}`;
+          this.journal!.createDelivery({ id, peer, state: "queued", createdAt: env.ts, originals: [env], out: [env] });
+          const row = this.journal!.get(id)!;
+          this.journal!.resolve(id, row.revision, "discard", reason, row.revision, "user");
+          settled.push(id);
+        }
+        this.deferredHub.clear();
+        this.persist();
+      });
+    } catch (error) {
+      this.deferredHub.clear(); for (const [id, env] of pending) this.deferredHub.set(id, env);
+      throw error;
+    }
+    return settled;
+  }
+
+  /** Accepted pending work, including notices withheld from the recovery integrity view. */
+  pendingEnvelopes(peer: PeerId): Envelope[] {
+    return [...(this.queues.get(peer) ?? []), ...[...this.deferredHub.values()].filter(e => e.to?.includes(peer))];
+  }
+
+  /** Returns the peers the envelope was accepted for, including durable deferred notices. */
   publish(env: Envelope): PeerId[] {
+    if (this.storageError) throw new Error("delivery journal unavailable");
+    if (this.seen.has(env.id) || this.deferredHub.has(env.id)) return [];
+    if (this.recoveryHeld && (this.deferHub || this.replayingHub) && env.from === HUB && env.priority !== "fyi" && env.hop <= MAX_HOP) {
+      if (this.deferredHub.size >= MAX_DEFERRED_HUB) throw new RecoveryDeferredHubError();
+      const targets = this.audience(env);
+      const copy = structuredClone({ ...env, to: targets });
+      this.deferredHub.set(copy.id, copy);
+      try { this.persist(); }
+      catch (error) { this.deferredHub.delete(copy.id); throw error; }
+      return targets;
+    }
+    return this.publishNow(env);
+  }
+
+  private publishNow(env: Envelope): PeerId[] {
     if (this.storageError) throw new Error("delivery journal unavailable");
     if (this.seen.has(env.id)) return [];
     this.seen.set(env.id, env);
@@ -638,7 +747,7 @@ export class Bus {
     } } finally { this.suppressDrain = false; }
     if (this.journal) {
       this.persist();
-      this.onQueues?.();
+      if (!this.flushingHub) this.onQueues?.();
       for (const id of targets) {
         const peer = this.peers.get(id);
         if (!this.held(id) && env.priority === "important" && peer?.steer && this.stateOf(id) === "busy") void this.steerQueued(id, env);
@@ -681,7 +790,7 @@ export class Bus {
 
   /** A recently published envelope, for resolving `reply_to`. */
   get(id: string): Envelope | undefined {
-    return this.seen.get(id);
+    return this.seen.get(id) ?? this.deferredHub.get(id);
   }
 
   /** The envelopes most recently handed to a peer, used to distinguish a received request from an unread queue. */
@@ -696,10 +805,10 @@ export class Bus {
    */
   withdraw(envelopeId: string): boolean {
     this.markWithdrawn(envelopeId);
-    let removed = false;
+    let removed = this.deferredHub.delete(envelopeId);
     for (const queue of this.queues.values()) {
       const i = queue.findIndex((e) => e.id === envelopeId);
-      if (i !== -1) removed = queue.splice(i, 1).length > 0;
+      if (i !== -1) { queue.splice(i, 1); removed = true; }
     }
     if (removed) this.onQueues?.();
     this.persist();
@@ -709,8 +818,15 @@ export class Bus {
   /** Revoke pending feed copies only; accepted/dispatching journal records and native turns are untouched. */
   revokeSupervision(peer: PeerId): number {
     const queue = this.queues.get(peer);
-    if (!queue && !this.preparing.has(peer)) return 0;
     let removed = 0;
+    for (const [id, env] of this.deferredHub) {
+      if (!env.refs?.supervision || !env.to?.includes(peer)) continue;
+      const remaining = env.to.filter(target => target !== peer);
+      if (remaining.length) this.deferredHub.set(id, { ...env, to: remaining });
+      else this.deferredHub.delete(id);
+      removed++;
+    }
+    if (!queue && !this.preparing.has(peer)) { if (removed) this.persist(); return removed; }
     const discarded = new Set<string>();
     for (let i = (queue?.length ?? 0) - 1; i >= 0; i--) {
       const env = queue![i]!;
@@ -796,9 +912,11 @@ export class Bus {
     }
     if (queuedEnv.priority === "important" && this.peers.get(id)?.pullOnly) {
       // Advisory only (issue #398): the envelope stays queued for `pull`; the hook must never affect it.
-      try { this.opts.onImportantQueued?.(id, { queued: queue.length, important: queue.filter((e) => e.priority === "important").length }); } catch { /* a nudge never stops an enqueue */ }
+      const counts = { queued: queue.length, important: queue.filter((e) => e.priority === "important").length };
+      const nudge = () => { try { this.opts.onImportantQueued?.(id, counts); } catch { /* a nudge never stops an enqueue */ } };
+      if (this.flushingHub) this.deferredNudges.push(nudge); else nudge();
     }
-    this.onQueues?.();
+    if (!this.flushingHub) this.onQueues?.();
     if (!this.suppressDrain) this.persist();
     if (!this.suppressDrain) void this.drain(id);
   }
@@ -1060,6 +1178,7 @@ export class Bus {
   }
 
   private emit(e: BusEvent): void {
+    if (this.flushingHub) { this.deferredEvents.push(e); return; }
     for (const tap of this.taps) tap(e);
   }
 }

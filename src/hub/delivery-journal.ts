@@ -6,6 +6,7 @@ import { HUB, USER, type Envelope, type Kind } from "./envelope.ts";
 import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
+import { validateDeferredHub } from "./deferred-hub.ts";
 
 export type JournalDeliveryState =
   | "queued"
@@ -167,6 +168,11 @@ function validateBus(value: unknown, name = "bus"): BusSnapshot {
     list(b.manualPaused, `${name}.manualPaused`, 4096).forEach((id) =>
       text(id, `${name}.manualPaused[]`, 256),
     );
+  const occupied = new Set<string>([
+    ...(b.seen as Envelope[]).map(env => env.id),
+    ...Object.values(queues).flatMap(items => (items as Envelope[]).map(env => env.id)),
+  ]);
+  validateDeferredHub(b.deferredHub, validateEnvelope, occupied, `${name}.deferredHub`);
   if (b.journal !== undefined) fail("nested journal snapshot is invalid");
   return b as unknown as BusSnapshot;
 }

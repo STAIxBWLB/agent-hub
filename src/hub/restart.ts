@@ -2,10 +2,11 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSy
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { BusSnapshot } from "./bus.ts";
-import type { PeerId, PeerState } from "./envelope.ts";
+import type { Envelope, PeerId, PeerState } from "./envelope.ts";
 import { MAX_HOP } from "./envelope.ts";
 import { validateJournalSnapshot } from "./delivery-journal.ts";
 import { atomicPrivateJSON } from "./recovery-store.ts";
+import { RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
 
 export const RESTART_SCHEMA_VERSION = 1;
 
@@ -75,6 +76,16 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   const bus = s.bus as Partial<BusSnapshot>;
   if (bus.schemaVersion !== 1 || !bus.queues || typeof bus.queues !== "object" || !bus.prefaces || typeof bus.prefaces !== "object" || !Array.isArray(bus.seen) || !bus.attempts || typeof bus.attempts !== "object" || !Array.isArray(bus.withdrawn)) return undefined;
   if (!Object.keys(bus.queues).every(peerId) || !Object.keys(bus.prefaces).every(peerId) || !Object.values(bus.queues).every((queue) => Array.isArray(queue) && queue.every((e) => isEnvelope(e))) || !Object.values(bus.prefaces).every((e) => isEnvelope(e)) || !bus.seen.every((e) => isEnvelope(e, true)) || !bus.withdrawn.every((id) => typeof id === "string" && id.length > 0) || !Object.values(bus.attempts).every((n) => Number.isSafeInteger(n) && n > 0)) return undefined;
+  try {
+    const occupied = new Set<string>([
+      ...bus.seen.map(env => env.id),
+      ...Object.values(bus.queues).flatMap(queue => queue.map(env => env.id)),
+    ]);
+    validateDeferredHub(bus.deferredHub, (value, name) => {
+      if (!isEnvelope(value)) throw new Error(`${name} is invalid`);
+      return value as Envelope;
+    }, occupied);
+  } catch (error) { if (error instanceof RecoveryDeferredHubError) throw error; return undefined; }
   if (!Array.isArray(s.manualPaused) || !s.manualPaused.every((id) => typeof id === "string") || !Array.isArray(s.peers) || !s.peers.every((peer) => peer && typeof peer === "object" && typeof peer.id === "string" && ["idle", "busy", "paused", "offline"].includes(peer.state as string) && Array.isArray(peer.queueIds) && peer.queueIds.every((id) => typeof id === "string"))) return undefined;
   if (s.integrity !== undefined && (!s.integrity || typeof s.integrity !== "object" || typeof s.integrity.boardDigest !== "string" || typeof s.integrity.budgetDigest !== "string" || !Array.isArray(s.integrity.manualPaused) || !s.integrity.manualPaused.every((id) => typeof id === "string") || !s.integrity.queues || typeof s.integrity.queues !== "object" || !Object.values(s.integrity.queues).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string")))) return undefined;
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }
