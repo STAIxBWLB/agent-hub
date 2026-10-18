@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -71,8 +71,14 @@ test("ahub jcode writes the bundle the daemon reports, and its own copy only for
 
 test("ahub kimi --mode tui writes the bundle the daemon reports (#502)", async () => {
   const hub = fakeHub({ roster: [{ peer: "kimi", on: true }], peers: {}, pluginBundle: DAEMON_BUNDLE });
-  writeFileSync(join(hub.cwd, ".agenthub/config.local.json"), JSON.stringify({ kimi_cmd: ["/usr/bin/true"] })); // a stand-in TUI that exits at once
-  await hub.run("kimi", "--mode", "tui");
+  // kimi_cmd is machine-local: honored only from a file git confirms is untracked, so the fixture is a repo.
+  expect(Bun.spawnSync(["git", "init", "-q", hub.cwd]).exitCode).toBe(0);
+  const stand = join(hub.cwd, "stand-in.sh"), marker = join(hub.cwd, "stand-in-ran");
+  writeFileSync(stand, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 }); // a stand-in TUI that exits at once
+  writeFileSync(join(hub.cwd, ".agenthub/config.local.json"), JSON.stringify({ kimi_cmd: [stand] }));
+  const run = await hub.run("kimi", "--mode", "tui");
+  expect(run.code).toBe(0);
+  expect(existsSync(marker)).toBe(true); // the stand-in ran, not a real Kimi
   expect(hub.requests).toContain("start");
   expect(bundleIn(join(hub.cwd, ".kimi-code/mcp.json"))).toContain(DAEMON_BUNDLE);
 });
