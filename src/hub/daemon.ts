@@ -47,7 +47,7 @@ import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
-import { claudeReportedTokens, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
+import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, QwenIdentityError, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -1600,6 +1600,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const activeAt = new Map<PeerId, number>();
   interface NativeTurnStart { at: number; baseline?: string; generation: string; session: string; launch: string }
   const nativeTurnStart = new Map<PeerId, NativeTurnStart>();
+  const stopUnconfirmedNoticed = new WeakSet<NativeTurnStart>();
   const nativeStopWaits = new Map<PeerId, { start: NativeTurnStart; wait: ReturnType<typeof waitForClaudeCompletion> }>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
   const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
@@ -5123,7 +5124,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const current = claudeSession(peer);
             if (phase === "start" || nativePeer.state !== "busy" || previous?.generation !== nativePeer.sessionGeneration || previous?.session !== sessionId || previous?.launch !== (current.launchId ?? "")) {
               const session = claudeSession(peer);
-              const baseline = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).filter(record => record.completedTurn).at(-1)?.id : undefined;
+              const baseline = session.sessionId && session.transcriptPath ? readClaudeTranscriptCompletion(session.sessionId, session.transcriptPath)?.id : undefined;
               nativeTurnStart.set(peer, { at: Date.now(), ...(baseline ? { baseline } : {}), generation: nativePeer.sessionGeneration, session: sessionId!, launch: session.launchId ?? "" });
             }
             nativePeer.nativeStarted(sessionId!);
@@ -5147,7 +5148,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!nativeClaude) { finishStop(); reply({ t: "facts", ok: true }); return; } // legacy bookkeeping cannot certify native completion
             const session = claudeSession(peer);
             let transcript = session.transcriptPath ?? claudeTranscript(sessionId, msg.transcriptPath, peer);
-            const readCompletion = () => { transcript ??= claudeTranscript(sessionId, msg.transcriptPath, peer); return session.sessionId && transcript ? readClaudeTranscriptUsage(session.sessionId, transcript).filter(record => record.completedTurn).at(-1) : undefined; };
+            const readCompletion = () => { transcript ??= claudeTranscript(sessionId, msg.transcriptPath, peer); return session.sessionId && transcript ? readClaudeTranscriptCompletion(session.sessionId, transcript) : undefined; };
             const completionId = (id: string) => createHash("sha256").update(`${sessionId}:${session.launchId ?? "legacy"}:${id}`).digest("hex");
             const started = nativeTurnStart.get(peer);
             const activeStart = !!started && started.session === sessionId && started.launch === (session.launchId ?? "") && nativePeer instanceof WsPeer && started.generation === nativePeer.sessionGeneration;
@@ -5173,7 +5174,13 @@ export async function startDaemon(opts: DaemonOptions) {
               if (nativeStopWaits.get(peer) === ownWait) nativeStopWaits.delete(peer);
               if (!result.record) {
                 const reason = ({ unavailable: "completed transcript message unavailable", baseline: "completion still matches start baseline", "before-start": "completion timestamp precedes native start", superseded: "native start superseded during completion wait", verified: "completed transcript message unavailable" } as const)[result.reason];
-                log(`native Stop refused for claude: ${reason}`); return;
+                log(`native Stop refused for claude: ${reason}`);
+                // #517: a peer left busy receives no pushed messages; say so where the person looks, once per turn.
+                if (result.reason === "unavailable" && !stopUnconfirmedNoticed.has(started)) {
+                  stopUnconfirmedNoticed.add(started);
+                  notify(`${peer}: its turn end could not be confirmed from its transcript, so it stays busy and messages to it wait in its queue (hub_inbox reads them)`);
+                }
+                return;
               }
               const id = completionId(result.record.id);
               if (scopeCurrent() && nativeStopsSeen.has(id)) return;

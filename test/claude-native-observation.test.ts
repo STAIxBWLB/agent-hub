@@ -236,3 +236,43 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs"; const args=pr
   const stderr = await new Response(child.stderr).text(); expect(await child.exited).toBe(0); expect(stderr).not.toContain("cannot run");
   const finished = JSON.parse(readFileSync(capture, "utf8")); expect(finished.readableBeforeExit).toBe(true); expect(existsSync(finished.file)).toBe(false);
 }, 20_000);
+
+test("a transcript over 32 MiB still ends the native turn, and an unconfirmed Stop says so on the console once (#517)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-large-transcript-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, ".agenthub"));
+  writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ coordination: "advisory", roles: { claude: ["planner", "reviewer"] }, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: true } }));
+  const configDir = join(dir, "claude-config"), projects = join(configDir, "projects", "fixture"); mkdirSync(projects, { recursive: true });
+  const previous = process.env.CLAUDE_CONFIG_DIR; process.env.CLAUDE_CONFIG_DIR = configDir;
+  cleanup.push(() => { if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previous; });
+  const stateDir = stateDirFor(dir);
+  const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 }); cleanup.push(() => daemon.stop());
+  const native = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => native.close());
+  for (let n = 0; n < 100 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+  const instanceId = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).instanceId;
+  const launchId = crypto.randomUUID(), sessionId = "long-session", transcript = join(projects, `${sessionId}.jsonl`);
+  const row = (id: string) => JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id, stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n";
+  writeFileSync(transcript, row("earlier-turn") + JSON.stringify({ type: "user", padding: "x".repeat(33 * 1024 * 1024) }) + "\n");
+  writeFileSync(join(stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId }));
+  const observed = claudeObservationHooks({ coordination: "advisory", task_sweep: { enabled: true }, roles: { claude: ["planner", "reviewer"] } }, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir })!;
+  const launch = buildLaunch("claude", [], { unattended: false, statusLine: { script: join(import.meta.dir, "../src/cli/statusline-tee.ts"), stateDir }, facts: observed });
+  const settings = JSON.parse(readFileSync(launch.args[launch.args.indexOf("--settings") + 1]!, "utf8"));
+  const hook = async (kind: string) => {
+    const child = Bun.spawn(["/bin/sh", "-c", settings.hooks[kind][0].hooks[0].command], { cwd: dir,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: instanceId, AGENTHUB_LAUNCH_ID: launchId },
+      stdin: Buffer.from(JSON.stringify({ hook_event_name: kind, session_id: sessionId, transcript_path: transcript })), stdout: "pipe", stderr: "pipe" });
+    await new Response(child.stdout).text(); await new Response(child.stderr).text(); expect(await child.exited).toBe(0);
+  };
+  const notices = () => readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("turn end could not be confirmed"));
+  await hook("SessionStart"); await hook("UserPromptSubmit"); expect(daemon.bus.stateOf("claude")).toBe("busy");
+  // No new completion: the Stop is refused, the peer stays busy, and the console is told once.
+  await hook("Stop");
+  for (let n = 0; n < 400 && !notices().length; n++) await Bun.sleep(5);
+  expect(notices()).toHaveLength(1);
+  expect(daemon.bus.stateOf("claude")).toBe("busy");
+  // The real completion is appended after the 33 MiB: the next Stop verifies it and the peer goes idle.
+  appendFileSync(transcript, row("final-turn"));
+  await hook("Stop");
+  for (let n = 0; n < 400 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+  expect(daemon.bus.stateOf("claude")).toBe("idle");
+  expect(notices()).toHaveLength(1);
+}, 30_000);

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readClaudeTranscriptUsage } from "../src/hub/usage.ts";
+import { readClaudeTranscriptCompletion, readClaudeTranscriptUsage } from "../src/hub/usage.ts";
 
 test("Claude transcript usage collapses streamed message records and exposes no transcript identity or text", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-transcript-"));
@@ -77,4 +77,35 @@ test("unknown non-null stop reasons count as unknown usage and oversized transcr
     expect(unavailable[0]).not.toHaveProperty("usage");
     expect(unavailable[0]!.id).toBe(readClaudeTranscriptUsage("s", file)[0]!.id);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("turn completion reads the transcript tail at any size: the 32 MiB usage cap no longer hides it (#517)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-transcript-tail-"));
+  const file = join(dir, "s.jsonl");
+  const row = (id: string, stop: string, at: string) => JSON.stringify({ type: "assistant", sessionId: "s", timestamp: at, message: { id, stop_reason: stop, usage: { input_tokens: 1, output_tokens: 1 } } });
+  try {
+    writeFileSync(file, [row("old-turn", "end_turn", "2026-10-02T00:00:01Z"), "x".repeat(33 * 1024 * 1024), row("new-turn", "end_turn", "2026-10-02T00:00:03Z"), row("later-tool", "tool_use", "2026-10-02T00:00:04Z"), "{partial"].join("\n"));
+    expect(readClaudeTranscriptUsage("s", file)).toHaveLength(1); // the usage reader keeps its cap: one opaque coverage record
+    expect(readClaudeTranscriptUsage("s", file)[0]!.completedTurn).toBeUndefined();
+    const done = readClaudeTranscriptCompletion("s", file)!;
+    expect(done).toMatchObject({ completedTurn: true, at: "2026-10-02T00:00:03.000Z" });
+    // Same opaque id as the whole-file reader gives the same message, so baseline comparisons hold.
+    const small = join(dir, "small.jsonl"); writeFileSync(small, row("new-turn", "end_turn", "2026-10-02T00:00:03Z"));
+    expect(done.id).toBe(readClaudeTranscriptUsage("s", small)[0]!.id);
+    // A cut inside a row drops that partial line instead of misreading it.
+    const two = join(dir, "two.jsonl"), b = row("b-turn", "end_turn", "2026-10-02T00:00:06Z");
+    writeFileSync(two, [row("a-turn", "end_turn", "2026-10-02T00:00:05Z"), b].join("\n"));
+    expect(readClaudeTranscriptCompletion("s", two, b.length + 10)?.at).toBe("2026-10-02T00:00:06.000Z");
+    expect(readClaudeTranscriptCompletion("s", two, b.length - 10)).toBeUndefined();
+    // A cut exactly at a row start keeps that complete row.
+    expect(readClaudeTranscriptCompletion("s", two, b.length)?.at).toBe("2026-10-02T00:00:06.000Z");
+    expect(readClaudeTranscriptCompletion("s", join(dir, "missing.jsonl"))).toBeUndefined();
+    // A cut tail without any newline is one partial line: never parsed, even when its suffix is valid JSON.
+    const corrupt = join(dir, "corrupt.jsonl"), last = row("suffix-turn", "end_turn", "2026-10-02T00:00:07Z");
+    writeFileSync(corrupt, "garbage-prefix" + last);
+    expect(readClaudeTranscriptUsage("s", corrupt).some(r => r.completedTurn)).toBe(false);
+    expect(readClaudeTranscriptCompletion("s", corrupt, last.length)).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
