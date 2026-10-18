@@ -37,7 +37,7 @@ const sessionState = (binding: TerminalBinding): "found" | "missing" | "unknown"
   return state === "unknown" ? "unknown" : state === false ? "missing" : "found";
 };
 const sessionPath = (binding: TerminalBinding) => definitionOf(binding.peer)?.session.transcriptPath?.(binding);
-const observedSession = (peer: string, value: RecoveryPeer | undefined) => value?.[definitionOf(peer)?.session.idField ?? "sessionId"];
+export const observedSession = (peer: string, value: RecoveryPeer | undefined) => value?.[definitionOf(peer)?.session.idField ?? "sessionId"];
 const nativeZeroTurn = (stateDir: string, binding: TerminalBinding, phase: "plan" | "attach" | "verify") => definitionOf(binding.peer)?.session.zeroTurn?.({ stateDir, binding, phase }) === true;
 const unresumable = (binding: TerminalBinding) => sessionState(binding) === "unknown"
   ? `codex: the session store ${sessionPath(binding)} cannot be read, so whether thread ${binding.sessionId} can resume is unknown`

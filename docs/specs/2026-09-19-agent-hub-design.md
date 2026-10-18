@@ -3462,3 +3462,11 @@ retaining explicit overrides and existing unknown-id behavior. The Kimi default
 mutant changes that native metadata from TUI to headless, so the original default
 assertion observes it directly; it does not remove a settings row or mutate the
 retained cross-release source literal.
+
+A2 preserves the recovery tests' assertion contract while reconnecting their
+execution harnesses to production code. The Pi CLI parser harness imports its
+extracted pure parser rather than extracting a removed main.ts declaration.
+The reattach parser VM receives the real registry resolver, and the attachment
+wait VM receives the real exported session-field resolver. Every existing
+`expect` line in these three files remains byte-identical; no fallback, mock
+policy, weaker condition or changed expected result is introduced.
