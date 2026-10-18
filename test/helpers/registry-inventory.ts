@@ -4,7 +4,7 @@ import { posix } from "node:path";
 // #451 A0's 265 sites were double-quote grep matches at 71253098. This inventory counts AST nodes,
 // includes inline dashboard scripts, and attributes stable lexical symbols on the reviewed A1 base.
 // Reconcile that explicit drift when freezing the baseline; do not regenerate it during a test.
-// ponytail: file/symbol counts cannot distinguish removal plus replacement in the same scope. A2 removes the baseline.
+// A2 has no policy baseline entries; the three cross-release literal probes are classified separately.
 
 export interface InventorySite {
   file: string;

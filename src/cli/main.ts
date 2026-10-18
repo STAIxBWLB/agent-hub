@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { definitionOf } from "../adapters/registry.ts";
+import { BUILTIN_CLI_ENTRIES, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
 import { parsePiFlags } from "../adapters/definitions/native-cli-pi.ts";
 import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
@@ -802,220 +802,17 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest });
   },
 
-  claude: async () => {
-    if (args.includes("--print-command") || args.includes("--dry-run")) {
-      try { return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2)); }
-      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
-    }
-    assertLifecycleAvailable();
-    const control = readControl(stateDir);
-    if (control?.instanceId) {
-      process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-      const terminal = await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
-      if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
-    }
-    // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
-    // project local, then project, then user.
-    let original: { command?: string; refreshInterval?: number; padding?: number } | undefined;
-    for (const file of [join(cwd, ".claude", "settings.local.json"), join(cwd, ".claude", "settings.json"), join(process.env.HOME ?? "", ".claude", "settings.json")]) {
-      try {
-        original ??= JSON.parse(readFileSync(file, "utf8")).statusLine;
-      } catch {
-        // no such file, or no status line in it
-      }
-    }
-    // Turn-free facts and opted-in task sweeps share native PreToolUse/PostToolUse/Stop observations.
-    const facts = claudeObservationHooks(projectConfig(), { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
-    let previousLaunch: unknown;
-    try { previousLaunch = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")); } catch { /* no previous managed launch */ }
-    const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
-    let result: Awaited<ReturnType<typeof runClaudeLaunch>>;
-    try {
-      let launchRecord: ClaudeLaunchRecord | undefined;
-      if (control?.instanceId) {
-        // Publish only the final launch's installed hook and effective permission flags.
-        launchRecord = { instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID!, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
-        recordClaudeLaunch(stateDir, launchRecord);
-        cleanupStaleClaudeSettings(stateDir, previousLaunch);
-      }
-      if (launch.warning) console.error(launch.warning);
-      const env = nativeLaunchEnv("claude", childEnv());
-      result = await runClaudeLaunch(launch, { cwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...(launchRecord ? { record: launchRecord } : {}) });
-    } finally {
-      cleanupClaudeSettings(stateDir, launch.settingsFile);
-    }
-    if (result.error) fail(`cannot run ${launch.cmd}: ${result.error.message}`);
-    process.exit(result.status ?? 1);
-  },
-
-  codex: async () => {
-    if (args.includes("--print-command") || args.includes("--dry-run")) {
-      try { return console.log(JSON.stringify(launcherPreview("codex", args, cwd, stateDir, unattendedEnv), null, 2)); }
-      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
-    }
-    assertLifecycleAvailable();
-    const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: "pending" }); // refuse bad flags before starting anything
-    // #215: a launch by a recovery operation records itself before the hub round trip, so the coordinator never takes
-    // a launcher still starting for one that never ran. An ordinary launch records only once the hub accepted it: a
-    // refused start must not replace the record of a Codex already running here (one row per peer and instance).
-    const recovering = !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock(); // not an id a restored session inherited
-    const before = readControl(stateDir);
-    if (recovering && before?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, before.instanceId);
-    const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "codex", args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-    hub.close();
-    if (!res.ok) fail(res.error);
-    const control = readControl(stateDir);
-    if (!recovering && control?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, control.instanceId);
-    const launch = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
-    if (launch0.warning) console.error(launch0.warning);
-    exec(launch.cmd, launch.args, "codex");
-  },
-
-  jcode: async () => {
-    if (args.includes("--print-command") || args.includes("--dry-run")) {
-      try { return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2)); }
-      catch { fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)"); }
-    }
-    assertLifecycleAvailable();
-    const { one, rest } = takeFlags(args, ["--mode", "--model", "--provider-profile", "--session-id"], []);
-    if (rest.length || (one["--mode"] !== undefined && one["--mode"] !== "headless")) fail("usage: ahub jcode [--mode headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>]");
-    if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"])) fail("invalid Jcode session identity");
-    const hub = await connect();
-    try {
-      const snapshot = (await hub.request({ t: "status" })).status;
-      if (snapshot?.roster?.find((row: any) => row.peer === "jcode")?.on !== true) fail("jcode is off roster; add it with ahub roster add jcode");
-      const written = configureJcodeMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"));
-      if (written.tracked) console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
-      const reply = await hub.request({ t: "start", peer: "jcode", args: { mode: "headless", model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65_000);
-      if (!reply.ok) fail(reply.error);
-      console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox");
-    } finally { hub.close(); }
-  },
-
-  qwen: async () => {
-    if (args.includes("--print-command") || args.includes("--dry-run")) {
-      try { return console.log(JSON.stringify(launcherPreview("qwen", args, cwd, stateDir, unattendedEnv), null, 2)); }
-      catch { fail("cannot preview Qwen launch: invalid arguments or configuration (details withheld)"); }
-    }
-    assertLifecycleAvailable();
-    const { one, rest } = takeFlags(args, ["--mode", "--model", "--session-id"], []);
-    const adapter = definitionOf("qwen")!;
-    if (one["--session-id"] !== undefined && !adapter.session.crashIdentity?.({ sessionId: one["--session-id"] }).sessionId) fail("invalid Qwen session identity");
-    if (rest.length || (one["--mode"] !== undefined && !(adapter.start.forms as readonly string[]).includes(one["--mode"]))) fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
-    const hub = await connect();
-    try {
-      const reply = await hub.request({ t: "start", peer: "qwen", args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}), ...(one["--session-id"] ? { sessionId: one["--session-id"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
-      if (!reply.ok) fail(reply.error);
-      console.log(reply.already ? "qwen is already attached" : "qwen attached (headless); use ahub say @qwen and the console for approvals");
-    } finally { hub.close(); }
-  },
-  kimi: async () => {
-    if (args.includes("--print-command") || args.includes("--dry-run")) {
-      try { return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2)); }
-      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
-    }
-    assertLifecycleAvailable();
-    const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
-    const mode = one["--mode"] ?? startModeOf(projectConfig().peers, "kimi"), model = one["--model"];
-    if (rest.length || !["tui", "headless"].includes(mode)) fail("usage: ahub kimi [--mode tui|headless] [--model <alias>]");
-    if (mode === "tui" && one["--mode"] === undefined && !(process.stdin.isTTY && process.stdout.isTTY)) {
-      if (model) fail("Kimi's TUI needs a terminal for these options; run in a terminal or add --mode headless");
-      const hub = await connect();
-      try {
-        const reply = await hub.request({ t: "peer_start", peer: "kimi" }, 35_000);
-        if (!reply.ok) fail(reply.error);
-        return console.log(reply.already ? "kimi is already attached" : `kimi: opened a terminal running ${reply.command}; it attaches pull-only when its TUI is ready`);
-      } finally { hub.close(); }
-    }
-    const hub = await connect();
-    try {
-      if (mode === "tui") {
-        const launch = buildKimiTuiLaunch(projectConfig().kimi_cmd, model);
-        const snapshot = (await hub.request({ t: "status" })).status;
-        if (snapshot?.roster?.find((row: any) => row.peer === "kimi")?.on === false) fail("kimi is off roster; add it with ahub roster add kimi");
-        const peer = snapshot?.peers?.kimi;
-        if (peer && !["offline"].includes(peer.state) && !peer.pullOnly) fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
-        const admission = await hub.request({ t: "start", peer: "kimi", args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-        if (!admission.ok) fail(admission.error);
-        let result: ReturnType<typeof spawnSync>;
-        try {
-          const written = configureKimiMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"), "tui");
-          if (written.tracked) console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
-          result = spawnSync(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
-        } finally {
-          if (admission.admissionId) await hub.request({ t: "kimi_launch_end", admissionId: admission.admissionId }).catch(() => {});
-        }
-        if (result.error) fail(`cannot run ${launch.cmd}: ${result.error.message}`);
-        process.exit(result.status ?? 1);
-      }
-      const peer = (await hub.request({ t: "status" })).status?.peers?.kimi;
-      if (peer?.pullOnly && peer.state !== "offline") fail("Kimi runs in a terminal; end it there before starting a headless one");
-      configureKimiMcp(cwd, stateDir, resolve(import.meta.dir, "../../plugins/agent-hub/server.js"), "headless");
-      const res = await hub.request({ t: "start", peer: "kimi", args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-      if (!res.ok) fail(res.error);
-      console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: ahub say @kimi "..."');
-    } finally { hub.close(); }
-  },
-
-  pi: async () => {
-    // --headless is --mode headless everywhere this command goes: the preview, the hub and the conductor path.
-    if (args.includes("--headless") && !args.includes("--mode")) args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
-    if (args.includes("--print-command") || args.includes("--dry-run")) {
-      try { return console.log(JSON.stringify(launcherPreview("pi", args, cwd, stateDir, unattendedEnv), null, 2)); }
-      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
-    }
-    const flags = piFlags();
-    // #269: with no flag, Pi's start mode decides, and that is its TUI unless a person set headless.
-    const options = { ...flags, mode: flags.mode ?? startModeOf(projectConfig().peers, "pi") };
-    if (flags.mode === undefined && options.mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY)) {
-      // The default asked for the TUI and there is no terminal here (the console's command line, a script): the hub
-      // opens one, or says how to. It is never downgraded to headless. The fixed command carries no option, so one
-      // that was given needs a terminal of its own. An explicit --mode tui is taken at its word, as before.
-      if (Object.keys(flags).length) fail("Pi's TUI needs a terminal, and these options are not passed to one the hub opens: run this in a terminal, or add --mode headless");
-      const hub = await connect();
-      try {
-        const reply = await hub.request({ t: "peer_start", peer: "pi" }, 35_000);
-        if (reply.ok !== true) {
-          const error = String(reply.error ?? "pi start refused");
-          fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_start"/i.test(error) ? `${error}; upgrade the running hub, or run ahub pi --mode headless` : error);
-        }
-        return console.log(reply.already ? "pi is already attached" : reply.opened ? `pi: opened a terminal running ${reply.command}; it attaches when its TUI is ready` : 'pi attached (headless). Talk to it with: ahub say @pi "..."');
-      } finally { hub.close(); }
-    }
-    // #215: as for Codex, a TUI launch by the recovery operation holding the lock records itself before the hub round
-    // trip, so a resume in that window never reads it as gone; an ordinary launch records only after the hub accepted it.
-    const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
-    const before = readControl(stateDir);
-    if (recovering && before?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, before.instanceId);
-    const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "pi", args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-    hub.close();
-    if (!res.ok) fail(res.error);
-    if (options.mode === "tui") {
-      const launch = res.launch;
-      if (!launch || typeof launch.cmd !== "string" || !Array.isArray(launch.args) || !launch.args.every((a: unknown) => typeof a === "string") || !launch.env || typeof launch.env !== "object") fail("Pi TUI launch metadata was not verified");
-      const launchEnv = { ...(launch.env as NodeJS.ProcessEnv) };
-      delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
-      delete launchEnv.AGENTHUB_UNATTENDED;
-      const control = readControl(stateDir);
-      if (!recovering && control?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, control.instanceId);
-      return execWithEnv(launch.cmd, launch.args, launchEnv);
-    }
-    console.log(res.already ? "pi is already attached" : 'pi attached (headless). Talk to it with: ahub say @pi "..."');
-  },
-
-  local: async () => {
-    const opt = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] ?? fail(`${flag} needs a value`) : undefined);
-    for (const flag of ["--route", "--model"]) if (args.includes(flag) && (!opt(flag) || opt(flag)!.startsWith("--"))) fail(`${flag} needs a value`);
-    if (args.includes("--route") && args.includes("--model")) fail("use --route or --model, not both");
-    if (args.some((a, i) => i % 2 === 0 && !["--route", "--model"].includes(a))) fail("usage: ahub local [--route <id> | --model <id>]");
-    const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "local", args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-    hub.close();
-    if (!res.ok) fail(res.error);
-    console.log(res.already ? "local is already attached" : `local attached on ${res.model}. Give it work with: ahub say @local "..."`);
-  },
+  ...Object.fromEntries(BUILTIN_CLI_ENTRIES.map(entry => [entry.command, async () => {
+    // Preserve the original guard before native effects; previews remain read-only and precede this guard.
+    if (entry.lifecycleAdmission && !args.includes("--print-command") && !args.includes("--dry-run")) assertLifecycleAvailable();
+    return entry.execute({ args, cwd, stateDir, cliDir: import.meta.dir, unattendedEnv, definition: entry.definition,
+      projectConfig, connect, fail, exec, execWithEnv, takeFlags,
+      helpers: { launcherPreview, readControl, recordTerminalLaunch, recoveryLock, processSignature,
+        buildLaunch, claudeObservationHooks, recordClaudeLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings,
+        nativeLaunchEnv, runClaudeLaunch, childEnv, qwenSessionId, configureJcodeMcp, configureKimiMcp,
+        buildKimiTuiLaunch, startModeOf },
+    });
+  }])),
 
   models: async () => {
     const action = outputArguments()[0] ?? "status";
@@ -1930,15 +1727,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       return res.status === 0 ? res.stdout.trim().split("\n")[0]! : undefined;
     };
     const checks: DoctorCheck[] = [];
-    const row = (ok: boolean | undefined, name: string, detail: string) => {
-      const section: DoctorCheck["section"] = ["bun", "claude", "codex", "kimi", "qwen", "jcode"].includes(name) ? "Tools"
-        : name === "config" || name === "retired setting" ? "Config"
-        : name.startsWith("memory") ? "Memory"
-        : ["omniroute", "omniroute key", "local fixed_model", "switchyard", "pi mlx"].includes(name) ? "Models" : "Hub";
-      const optional = ["claude", "codex", "kimi", "qwen", "jcode", "ahub daemon", "switchyard", "pi mlx"].includes(name) || section === "Memory";
-      const level: DoctorCheck["level"] = ok === undefined ? (["switchyard", "omniroute"].includes(name) ? "warn" : "unknown") : ok ? "ok" : optional ? "warn" : "fail";
-      checks.push({ section, level, name, detail });
-    };
+    const row = (ok: boolean | undefined, name: string, detail: string) => { checks.push(nativeDoctorCheck(ok, name, detail)); };
 
     try {
       const catalog = loadRoleCatalog(cwd);
@@ -1947,7 +1736,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const config = loadConfig(cwd), assigned = catalogAssignments(config.catalog_roles);
         for (const peer of Object.keys(assigned)) selectedRoles(peer, config.roles, assigned, catalog);
       } catch { row(false, "catalog roles", "invalid assignment id, shape or flow base"); }
-      for (const bin of ["bun", "claude", "codex", "kimi"]) {
+      for (const bin of DOCTOR_TOOL_PROBES) {
         const v = version(bin);
         row(!!v, bin, v ?? "not found on PATH");
       }
@@ -1961,26 +1750,24 @@ const commands: Record<string, () => Promise<void> | void> = {
           row(!status.deliveryError && pending === 0, "delivery recovery", status.deliveryError ?? (pending ? `${pending} deliveries need review; run ahub queue list` : "journal healthy; no deliveries need review"));
           const observed = await hub.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId });
           for (const peer of Object.values(observed.recovery?.peers ?? {}) as { id: string; state: string; sessionId?: string; threadId?: string }[]) {
-            if (!["claude", "codex"].includes(peer.id) || peer.state === "offline") continue;
-            const identity = peer.id === "claude" ? peer.sessionId : peer.threadId;
-            row(!!identity, `${peer.id} recovery ID`, identity ? "recorded" : `missing; verify the current conversation and reconnect with ahub ${peer.id} before upgrading`);
+            const check = nativeDoctorRecoveryIdentity(peer);
+            if (check) row(check.ok, check.name, check.detail);
           }
         } finally { hub.close(); }
       }
-      const plugin = pluginState(parseList<InstalledPlugin>(spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
-      row(plugin.state === "current", "claude plugin", plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
+      const plugin = pluginState(parseList<InstalledPlugin>(spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
+      row(plugin.state === "current", DOCTOR_PLUGIN_PROBE.name, plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
 
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
       for (const line of config.retired ?? []) row(false, "retired setting", line);
-      if (config.roster.jcode === true) {
-        row(verifiedJcodeCommand(config.jcode_cmd, cwd), "jcode", "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged");
+      for (const probe of nativeDoctorOptionalProbes(config)) {
+        if (probe.kind === "source-identity") row(verifiedJcodeCommand(probe.command, cwd), probe.name, probe.detail);
+        else {
+          const v = version(probe.command[0]!);
+          row(v === probe.expected, probe.name, v === probe.expected ? probe.confirmed : probe.unconfirmed);
+        }
       }
-      if (config.roster.qwen === true) {
-        // ponytail: keep this bounded CLI-version probe and 0.25.0 pin in the A1 guard baseline; A2 moves every version probe together when VersionContext gains its observed input.
-        const v = version(config.qwen_cmd[0]!);
-        row(v === "0.25.0", "qwen", v === "0.25.0" ? "CLI reports 0.25.0; native ACP identity/modes and provider access require a separate live check" : "Qwen Code 0.25.0 executable not confirmed; provider and ACP readiness unknown");
-      } // issue #83
       const omni = new OmniRoute(config.omniroute);
       const gateway = await omni.base();
       row(gateway ? true : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? false : undefined, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
@@ -2006,7 +1793,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       row(mem.ok, "memory worker", mem.ok ? `claude-mem ${mem.version ?? ""} at ${memory.url}` : `unavailable at ${memory.url} (the hub works without it)`);
       const bridge = spawnSync("dot", ["ai", "memory", "status"], { encoding: "utf8" });
       const out = bridge.error ? "" : bridge.stdout.replace(/\x1b\[[0-9;]*m/g, "");
-      for (const tool of ["codex", "kimi"]) {
+      for (const tool of DOCTOR_MEMORY_CAPTURE_PEERS) {
         const ready = new RegExp(`✓\\s+${tool} ready`).test(out);
         row(bridge.error ? undefined : ready, `memory capture: ${tool}`, bridge.error ? "unknown (`dot ai memory status` not available)" : `${ready ? "ready" : "not ready"}, per ` + "`dot ai memory status`");
       }
@@ -2033,11 +1820,12 @@ async function runConductorCommand(): Promise<void> {
     input = { peer: args[0] };
   } else {
     // Native TUIs return a human launch command through the daemon; an agent shell never executes it.
-    if (cmd === "pi" && args.length === 1 && args[0] === "--headless") args.splice(0, 1, "--mode", "headless");
-    if (args.length && !(cmd === "pi" && args.length === 2 && args[0] === "--mode" && ["headless", "tui"].includes(args[1] ?? ""))) fail(`conductor starts accept no launch overrides; use ahub ${cmd}${cmd === "pi" ? " [--mode headless|tui]" : ""}`);
+    const parseStart = definitionOf(cmd)?.start.conductorStartArgs;
+    const parsed = parseStart ? parseStart(args) : args.length ? new Error(`conductor starts accept no launch overrides; use ahub ${cmd}`) : {};
+    if (parsed instanceof Error) fail(parsed.message);
     op = "hub_peer_start";
     // #269: a mode may only repeat the peer's start mode, which a person sets; without one the hub takes that mode.
-    input = { peer: cmd, ...(cmd === "pi" && args[1] ? { mode: args[1] } : {}) };
+    input = { peer: cmd, ...parsed };
   }
   console.log(await taskOp(op, input));
 }

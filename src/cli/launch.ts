@@ -7,6 +7,7 @@ import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
 import { peerChildEnv, processTable } from "../hub/child-process.ts";
 import { definitionOf } from "../adapters/registry.ts";
+import { kimiAcpCommand } from "../adapters/definitions/native-daemon-kimi.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
 /** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
@@ -302,8 +303,8 @@ export function buildLaunch(
 
 /** The daemon and preview use exactly the same ACP command insertion. */
 export function buildKimiLaunch(command: string[], model?: string): Launch {
-  const [cmd, ...args] = command;
-  return { cmd: cmd!, args: model ? ["--model", model, ...args] : args };
+  const [cmd, ...args] = kimiAcpCommand(command, model);
+  return { cmd: cmd!, args };
 }
 
 export { buildQwenLaunch } from "../adapters/definitions/qwen-native.ts";

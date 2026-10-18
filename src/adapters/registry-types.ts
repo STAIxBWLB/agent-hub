@@ -146,6 +146,8 @@ export interface AdapterDefinition {
   roles: readonly string[];
   optional?: boolean;
   defaultOnRoster?: boolean;
+  /** A legacy enable switch gates new starts, not retained sockets or queues. */
+  enabledSwitchStartOnly?: boolean;
   trust: { onPrem: boolean; hubSandboxed: boolean };
   start: {
     forms: readonly StartForm[];
@@ -159,13 +161,24 @@ export interface AdapterDefinition {
     conductorStartable: boolean;
     passthrough?: boolean;
     autoStart?: "pi.auto_start";
+    exclusiveStartRefusal?: string;
+    refreshTools?: boolean;
+    explicitHeadlessMode?: boolean;
+    planCommand?(form: StartForm): string;
+    acpCommand?(command: readonly string[], model?: string): string[];
+    reconfigureWhileAttached?: boolean;
     unattended?: boolean;
     hubSwitches: readonly string[];
     ownedFlags: readonly string[];
     conductorStartArgs?(args: string[]): { mode?: StartForm } | Error;
   };
   identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin" };
-  attach?: { pullOnlyForms?: readonly StartForm[] };
+  attach?: {
+    pullOnlyForms?: readonly StartForm[];
+    recoveryLaunch?(instance: string): Record<string, unknown>;
+    pullOnlyNotice?: string;
+    admission?: { reservedRefusal: string; watchRefusal: string };
+  };
   permission: {
     modes: Partial<Record<PermissionMode, NativeModeSpec>>;
     grants?: Partial<Record<PermissionMode, string>>;
@@ -173,8 +186,11 @@ export interface AdapterDefinition {
     unmanaged?: string;
     unmanagedForms?: readonly StartForm[];
     unmanagedNote?: string;
+    unmanagedStatusNote?: string;
+    trackUnattended?: boolean;
   };
   session: {
+    nativeRevert?: boolean;
     crashPlan?(meta: Record<string, unknown>): { resume?: Record<string, string>; how: string; fresh?: Record<string, string>; tui?: true };
     unrecordedTerminal?: "always" | "tui";
     continuityBookmark?(peer: RecoveryPeer, binding?: TerminalBinding): Pick<RecoveryContinuityBookmark, "pi">;
@@ -205,7 +221,7 @@ export interface AdapterDefinition {
   };
   turnEnd: "adapter" | "native-hook";
   reporting?: { tokensNotReported?: boolean };
-  budget?: { account: string; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean };
+  budget?: { account: string; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean; resetSoftTokensOnResume?: boolean };
   configuration?: {
     schema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;
     routingSchema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;
@@ -227,6 +243,9 @@ export interface AdapterDefinition {
     personOnlyFlags?: readonly string[];
     startWords(form: StartForm): string[];
     stopNotice?(form: StartForm, owner: PeerAdapter | undefined): string;
+    previewArgs?: readonly string[];
+    retainedTerminalNotice?(instance: string, form: StartForm | undefined, resumeCommand: string): string | undefined;
+    rosterReturnNotice?(resumeCommand: string): string;
   };
   display: { streamTone?: string; palette: { fg: string; bg: string; tone?: string; ansi?: string } };
   hooks?: Partial<NativeHooks>;

@@ -3352,9 +3352,19 @@ moves of existing built-in policy, with the same host-owned effects, argv, order
 errors, privacy, permission and timing fences. They add no instance support,
 capability or native behavior.
 
-Built-in definitions may carry bounded CLI run/preview callbacks over the current
-CLI's typed config/connect/exec/fail/flag ports, environment deltas and doctor
-metadata. Configuration projections receive the current validator vocabulary and
+Private, statically imported built-in preview helpers implement the frozen
+`start.launch` / `publicLaunch` redaction path. They preserve current validation,
+JSON order and placeholders, and cannot execute a native process, connect to
+control, allocate runtime state or write authoritative state. They are not public
+`AdapterDefinition` / `NativeHooks` extension points; configuration cannot register
+a helper. Person CLI entrypoints are relocated into a fixed private built-in
+dispatcher for C1, without adding a public `cli.run` or `NativeHooks` callback.
+The dispatcher cannot load external modules or accept caller-selected callbacks;
+its typed context contains only the original CLI host operations. Identity,
+command access, live-test delegation, audit and project/lifecycle admission remain
+in the host before dispatch, and each moved body retains its native effects,
+ordering, errors, environment and cleanup. Doctor projections carry existing probe
+metadata; the host retains probe execution and output. Configuration projections receive the current validator vocabulary and
 return the existing schema/settings entries. Recovery projections carry the current
 crash plan, continuity decoder/bookmark and unrecorded-terminal classification.
 Reporting flags, tool classification, recall source and display tones are semantic
@@ -3380,3 +3390,59 @@ notifications without an active turn and notifications naming an inactive turn,
 retains the legacy unknown-turn compatibility path, and clears expired deltas.
 The new probe keeps its strict no-message/needs-review assertions. Supported native
 RPC behavior, approvals, quota classification and existing tests stay unchanged.
+
+The watchdog fence also covers acceptance before a queued `turn/started` report
+and unanswered hub `turn/start` RPCs. Cancelled named ids remain retired until their
+exact completion or session teardown; late acknowledgements cannot restore a
+cancelled audience or relabel uncertainty as `failed_safe`. Ordinary legacy
+unknown-id starts keep their fallback. After an invalidation with no provable
+native identity, unnamed lifecycle reports cannot be safely attributed: keep the
+peer offline and require a verified reattachment rather than guess a new turn.
+
+### A2 daemon semantic projections (2026-10-18)
+
+The daemon constructs every native driver through `start.create` and the fixed,
+transport-typed `DAEMON_PORTS` wrappers. Protocol lifecycle dispatch may select the
+actual engine; provider policy does not select an unrelated capability as an alias
+for a kind. Existing host callbacks retain their original effect authority,
+privacy, owner checks, ordering and timing.
+
+The internal definitions additionally carry the existing start-only enable-switch
+membership rule, exclusive-start refusal, tool-refresh requirement, explicit
+headless-mode argument, attached-worker reconfiguration rule, dashboard start
+command and pure ACP argv builder. Attach metadata serializes recovery launch
+identity and carries the existing pull-only admission and status guidance.
+Permission status text is separate from the existing permission refusal text;
+`permission.trackUnattended` keeps native unattended ownership accounting distinct
+from protocol dispatch.
+Budget metadata names the soft-token reset on resume. Session metadata declares
+native conversation revert support; the host still checks the actual driver and
+latest turn and owns the pause while reverting. CLI metadata formats retained
+terminal and roster-return notices and supplies the existing preview argument
+tail. These fields only move native policy, preserving existing output bytes and
+behavior. The version hook consumes the already frozen `observedVersion` and peer
+fields; the daemon retains the bounded native transcript probe.
+
+The doctor command consumes fixed built-in metadata and pure observed-value
+projections exported through the registry. Native tool order, plugin probe argv,
+optional roster checks, section/severity, recovery identity fields and legacy
+capture labels stay in the built-in implementation. The CLI retains every spawn,
+source-verification, connection, gateway and memory effect in its existing order
+and privacy boundary. This private data adds no public definition member,
+executable callback or configurable probe; unknown names retain their existing
+Hub/unknown classification.
+
+A2 reanchors twelve seeded mutants to the same moved semantic guards: explicit Pi
+roster precedence, supported roster keys, retained-terminal result text, Kimi TUI
+recovery refusal and admission cleanup, Qwen opt-in/session/crash resume, planning
+reservation support, live headless Kimi watch, disabled Codex plugins and bounded
+regular-file tooling reads. Seed ids and test targets remain unchanged; the other
+407 seed objects remain byte-identical. The mutation pairs must still demonstrate
+green production behavior and failure with that guard removed.
+
+The final A2 AST inventory is empty for core policy: zero sites and zero lexical
+groups. The reviewed policy baseline is explicitly `[]`; it is never generated
+from source during tests. Three cross-release literal probes remain separate
+(`KNOWN_PEERS` five, `OPTIONAL_PEERS` two, `START_MODE_PEERS` three). Precise
+screening-provider/lifecycle enum false positives remain scoped by file, symbol
+and AST shape; negative fixtures still catch vendor comparisons in those scopes.

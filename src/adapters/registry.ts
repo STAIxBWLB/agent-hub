@@ -1,3 +1,5 @@
+import { builtinCliEntries } from "./definitions/native-cli-entry.ts";
+import { builtinPreview } from "./definitions/native-cli-preview.ts";
 import { DAEMON_PORTS } from "./definitions/native-factories.ts";
 export { DAEMON_PORTS };
 import { BUILTIN_DEFINITIONS_WITHOUT_QWEN } from "./definitions/builtin-metadata.ts";
@@ -87,3 +89,21 @@ export const ADAPTER_DISPLAY = Object.fromEntries(ADAPTERS.map(adapter => [adapt
   pullOnlyRead: adapter.attach?.pullOnlyForms?.includes("tui") === true,
   terminalApproval: adapter.trust.hubSandboxed,
 }]));
+
+export { NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting } from "./definitions/native-config-defaults.ts";
+
+/** Private fixed-builtin preview implementation; not an adapter extension or configurable callback. */
+export function builtinPreviewOf(id: string) {
+  const definition = definitionOf(id);
+  return definition ? builtinPreview(definition) : undefined;
+}
+
+/** Fixed builtin doctor metadata and pure observed-value projections; the CLI retains all probe effects. */
+export { DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "./definitions/native-cli-doctor.ts";
+
+/** Internal fixed builtin CLI entries; public AdapterDefinition and NativeHooks expose no execution extension. */
+export const BUILTIN_CLI_ENTRIES = Object.freeze(builtinCliEntries.map(entry => {
+  const definition = definitionOf(entry.command);
+  if (!definition) throw new Error("builtin CLI entry has no adapter definition");
+  return Object.freeze({ ...entry, definition });
+}));
