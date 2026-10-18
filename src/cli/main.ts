@@ -1118,10 +1118,17 @@ const commands: Record<string, () => Promise<void> | void> = {
       finally { hub.close(); }
       return;
     }
+    if (sub === "costs") {
+      if (args.length > 2) fail("usage: ahub sdlc costs [owner/repository]");
+      return console.log(await taskOp("hub_sdlc_costs", { ...(args[1] ? { repo: args[1] } : {}) }));
+    }
     if (sub === "plan-review") {
       const revision = Number(args[2]);
       if (!Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(revision) || revision < 0 || args.length < 4) fail("usage: ahub sdlc plan-review <task> <revision> <reason...>");
-      return console.log(await taskOp("hub_plan_review", { id, revision, reason: args.slice(3).join(" ") }));
+      const flags = takeFlags(args.slice(3), ["--review", "--reviewers", "--ci"], []);
+      const scope = flags.one["--review"], reviewers = flags.one["--reviewers"];
+      if (!flags.rest.length || (scope === undefined) !== (reviewers === undefined)) fail("plan-review needs a reason and both --review and --reviewers when supplying review scope");
+      return console.log(await taskOp("hub_plan_review", { id, revision, reason: flags.rest.join(" "), ...(scope !== undefined ? { review: { scope, reviewers: Number(reviewers) } } : {}), ...(flags.one["--ci"] !== undefined ? { ci: flags.one["--ci"] } : {}) }));
     }
     if (sub === "accept") {
       // #481 S1: the person accepts the task's spec issue at its current body; agent shells are refused before this runs.

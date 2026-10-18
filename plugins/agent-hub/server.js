@@ -6952,10 +6952,18 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
       const selectedPlan = { ...plan, properties: Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
+    if (criteria && properties.plan) {
+      const current = properties.plan;
+      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties } };
+    }
+    if (criteria && tool.name === "hub_backlog_split") {
+      const parts = properties.parts;
+      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties } } } } };
+    }
     return { ...tool, ...customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
-var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id, refs, list = (description) => ({ type: "array", items: str2, description }), plan, acceptPlan, tool = (name, description, properties, required = []) => ({
+var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id, refs, list = (description) => ({ type: "array", items: str2, description }), costPlanProperties, plan, acceptPlan, tool = (name, description, properties, required = []) => ({
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
@@ -6973,6 +6981,10 @@ var init_hub_tools = __esm(() => {
     description: "where the work lives",
     properties: { branch: str2, commit: str2, paths: { type: "array", items: str2 } },
     additionalProperties: false
+  };
+  costPlanProperties = {
+    review: { type: "object", properties: { scope: { type: "string", enum: ["none", "delta", "full"] }, reviewers: { type: "integer", minimum: 0, maximum: 8 } }, required: ["scope", "reviewers"], additionalProperties: false },
+    ci: { type: "string", enum: ["focused", "full", "reuse"] }
   };
   plan = {
     type: "object",
@@ -7016,7 +7028,8 @@ var init_hub_tools = __esm(() => {
   ];
   PLANNER_REVIEW_TOOLS = [
     tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
-    tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 } }, ["id", "revision", "reason"]),
+    tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 }, ...costPlanProperties }, ["id", "revision", "reason"]),
+    tool("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes. S7 owns automatic band proposals.", { repo: str2 }),
     tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 } }, ["id", "revision", "reason"])
   ];
   TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);

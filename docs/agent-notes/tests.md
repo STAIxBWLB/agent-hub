@@ -22,3 +22,5 @@ Scope: tests, fakes and the test gate. Read before adding or changing a test or 
 - Keep CI's Bun version sourced from `.bun-version` through the pinned setup-bun action; update the version file rather than adding per-job version literals.
 - Release verification requires both OS checks and the aggregate `seeded guards` success for an identical tree, a tag matching `package.json` on `origin/main`, and fresh ancestor-bound documentation stamps. Preserve the separate npm OIDC publish job and GitHub Release write job; neither job gets the other's credential authority.
 - `test/conformance/` runs real adapters against fake transports. Record a case that does not apply as an explicit unsupported outcome, never synthetic success, and never change native production behavior to satisfy a generic case.
+
+- Keep the CI admission lock around the whole controller workflow, not just its decision job. Preserve successful identical-tree full proof and required job names; a skipped job, pending controller or unavailable active inventory is never a successful full gate. CI reuse tests use fixed metadata fixtures and never dispatch real duplicate workflows.

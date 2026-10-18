@@ -1,3 +1,4 @@
+import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { specRefs } from "./spec-read.ts";
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
@@ -29,7 +30,7 @@ import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -225,7 +226,9 @@ function cleanRefs(input: unknown): TaskRefs {
 /** The same for a plan (issue #31): only its four lists, each of short strings. */
 function cleanPlan(input: unknown, profile: ProfileSelection = "dev"): TaskPlan {
   const r = fields(input);
-  return Object.fromEntries((profileData(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length));
+  let scope: CostPlan;
+  try { scope = cleanCostPlan(r); } catch { throw new PreEffectToolRefusal("invalid review or CI cost scope"); }
+  return { ...Object.fromEntries((profileData(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length)), ...scope };
 }
 
 /** A plan as one line for other owners; the whole plan is on the board. */
@@ -1988,10 +1991,49 @@ export class Tasks {
     return { ...digest, truncated: digest.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}) };
   }
 
+  /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */
+  async costReport(by: PeerId, repository?: unknown): Promise<Record<string, unknown>> {
+    const authority = () => {
+      this.planningAuthority(by);
+      if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("cost report unavailable during private work");
+    };
+    authority();
+    const repo = repository ?? this.d.repository;
+    if (typeof repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.startsWith("-") || !this.nameable(repo)) throw new PreEffectToolRefusal("cost report requires a public owner/repository identity");
+    const deadline = performance.now() + 20_000;
+    const bounded = (args: string[], timeout?: number, cwd?: string, cap?: number) => performance.now() < deadline
+      ? (this.d.sdlc?.gh ?? sdlcGh)(args, Math.max(1, Math.min(timeout ?? 10_000, deadline - performance.now())), cwd, cap)
+      : Promise.resolve({ code: 1, stdout: "" });
+    const linked = () => this.d.board.list().filter(task => task.sdlc?.repo?.toLowerCase() === repo.toLowerCase() && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr! > 0);
+    const ids = [...new Set(linked().filter(task => !this.isPii(task)).map(task => task.sdlc!.pr!))].sort((a, b) => a - b);
+    const observations: import("./cost-governance.ts").CostPr[] = [];
+    let incomplete = ids.length > 16;
+    for (const pr of ids.slice(0, 16)) {
+      authority();
+      if (linked().some(task => task.sdlc?.pr === pr && this.isPii(task))) continue;
+      if (performance.now() >= deadline) { incomplete = true; break; }
+      const evidence = await readPrCostHistory(repo, pr, (args, timeout, cwd, cap) => {
+        authority();
+        const fresh = linked().filter(task => task.sdlc?.pr === pr);
+        if (!fresh.length || fresh.some(task => this.isPii(task))) return Promise.resolve({ code: 1, stdout: "" });
+        return bounded(args, timeout, cwd, cap);
+      });
+      if (evidence) observations.push(evidence); else incomplete = true;
+    }
+    authority();
+    const current = linked();
+    const visiblePrs = new Set(current.filter(task => !this.isPii(task)).map(task => task.sdlc!.pr!));
+    for (const task of current) if (this.isPii(task)) visiblePrs.delete(task.sdlc!.pr!);
+    if (JSON.stringify([...visiblePrs].sort((a, b) => a - b)) !== JSON.stringify(ids)) incomplete = true;
+    const report = costMetrics(current.map(task => ({ repo, pr: task.sdlc!.pr!, private: this.isPii(task), history: task.history })), observations.filter(pr => visiblePrs.has(pr.pr)));
+    return { ...report, truncated: report.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}), bands: "S7 pending" };
+  }
+
   async planReviewGap(task: Task): Promise<string | undefined> {
     const receipt = task.sdlc?.planReview;
     if (!receipt) return "plan not reviewed since proposal";
     if (!receipt.planner || !Number.isFinite(receipt.recordedAt) || receipt.planningRevision !== (task.planningRevision ?? 0)) return "plan not reviewed since planning revision change";
+    if (receipt.scope && JSON.stringify(receipt.scope) !== JSON.stringify(cleanCostPlan(task.plan ?? {}))) return "plan not reviewed since cost scope change";
     const identity = this.planIssueIdentity(task);
     if (identity?.issue && this.isPii(task)) return "private issue plan review evidence unavailable";
     if (!identity?.issue) return receipt.issue ? "plan not reviewed since issue identity change" : undefined;
@@ -2007,11 +2049,19 @@ export class Tasks {
     this.plannerWriteAuthority(by);
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new PreEffectToolRefusal("plan review needs a revision and reason");
     const raw = input as Record<string, unknown>;
-    if (Object.keys(raw).some(key => !["revision", "reason"].includes(key)) || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0
+    if (Object.keys(raw).some(key => !["revision", "reason", "review", "ci"].includes(key)) || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0
       || typeof raw.reason !== "string" || !raw.reason.trim() || raw.reason.length > 1000) throw new PreEffectToolRefusal("plan review needs a current revision and bounded reason");
     const task = this.need(id, false, true, true), revision = raw.revision as number;
     if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
     if ((task.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("planning revision changed");
+    let scope: CostPlan;
+    try { scope = cleanCostPlan({ ...task.plan, ...("review" in raw ? { review: raw.review } : {}), ...("ci" in raw ? { ci: raw.ci } : {}) }); }
+    catch { throw new PreEffectToolRefusal("invalid review or CI cost scope"); }
+    const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
+    if (!scope.review || !scope.ci) {
+      if (mode === "enforce") throw new PreEffectToolRefusal("review and CI cost scope required for a new plan receipt");
+      if (mode === "advise") this.releaseNotice(`task ${this.publicTitle(task)}: cost scope unspecified`);
+    }
     const flow = task.history.length, withheld = await this.withholds("note", raw.reason, task);
     this.plannerWriteAuthority(by);
     const observed = this.need(task.id, false, true, true);
@@ -2025,8 +2075,8 @@ export class Tasks {
     const current = this.need(task.id, false, true, true);
     if (current.history.length !== flow || (current.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("plan review changed during readback");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    const updated = this.d.board.update(current.id, by, "plan reviewed", { sdlc: { ...current.sdlc, stage: current.sdlc?.stage ?? lifecycleStage(config, "plan"),
-      planReview: { planner: by, planningRevision: revision, recordedAt: Date.now(), ...(issue ? { issue } : {}) } } }, raw.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
+    const updated = this.d.board.update(current.id, by, "plan reviewed", { ...(Object.keys(scope).length ? { plan: { ...current.plan, ...scope } } : {}), sdlc: { ...current.sdlc, stage: current.sdlc?.stage ?? lifecycleStage(config, "plan"),
+      planReview: { planner: by, planningRevision: revision, recordedAt: Date.now(), ...(Object.keys(scope).length ? { scope } : {}), ...(issue ? { issue } : {}) } } }, raw.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
     if (updated.state === "proposed" && !updated.owner) {
       this.offered.delete(updated.id);
       try { await this.offerReady(updated, "planner review recorded"); }
@@ -2170,17 +2220,25 @@ export class Tasks {
     this.d.notify(this.specText(task, state, "advice"));
   }
 
-  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<void> {
+  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
-    const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, this.d.sdlc?.gh) : undefined;
+    const read: SdlcGh = (args, timeout, cwd, cap) => {
+      const current = this.need(task.id, false, true);
+      if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || this.isPii(current) !== this.isPii(task)) return Promise.resolve({ code: 1, stdout: "" });
+      return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap);
+    };
+    const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, read) : undefined;
     const current = this.need(task.id, false, true);
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
+    // Advise may continue on the current task, but evidence from its previous link cannot admit that task's review.
+    if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
     const status = sdlcStatus(config, receipt, evidence, this.workflowView(current));
     const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
     if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);
+    return evidence;
   }
 
   private need(id: unknown, open = false, preEffect = false, allowBacklog = false): Task {
@@ -2223,6 +2281,7 @@ export class Tasks {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off" || !this.isBuildTask(task)) return;
     const gap = await this.planReviewGap(task);
+    if (mode === "advise" && !task.sdlc?.planReview?.scope) this.releaseNotice(`task ${this.publicTitle(task)}: cost scope unspecified`);
     const current = this.need(task.id, false, true);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during plan readback");
@@ -2269,7 +2328,14 @@ export class Tasks {
     }
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
     const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
-    const cleaned = given && Object.keys(given).length ? given : undefined;
+    // File-list intent still replaces the old lists; omitted budget keys retain the planner-reviewed scope.
+    const cleaned = given && Object.keys(given).length ? { ...cleanCostPlan(task.plan ?? {}), ...given } : undefined;
+    if (this.d.sdlc?.config().mode === "enforce" && task.sdlc?.planReview && !task.sdlc.planReview.scope
+      && given && Object.keys(cleanCostPlan(given)).length) throw new PreEffectToolRefusal("legacy plan cost scope is unspecified; record a scoped planner review before acceptance");
+    if (this.d.sdlc?.config().mode === "enforce" && task.sdlc?.planReview?.scope
+      && JSON.stringify(cleanCostPlan(cleaned ?? task.plan ?? {})) !== JSON.stringify(task.sdlc.planReview.scope)) {
+      throw new PreEffectToolRefusal("plan cost scope changed; record a new planner review before acceptance");
+    }
     // A task's signals are fixed when it is proposed: text that matches a PII pattern cannot be let in afterwards.
     if (cleaned && !this.isPii(task) && this.isPii({ signals: this.signalsFor({ title: "", detail: planText(cleaned), refs: {}, plan: cleaned }) })) {
       throw new PreEffectToolRefusal("this plan matches a PII pattern and is not kept: other owners would see it");
@@ -2376,7 +2442,10 @@ export class Tasks {
       await this.planEntryGate(by, admission);
       task = valid();
     }
-    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "review"); task = valid(); }
+    let reviewEvidence: PrEvidence | undefined;
+    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = valid(); }
+    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence) : undefined;
+    task = valid();
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
     const silentMember = !!cohort?.silent && this.turnFree() && !!task.owner && !this.isPii(task);
@@ -2407,7 +2476,7 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review");
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
     const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary, { withheld: withheld || undefined });
@@ -2534,17 +2603,27 @@ export class Tasks {
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review"): Promise<Task> {
-    let reviewer = task.reviewer;
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness): Promise<Task> {
+    let reviewer = task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
-      await this.lifecycleGate(task, reviewer ? "review" : "approval");
+      reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
       task = this.need(task.id, false, true);
       this.mine(task, by, "owner", true);
       // In every mode: another done may have landed during the readback.
       if (task.state === "in_review" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
       reviewer = task.reviewer;
     }
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined });
+    // A delayed local check needs a new readback; the immediate done path already admitted before effects.
+    if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
+      const observed = task;
+      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence);
+      task = this.need(task.id);
+      this.mine(task, by, "owner");
+      if (task.history.length !== observed.history.length || task.state === "in_review" || isClosedTaskState(task.state)) throw new Error("task changed during review admission");
+    }
+    const reviewCost: ReviewCost | undefined = reviewer && task.plan && (task.plan.review || task.plan.ci)
+      ? { ...cleanCostPlan(task.plan), ...(admission?.ready && admission.head ? { head: admission.head } : {}) } : undefined;
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined, ...(reviewCost ? { reviewCost } : {}) });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -2555,7 +2634,7 @@ export class Tasks {
       await this.releaseDependents(next);
     }
     else if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);
-    else this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer));
+    else this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, "", admission));
     return next;
   }
 
@@ -2629,7 +2708,44 @@ export class Tasks {
   }
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
-  private sendReview(task: Task, reviewer: PeerId, why = ""): void {
+  /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
+  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence): Promise<ReviewReadiness | undefined> {
+    const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
+    if (mode === "off") return undefined;
+    const guard = () => {
+      if (actor !== USER && actor !== task.owner) {
+        const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
+        if (holders.length !== 1 || holders[0] !== actor) throw new (preEffect ? PreEffectToolRefusal : Error)("review admission authority changed");
+      }
+      const current = this.need(task.id, false, preEffect);
+      if ((this.d.sdlc?.config().mode ?? "off") !== mode || current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer
+        || this.isPii(current) !== this.isPii(task) || JSON.stringify(current.sdlc ?? null) !== JSON.stringify(task.sdlc ?? null)
+        || actor !== USER && this.d.privateTurn?.(actor) && !this.isPii(current)) throw new (preEffect ? PreEffectToolRefusal : Error)("task or authority changed during review admission");
+      return current;
+    };
+    guard();
+    const expected = cleanRefs(refs).commit ?? task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
+    const read: SdlcGh = (args, timeout, cwd, cap) => { guard(); return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap); };
+    const evidence: ReviewReadiness = this.isPii(task)
+      ? { ready: false, blockers: ["private review readiness unavailable"] }
+      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
+    const current = guard();
+    if (!evidence.ready) {
+      const message = `task ${this.publicTitle(current)}: premature review: ${evidence.blockers.join("; ")}`;
+      if (mode === "enforce") throw new (preEffect ? PreEffectToolRefusal : Error)(message);
+      this.releaseNotice(message);
+    }
+    return evidence;
+  }
+
+  private sendReview(task: Task, reviewer: PeerId, why = "", admission?: ReviewReadiness): void {
+    const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
+    if (mode === "enforce" && !admission?.ready) {
+      // Background roster/quota role changes are retained, but never invent a remotely admitted review request.
+      this.releaseNotice(`task ${this.publicTitle(task)}: premature review held; retry the reviewer assignment after current CI and bot replies are verified`);
+      return;
+    }
+
     const r = task.refs;
     const last = [...task.history].reverse().find((h) => h.event === "done");
     const where = [r.branch ? `branch ${r.branch}` : "", r.commit ? `commit ${r.commit}` : "", r.paths?.length ? `paths ${r.paths.join(", ")}` : ""].filter(Boolean).join("; ");
@@ -2865,11 +2981,23 @@ export class Tasks {
       this.ready(task, preEffect);
       const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
+      const admission = task.state === "in_review" ? await this.reviewRequestAdmission(task, undefined, preEffect, by) : undefined;
+      // Every runtime authority check precedes the final write, including revocations during the metadata await.
+      const current = this.need(task.id, false, preEffect);
+      if (current.history.length !== task.history.length) throw new (preEffect ? PreEffectToolRefusal : Error)("task changed during reviewer admission");
+      if (by !== USER) {
+        const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
+        if (holders.length !== 1 || holders[0] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)("only the console user or the configured conductor may name a reviewer");
+      }
+      if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster`);
+      this.requireCapabilities(current, peer, role, preEffect);
+      const eligible = assign(current, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(current.owner ? { notReviewer: current.owner } : {}), ...this.weights(current.class) });
+      if (eligible.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)("reviewer is no longer eligible");
       const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, this.assignmentNote(`named reviewer ${peer}`, a), { reason: "manual" }, expectedFlowRevision);
       if (next.state === "in_review" && task.reviewer && task.reviewer !== peer) {
         this.withdrawRoleRequest(task, next, "reviewer");
       }
-      if (next.state === "in_review" && peer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${peer}`, () => this.sendReview(next, peer));
+      if (next.state === "in_review" && peer !== USER) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${peer}`, () => this.sendReview(next, peer, "", admission));
       return next;
     }
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.

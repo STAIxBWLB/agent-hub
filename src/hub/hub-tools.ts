@@ -17,6 +17,10 @@ const refs = {
   additionalProperties: false,
 } as const;
 const list = (description: string) => ({ type: "array", items: str, description }) as const;
+const costPlanProperties = {
+  review: { type: "object", properties: { scope: { type: "string", enum: ["none", "delta", "full"] }, reviewers: { type: "integer", minimum: 0, maximum: 8 } }, required: ["scope", "reviewers"], additionalProperties: false },
+  ci: { type: "string", enum: ["focused", "full", "reuse"] },
+} as const;
 const plan = {
   type: "object",
   description: "what you will change, before you start. Owners of open tasks on the same files or symbols see it, and get a notice when your task is done.",
@@ -77,7 +81,8 @@ export const TASK_TOOLS: HubTool[] = [
 
 export const PLANNER_REVIEW_TOOLS: HubTool[] = [
   tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
-  tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 } }, ["id", "revision", "reason"]),
+  tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 }, ...costPlanProperties }, ["id", "revision", "reason"]),
+  tool("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes. S7 owns automatic band proposals.", { repo: str }),
   tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 } }, ["id", "revision", "reason"]),
 ];
 TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
@@ -139,6 +144,14 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       const parts = properties.parts as { items: { properties: Record<string, unknown> } };
       const selectedPlan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
+    }
+    if (criteria && properties.plan) {
+      const current = properties.plan as { properties: Record<string, unknown> };
+      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties } };
+    }
+    if (criteria && tool.name === "hub_backlog_split") {
+      const parts = properties.parts as { items: { properties: { plan: { properties: Record<string, unknown> } } } };
+      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties } } } } };
     }
     return { ...tool, ...(customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}), inputSchema: { ...tool.inputSchema, properties } };
   });
