@@ -29,7 +29,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | Slice | Playbook play | Delivery in this slice |
 | --- | --- | --- |
 | S0 | Plan, Design, Build, Test, Deploy, Maintain stage model | Nine built-in bases, canonical ids, stored receipt aliases and playbook labels |
-| S1 | Accepted intent/spec and spec drift | Pending; issue metadata acceptance is not yet a hub gate |
+| S1 | Accepted intent/spec and spec drift | Person-only `ahub sdlc accept`, bound to the issue's body edit time; build entry needs it in enforce (see Spec acceptance below) |
 | S2 | Accepted plan and diff conformance | Pending; existing task plans remain authoritative without a conformance readback |
 | S3 | Bugs, Security and Compliance review passes | Pending structured findings; existing reviewer separation and head-bound review remain |
 | S4 | Red-first tests and test integrity | Pending receipts/gates; repository test-integrity rules still apply |
@@ -71,6 +71,12 @@ A per-project `.agenthub/sdlc.toml` may set `mode = "advise"` and `required_chec
 A person records ids and a claimed local receipt with `ahub sdlc record 12 '{"repo":"owner/repo","issue":109,"pr":325,"localHead":"<full SHA>","localResult":"passed","stage":"build"}'`. Owners/reviewers have the bounded `hub_sdlc_record` tool; it accepts no remote bodies or external-check results. Only the assigned reviewer or person records a reviewed head. `ahub review 12 approved --head <full SHA>` rechecks current evidence before approval. Changes requested does not require green CI.
 
 `ahub sdlc status` lists bounded local projections without polling every remote PR. `ahub sdlc explain 12` or `status 12` performs a fresh structured readback, with a console-only boundary and no remote body retention. Shared console/dashboard projections explicitly show unknown external evidence; they do not certify freshness from cached data. Default task rows and contracts remain unchanged when off.
+
+# Spec acceptance (#481 S1)
+
+- The person accepts a task's spec issue with `ahub sdlc accept <task> --issue <n> [--repo owner/repository]` (the repository defaults to the task's receipt). Agent shells and live tests are refused. The hub reads the issue's `lastEditedAt` and `updatedAt` through a fixed GraphQL query and stores them with the issue identity and the time of acceptance; it never reads or stores the body. `hub_sdlc_record` cannot write an acceptance, and relinking the receipt to another repository or issue drops it.
+- Build entry is the `implement` or `bulk_edit` task's acceptance (`hub_task_accept`), or a recorded stage change into a build stage by anyone but the person. In enforce, build entry needs a current acceptance: the hub rereads the issue and refuses with `spec acceptance missing`, `spec changed after acceptance` (the body was edited; comments only move `updatedAt` and do not count), `spec edit time unknown` (the readback failed) or `spec issue unknown` (the receipt names no issue). Advise posts the same text as a notice and lets the work start; off reads nothing.
+- `ahub sdlc status <task>` and `explain` show `spec: {issue, state}` (`missing`, `current`, `changed` or `unknown`) when the lifecycle is enabled and the receipt names an issue. The spec state is not a merge-readiness blocker: its gate is build entry.
 
 # Acceptance-criteria checklist
 

@@ -19,7 +19,7 @@ import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from
 import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
-import { loadSdlc, sdlcGh } from "./sdlc.ts";
+import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
@@ -2120,6 +2120,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return [line(t), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : ""].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
+        await tasks.specGate(by, a.id); // #481 S1: a live spec edit-time check before build entry
         const t = tasks.accept(by, a.id, a.plan);
         // A silent cohort (issue #107): the owners' plans come with every accept, as what the newcomer works from.
         const silent = tasks.silentFor(t.id);
@@ -2151,6 +2152,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return extra ? `${result}\n${extra}` : result;
       }
       case "hub_sdlc_record":
+        await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(tasks.recordLifecycle(by, a.id, a.receipt));
       case "hub_review":
         return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head));
@@ -5202,6 +5204,23 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         if (msg.op === "export") {
           try { return void reply({ ok: true, export: tasks.workflowExport(msg.id) }); } catch { return void reply({ ok: false, error: "workflow export unavailable" }); }
+        }
+        if (msg.op === "accept") {
+          // #481 S1: the person's spec acceptance, bound to the issue's body edit time; no body is read.
+          if (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !Number.isSafeInteger(msg.issue) || msg.issue <= 0 || (msg.repo !== undefined && typeof msg.repo !== "string")) return void reply({ ok: false, error: "usage: ahub sdlc accept <task> --issue <n> [--repo owner/repository]" });
+          const task = board.get(msg.id);
+          const repo = msg.repo ?? task?.sdlc?.repo;
+          if (!task || typeof repo !== "string") return void reply({ ok: false, error: task ? "spec acceptance needs --repo owner/repository (the task's receipt names none)" : "invalid lifecycle task id" });
+          const linked = `${task.sdlc?.repo ?? ""}#${task.sdlc?.issue ?? ""}`;
+          void readSpecEdit(repo, msg.issue, (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound)).then(edit => {
+            if (!edit) return reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" });
+            // The readback is for the receipt read before it; a relink meanwhile makes it someone else's evidence.
+            const now = board.get(msg.id)?.sdlc;
+            if (`${now?.repo ?? ""}#${now?.issue ?? ""}` !== linked) return reply({ ok: false, error: "the task's spec link changed during the readback; nothing was recorded, run ahub sdlc accept again" });
+            try { const next = tasks.acceptSpec(USER, msg.id, { repo, issue: msg.issue, edit }); reply({ ok: true, acceptance: next.sdlc?.acceptance }); }
+            catch (error) { reply({ ok: false, error: (error as Error).message }); }
+          }, () => reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" }));
+          return;
         }
         if (msg.op !== "status" && msg.op !== "explain") return void reply({ ok: false, error: "unknown SDLC operation" });
         const selected = msg.id === undefined ? board.list().filter(task => task.state !== "backlog" && (task.sdlc || lifecycleConfig.mode !== "off" || lifecycleConfig.workflow === "gsd-lite")) : [board.get(Number(msg.id))].filter((task): task is Task => !!task);

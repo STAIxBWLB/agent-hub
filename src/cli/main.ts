@@ -1114,6 +1114,19 @@ const commands: Record<string, () => Promise<void> | void> = {
       finally { hub.close(); }
       return;
     }
+    if (sub === "accept") {
+      // #481 S1: the person accepts the task's spec issue at its current body; agent shells are refused before this runs.
+      const flags = takeFlags(args.slice(2), ["--issue", "--repo"], []);
+      const issue = Number(flags.one["--issue"]), repo = flags.one["--repo"];
+      if (flags.rest.length || !Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(issue) || issue <= 0) fail("usage: ahub sdlc accept <task> --issue <n> [--repo owner/repository]");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "sdlc", op: "accept", id, issue, ...(repo ? { repo } : {}) }, 30_000);
+        if (!reply.ok) fail(reply.error);
+        console.log(`task #${id}: spec issue #${issue} accepted at body edit ${reply.acceptance?.lastEditedAt ?? "never"}`);
+      } finally { hub.close(); }
+      return;
+    }
     if (sub === "record") {
       if (args.length !== 3 || !Number.isSafeInteger(id) || id! <= 0 || Buffer.byteLength(args[2]!) > 32768) fail("usage: ahub sdlc record <task> '<receipt JSON>'");
       let receipt: unknown; try { receipt = JSON.parse(args[2]!); } catch { fail("receipt must be valid JSON"); }
