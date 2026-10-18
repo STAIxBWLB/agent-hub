@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
-import { rosterInStatus } from "../../hub/roster.ts";
+import { rosterInStatus } from "../../hub/status-roster.ts";
 
 export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;

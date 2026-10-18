@@ -8225,7 +8225,7 @@ async function runCodexEntry(ctx) {
   exec(launch.cmd, launch.args, "codex");
 }
 
-// src/hub/roster.ts
+// src/hub/status-roster.ts
 function rosterInStatus(status, peer) {
   const rows = status?.roster;
   if (!Array.isArray(rows))
@@ -8233,10 +8233,6 @@ function rosterInStatus(status, peer) {
   const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
   return typeof row?.on === "boolean" ? row.on : undefined;
 }
-var init_roster = __esm(() => {
-  init_registry();
-  init_registry();
-});
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
 import { resolve as resolve3 } from "path";
@@ -8274,9 +8270,7 @@ async function runJcodeEntry(ctx) {
     hub.close();
   }
 }
-var init_native_cli_entry_jcode = __esm(() => {
-  init_roster();
-});
+var init_native_cli_entry_jcode = () => {};
 
 // src/adapters/definitions/native-cli-entry-qwen.ts
 async function runQwenEntry(ctx) {
@@ -8378,9 +8372,7 @@ async function runKimiEntry(ctx) {
     hub.close();
   }
 }
-var init_native_cli_entry_kimi = __esm(() => {
-  init_roster();
-});
+var init_native_cli_entry_kimi = () => {};
 
 // src/adapters/definitions/native-cli-pi.ts
 function parsePiFlags(args, fail) {
