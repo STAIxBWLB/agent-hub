@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## 0.12.34
 
-Built-in native policy now lives behind the adapter registry (#451 A2). Native behaviour is unchanged, the core keeps no vendor tables, and a guard refuses new ones. The changes_requested threshold that moves a task to another peer is now the setting `tasks.escalate_after`, with a default of three instead of the old fixed two (#488). Antigravity, Gemini CLI and Grok project configuration directories are protected like other agent configuration (#485). Live native clients, the #418 AC8 managed-Pi leg (#142) and #438 AC7 remain unverified by this release preparation. Installation and the person's restart require separate receipts.
+Built-in native policy now lives behind the adapter registry (#451 A2). Native behaviour is unchanged except the disclosed Codex watchdog fence below; the core keeps no vendor tables, and a guard refuses new ones. The changes_requested threshold that moves a task to another peer is now the setting `tasks.escalate_after`, with a default of three instead of the old fixed two (#488). Antigravity, Gemini CLI and Grok project configuration directories are protected like other agent configuration (#485). Live native clients, the #418 AC8 managed-Pi leg (#142) and #438 AC7 remain unverified by this release preparation. Installation and the person's restart require separate receipts.
 
 - Escalate a task after `tasks.escalate_after` consecutive changes_requested (1-10, default 3, applies live at the next verdict), replacing the fixed two (#488).
 - Treat `.agent`, `_agents`, `_agent`, `.gemini` and `.grok` as protected agent configuration directories, so scoped grants ask instead of auto-allowing (#485).

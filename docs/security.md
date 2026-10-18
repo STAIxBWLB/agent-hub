@@ -67,7 +67,7 @@ the console. Merged and generated Claude settings live in 0600 state files and
 are passed by path, keeping caller settings out of process argv.
 
 Claude ask-when-needed grants only resolving project file targets outside
-.agenthub, .git, .claude, .codex, .qwen, .kimi, .kimi-code, .pi, .mcp.json, .agents, .agent, _agents, _agent, .gemini, .grok and .claude.json. Symlink escapes, protected aliases, traversal and
+.agenthub, .git, .claude, .codex, .qwen, .kimi, .kimi-code, .jcode, .pi, .mcp.json, .agents, .agent, _agents, _agent, .gemini, .grok and .claude.json. Symlink escapes, protected aliases, traversal and
 unresolved wildcard targets receive no decision. Names are compared folded (letter case, compatibility forms and
 the code points HFS+ ignores; case-insensitive APFS folds case but ignored none in the probe; so a look-alike such
 as a long s or a name with a zero-width joiner is the same name), the path is judged inside the project, and
