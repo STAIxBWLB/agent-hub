@@ -60,6 +60,19 @@ import { randomUUID } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
   const peer = ctx.instance ?? "claude";
+  if (ctx.hubStarted) {
+    if (args.includes("--print-command") || args.includes("--dry-run"))
+      return console.log(JSON.stringify({ peer, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
+    const hub = await ctx.connect();
+    try {
+      const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+      if (res.ok !== true)
+        fail(String(res.error ?? `${peer} was not started`));
+    } finally {
+      hub.close();
+    }
+    return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
+  }
   const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
@@ -16121,7 +16134,7 @@ var STDOUT_LIMIT = 512 * 1024;
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.35",
+  version: "0.12.36",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",

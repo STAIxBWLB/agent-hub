@@ -64,7 +64,7 @@ import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
-import { reviewDiff, type ClaudePrintPeer } from "../adapters/claude-print.ts";
+import { reviewDiff, ClaudePrintPeer } from "../adapters/claude-print.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
@@ -3269,6 +3269,9 @@ export async function startDaemon(opts: DaemonOptions) {
     return { ok: true, mode, opened: opened.via, command };
   }
 
+  /** The CLI command that starts a peer: `ahub <kind> --as <id>` for a declared instance. */
+  const startCommand = (peer: string): string => { const kind = definitionOf(peer)?.kind; return kind && kind !== peer ? `ahub ${kind} --as ${peer}` : `ahub ${peer}`; };
+
   async function stopPeer(peer: unknown, rosterRemoval = false): Promise<Record<string, unknown>> {
     if (!rosterRemoval && rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding peer stops; finish the operation before retrying" };
@@ -3276,9 +3279,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     const stopNotice = definitionOf(peer)?.cli.stopNotice?.(owner instanceof WsPeer ? "tui" : !owner ? startMode(peer) : "headless", owner);
     if (stopNotice) return { ok: false, error: stopNotice };
-    if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
+    if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer || owner instanceof ClaudePrintPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
     if (owner instanceof PiPeer && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
-    if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ahub ${peer} before stopping it` };
+    if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ${startCommand(peer)} before stopping it` };
     if (starting.has(peer) || requestedPeerStops.has(peer) || permissionChanges.has(peer)) return { ok: false, error: "peer lifecycle or permission change is in progress; wait for ahub status before retrying" };
     requestedPeerStops.add(peer); // fence delivery, starts and recovery before the first asynchronous stop step
     try {
@@ -3295,7 +3298,7 @@ export async function startDaemon(opts: DaemonOptions) {
         writeStatus();
         const state = bus.stateOf(peer);
         if (state !== "offline" || bus.peers.get(peer) !== owner) return { ok: false, error: "peer stop did not reach offline on its owner; inspect ahub status and its terminal before retrying" };
-        try { notify(rosterRemoval ? `${peer} stopped for roster removal; add it with ahub roster add ${peer} before starting it again` : `${peer} stopped by the console; start it again with ahub ${peer}`); } catch { /* owner stop and readback remain authoritative */ }
+        try { notify(rosterRemoval ? `${peer} stopped for roster removal; add it with ahub roster add ${peer} before starting it again` : `${peer} stopped by the console; start it again with ${startCommand(peer)}`); } catch { /* owner stop and readback remain authoritative */ }
         return { ok: true, state };
       });
     } catch {
