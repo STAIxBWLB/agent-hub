@@ -1,4 +1,4 @@
-import { paint, quoted, wrap, type Tone } from "./console-state.ts";
+import { paint, quoted, terminalText, wrap, type Tone } from "./console-state.ts";
 import { operationLines, stepLabel } from "./upgrade-labels.ts";
 import { recordedPeerGuidance, stopAndArchiveSummary, type RecordedPeerGuidance } from "./recovery-guidance.ts";
 import { restoreReceiptStatus } from "./upgrade-restore-state.ts";
@@ -162,6 +162,16 @@ export function renderBlocked(op: RecoveryOperation, choices: readonly NextChoic
   } else if (op.failure?.code === "database_busy") {
     happened = "The recovery database could not complete this step yet.";
     why = "The coordinator recorded database contention as retryable; its saved recovery state is retained.";
+  } else if (!cause && op.error) {
+    // A recorded error is evidence to show, not a typed classification. Reuse the console's
+    // terminal sanitizer before the normal renderer; discard later lines and bound by code point.
+    const first = terminalText(op.error.split(/[\r\n\p{Zl}\p{Zp}]/u, 1)[0] ?? "").replace(/\p{Cc}/gu, "").trim();
+    if (first) {
+      const points = Array.from(first);
+      const recorded = points.length > 512 ? `${points.slice(0, 509).join("")}...` : first;
+      why = `recorded error: ${recorded} (typed cause unknown).`;
+      action = "Resolve the recorded error, then resume or choose an offered action. If the target lacks a feature the source needs, choose a compatible target; keep the source records. Read [j] or use --verbose for details.";
+    }
   }
   const output = [...lines(`What happened: ${happened}`, "failure", options), ...lines(`Why: ${why}`, "muted", options), ...lines(`What to do: ${action}`, "attention", options)];
   for (const choice of choices) {

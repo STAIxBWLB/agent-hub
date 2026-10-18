@@ -849,3 +849,23 @@ Recovery authorization and the presentation parser share the pure
 skipping the accepted one-shot presentation flags (`--json`, `--verbose`, `--color=<mode>`). Such flags never hide
 person-only reattachment from agent or live-test refusal checks; normalization
 confers no authority and unknown flags still fail the command parser.
+
+
+## Recovery-held hub publication amendment (#478)
+
+2026-10-18: Keep exact carried-queue integrity equality. Every checked prepare renewal carries the verified target features stored on the operation. Ordinary post-commit observational inspection stays free of pre-commit compatibility checks.
+
+Only an authenticated recovery operation with verified target support opts into hub deferral; a bare bus delivery fence retains its existing queue admission and does not confer daemon operation authority. The bus accepts hub-originated, deliverable notices during recovery into optional `BusSnapshot.deferredHub`, persisted by the existing private delivery journal and restart snapshot. These originals are outside delivery queues and their integrity projection. The accepted audience and envelope metadata, including private marking, are captured without new text-writing paths. FYI and hop-dropped publications keep their existing record-only behavior. Withdrawal and role/feed revocation also cover deferred originals. Backlog retention counts them as accepted work.
+
+A target advertises `recovery_deferred_hub` beside `task_cancel`. Before a commit to a target without that verified feature, the source materializes deferred originals into normal queues; expected integrity therefore verifies those rows normally. No old target is asked to preserve a field it cannot read.
+
+Deferred restore validation refuses malformed, non-hub, duplicate or already-accepted ids with a typed recovery error. The FIFO is capped at 2048 originals; overflow refuses admission without dropping accepted work or releasing the hold. Each release transfers an original through normal publication and checkpoints its removal from the deferred FIFO together with its queued/seen state before delivery is allowed. A crash resumes from the journal, preserving id dedupe. Failed checkpoints leave the original pending and recovery held. A retry of an already archived release still completes the bus release; a later ordinary startup also completes durable pending publication. Abort and lease expiry retain their recovery ownership until pending publication can be checkpointed.
+
+When no typed presentation cause exists, the human blocked screen shows only the existing sanitized first recorded error line, with controls removed and a 512-code-point cap. The action is uniform: resolve the recorded error, then resume or choose an offered action. Feature compatibility is a conditional option only, never classified from an error substring. JSON and piped rendering are unchanged.
+
+
+### Deferred-notice edge paths (#478 review amendment)
+
+An expired source lease retries a failed release checkpoint on a short timer; a vanished coordinator is not required to unstick the hold once storage recovers. Reset previews count deferred recipients as pending delivery ids, and stopped-runtime reset atomically records their discard audit and removes the originals without publication. Deferred records require their captured recipient array. Flush rollback restores only publication-owned state (affected queue arrays in place, deferred and seen ids, withdrawal bookkeeping and pending outcomes); it never reloads a live bus snapshot or changes its recovery mode, prefaces or independent pauses. Advisory nudges, like publication events, run after the checkpoint.
+
+A corrupt deferred field still refuses daemon restore. Coordinator inspection catches only the typed deferred-corruption error, keeps independently verified stopped evidence, reports an unknown snapshot binding with a static blocker, and leaves person abort/stop-and-archive exits available. It never claims that the corrupt snapshot can be resumed, repairs it or exposes rejected content.

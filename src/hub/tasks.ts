@@ -2415,7 +2415,7 @@ export class Tasks {
       const acceptance = previous.history.slice(assignment + 1).some(entry => entry.event === "accepted" && entry.by === peer);
       const boardEvidence = role === "owner" && acceptance;
       const mayHaveReceived = boardEvidence || this.d.bus.lastDeliveredTo(peer).some(matches) || this.d.bus.queueList(peer).some(row => ["dispatching", "accepted", "needs_review", "completed"].includes(row.state) && row.originals.some(matches));
-      for (const env of this.d.bus.snapshot(false).queues[peer] ?? []) if (matches(env)) this.d.bus.withdraw(env.id);
+      for (const env of this.d.bus.pendingEnvelopes(peer)) if (matches(env)) this.d.bus.withdraw(env.id);
       if (!mayHaveReceived) return;
       const body = role === "owner"
         ? `Task ${this.publicTitle(next)} is no longer assigned to you${next.owner ? `; its owner is now ${next.owner}` : "; it is unassigned"}. Do not accept or complete it; late calls under your former assignment are refused.`

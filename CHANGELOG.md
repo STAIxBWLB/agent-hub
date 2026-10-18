@@ -2,6 +2,11 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Preserve target capabilities on recovery lease renewals, defer hub notices until held queue verification finishes, and show recorded blocked errors (#478).
+- Discard deferred notices on reset, retry expired recovery leases after storage failures, and keep abort/archive available for corrupt snapshots (#478).
+
 ## 0.12.32
 
 Settings now reload without a restart where their apply class allows it, and settings changed by an agent never adopt guarded or machine-local values without a person's confirmed reload (#439). The upgrade runs with the target release's own coordinator, so this upgrade already uses the new reattach, continuity and screen changes (#463, #466). The first-party memory pin stays `@staix/agent-mem` 0.3.1; the curated shard migration merged in agent-mem is not released and must not be run before the hub opens memory through shards (#175). Native real-terminal console settings (#439 AC5), a real Orca upgrade with reattach (#463), installed managed-Pi #418 AC8 (#142) and #438 AC7 remain unverified by this release preparation. Installation and the person's restart require separate receipts.

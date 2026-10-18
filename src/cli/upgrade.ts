@@ -32,6 +32,8 @@ export interface Inspection {
   blockers: string[];
   /** #215: for a stopped runtime, the operation whose committed restart snapshot its state dir holds (unreleased). */
   snapshot?: string;
+  /** The runtime may be positively stopped while its restart snapshot remains unreadable; never claim ownership. */
+  snapshotError?: { code: "recovery_deferred_hub"; message: string };
 }
 export interface PlannedProject {
   project: Project;
