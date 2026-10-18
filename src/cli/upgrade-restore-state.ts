@@ -24,10 +24,12 @@ export type RestoreReceiptStatus = "unstarted" | "pending" | "waiting:pending" |
 function malformed(): never { throw new Error("invalid restore receipt"); }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
-function terminalBinding(value: unknown): TerminalBinding {
+function terminalBinding(value: unknown, historical = false): TerminalBinding {
   if (!object(value) || typeof value.peer !== "string") malformed();
   for (const key of ["handle", "incarnationId", "worktreeId", "projectRoot", "sessionId"]) if (!text(value[key])) malformed();
-  try {
+  if (historical) {
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(value.peer)) malformed();
+  } else try {
     const adapter = definitionOf(value.peer) ?? definitionOf(value.peer, readInstanceConfig(value.projectRoot as string).instances);
     if (!adapter?.session.launchRecord) malformed();
   } catch { malformed(); }
@@ -41,7 +43,9 @@ function terminalBinding(value: unknown): TerminalBinding {
 }
 
 /** Decode legacy representations only here. Absence is unstarted, never pending or failed. */
-export function decodeRestoreReceipt(value: unknown): RestoreReceipt | undefined {
+export function decodeRestoreReceipt(value: unknown, options: { authority?: "current" | "historical" } = {}): RestoreReceipt | undefined {
+  // Historical decoding proves receipt structure only, never current permission to launch or replace a peer.
+  const historical = options.authority === "historical";
   if (value === undefined) return undefined;
   if (value === "pending" || value === "failed") return { state: value };
   if (!object(value)) malformed();
@@ -52,14 +56,14 @@ export function decodeRestoreReceipt(value: unknown): RestoreReceipt | undefined
       case "pending": case "failed": return { state: value.state };
       case "waiting": {
         if (value.origin !== "pending" && value.origin !== "failed") malformed();
-        return { state: "waiting", origin: value.origin, binding: terminalBinding(value.binding) };
+        return { state: "waiting", origin: value.origin, binding: terminalBinding(value.binding, historical) };
       }
-      case "done": return { state: "done", binding: terminalBinding(value.binding) };
+      case "done": return { state: "done", binding: terminalBinding(value.binding, historical) };
       default: return malformed();
     }
   }
   if (Object.hasOwn(value, "attachmentReceipt")) malformed();
-  return { state: "done", binding: terminalBinding(value) };
+  return { state: "done", binding: terminalBinding(value, historical) };
 }
 
 export function restoreReceiptStatus(value: unknown): RestoreReceiptStatus {

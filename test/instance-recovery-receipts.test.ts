@@ -61,7 +61,7 @@ test("instance retained receipts refuse revoked or tracked declarations instead 
     expect(() => resolveAcceptedBinding(f.planned, f.progress, "codex-2")).toThrow();
     expect(recordedPeerGuidance(f.planned, f.progress).some(row => row.peer === "codex-2")).toBe(false);
     writeFileSync(f.file, JSON.stringify({ instances: { "codex-2": { kind: "codex" } } }));
-    const add = spawnSync("git", ["-C", f.root, "add", ".agenthub/config.local.json"], { encoding: "utf8" });
+    const add = spawnSync("git", ["-C", f.root, "add", "-f", ".agenthub/config.local.json"], { encoding: "utf8" });
     expect(add.status).toBe(0);
     expect(() => decodeRestoreReceipt(f.binding)).toThrow("invalid restore receipt");
     expect(recordedPeerGuidance(f.planned, f.progress).some(row => row.peer === "codex-2")).toBe(false);

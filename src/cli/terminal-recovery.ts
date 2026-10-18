@@ -1,7 +1,8 @@
 import { shellQuote } from "./shell-quote.ts";
 export { shellQuote } from "./shell-quote.ts";
 import { definitionOf, type KindMap } from "../adapters/registry.ts";
-import { readInstanceConfig } from "../hub/instance-config.ts";
+import { readInstanceConfig, readInstanceRoleConfig } from "../hub/instance-config.ts";
+import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -327,11 +328,11 @@ export function recordPath(stateDir: string): string {
 function executionRoot(peer: string, projectRoot: string, captured?: string): string {
   const builtin = definitionOf(peer);
   if (builtin?.session.launchRecord) return projectRoot;
-  const declarations = readInstanceConfig(projectRoot).instances;
+  const { instances: declarations, roles } = readInstanceRoleConfig(projectRoot);
   const definition = definitionOf(peer, declarations);
   if (!definition?.session.launchRecord) throw new Error(`${peer}: no managed terminal recovery adapter`);
   if (definition.transport !== "codex-appserver" || !declarations?.[peer]) throw new Error(`${peer}: I2 extra instance has no managed terminal support`);
-  const expected = resolveInstanceExecutionCwd(projectRoot, peer, declarations, declarations[peer]?.roles ?? definition.roles);
+  const expected = resolveInstanceExecutionCwd(projectRoot, peer, declarations, effectiveInstanceRoles(peer, declarations, roles));
   if (captured !== undefined && captured !== expected) throw new Error(`${peer}: declared execution worktree changed; manual recovery required`);
   return expected;
 }

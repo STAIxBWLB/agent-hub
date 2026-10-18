@@ -14,6 +14,9 @@ export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
   // refused start must not replace the record of a Codex already running here (one row per peer and instance).
   const recovering = !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock(); // not an id a restored session inherited
   const before = readControl(stateDir);
+  // ponytail: recovering extras have no authenticated execution-root binding before start replies, so their row
+  // is recorded afterward. The coordinator retains its pending creation/wait evidence; add pre-start recording
+  // only when a future recovery receipt supplies independently verified exact-instance execution-root evidence.
   if (recovering && !ctx.instance && before?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });

@@ -26,8 +26,8 @@ import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
 import { definitionOf as instanceDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
-import { instanceDefaultRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
-import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers } from "./instance-config.ts";
+import { effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
+import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
 import { resolveInstanceExecutionCwd } from "./instance-execution.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
@@ -358,10 +358,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[]): HubCon
   }
   const mlx = { ...(file.mlx?.provider === "legacy" ? { enabled: true, provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
   const conductorPolicy = loadConductorPolicy(cwd, captured);
-  const instanceRoles = instanceDefaultRoles(instances);
-  const extraRoles = Object.fromEntries(Object.entries(instances ?? {}).map(([id, declaration]) => [id,
-    [...(declaration.roles ?? conductorPolicy.roles[id] ?? conductorPolicy.roles[declaration.kind] ?? instanceRoles[id]!)],
-  ]));
+  const extraRoles = Object.fromEntries(Object.keys(instances ?? {}).map(id => [id, effectiveInstanceRoles(id, instances, conductorPolicy.roles)]));
   const instancePermissions: Record<string, PermissionMode> = {};
   const instanceModes: PeerStartConfig = {};
   for (const [id, declaration] of Object.entries(instances ?? {})) {
@@ -607,12 +604,13 @@ export async function startDaemon(opts: DaemonOptions) {
   const declarations = validateInstances(loadedConfig.instances);
   const extraIds = Object.keys(declarations);
   const executionRoots = new Map<string, string>();
+  const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string }>();
   const roles = { ...loadedConfig.roles };
   const permissionModesFromInstances: Record<string, PermissionMode> = {};
   const startModesFromInstances: PeerStartConfig = {};
   const instancePermissionSources: NonNullable<HubConfig["permission_default_sources"]> = {};
   for (const [id, declaration] of Object.entries(declarations)) {
-    roles[id] = [...(declaration.roles ?? roles[id] ?? roles[declaration.kind] ?? instanceDefinitionOf(id, declarations)!.roles)];
+    roles[id] = effectiveInstanceRoles(id, declarations, loadedConfig.roles);
     startModesFromInstances[id] = { start_mode: "headless" };
     if (declaration.permission_mode !== undefined) {
       permissionModesFromInstances[id] = declaration.permission_mode;
@@ -1280,6 +1278,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const tasks: Tasks = new Tasks({
     capabilities: peerCapabilities, repository: memoryRepo,
     instances: () => declarations,
+    // Proof belongs to the adapter generation actually started in the validated root. A role-only
+    // reload cannot turn a canonical reviewer process into an isolated implementation owner.
+    ownerIsolation: () => Object.fromEntries(extraIds.map(id => {
+      const bound = executionOwners.get(id);
+      return [id, !!bound && bound.owner === bus.peers.get(id) && bound.cwd !== opts.cwd && bound.cwd === executionRoots.get(id)];
+    })),
     recordPlanning: change => event({ type: "planning", ...change }),
     wipLimit: peer => Object.hasOwn(config.tasks.wip_limits ?? {}, peer) ? config.tasks.wip_limits![peer]! : 1,
     escalateAfter: () => config.tasks.escalate_after ?? ESCALATE_AFTER,
@@ -1404,14 +1408,25 @@ export async function startDaemon(opts: DaemonOptions) {
   if (!factsRepo) log(repositoryFacts ? "project has no Git or shadow repository; snapshots/undo and Git directory facts are unavailable; dev named-file facts remain (opt in with ahub init --shadow)" : "project has no Git or shadow repository; facts, snapshots and undo are off (opt in with ahub init --shadow)");
   const facts: Facts = new Facts({ root: opts.cwd, repo: factsRepo, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => repositoryFacts ? (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)) : undefined, peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []), projection: file => projections.project(file) });
   const worktreeFacts = new Map<string, Facts>();
+  const worktreeProjections = new Map<string, TextProjections>();
   const executionRoot = (peer: string) => executionRoots.get(peer) ?? opts.cwd;
   const repoFor = (peer: string) => executionRoot(peer) === opts.cwd ? factsRepo : repoOf(executionRoot(peer));
+  const projectionsFor = (peer: string): TextProjections => {
+    const root = executionRoot(peer);
+    if (root === opts.cwd) return projections;
+    let projection = worktreeProjections.get(peer);
+    if (!projection) {
+      projection = new TextProjections({ cwd: root, projectRoot: opts.cwd, stateDir: nativeStateDir(peer), config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log });
+      worktreeProjections.set(peer, projection);
+    }
+    return projection;
+  };
   const factsFor = (peer: string): Facts => {
     const root = executionRoot(peer);
     if (root === opts.cwd) return facts;
     let store = worktreeFacts.get(peer);
     if (!store) {
-      const projection = new TextProjections({ cwd: root, stateDir: nativeStateDir(peer), config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log });
+      const projection = projectionsFor(peer);
       store = new Facts({ root, repo: repoFor(peer), tmp: join(nativeStateDir(peer), "facts"), instance: `${instanceId.slice(0, 8)}-${peer}`,
         scope: id => scopes.has(id) ? scopes.get(id) : scopes.set(id, tasks.factScope(id)).get(id),
         peers: () => [...bus.peers.keys()].filter(id => executionRoot(id) === root), nameable: tasks.nameable, deny: config.local.deny,
@@ -1769,19 +1784,26 @@ export async function startDaemon(opts: DaemonOptions) {
     return [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
   }
   function reviewProjection(task: Task): string | undefined {
-    const repo = repoFor(task.owner ?? "");
+    const owner = task.owner ?? "", root = executionRoot(owner);
+    const repo = repoFor(owner), projections = projectionsFor(owner);
     if (!projections.enabled || tasks.isPii(task)) return undefined;
     if (!config.snapshots.enabled || !repo || !turnLog) return "(projected review unavailable: snapshots are disabled or unavailable)";
     if (privateSnapshotWindow()) return "(projected review unavailable: private snapshot window)";
     const created = taskProposalAt(task);
     const from = created === undefined ? undefined : turnLog.taskStart(task.id, created);
     if (!from || !hasTree(repo, from)) return "(projected review unavailable: original task snapshot is unknown)";
-    const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!)].map(path => relative(opts.cwd, resolve(opts.cwd, path)));
+    const scopes = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!)].map(path => {
+      const scoped = relative(root, resolve(root, path));
+      if (root === opts.cwd || scoped !== ".." && !scoped.startsWith("../")) return scoped;
+      // Task refs may name the canonical copy of this repository file while the owner executes its worktree copy.
+      const canonical = relative(opts.cwd, resolve(root, path));
+      return canonical !== ".." && !canonical.startsWith("../") && !canonical.startsWith(".worktrees/") ? canonical : scoped;
+    });
     if (!scopes.length) return "(projected review unavailable: task paths were not declared)";
     const to = snap(`task #${task.id} review`, config.snapshots.enabled, task.owner ?? undefined).tree;
     if (!to) return "(projected review unavailable: current snapshot is unknown)";
     const paths = changedPaths(repo, from, to).filter(path => { const local = path.slice(repo.prefix.length); return scopes.some(scope => !scope || local === scope || local.startsWith(scope + "/")); });
-    return projectedDiff({ repo, from, to, paths, projections, deny: config.local.deny, nameable: tasks.nameable, privatePath: path => matchesPolicy(opts.cwd, join(repo.top, path), config.pii?.paths ?? []) });
+    return projectedDiff({ repo, from, to, paths, projections, deny: config.local.deny, nameable: tasks.nameable, privatePath: path => matchesPolicy(root, join(repo.top, path), config.pii?.paths ?? []) });
   }
   const delta = tokenDeltas();
   /** Tokens a peer used, as increments: Kimi reports a session total (turned into increments below), Codex increments. */
@@ -2231,6 +2253,14 @@ export async function startDaemon(opts: DaemonOptions) {
         if (turnLog!.latest(turn.peer)?.id !== turn.id) throw new Error(`turn ${turn.id} is not Codex's latest turn; reverting it would drop the later ones too`);
         const codex = bus.peers.get(turn.peer);
         if (!(codex instanceof CodexPeer)) throw new Error("codex is not attached");
+        const workspace = turnLog!.workspace(turn.id);
+        if (workspace !== undefined) {
+          const current = readInstanceRoleConfig(opts.cwd), adapter = instanceDefinitionOf(turn.peer, current.instances);
+          if (!current.instances?.[turn.peer] || adapter?.kind !== definitionOf(turn.peer)?.kind) throw new Error("turn workspace declaration changed; inspect before reverting");
+          const validated = resolveInstanceExecutionCwd(opts.cwd, turn.peer, current.instances, effectiveInstanceRoles(turn.peer, current.instances, current.roles));
+          const bound = executionOwners.get(turn.peer);
+          if (validated !== workspace || executionRoot(turn.peer) !== workspace || bound?.owner !== codex || bound.cwd !== workspace) throw new Error("turn workspace differs from the current native owner; inspect before reverting");
+        }
         // Nothing may reach Codex while its history is rewritten: a turn started meanwhile would go with the reverted ones.
         const held = bus.stateOf(turn.peer) !== "paused";
         if (held) bus.pause(turn.peer);
@@ -3509,7 +3539,7 @@ export async function startDaemon(opts: DaemonOptions) {
       };
       const routing = activeRouting();
       const pi: PiPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["pi-rpc"]({
-        cwd: executionCwd, stateDir: nativeRoot, hubStateDir: opts.stateDir, cmd: config.pi.cmd, mode, backend,
+        cwd: executionCwd, stateDir: nativeRoot, ...(declarations[peer] ? { hubStateDir: opts.stateDir } : {}), cmd: config.pi.cmd, mode, backend,
         model: args.model,
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, peer, unit),
@@ -3617,6 +3647,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }) }) as PiPeer;
       recoveryTaskPreface(peer);
       await ensurePreface(peer);
+      executionOwners.set(peer, { owner: pi, cwd: executionCwd });
       bus.add(pi);
       // The start's own error is the one reported; a stop that fails too is logged beside it (#115).
       try { await pi.start(); } catch (error) { await pi.stop().catch((stop: Error) => log(`pi stop after a failed start: ${stop.message}`)); throw error; }
@@ -3696,6 +3727,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }) }) as LocalPeer;
       recoveryTaskPreface(peer);
       await ensurePreface(peer);
+      executionOwners.set(peer, { owner: local, cwd: executionCwd });
       bus.add(local);
       await local.start();
       return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
@@ -4778,6 +4810,7 @@ export async function startDaemon(opts: DaemonOptions) {
         else await owner.setPermissionMode(selected);
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
+      executionOwners.set(peer, { owner, cwd: executionRoots.get(peer) ?? opts.cwd });
       bus.add(owner);
       // start() finished before the bus installed its state hook: replay the current state to drain queued work and record it.
       if (owner.state !== "offline") owner.onState?.(owner.state);

@@ -94,3 +94,10 @@ test("instance budget headroom projects one canonical window to explicit members
   expect(projectBudgetHeadroom({ external }, () => [])).toEqual({ external });
   expect(projectBudgetHeadroom(source, key => [key])).toEqual(source);
 });
+
+
+test("instance account handoff memory is emitted once when every member recalls the same text", async () => {
+  const b = base(), hooks = instanceBudgetHooks(b.hooks, members, account);
+  b.hooks.platformContext = async () => "shared account memory";
+  expect(await hooks.platformContext("codex")).toBe("[codex, codex-2]\nshared account memory");
+});

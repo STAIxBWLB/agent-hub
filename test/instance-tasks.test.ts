@@ -27,7 +27,10 @@ async function fixture(ids = ["codex-a", "codex-b", "kimi-a"], reviewers = ["cod
   for (const peer of Object.values(peers)) { await peer.start(); bus.add(peer); }
   cleanup.push(() => { for (const peer of Object.values(peers)) peer.set("offline"); });
   const routing = parseRouting(`[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["codex"]\n[classes.review]\npeers=${JSON.stringify(reviewers)}\n`);
-  const deps: TasksDeps & { instances: () => InstancesConfig } = { board, bus, cwd: dir, project: "fixture", routing: () => routing, instances: () => instances, notify: () => {} };
+  // These fake native owners represent host-verified isolated runtimes; declaration text is not the proof.
+  const roles = { "codex-a": ["implementer"], "codex-b": ["implementer"], "kimi-a": ["reviewer"] };
+  const deps: TasksDeps & { instances: () => InstancesConfig } = { board, bus, cwd: dir, project: "fixture", routing: () => routing, instances: () => instances, roles,
+    ownerIsolation: () => Object.fromEntries(ids.map(peer => [peer, true])), notify: () => {} };
   const tasks = new Tasks(deps);
   return { board, bus, peers, tasks };
 }

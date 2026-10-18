@@ -20,14 +20,21 @@ export function instanceBudgetHooks(base: BudgetHooks, members: BudgetAccountMem
   // A failed handoff leaves the core pause unmarked. Preserve completed work until its retry or resume notice;
   // one entry per board task/role bounds this state by the host's task board, rather than by retry count.
   const partialMoves = new Map<string, Moved[]>();
-  const summaries = async (peer: string, request: (member: string) => Promise<string | undefined>): Promise<string | undefined> => {
+  const summaries = async (peer: string, request: (member: string) => Promise<string | undefined>, deduplicate = false): Promise<string | undefined> => {
     const peers = ids(peer);
     if (peers.length === 1) return request(peers[0]!);
     const parts = await Promise.all(peers.map(async member => {
       const text = await request(member).catch(() => undefined);
-      return text === undefined || text.length === 0 ? undefined : `[${member}]\n${text}`;
+      return text === undefined || text.length === 0 ? undefined : { member, text };
     }));
-    return parts.filter((part): part is string => part !== undefined).join("\n\n") || undefined;
+    const groups = new Map<string, { members: string[]; text: string }>();
+    for (const part of parts) if (part) {
+      const key = deduplicate ? part.text : part.member;
+      const group = groups.get(key);
+      if (group) group.members.push(part.member);
+      else groups.set(key, { members: [part.member], text: part.text });
+    }
+    return [...groups.values()].map(part => `[${part.members.join(", ")}]\n${part.text}`).join("\n\n") || undefined;
   };
   return {
     ...base,
@@ -35,7 +42,7 @@ export function instanceBudgetHooks(base: BudgetHooks, members: BudgetAccountMem
     pause(peer) { for (const member of ids(peer)) base.pause(member); },
     resume(peer) { for (const member of ids(peer)) base.resume(member); },
     requestCheckpoint: peer => summaries(peer, member => base.requestCheckpoint(member)),
-    platformContext: peer => summaries(peer, member => base.platformContext(member)),
+    platformContext: peer => summaries(peer, member => base.platformContext(member), true),
     attached: peer => ids(peer).some(member => base.attached(member)),
     canHandOff: peer => ids(peer).some(member => base.canHandOff(member)),
     async handoff(peer, context, urgentOnly) {

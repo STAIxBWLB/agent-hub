@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
@@ -119,21 +120,23 @@ try {
     const declarations = markedPeer && markedRoot && !definitionOf(markedPeer) ? readInstanceConfig(realPath(markedRoot)).instances : undefined;
     if (markedPeer && markedRoot && declarations && Object.hasOwn(declarations, markedPeer)) {
       const canonicalRoot = realPath(markedRoot), config = loadConfig(canonicalRoot);
-      const executionCwd = resolveInstanceExecutionCwd(canonicalRoot, markedPeer, declarations, config.roles[markedPeer] ?? definitionOf(markedPeer, declarations)?.roles ?? []);
+      const executionCwd = resolveInstanceExecutionCwd(canonicalRoot, markedPeer, declarations, effectiveInstanceRoles(markedPeer, declarations, config.roles));
       if (realPath(projectRoot(process.cwd())) !== realPath(executionCwd)) fail("native instance workspace does not match its declared checkout");
       selected = projectContext(canonicalRoot);
     } else selected = projectContext(process.cwd());
   }
-} catch (error) { fail((error as Error).message); }
+} catch (error) { fail(startupDiagnostic(error)); }
 const cwd = selected.root;
 const unboundCaller = detectCliIdentity(process.env);
 const markerNeedsDeclaration = unboundCaller.role === "invalid" && unboundCaller.reason === "AGENTHUB_PEER_ID conflicts with native agent marker"
   && process.env.AGENTHUB_PEER_ID !== undefined && !definitionOf(process.env.AGENTHUB_PEER_ID);
 const needsInstances = definitionOf(given) && rest.some(arg => arg === "--as" || arg.startsWith("--as=")) || markerNeedsDeclaration;
-const declaredInstances = needsInstances ? readInstanceConfig(cwd).instances : undefined;
+let declaredInstances: ReturnType<typeof readInstanceConfig>["instances"];
 let nativeSelection: ReturnType<typeof instanceLaunchArguments>;
-try { nativeSelection = instanceLaunchArguments(given, rest, declaredInstances); }
-catch (error) { fail((error as Error).message); }
+try {
+  declaredInstances = needsInstances ? readInstanceConfig(cwd).instances : undefined;
+  nativeSelection = instanceLaunchArguments(given, rest, declaredInstances);
+} catch (error) { fail(startupDiagnostic(error)); }
 const selectedInstance = nativeSelection.instance;
 // `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
 // (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
@@ -351,6 +354,12 @@ async function orphanDoctor(kill: boolean, options: ReturnType<typeof outputOpti
     : printOutput(wrap(text, options.columns ?? Infinity).map(text => [{ text }]), options.color);
   if (kill) for (const { project, pids } of orphans) for (const pid of pids) if (!(await killOrphan(pid, project.root, diagnostic))) failed++;
   if (failed) fail(`${failed} orphaned hub process(es) could not be stopped`);
+}
+
+/** Startup refusals remain single-line and bounded even for malformed local declarations. */
+function startupDiagnostic(error: unknown): string {
+  const message = error instanceof Error ? error.message : "invalid startup configuration";
+  return message.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 512) || "invalid startup configuration";
 }
 
 function fail(message: string): never {
@@ -1617,7 +1626,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const declarations = readInstanceConfig(cwd).instances;
       if (!declarations || !Object.hasOwn(declarations, turn.peer)) fail(`turn ${id}'s recorded instance is no longer declared; nothing was restored`);
       const config = projectConfig();
-      const current = resolveInstanceExecutionCwd(cwd, turn.peer, declarations, config.roles[turn.peer] ?? []);
+      const current = resolveInstanceExecutionCwd(cwd, turn.peer, declarations, effectiveInstanceRoles(turn.peer, declarations, config.roles));
       if (realPath(current) !== realPath(recordedWorkspace)) fail(`turn ${id}'s recorded execution workspace changed; nothing was restored`);
       return current;
     };

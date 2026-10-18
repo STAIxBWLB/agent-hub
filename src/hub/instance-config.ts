@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { defaultPeerRoles } from "../adapters/registry.ts";
+import { conductorPeer } from "./conductor.ts";
 import { configRefusal } from "./config-trust.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
 
@@ -27,4 +29,19 @@ export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigL
     else instances = checked;
   }
   return { ...(instances ? { instances } : {}), ignored };
+}
+
+/** Capture ordinary role policy and trusted instance declarations together, without loading daemon configuration. */
+export function readInstanceRoleConfig(cwd: string, layers: readonly InstanceConfigLayer[] = readInstanceConfigLayers(cwd)): { instances?: InstancesConfig; roles: Record<string, string[]>; ignored: string[] } {
+  const declarationConfig = readInstanceConfig(cwd, layers);
+  const roles = defaultPeerRoles(false);
+  for (const name of INSTANCE_CONFIG_FILES) {
+    const raw = layers.find(layer => layer.name === name)?.raw;
+    if (raw?.roles !== undefined) {
+      conductorPeer(raw.roles); // Preserve the ordinary loader's ids, role-list and conductor validation exactly.
+      for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) roles[id] = [...list];
+    }
+  }
+  conductorPeer(roles);
+  return { ...declarationConfig, roles };
 }

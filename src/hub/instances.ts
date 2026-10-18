@@ -89,3 +89,12 @@ export function instanceDefaultRoles(declarations?: InstancesConfig, includeOpti
   for (const [id, config] of Object.entries(validateInstances(declarations))) result[id] = [...(config.roles ?? definitionOf(config.kind)!.roles)];
   return result;
 }
+
+/** One precedence rule for startup, native launch and recovery; ordinary roles may use the instance id or its kind. */
+export function effectiveInstanceRoles(id: string, declarations: InstancesConfig | undefined, policyRoles: Readonly<Record<string, readonly string[]>>): string[] {
+  const definition = definitionOf(id, declarations);
+  if (!definition) throw new Error(`${id}: no declared native instance`);
+  const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
+  const ownRoles = (key: string): readonly string[] | undefined => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;
+  return [...(declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles)];
+}

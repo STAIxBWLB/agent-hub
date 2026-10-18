@@ -57,8 +57,11 @@ test("I2 live reload defers nested instance defaults and additions without repla
   expect(afterUi.starts.some((row: any) => row.peer === "codex-b")).toBe(false);
   expect((await f.console_.request({ t: "start", peer: "codex-b" })).ok).toBe(false);
   let accepted = false;
-  try { const tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex-b", projectRoot: f.root }); accepted = true; tools.close(); } catch { /* absent from the startup-bound catalog */ }
-  expect(accepted).toBe(false);
+  try { const tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex-b", projectRoot: f.root }); accepted = true; tools.close(); } catch { /* ordinary external tools admission may fail only for an independent transport error */ }
+  // B1: startup-bound native metadata stays absent, while pre-I2 external tool admission remains available.
+  expect(accepted).toBe(true);
+  expect((await f.console_.request({ t: "watch", peer: "codex-b" })).ok).toBe(false);
+  expect(f.daemon.bus.peers.has("codex-b")).toBe(false);
   expect(f.daemon.bus.peers.get("codex-a")).toBe(f.owner); expect(f.owner.state).toBe("idle"); expect(f.owner.stops).toBe(0);
 }, 20_000);
 

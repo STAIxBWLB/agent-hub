@@ -47,15 +47,15 @@ export function piArchiveExit(planned: PlannedProject, stopAndArchiveCommand: st
 }
 
 /** Accepted identity outlives an incarnation's repair fence. Malformed evidence never means absence. */
-export function resolveAcceptedBinding(planned: PlannedProject, progress: ProjectProgress, peer: RecoveryNativePeer): TerminalBinding | undefined {
+export function resolveAcceptedBinding(planned: PlannedProject, progress: ProjectProgress, peer: RecoveryNativePeer, options: { authority?: "current" | "historical" } = {}): TerminalBinding | undefined {
   if (progress.id !== planned.project.id) throw new Error("recorded binding project mismatch");
-  if (!projectDefinition(peer, planned.project.root)?.session.launchRecord) throw new Error("recorded binding peer has no current trusted recovery declaration");
+  if (options.authority !== "historical" && !projectDefinition(peer, planned.project.root)?.session.launchRecord) throw new Error("recorded binding peer has no current trusted recovery declaration");
   const binding = (value: unknown): TerminalBinding => {
-    const receipt = decodeRestoreReceipt({ state: "done", binding: value });
+    const receipt = decodeRestoreReceipt({ state: "done", binding: value }, options);
     if (receipt?.state !== "done" || receipt.binding.peer !== peer || receipt.binding.projectRoot !== planned.project.root) throw new Error("recorded binding does not match its peer and project");
     return receipt.binding;
   };
-  const restored = decodeRestoreReceipt(progress.terminals[`restored:${peer}`]);
+  const restored = decodeRestoreReceipt(progress.terminals[`restored:${peer}`], options);
   if (restored?.state === "done" || restored?.state === "waiting") return binding(restored.binding);
   if (progress.reattachments !== undefined) {
     if (!progress.reattachments || typeof progress.reattachments !== "object" || Array.isArray(progress.reattachments)) throw new Error("invalid recorded reattachment markers");
@@ -79,7 +79,16 @@ export function resolveAcceptedBinding(planned: PlannedProject, progress: Projec
  * current receipts and the original plan. A malformed current receipt otherwise stays unavailable.
  */
 export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectProgress, options: RecoveryGuidanceOptions = {}): RecordedPeerGuidance[] {
-  const instances = readInstanceConfig(planned.project.root).instances;
+  let instances: KindMap | undefined;
+  try { instances = readInstanceConfig(planned.project.root).instances; }
+  catch {
+    // ponytail: failed-config guidance shows at most 64 recorded extra ids, the declaration ceiling;
+    // share an exported instance limit if that ceiling grows. These rows confer no launch authority.
+    const base = peers(undefined), recorded = [...planned.terminals.map(value => (value as { peer?: unknown })?.peer),
+      ...Object.keys(progress.reattachments ?? {}), ...Object.keys(progress.terminals).filter(key => key.startsWith("restored:")).map(key => key.slice("restored:".length))];
+    const extra = [...new Set(recorded.filter((peer): peer is string => typeof peer === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(peer) && !base.includes(peer)))].slice(0, 64);
+    return [...base, ...extra].map(peer => ({ peer, note: `${peer}: recorded session identity unavailable; project instance configuration could not be read; inspect the retained recovery receipt before choosing a conversation` }));
+  }
   return peers(instances).map(peer => {
     const adapter = definitionOf(peer, instances)!;
     let session: { sessionId?: string; sessionFile?: string } | undefined;

@@ -1,5 +1,5 @@
 import { readInstanceConfig } from "../hub/instance-config.ts";
-import { instanceDefaultRoles } from "../hub/instances.ts";
+import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { activeLifecycleStages } from "../hub/lifecycle-schema.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName, type ProjectProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
@@ -47,8 +47,7 @@ function roles(): Record<string, string[]> {
   const configured = { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
   try {
     const declarations = readInstanceConfig(projectRoot).instances;
-    const defaults = instanceDefaultRoles(declarations);
-    for (const [id, declaration] of Object.entries(declarations ?? {})) configured[id] = [...(declaration.roles ?? configured[id] ?? configured[declaration.kind] ?? defaults[id] ?? [])];
+    for (const id of Object.keys(declarations ?? {})) configured[id] = effectiveInstanceRoles(id, declarations, configured);
   } catch { /* Invalid declarations authorize no extra role; the daemon remains the write authority. */ }
   return configured;
 }

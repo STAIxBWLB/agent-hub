@@ -114,6 +114,8 @@ export interface InstanceRoutingOptions {
   instances?: Readonly<Record<string, { kind: string }>>;
   wip?: Record<string, number>;
   load?: Record<string, number>;
+  /** Positive host verification of the live extra runtime's noncanonical execution root. */
+  ownerIsolation?: Readonly<Record<string, boolean>>;
 }
 const hasInstances = (opts: InstanceRoutingOptions): boolean => !!opts.instances && Object.keys(opts.instances).length > 0;
 function siblingOrder(states: Readonly<Record<string, PeerState>>, opts: InstanceRoutingOptions): (a: string, b: string) => number {
@@ -360,7 +362,6 @@ export function assign(
   const refusals = new Map<string, RoutingRefusal>();
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
-    if (instanceMode && !definitionOf(peer, opts.instances)) return deny("instance", "undeclared instance or unknown kind");
     if (role === "owner" && opts.capabilities && !pii) {
       const caps = peerEntry(opts.capabilities, peer);
       if (needsTests && !caps?.tests) return deny("tests", `missing tests: ${caps?.testsReason ?? "capability unavailable"}`);
@@ -372,6 +373,11 @@ export function assign(
     if (!Object.hasOwn(states, peer)) return deny("not-attached", "not attached");
     if (opts.exclude?.includes(peer)) return deny("excluded", "excluded (declined or replaced)");
     if (role === "owner" && opts.excludeOwners?.includes(peer)) return deny("owner-admission", "owner admission: WIP or delivery hold");
+    const adapter = definitionOf(peer, opts.instances);
+    if (role === "owner" && needsTests && adapter && adapter.kind !== peer) {
+      if (!peerEntry(opts.roles, peer)?.includes("implementer")) return deny("owner-admission", "owner admission: declared write owner requires the current implementer role");
+      if (peerEntry(opts.ownerIsolation, peer) !== true) return deny("owner-admission", "owner admission: declared write owner requires a verified isolated execution root");
+    }
     if (states[peer] === "offline") return deny("offline", "offline");
     if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return deny("paused", "paused");
     const failing = peerEntry(opts.failing, peer);

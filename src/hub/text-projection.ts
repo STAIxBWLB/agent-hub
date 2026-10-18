@@ -54,7 +54,7 @@ export class TextProjections {
   private readonly warned = new Set<string>();
   /** Inputs whose full-budget conversion failed: the same bytes under the same command are not converted again. */
   private readonly failed = new Set<string>();
-  constructor(private readonly options: { cwd: string; stateDir: string; config: ProjectionConfig; deny?: string[]; readAllow?: string[]; log?: (line: string) => void }) {
+  constructor(private readonly options: { cwd: string; projectRoot?: string; stateDir: string; config: ProjectionConfig; deny?: string[]; readAllow?: string[]; log?: (line: string) => void }) {
     // Rooted at an empty system directory, not the project. The project guarantee: project file data is denied, then the
     // snapshot, the argv-named program/script files and the directory listings above an in-project script are granted, so
     // no other project file is readable (system, toolchain, home and local.read_allow paths outside the project remain granted).
@@ -105,7 +105,9 @@ export class TextProjections {
     try {
       if (deadline !== undefined && (!Number.isFinite(deadline) || deadline <= performance.now())) throw new Error("projection deadline");
       const rawHash = createHash("sha1").update(bytes).digest("hex"), rawBlob = createHash("sha1").update("blob " + bytes.length + "\0").update(bytes).digest("hex");
-      const inputHash = hash(bytes), configHash = commandFingerprint(this.options.cwd, argv), key = hash(inputHash + "\n" + configHash + "\n" + ext);
+      const inputHash = hash(bytes), commandHash = commandFingerprint(this.options.cwd, argv);
+      const configHash = this.options.projectRoot === undefined ? commandHash : hash(commandHash + "\nproject-root:" + realPath(this.options.projectRoot));
+      const key = hash(inputHash + "\n" + configHash + "\n" + ext);
       const cacheDir = join(this.options.stateDir, "text-projections"), cache = join(cacheDir, key + ".json");
       try {
         const cached = boundedCache(cache);
@@ -121,7 +123,9 @@ export class TextProjections {
       // A read_allow entry may enclose the project. Seatbelt lets a later rule win only for the operation it names, so the
       // deny and the literal grants after it both name file-read-data. The converter runs in its scratch directory (getcwd
       // needs that directory's data), with its program and script arguments resolved to absolute paths.
-      const root = realPath(this.options.cwd), projectDeny = "\n(deny file-read-data (subpath " + sbplString(root) + "))";
+      const root = realPath(this.options.cwd), protectedRoot = realPath(this.options.projectRoot ?? this.options.cwd);
+      if (root !== protectedRoot && !root.startsWith(protectedRoot + "/")) throw new Error("execution root outside protected project");
+      const projectDeny = "\n(deny file-read-data (subpath " + sbplString(protectedRoot) + "))";
       const resolved = programFiles(this.options.cwd, argv);
       // A module loader lists the directories above its script: grant those listings (not their files) up to the root.
       const listings = new Set<string>();

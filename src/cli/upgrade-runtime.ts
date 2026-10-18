@@ -142,13 +142,19 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
 }
 
 /** Declared identities cannot be reinterpreted against an older running source's unbound peer rows. */
-export function instanceRecoverySourceRefusal(projectRoot: string, features: unknown): string | undefined {
-  if (!Object.keys(readInstanceConfig(projectRoot).instances ?? {}).length) return undefined;
+export function instanceRecoverySourceRefusal(projectRoot: string, features: unknown, observedPeers?: unknown): string | undefined {
+  const declared = Object.keys(readInstanceConfig(projectRoot).instances ?? {});
+  if (!declared.length) return undefined;
   if (Array.isArray(features) && features.every(feature => typeof feature === "string") && features.includes("peer_instances")) return undefined;
-  return "source lacks peer_instances support for this project's declared instances; restart the source with a supporting agent-hub version before retrying recovery; legacy peer identities were not reinterpreted";
+  if (observedPeers && typeof observedPeers === "object" && !Array.isArray(observedPeers)) {
+    const peers = Object.entries(observedPeers);
+    if (peers.every(([, peer]) => !!peer && typeof peer === "object" && typeof (peer as { state?: unknown }).state === "string") &&
+      !peers.some(([id, peer]) => declared.includes(id) && (peer as { state: string }).state !== "offline")) return undefined;
+  }
+  return "source lacks peer_instances support for this project's declared instances; restart the source with a supporting agent-hub version before retrying recovery; for a first upgrade, end any extra native sessions and temporarily remove the instance declarations, upgrade the source, then declare them again; legacy peer identities were not reinterpreted";
 }
 
-export async function inspectRecovery(project: Project, targetFeatures?: readonly string[]): Promise<Inspection> {
+export async function inspectRecovery(project: Project, targetFeatures?: readonly string[], purpose?: "cleanup"): Promise<Inspection> {
   // #226: the claim is judged by the registry as it is now, never by the plan's frozen copy, which holds the source's
   // pid from planning time (after a reboot another process may hold it). A registry that cannot be read throws: the
   // caller reads that as not inspected, never as stopped.
@@ -194,7 +200,7 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
     }
   }
   if (!status || !control) return { state: "unavailable", peers: [], blockers: ["authenticated source status unavailable"] };
-  const instanceRefusal = instanceRecoverySourceRefusal(project.root, status.features);
+  const instanceRefusal = purpose === "cleanup" ? undefined : instanceRecoverySourceRefusal(project.root, status.features, status.peers);
   if (instanceRefusal) return { state: "incompatible", instanceId: status.instanceId, version: status.version, protocol: status.protocol, peers: [], blockers: [instanceRefusal] };
   let response: any;
   try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId, ...(targetFeatures === undefined ? {} : { targetFeatures }) }, sourceProtocol ?? PROTOCOL); }
@@ -587,13 +593,16 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       }
       // Reuse capability proof only after verifying the cached root and digest still identify these exact bytes.
       const cached = op.targetDigest === target.digest && op.targetRoot === target.root;
+      // Once every source committed, compatibility cannot be re-applied using mutable project declarations.
+      // Package identity/hash and live-test authority above still bind these retained bytes.
+      if (cached && op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase))) {
+        return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
+      }
       if (cached && op.targetFeatures !== undefined) {
         if (!op.targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
         return { ...target, targetFeatures: [...op.targetFeatures] };
       }
-      // A legacy cached operation already past commit needs no capability proof to finish restoration (#215).
       // A prepared commitSent receipt remains uncertain and must still obtain proof before a possible commit.
-      if (cached && op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase))) return target;
       // Legacy uncommitted receipts acquire verified feature evidence before source compatibility checks.
       const probe = await run([process.execPath, "-e", `import * as target from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(JSON.stringify({protocol: target.PROTOCOL, features: target.DAEMON_FEATURES ?? []}))`]);
       let metadata: { protocol?: unknown; features?: unknown } | undefined;
@@ -946,7 +955,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       abandonRestartSnapshot(project.stateDir, op.id);
       const planned = op.plan.projects?.find(item => item.project.id === project.id);
       const progress = op.projects?.find(item => item.id === project.id);
-      const source = planned?.source.peers.find(peer => projectDefinition(peer.id, project.root)?.start.autoStart && peer.state !== "offline");
+      const source = planned?.source.peers.find(peer => definitionOf(peer.id)?.start.autoStart && peer.state !== "offline");
       if (source && progress) {
         // abandonRestartSnapshot is deliberately a no-op for another operation or an unreadable snapshot.
         // A continuity bookmark needs positive archival evidence, including when disposal resumes after a crash.

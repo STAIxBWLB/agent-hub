@@ -3578,6 +3578,18 @@ separate. The terminal grouping root may be only that project root or the
 verified execution directory; exact live launcher, handle, incarnation and
 worktree evidence is still required. Native kind metadata alone never binds an
 extra instance. Revoked declarations or changed directories refuse reuse.
+Effective roles resolve from declaration roles, exact-id policy roles, kind policy
+roles, then definition defaults; launch validation uses the same order.
+
+I2 recovery ceiling: a recovering extra Codex launcher records its launch row only
+after the authenticated start response supplies its execution-root binding. Until
+then, the coordinator retains durable pending terminal-creation and attachment-wait
+evidence; it never records an assumed checkout. Base Codex pre-start recording is
+unchanged. Earlier recording for extras requires independently verified exact-instance
+execution-root evidence. Past-commit resumes do not repeat pre-commit instance
+compatibility checks. Abort and stop-and-archive validate historical receipt structure
+and authenticated runtime ownership independently of mutable declarations; restore,
+fresh and reattach retain current declaration authority.
 
 Routing expands a kind preference to its declared members and considers idle
 state, board WIP and queued load with stable ties. Exact manual candidates,
@@ -3585,7 +3597,13 @@ reservations and nominations stay exact ids. Assignment and explain use the same
 pure decision and name the chosen instance. Reviewer independence compares
 families (the kind); an eligible other family takes precedence even when busy.
 Only when no other family is eligible may an assignment use its own family,
-recording `sameFamilyFallback=true` in assignment history.
+recording `sameFamilyFallback=true` in assignment history. This independence rule
+also applies to an explicit same-family reviewer nomination. A declared owner of
+implement, bulk-edit or test work requires the current implementer role and positive
+host evidence tied to the actual adapter generation started in a verified noncanonical
+worktree; a role-only reload cannot promote a canonical reviewer process. External
+ids, including console recipients, retain their existing admission and explicit
+nomination behavior without acquiring native metadata or automatic kind expansion.
 
 Quota readings, pause records and reset windows are shared by the definition's
 account (one account per kind in I2). Member telemetry retains its exact reporter
@@ -3605,7 +3623,10 @@ canonical checkout. New readers hydrate the same public turn shape from the
 receipt. An absent receipt preserves historical external-peer undo behavior;
 an existing receipt requires the current trusted declaration and the same
 validated root before context changes or file restoration. Pruning a turn also
-prunes its workspace receipt. Overlap refusal remains conservative across
+prunes its workspace receipt. Review projections resolve converter programs, task
+paths and private-path policy in the execution checkout while their sandbox denies
+other canonical project file data, including when read_allow encloses that project.
+Overlap refusal remains conservative across
 separate worktrees; it may refuse an undo rather than assume independence.
 
 The I2 seed contract amendment re-anchors only `roster-r-pi-override`,

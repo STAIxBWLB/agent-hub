@@ -39,6 +39,8 @@ export interface TasksDeps {
   routing: () => Routing;
   /** Startup-bound project declarations; routing never discovers instances from peer names. */
   instances?: () => InstancesConfig;
+  /** Host proof of each live extra runtime's actual isolated execution root; config paths alone are not proof. */
+  ownerIsolation?: () => Readonly<Record<string, boolean>>;
   cwd: string;
   project: string;
   profile?: ProfileName;
@@ -516,7 +518,7 @@ export class Tasks {
     const instances = this.d.instances?.();
     if (!instances || !Object.keys(instances).length) return {};
     const peers = [...new Set([...ADAPTERS.map(adapter => adapter.kind), ...Object.keys(instances), ...this.d.bus.peers.keys()])];
-    return { instances, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
+    return { instances, ownerIsolation: this.d.ownerIsolation?.() ?? {}, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
   }
 
   /** Peer health and roles the daemon feeds routing (issues #89, #90, #92): failing peers are skipped, held queues explained. */
@@ -530,10 +532,12 @@ export class Tasks {
 
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
   private requireCapabilities(task: Parameters<typeof assign>[0], peer: PeerId, role: TaskAssignmentRole = "owner", preEffect = true): void {
-    if (!this.d.capabilities || this.isPii(task)) return;
+    const instances = this.d.instances?.(), adapter = definitionOf(peer, instances);
+    const declaredExtra = !!adapter && adapter.kind !== peer;
+    if ((!this.d.capabilities || this.isPii(task)) && !declaredExtra) return;
     const { state: _state, ...draft } = task; // backlog/readiness must not bypass an explicit reservation's admission
     const admission = assign(draft, this.states(), this.d.routing(), { candidates: role === "owner" ? [peer] : [], ...(role === "owner" ? { namedOwner: peer } : { namedReviewer: peer }), ...this.weights(task.class) });
-    const missing = (admission.refusals ?? []).filter(row => row.peer === peer && row.role === role && (row.code === "tests" || row.code === "spec")).map(row => `  ${role} candidate ${peer}: skipped, ${row.reason}`);
+    const missing = (admission.refusals ?? []).filter(row => row.peer === peer && row.role === role && (row.code === "tests" || row.code === "spec" || declaredExtra && role === "owner" && row.code === "owner-admission")).map(row => `  ${role} candidate ${peer}: skipped, ${row.reason}`);
     if (missing.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot assign ${peer}: ${missing.join("; ")}`);
   }
 
