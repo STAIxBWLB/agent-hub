@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.35 and control protocol 16. Live verification
+This guide describes ahub 0.12.36 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -802,7 +802,13 @@ includes), read the check result, and list what is
 unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). A reviewer
 that missed the request, and the owner, read the done summary and check result
 with `hub_task_show {id}`: the task's public view with its history, as the
-conductor sees it, and only a stub for a PII task. Other peers are refused. The hub
+conductor sees it, and only a stub for a PII task. Other peers are refused. Each
+request also carries the hub's review brief for the task's commit: reviewable and
+excluded files with reasons, the `REVIEW.md` and `ahub-review-rules` rules read at
+the merge base, and a cross-check list; `ahub review brief <id>` prints it.
+`hub_review` takes `coverage {reviewed, skipped}`: in enforce an approval that leaves
+a reviewable path unaccounted is refused, and advise notes the gap in the verdict
+(#520). The hub
 records how each review turned out, per implementer, reviewer and class:
 approved; caught (changes were requested and the owner's redo was approved);
 contradicted (within a week, work on the same file or symbol failed its check
@@ -1785,6 +1791,7 @@ A Claude session started with `ahub claude` receives pushes when it is idle. Whi
 - `hub_inbox` reads the daemon queue (and any local failed-push buffer) in a channel session too. A read is one `completed` delivery, like a tools-only read; holds refuse it the same way.
 - An important message is pushed into the running turn (steered) instead of waiting for the turn to end. Mid-turn reading was verified on Claude Code 2.1.302; an older client that drops it leaves the delivery `accepted` until a person resolves it. Ordinary messages still wait for the idle push or `hub_inbox`.
 - Do not use `[FYI]` for PR ready, done, submitted, ruling-needed, blocker or changed-contract messages: they need action. `hub_task_done` and `hub_review` already notify their recipients.
+- Turn completion is read from the transcript's last 4 MiB, whatever its size. When a Stop cannot be confirmed there, the console says once per turn that the peer stays busy and its messages wait in its queue (#517).
 
 ## Graceful shutdown
 
@@ -1971,21 +1978,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.35), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.36), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.35 ahub upgrade --to 0.12.35 --dry-run
-bunx --package @staix/agent-hub@0.12.35 ahub upgrade --to 0.12.35 --yes
+bunx --package @staix/agent-hub@0.12.36 ahub upgrade --to 0.12.36 --dry-run
+bunx --package @staix/agent-hub@0.12.36 ahub upgrade --to 0.12.36 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.35 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.36 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -2017,14 +2024,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.35 --dry-run
+ahub upgrade --to 0.12.36 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.35 --yes
+ahub upgrade --to 0.12.36 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -3056,7 +3063,7 @@ that the file is untracked; a dropped value is reported by the settings result.
 
 ## SDLC artifact receipts and gates
 
-The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. S1-S7 and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
+The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). S2-S7, S11 and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
 ## Optional Qwen Code peer
 
 Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
@@ -3084,7 +3091,7 @@ Qwen controlled recovery and automatic crash resume load the recorded conversati
 
 ## Optional Jcode peer
 
-Use ahub roster add jcode, then ahub jcode --mode headless [--model <alias>] [--provider-profile <name>]. The launcher reads roster membership from the hub's status reply; a hub older than 0.12.35 does not send it, so the launcher stops with an upgrade-or-restart remedy and starts nothing (#484). The person launcher configures only agent-hub-jcode in .jcode/mcp.json; run ahub init afterwards to ignore the untracked machine-path file. Conductor/dashboard starts read that entry without editing it. Preview starts nothing, and ahub stop jcode stops only the owned private daemon/ACP groups. jcode_cmd, jcode_home and jcode_provider_profile are machine-local and never editable from settings.
+Use ahub roster add jcode, then ahub jcode --mode headless [--model <alias>] [--provider-profile <name>]. The launcher reads roster membership from the hub's status reply; a hub older than 0.12.35 does not send it, so the launcher stops with an upgrade-or-restart remedy and starts nothing (#484). The person launcher configures only agent-hub-jcode in .jcode/mcp.json; run ahub init afterwards to ignore the untracked machine-path file. It writes the plugin bundle the running hub reports in `status`, so a CLI from another install no longer leaves a stale entry; `ahub kimi` does the same for Kimi's TUI entry (#502). Conductor/dashboard starts read that entry without editing it. Preview starts nothing, and ahub stop jcode stops only the owned private daemon/ACP groups. jcode_cmd, jcode_home and jcode_provider_profile are machine-local and never editable from settings.
 
 After upgrading to the recipient-retry release, a Jcode project MCP entry written before `AGENTHUB_DELIVERY_ONLY` was added is intentionally stale. Once per project, the person runs `ahub jcode --mode headless` before using conductor/dashboard starts. The launcher rewrites only the owned entry with the delivery-only marker, preserving foreign entries and refusing collisions; recovery relaunches already use this CLI path. Readiness checks never rewrite the file, and an explicit false marker or any other drift remains refused. Until that rewrite, daemon starts keep their actionable stale-entry refusal rather than advertising a retry tool Jcode cannot use.
 
@@ -3270,7 +3277,9 @@ Capacity defaults to one per peer. `ahub settings set tasks.wip_limits.codex 2`
 uses the existing machine-local registry path; integers 0..32 apply at hub start,
 with 0 disabling planner admission for that peer. Stored pending values and
 effective runtime limits remain distinct. Status and the agent legend count
-owned unfinished work plus unowned planner-pull reservations.
+owned unfinished work plus unowned planner-pull reservations. The same limit gates
+acceptance and self-claim in every lifecycle mode, so 0 refuses new acceptances; a
+current owner's redo of sent-back work keeps its slot (#481 S9).
 
 Pending unowned, unstarted pull can be undone at its latest owned revision via
 `hub_backlog_undo` or the existing planning undo control, restoring its earlier

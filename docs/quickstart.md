@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.35
+bun add -g github:STAIxBWLB/agent-hub#v0.12.36
 ahub setup
 ```
 
@@ -30,17 +30,15 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to 0.12.35
+## Upgrading to 0.12.36
 
-A Claude session started with `ahub claude` now gets its hub messages while it is busy (#493). Its tool results report how many queued and important messages wait, `hub_inbox` reads the daemon queue even in a channel session, and an important message reaches the running turn instead of waiting for the turn to end. Nothing needs configuring. A Claude session keeps the plugin server it started with, so restart it after the upgrade to get this. `ahub jcode` no longer refuses every start as off roster (#484).
+Restart Claude sessions after upgrading: each keeps the plugin server it started with, and `hub_review` now takes `coverage`. Every review request carries a review brief the hub builds from the task's commit: reviewable files, excluded ones (`linguist-generated` in `.gitattributes`, lockfiles, binaries) and rules from `REVIEW.md` or an `ahub-review-rules` attribute, read at the merge base. `ahub review brief <id>` prints it (#520).
 
-If `.agenthub/sdlc.toml` sets `workflow` or names a `phase` gate, `hub.log` now warns: remove `workflow`, rename the gate to `criteria`, and record `criteria` receipts, because 0.13.0 refuses all three. An enabled lifecycle now shows playbook stages, and stored `implement`/`verify` receipts read as `build`/`test` (#481).
+WIP admission now applies in every lifecycle mode, `off` included: an owner at its WIP limit (default one open task per peer) cannot accept or claim another task, while a redo of its own sent-back work keeps its slot. Raise it with `ahub settings set tasks.wip_limits.<peer> N` (see [operations](operations.md) for when it applies); a limit of 0 refuses every new acceptance for that peer (#481 S9).
 
-To run extra peer instances, declare them in `.agenthub/config.local.json` after upgrading and restart the hub; an extra implementer needs an existing registered worktree at `.worktrees/<id>` with a branch (#450 I2). See [operations](operations.md).
+Only in `enforce`: build work needs the person's `ahub sdlc accept <task> --issue <n>` and a current plan review (`hub_plan_review`, or `ahub sdlc plan-review`); an approval must account for every reviewable path of the brief; and a review request waits for the PR head, green required checks and answered bot threads. `advise` reports the same gaps; `off` adds none (#481, #520).
 
-The upgrade runs with the target release's own coordinator, so an upgrade from 0.12.32 with cancelled tasks and a managed terminal, or with a notice the target sends right after it starts, no longer blocks (#478). If the operation blocks because a restored Codex, Claude or Pi terminal disappeared, the person runs `ahub recovery reattach <operation-id> codex|claude|pi` to relaunch that peer with its recorded session (one relaunch per receipt), then `ahub recovery resume` to finish.
-
-A task now moves to another peer after the third consecutive `changes_requested` instead of the second (#488). To keep the old threshold, run `ahub settings set tasks.escalate_after 2` in a terminal (1 to 10, applies at the next verdict), or set `"tasks": { "escalate_after": 2 }` in `.agenthub/config.json`. In `ask-when-needed`, Claude, Pi and `local` now ask before writing under `.agent`, `_agents`, `_agent`, `.gemini` or `.grok`, like other agent configuration (#485).
+If the daemon refused a Jcode or Kimi TUI entry as stale because the CLI on PATH and the running hub came from different installs, run `ahub jcode --mode headless` or `ahub kimi` again (#502). For a second Claude session as reviewer or planner, or a headless Claude reviewer, see [instances](operations.md#additional-headless-peer-instances). A Claude session whose transcript passed 32 MiB no longer stays busy after its turns end (#517).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
