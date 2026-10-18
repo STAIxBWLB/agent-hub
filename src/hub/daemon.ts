@@ -2152,6 +2152,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return extra ? `${result}\n${extra}` : result;
       }
       case "hub_sdlc_record":
+        await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(tasks.recordLifecycle(by, a.id, a.receipt));
       case "hub_review":
         return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head));
@@ -5210,8 +5211,12 @@ export async function startDaemon(opts: DaemonOptions) {
           const task = board.get(msg.id);
           const repo = msg.repo ?? task?.sdlc?.repo;
           if (!task || typeof repo !== "string") return void reply({ ok: false, error: task ? "spec acceptance needs --repo owner/repository (the task's receipt names none)" : "invalid lifecycle task id" });
+          const linked = `${task.sdlc?.repo ?? ""}#${task.sdlc?.issue ?? ""}`;
           void readSpecEdit(repo, msg.issue, (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound)).then(edit => {
             if (!edit) return reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" });
+            // The readback is for the receipt read before it; a relink meanwhile makes it someone else's evidence.
+            const now = board.get(msg.id)?.sdlc;
+            if (`${now?.repo ?? ""}#${now?.issue ?? ""}` !== linked) return reply({ ok: false, error: "the task's spec link changed during the readback; nothing was recorded, run ahub sdlc accept again" });
             try { const next = tasks.acceptSpec(USER, msg.id, { repo, issue: msg.issue, edit }); reply({ ok: true, acceptance: next.sdlc?.acceptance }); }
             catch (error) { reply({ ok: false, error: (error as Error).message }); }
           }, () => reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" }));

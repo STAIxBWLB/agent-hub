@@ -77,6 +77,20 @@ test("enforce refuses a build stage change without acceptance from the owner, ne
   expect(r.tasks.recordLifecycle(USER, r.id, { stage: "build" }).sdlc?.stage).toBe("build");
 });
 
+test("an owner's build stage change re-reads the body edit time; other stages and the person are not gated", async () => {
+  const r = rig("enforce");
+  r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
+  await expect(r.tasks.specStageGate("codex", r.id, { stage: "build" })).rejects.toThrow("spec acceptance missing");
+  await r.acceptSpec();
+  await r.tasks.specStageGate("codex", r.id, { stage: "build" });
+  r.issue.lastEditedAt = LATER; // a body edit after acceptance: the synchronous gate alone sees only "unknown"
+  await expect(r.tasks.specStageGate("codex", r.id, { stage: "build" })).rejects.toThrow("spec changed after acceptance");
+  await expect(r.tasks.specStageGate("codex", r.id, { stage: "implement" })).rejects.toThrow("spec changed after acceptance");
+  await r.tasks.specStageGate("codex", r.id, { stage: "review" });
+  await r.tasks.specStageGate(USER, r.id, { stage: "build" });
+  expect(rig("advise").tasks.specStageGate("codex", 1, { stage: "build" })).resolves.toBeUndefined();
+});
+
 test("advise only notifies, off reads nothing, and non-build classes are not gated", async () => {
   const advise = rig("advise");
   expect((await advise.accept()).state).toBe("in_progress");

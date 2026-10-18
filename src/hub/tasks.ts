@@ -1941,6 +1941,20 @@ export class Tasks {
     this.d.notify(this.specText(task, state, "advice"));
   }
 
+  /** #481 S1: a build stage change by an agent in enforce re-reads the body edit time first, as accept does. */
+  async specStageGate(by: PeerId, id: unknown, input: unknown): Promise<void> {
+    const task = this.need(id, false, true), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    if (config.mode !== "enforce" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
+    let next: ReturnType<typeof sdlcReceipt>;
+    try { next = sdlcReceipt(input, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
+    const definition = stageDefinition(config, next.stage);
+    if (next.stage === task.sdlc?.stage || !definition || canonicalStage(definition.base) !== "build") return;
+    const accepted = next.acceptance;
+    const edit = accepted && !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
+    const state = next.issue ? specState(next, edit) : "missing";
+    if (state !== "current") throw new PreEffectToolRefusal(this.specText(task, state, "blocked"));
+  }
+
   private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<void> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
