@@ -1,4 +1,5 @@
 import { resolveAcceptedBinding } from "./recovery-guidance.ts";
+import { claudeStateFile } from "../hub/claude-state.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
@@ -265,21 +266,21 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         if (recorded?.state === "unknown") {
           // An unreadable launcher is never gone (#215): whether the session is managed cannot be told.
           delete peer.sessionId;
-          blockers.push(`claude: ${recorded.record ? `the launcher recorded in terminal ${recorded.record.handle}` : recorded.invalidRow ? "a launch record in terminal-recovery.json that may be its launcher's" : "the launcher record (terminal-recovery.json)"} cannot be read, so whether the attached session is managed is unknown; manual-required; next action: make it readable (or end that session and close its terminal), then make a new plan`);
+          blockers.push(`${peer.id}: ${recorded.record ? `the launcher recorded in terminal ${recorded.record.handle}` : recorded.invalidRow ? "a launch record in terminal-recovery.json that may be its launcher's" : "the launcher record (terminal-recovery.json)"} cannot be read, so whether the attached session is managed is unknown; manual-required; next action: make it readable (or end that session and close its terminal), then make a new plan`);
           continue;
         }
         const launcher = recorded?.state === "live" ? recorded.record! : undefined;
         if (!launcher) {
           delete peer.sessionId;
           if (source.protocol === PROTOCOL) reconnectOnly.push(peer.id);
-          else blockers.push(`claude: unmanaged session (no live ahub claude launcher recorded) runs a protocol-${source.protocol} plugin and cannot reconnect to a protocol-${PROTOCOL} hub; next action: end that Claude session, or relaunch it with ahub claude in an Orca terminal, then make a new plan`);
+          else blockers.push(`${peer.id}: unmanaged session (no live ahub claude launcher recorded) runs a protocol-${source.protocol} plugin and cannot reconnect to a protocol-${PROTOCOL} hub; next action: end that Claude session, or relaunch it with ahub claude in an Orca terminal, then make a new plan`);
           continue;
         }
         let record: { instanceId?: unknown; launchId?: unknown; sessionId?: unknown } | undefined;
-        try { record = JSON.parse(readFileSync(join(project.stateDir, "claude-session.json"), "utf8")); } catch { /* no record: the id check below reports it */ }
+        try { record = JSON.parse(readFileSync(join(project.stateDir, claudeStateFile("claude-session", peer.id)), "utf8")); } catch { /* no record: the id check below reports it */ }
         if (peer.sessionId && (record?.instanceId !== source.instanceId || record?.launchId !== launcher.launchId || record?.sessionId !== peer.sessionId)) {
           delete peer.sessionId;
-          blockers.push(`claude: the recorded session was not written by the live launcher in terminal ${launcher.handle}; manual-required; next action: close any other Claude session in this project, send one message in that terminal, then make a new plan`);
+          blockers.push(`${peer.id}: the recorded session was not written by the live launcher in terminal ${launcher.handle}; manual-required; next action: close any other Claude session in this project, send one message in that terminal, then make a new plan`);
           continue;
         }
       }
@@ -340,7 +341,8 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
 export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string, clock?: Pick<RecoveryDriver, "now" | "sleep">): RecoveryDriver {
   const now = clock?.now ?? (() => Date.now());
   const sleep = clock?.sleep ?? ((ms: number) => Bun.sleep(ms));
-  const env = (op: RecoveryOperation, project?: Project): NodeJS.ProcessEnv => {
+  /** `only`: one binding's native profile, for a command run once per profile (#450 I3: Claude instances may differ). */
+  const env = (op: RecoveryOperation, project?: Project, only?: TerminalBinding): NodeJS.ProcessEnv => {
     const value = { ...process.env };
     // Do not carry one project's gateway, auth overrides or unattended mode into another.
     for (const key of Object.keys(value)) if (key.startsWith("AGENTHUB_") || key.startsWith("OMNIROUTE_") || key.startsWith("CF_ACCESS_") ||
@@ -352,7 +354,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       value.AGENTHUB_PROJECT_DIR = project.root; value.AGENTHUB_STATE_DIR = project.stateDir;
       delete value.CODEX_HOME; delete value.CLAUDE_CONFIG_DIR;
       const bindings = op.plan.projects.find((p) => p.project.id === project.id)?.terminals as TerminalBinding[] | undefined;
-      for (const binding of bindings ?? []) {
+      for (const binding of only ? [only] : bindings ?? []) {
         // Preserve the captured legacy profile for terminal bindings without a dedicated native config variable.
         const key = projectDefinition(binding.peer, binding.projectRoot)?.session.configDirEnv ?? "CLAUDE_CONFIG_DIR";
         if (binding.launch.env[key]) value[key] = binding.launch.env[key];
@@ -360,9 +362,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     }
     return value;
   };
-  const command = async (op: RecoveryOperation, args: string[], project?: Project) => {
+  const command = async (op: RecoveryOperation, args: string[], project?: Project, only?: TerminalBinding) => {
     const result = await run([process.execPath, join(op.targetRoot!, "src/cli/main.js"), ...(project ? ["--project", project.root] : []), ...(liveTestPeer ? ["--live-test"] : []), ...args],
-      { env: env(op, project), cwd: project?.root ?? op.plan.projects[0]!.project.root, timeoutMs: 180_000 });
+      { env: env(op, project, only), cwd: project?.root ?? op.plan.projects[0]!.project.root, timeoutMs: 180_000 });
     if (result.code !== 0) throw new Error(`target command ${args[0]} failed; inspect recovery state before retrying`);
     return result;
   };
@@ -927,12 +929,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     installPlugin: async (op) => {
       const configured = new Set<string>();
       for (const planned of op.plan.projects) {
-        const binding = (planned.terminals as TerminalBinding[]).find((t) => projectDefinition(t.peer, t.projectRoot)?.transport === "claude-channel");
-        if (!binding) continue;
-        const profile = binding.launch.env.CLAUDE_CONFIG_DIR ?? "default";
-        if (configured.has(profile)) continue;
-        await command(op, ["setup", "--yes"], planned.project);
-        configured.add(profile);
+        // Every Claude binding (the builtin and each instance), once per distinct profile, each under its own profile.
+        for (const binding of (planned.terminals as TerminalBinding[]).filter((t) => projectDefinition(t.peer, t.projectRoot)?.transport === "claude-channel")) {
+          const profile = binding.launch.env.CLAUDE_CONFIG_DIR ?? "default";
+          if (configured.has(profile)) continue;
+          await command(op, ["setup", "--yes"], planned.project, binding);
+          configured.add(profile);
+        }
       }
       if (!configured.size) await command(op, ["setup", "--yes"]);
     },
@@ -1002,7 +1005,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           // #64: the restore gate already accepted a fresh session when the original never
           // persisted a transcript. Re-derive persistence from the binding exactly like that
           // gate did, so a first turn landing after the plan was made keeps the check strict.
-          const binding = (planned.terminals as TerminalBinding[]).find((t) => projectDefinition(t.peer, t.projectRoot)?.transport === "claude-channel");
+          const binding = (planned.terminals as TerminalBinding[]).find((t) => t.peer === old.id && projectDefinition(t.peer, t.projectRoot)?.transport === "claude-channel");
           if (recordedOnly || !binding || binding.sessionId !== old.sessionId || !nativeZeroTurn(planned.project.stateDir, binding, "verify")) throw nativeFailure(planned, old.id, "session_changed", "Claude resumed a different conversation", { ...(old.sessionId ? { expectedSession: old.sessionId } : {}), ...(peer.sessionId ? { observedSession: peer.sessionId } : {}) });
         }
         if (projectDefinition(old.id, planned.project.root)?.session.launchRecord && projectDefinition(old.id, planned.project.root)?.session.crashIdentity && (peer.sessionId !== old.sessionId || (old.sessionFile && peer.sessionFile !== old.sessionFile))) throw nativeFailure(planned, old.id, "session_changed", "Pi resumed a different conversation", { ...(old.sessionId ? { expectedSession: old.sessionId } : {}), ...(peer.sessionId ? { observedSession: peer.sessionId } : {}) });

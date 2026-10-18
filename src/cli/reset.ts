@@ -10,6 +10,8 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "../hub/db-timeout.ts";
 
 /** Agent session resume pointers. `pi-sessions/` holds Pi transcripts, history rather than pointers, and stays. */
 export const SESSION_POINTERS = ["sessions.json", "claude-session.json", "claude-context.json"];
+/** The fixed pointers plus each Claude instance's own session and context files (#450 I3). */
+const sessionPointers = (stateDir: string): string[] => [...SESSION_POINTERS, ...(existsSync(stateDir) ? readdirSync(stateDir).filter(name => /^claude-(session|context)\.[a-z][a-z0-9-]{0,31}\.json$/.test(name)) : [])];
 /** What a running daemon publishes; a daemon that did not stop cleanly (crash, SIGKILL, forced exit) leaves it. */
 export const MANIFEST = ["status.json", "control-token", "hub.pid"];
 
@@ -51,7 +53,7 @@ const shaped = (ok: boolean, what: string) => { if (!ok) throw new Error(`invali
 /** What a reset would act on, read from the state directory without changing it (hub.db opened read-only). */
 export function planReset(stateDir: string, projectId: string): ResetPlan {
   const plan: ResetPlan = { queued: [], needsReview: [], inFlight: [], manualHolds: [], budgetPauses: [], conductorHolds: [],
-    sessionPointers: SESSION_POINTERS.filter((name) => existsSync(join(stateDir, name))), entries: existsSync(stateDir) ? readdirSync(stateDir).length : 0 };
+    sessionPointers: sessionPointers(stateDir).filter((name) => existsSync(join(stateDir, name))), entries: existsSync(stateDir) ? readdirSync(stateDir).length : 0 };
   const file = join(stateDir, "hub.db");
   if (!existsSync(file)) return plan;
   // A read-only open of a WAL database creates hub.db-wal and -shm when the last writer's close removed them (Linux),
@@ -143,7 +145,7 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
       })();
     } finally { db.close(); }
   }
-  for (const name of SESSION_POINTERS) rmSync(join(stateDir, name), { force: true });
+  for (const name of sessionPointers(stateDir)) rmSync(join(stateDir, name), { force: true });
   // The caller has checked that no daemon behind these is alive or uncertain: they are a crashed run's leftovers.
   const stale = MANIFEST.filter((name) => existsSync(join(stateDir, name)));
   for (const name of stale) rmSync(join(stateDir, name), { force: true });

@@ -44,12 +44,22 @@ var __esm = (fn, res, err) => () => {
   return res;
 };
 
+// src/hub/claude-state.ts
+function claudeStateFile(base, peer) {
+  return peer.includes("-") && PEER.test(peer) ? `${base}.${peer}.json` : `${base}.json`;
+}
+var PEER;
+var init_claude_state = __esm(() => {
+  PEER = /^[a-z][a-z0-9-]{0,31}$/;
+});
+
 // src/adapters/definitions/native-cli-entry-claude.ts
 import { readFileSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
+  const peer = ctx.instance ?? "claude";
   const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
@@ -61,7 +71,7 @@ async function runClaudeEntry(ctx) {
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+    const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
     if (!terminal)
       process.env.AGENTHUB_LAUNCH_ID = randomUUID();
   }
@@ -74,20 +84,22 @@ async function runClaudeEntry(ctx) {
   const facts = claudeObservationHooks(projectConfig(), { script: join(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8"));
+    previousLaunch = JSON.parse(readFileSync(join(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
   const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
     if (control?.instanceId) {
-      launchRecord = { instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
+      launchRecord = { ...ctx.instance ? { peer } : {}, instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
       recordClaudeLaunch(stateDir, launchRecord);
       cleanupStaleClaudeSettings(stateDir, previousLaunch);
     }
     if (launch.warning)
       console.error(launch.warning);
     const env = nativeLaunchEnv("claude", childEnv());
+    if (ctx.instance)
+      env.AGENTHUB_PEER_ID = peer;
     result = await runClaudeLaunch(launch, { cwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...launchRecord ? { record: launchRecord } : {} });
   } finally {
     cleanupClaudeSettings(stateDir, launch.settingsFile);
@@ -96,7 +108,9 @@ async function runClaudeEntry(ctx) {
     fail(`cannot run ${launch.cmd}: ${result.error.message}`);
   process.exit(result.status ?? 1);
 }
-var init_native_cli_entry_claude = () => {};
+var init_native_cli_entry_claude = __esm(() => {
+  init_claude_state();
+});
 
 // src/adapters/definitions/native-cli-entry-codex.ts
 async function runCodexEntry(ctx) {
@@ -6785,7 +6799,7 @@ function catalogAssignments(raw) {
     throw new Error("catalog_roles must be a bounded peer map");
   const out = Object.create(null);
   for (const [peer, ids] of Object.entries(raw)) {
-    if (!PEER.test(peer) || ["user", "hub", "digest"].includes(peer) || !Array.isArray(ids) || ids.length > 2 || new Set(ids).size !== ids.length || ids.some((id) => typeof id !== "string" || !ID.test(id)))
+    if (!PEER2.test(peer) || ["user", "hub", "digest"].includes(peer) || !Array.isArray(ids) || ids.length > 2 || new Set(ids).size !== ids.length || ids.some((id) => typeof id !== "string" || !ID.test(id)))
       throw new Error("catalog_roles takes at most two distinct role ids per peer");
     out[peer] = [...ids];
   }
@@ -6812,7 +6826,7 @@ function catalogSection(roles) {
 
 `);
 }
-var ROLE_SECTIONS, BASES2, CLASSES2, ID, PEER;
+var ROLE_SECTIONS, BASES2, CLASSES2, ID, PEER2;
 var init_roles = __esm(() => {
   init_envelope();
   init_shipped_roles();
@@ -6820,7 +6834,7 @@ var init_roles = __esm(() => {
   BASES2 = ["planner", "implementer", "verifier", "reviewer"];
   CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   ID = /^[a-z][a-z0-9-]{0,47}$/;
-  PEER = /^[a-z][a-z0-9-]{0,31}$/;
+  PEER2 = /^[a-z][a-z0-9-]{0,31}$/;
 });
 
 // src/hub/profiles.ts
@@ -7785,6 +7799,7 @@ function sessionSettings(tee, facts) {
 }
 var CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub", UNATTENDED_WARNING = "WARNING: --unattended disables permission prompts. Other agents' messages are untrusted input and this agent will act on its own judgment without asking you.", sh = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 var init_launch2 = __esm(() => {
+  init_claude_state();
   init_process_signature();
   init_project();
   init_child_process();
@@ -16045,8 +16060,16 @@ function validateInstances(raw) {
       return fail(`${path}.kind`, "unknown native kind");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
       return fail(path, "id must be <kind>-<name>");
-    if (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp))
-      return fail(`${path}.kind`, "unsupported in I2; a headless factory with env or ACP-session identity is required, not channel-only or project-file identity");
+    const channel = definition.identity.mcp === "channel-plugin";
+    if (!channel && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp)))
+      return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
+    if (channel) {
+      if (entry.start_mode || entry.worktree)
+        return fail(path, "a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported");
+      const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+      if (!declared.length || declared.some((role) => role !== "reviewer" && role !== "planner"))
+        return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+    }
     const value = { kind };
     if (entry.roles) {
       value.roles = roles(entry.roles.value, `${path}.roles`);

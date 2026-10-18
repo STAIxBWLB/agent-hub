@@ -20,6 +20,7 @@ import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
+import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
@@ -69,7 +70,7 @@ import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
-import { closeSync, constants as fsConstants, openSync, readSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
@@ -603,6 +604,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
   const declarations = validateInstances(loadedConfig.instances);
   const extraIds = Object.keys(declarations);
+  // #450 I3: channel extras (Claude) attach from the person's terminal; the hub never starts them and their hello is admitted.
+  const channelExtras = extraIds.filter(id => instanceDefinitionOf(id, declarations)?.identity.mcp === "channel-plugin");
+  // Every Claude-family peer whose own state files the daemon reads: the builtin channel kinds, then their declared instances.
+  const channelPeers = [...ADAPTERS.filter(definition => definition.identity.mcp === "channel-plugin").map(definition => definition.kind), ...channelExtras];
   const executionRoots = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string }>();
   const roles = { ...loadedConfig.roles };
@@ -611,7 +616,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const instancePermissionSources: NonNullable<HubConfig["permission_default_sources"]> = {};
   for (const [id, declaration] of Object.entries(declarations)) {
     roles[id] = effectiveInstanceRoles(id, declarations, loadedConfig.roles);
-    startModesFromInstances[id] = { start_mode: "headless" };
+    if (!channelExtras.includes(id)) startModesFromInstances[id] = { start_mode: "headless" };
     if (declaration.permission_mode !== undefined) {
       permissionModesFromInstances[id] = declaration.permission_mode;
       instancePermissionSources[id] = { mode: declaration.permission_mode, source: ".agenthub/config.local.json" };
@@ -627,10 +632,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const definitionOf = (peer: string) => instanceDefinitionOf(peer, declarations);
   const KNOWN_PEERS: readonly string[] = [...BASE_KNOWN_PEERS, ...extraIds];
   const SUPPORTED_PEERS: readonly string[] = [...BASE_SUPPORTED_PEERS, ...extraIds];
-  const STARTABLE_PEERS: readonly string[] = [...BASE_STARTABLE_PEERS, ...extraIds];
+  const STARTABLE_PEERS: readonly string[] = [...BASE_STARTABLE_PEERS, ...extraIds.filter(id => !channelExtras.includes(id))];
   const isSupportedPeer = (peer: unknown): peer is string => typeof peer === "string" && definitionOf(peer) !== undefined;
-  const isStartablePeer = (peer: unknown): peer is string => typeof peer === "string" && definitionOf(peer)?.start.conductorStartable === true;
-  const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...extraIds]);
+  const isStartablePeer = (peer: unknown): peer is string => typeof peer === "string" && !channelExtras.includes(peer) && definitionOf(peer)?.start.conductorStartable === true;
+  const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...extraIds.filter(id => !channelExtras.includes(id))]);
   const SETTINGS = projectSettings(declarations);
   const settingDef = (key: unknown) => instanceSettingDef(key, declarations);
   const accountOf = (peer: string) => definitionOf(peer)?.budget?.account ?? peer;
@@ -1547,8 +1552,8 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch { /* no transcript yet: no readback */ }
   };
   /** Claude's transcript for this session: the one the status line reported, or the hook's own, inside Claude's projects. */
-  const claudeTranscript = (sessionId: string | undefined, fromHook: unknown): string | undefined => {
-    const reported = claudeSession();
+  const claudeTranscript = (sessionId: string | undefined, fromHook: unknown, peer = "claude"): string | undefined => {
+    const reported = claudeSession(peer);
     if (reported.transcriptPath && (!sessionId || reported.sessionId === sessionId)) return reported.transcriptPath;
     if (!sessionId || typeof fromHook !== "string" || !isAbsolute(fromHook) || basename(fromHook) !== `${sessionId}.jsonl`) return undefined;
     try {
@@ -1615,7 +1620,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const contextSession = (peer: PeerId): string | undefined => {
     const p = bus.peers.get(peer);
     if (p instanceof WsPeer && p.claiming) return undefined;
-    if (definitionOf(peer)?.turnEnd === "native-hook") { const c = claudeSession(); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
+    if (definitionOf(peer)?.turnEnd === "native-hook") { const c = claudeSession(peer); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
     if (p instanceof CodexPeer) return p.thread || undefined;
     if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
@@ -1829,7 +1834,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   // Claude's numbers arrive through the status line tee `ahub claude` installs (src/cli/statusline-tee.ts).
   let claudeUsageSeen = 0;
-  let claudeContextSeen = "";
+  const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
   const intervals = [
     setInterval(() => {
@@ -1861,16 +1866,16 @@ export async function startDaemon(opts: DaemonOptions) {
           for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "context", peer, reading }));
         }
       }
-      try {
-        const file = join(opts.stateDir, "claude-context.json");
+      for (const claudePeer of channelPeers) try {
+        const file = join(opts.stateDir, claudeStateFile("claude-context", claudePeer));
         const payload = readFileSync(file, "utf8");
-        if (payload === claudeContextSeen) return;
+        if (payload === claudeContextSeen.get(claudePeer)) continue;
         const c = JSON.parse(payload);
-        const session = claudeSession();
-        if (c.instanceId !== instanceId || !session.sessionId || c.sessionId !== session.sessionId || c.launchId !== session.launchId || !["idle", "busy", "paused"].includes(bus.stateOf("claude"))) return;
-        claudeContextSeen = payload;
-        const bound = contextSession("claude");
-        if (bound) contexts.report("claude", claudeContext(c.context, bound, c.at), bound);
+        const session = claudeSession(claudePeer);
+        if (c.instanceId !== instanceId || !session.sessionId || c.sessionId !== session.sessionId || c.launchId !== session.launchId || !["idle", "busy", "paused"].includes(bus.stateOf(claudePeer))) continue;
+        claudeContextSeen.set(claudePeer, payload);
+        const bound = contextSession(claudePeer);
+        if (bound) contexts.report(claudePeer, claudeContext(c.context, bound, c.at), bound);
       } catch { /* absent or unreadable native telemetry is unknown */ }
     }, 1000),
     setInterval(() => budget.tick(), 30_000),
@@ -2351,19 +2356,20 @@ export async function startDaemon(opts: DaemonOptions) {
         // #64: a Claude session that never persisted a transcript cannot be resumed, so the
         // restore gate accepted a fresh session and nothing it stood for is lost. Snapshots
         // written before this flag existed are re-derived from disk.
-        const unpersistedClaude = definitionOf(saved.id)?.session.missingEvidence === "transcript" && (saved.sessionPersisted === false || (saved.sessionPersisted === undefined && !claudeTranscriptPersisted(saved.sessionId)));
+        const unpersistedClaude = definitionOf(saved.id)?.session.missingEvidence === "transcript" && (saved.sessionPersisted === false || (saved.sessionPersisted === undefined && !claudeTranscriptPersisted(saved.id, saved.sessionId)));
         if (!unpersistedClaude && !waived()) return false;
       }
       return true;
     });
   };
-  const claudeSession = (): { sessionId?: string; transcriptPath?: string; launchId?: string } => {
+  /** #450 I3: each Claude peer (claude and every claude-<name> instance) has its own session and launch files. */
+  const claudeSession = (peer = "claude"): { sessionId?: string; transcriptPath?: string; launchId?: string } => {
     try {
-      const value = JSON.parse(readFileSync(join(opts.stateDir, "claude-session.json"), "utf8"));
+      const value = JSON.parse(readFileSync(join(opts.stateDir, claudeStateFile("claude-session", peer)), "utf8"));
       if (value.instanceId !== instanceId) return {};
       let currentLauncher = false;
       try {
-        const launch = JSON.parse(readFileSync(join(opts.stateDir, "claude-launch.json"), "utf8"));
+        const launch = JSON.parse(readFileSync(join(opts.stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
         if (launch.instanceId === instanceId && typeof launch.launchId === "string" && launch.launchId) {
           currentLauncher = true;
           if (value.launchId !== launch.launchId) return {};
@@ -2371,7 +2377,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { /* older/manual launches retain the existing instance fence */ }
       try {
         const records = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
-        const current = Array.isArray(records) ? records.find((row) => typeof row?.peer === "string" && definitionOf(row.peer)?.transport === "claude-channel" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId) : undefined;
+        const current = ownTerminalRow(records, peer, opts.cwd, instanceId);
         if (!currentLauncher && current?.launchId && value.launchId !== current.launchId) return {};
       } catch { /* no managed terminal record: the instance fence is still enforced */ }
       return {
@@ -2429,33 +2435,30 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   /** Claude persists projects/<slug>/<sessionId>.jsonl only with the first turn. Prefer the
    * path Claude itself reported through the status line; fall back to the slug computation. */
-  const claudeTranscriptPersisted = (sessionId: string): boolean => {
-    const reported = claudeSession();
-    if (reported.sessionId === sessionId && reported.transcriptPath) return existsSync(reported.transcriptPath);
-    const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
-    return existsSync(join(config, "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`));
-  };
+  // ponytail: the version probe reads the builtin claude peer only; extend per peer if an instance's version matters (#450 I3).
+  const claudeTranscriptPersisted = (peer: string, sessionId: string): boolean => transcriptPersisted(claudeSession(peer), sessionId, Object.hasOwn(declarations, peer),
+    join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`), path => pathEvidence(path, lstatSync));
   // Optional native usage: only the instance-fenced explicit Claude session is read.
   // IDs persist in telemetry, so a restart/resume never counts the same native message twice.
   const claudeNativeUsageSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript").map(e => (e as { id: string }).id));
-  const collectClaudeUsage = () => {
-    const session = claudeSession();
-    if (!session.sessionId || !session.transcriptPath) return;
+  const collectClaudeUsage = () => { for (const peer of channelPeers) {
+    const session = claudeSession(peer);
+    if (!session.sessionId || !session.transcriptPath) continue;
     for (const record of readClaudeTranscriptUsage(session.sessionId, session.transcriptPath)) {
       if (claudeNativeUsageSeen.has(record.id)) continue;
       claudeNativeUsageSeen.add(record.id);
       const reported = claudeReportedTokens(record.usage);
-      if (reported !== undefined) addTokens("claude", reported);
-      event({ type: "usage", peer: "claude", source: "claude_transcript", id: record.id, ...record.usage, ...taskAttribution("claude"), ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.at ? { measuredAt: record.at } : {}) });
+      if (reported !== undefined) addTokens(peer, reported);
+      event({ type: "usage", peer, source: "claude_transcript", id: record.id, ...record.usage, ...taskAttribution(peer), ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.at ? { measuredAt: record.at } : {}) });
     }
-  };
+  } };
   const claudeUsageTimer = setInterval(collectClaudeUsage, 2000);
   claudeUsageTimer.unref(); intervals.push(claudeUsageTimer);
   const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...bus.peers].map(([id, peer]) => {
     const metadata = peer.recoveryMetadata?.() ?? {};
     const row: RestartPeerSnapshot = { id, state: peer.state, queueIds: bus.queueIds(id), ...(metadata.launch ? { launch: metadata.launch as Record<string, unknown> } : {}) };
     if (typeof metadata.threadId === "string") row.threadId = metadata.threadId;
-    const sessionId = definitionOf(id)?.transport === "claude-channel" ? claudeSession().sessionId : metadata.sessionId;
+    const sessionId = definitionOf(id)?.transport === "claude-channel" ? claudeSession(id).sessionId : metadata.sessionId;
     if (typeof sessionId === "string" && sessionId) row.sessionId = sessionId;
     return [id, row];
   }));
@@ -2498,7 +2501,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer instanceof AcpPeer && ["unknown", "unmanaged"].includes(peer.permissionModeState)) return peer.permissionModeState;
     if (starting.has(id) && (peer instanceof AcpPeer || peer instanceof CodexPeer)) return peer.getPermissionMode();
     if (definitionOf(id)?.transport === "claude-channel" && peer instanceof WsPeer && peer.state !== "offline") {
-      const launch = claudePermissionLaunch();
+      const launch = claudePermissionLaunch(id);
       if (!launch || claudePermissionGenerations.get(id) !== peer.sessionGeneration) return "unverified";
     }
     return permissionMode(id);
@@ -2510,6 +2513,12 @@ export async function startDaemon(opts: DaemonOptions) {
     return mode === "ask" ? {} : { permissionMode: mode };
   };
   const lastCodexThreads = new Map<string, string>();
+  // #450 I3: the console and dashboard list each declared instance right after its kind.
+  const byKind = (ids: string[]): string[] => {
+    const kindOf = (id: string) => Object.hasOwn(declarations, id) ? declarations[id]!.kind : undefined;
+    const out = ids.filter(id => kindOf(id) === undefined).flatMap(id => [id, ...ids.filter(extra => kindOf(extra) === id)]);
+    return [...out, ...ids.filter(id => !out.includes(id))];
+  };
   const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
     const reservations = board.statusReservations();
     const ids = new Set([...bus.knownPeers(), ...extraIds, ...reservations]);
@@ -2521,7 +2530,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const taskNeeds = board.statusTasks();
     const taskStalls = tasks.stalled();
     const pendingTaskOffers = tasks.pendingOffers().filter(offer => offer.pullOnly === true);
-    const peerIds = statusPeerIds(taskNeeds);
+    const peerIds = byKind(statusPeerIds(taskNeeds));
     const view = {
     ...(crashReport.length ? { crash: crashReport } : {}),
     projectId,
@@ -2537,6 +2546,8 @@ export async function startDaemon(opts: DaemonOptions) {
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
     protocol: PROTOCOL,
     features: DAEMON_FEATURES,
+    // #450 I3: the instance ids this daemon bound at startup; a launcher selects only one of these.
+    activeInstances: extraIds,
     stopping,
     pid: process.pid,
     cwd: opts.cwd,
@@ -4672,7 +4683,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...saved,
         queueIds: bus.queueIds(saved.id),
         // Recorded at commit, not prepare: a first turn landing in between flips it (#64).
-        ...(definitionOf(saved.id)?.session.missingEvidence === "transcript" && saved.sessionId ? { sessionPersisted: claudeTranscriptPersisted(saved.sessionId) } : {}),
+        ...(definitionOf(saved.id)?.session.missingEvidence === "transcript" && saved.sessionId ? { sessionPersisted: claudeTranscriptPersisted(saved.id, saved.sessionId) } : {}),
       }));
       const snapshot: RestartSnapshot = {
         schemaVersion: 1,
@@ -4720,9 +4731,9 @@ export async function startDaemon(opts: DaemonOptions) {
     return recoveryError("unknown recovery operation");
   }
 
-  function claudePermissionLaunch(): { launchId: string; unattended: boolean; hookPurpose?: string } | undefined {
+  function claudePermissionLaunch(peer = "claude"): { launchId: string; unattended: boolean; hookPurpose?: string } | undefined {
     try {
-      const row = JSON.parse(readFileSync(join(opts.stateDir, "claude-launch.json"), "utf8"));
+      const row = JSON.parse(readFileSync(join(opts.stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
       if (row.instanceId !== instanceId || row.permissionHook !== true || typeof row.launchId !== "string" || !row.launchId) return undefined;
       return { launchId: row.launchId, unattended: row.unattended === true, ...(typeof row.hookPurpose === "string" ? { hookPurpose: row.hookPurpose } : {}) };
     } catch { return undefined; }
@@ -4751,7 +4762,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!isPermissionMode(mode)) return { ok: false, error: "mode must be ask, ask-when-needed or never-ask" };
     if (mode === "never-ask" && confirmed !== true) return { ok: false, error: "never-ask needs --yes or console confirmation" };
     if (definitionOf(peer)?.transport === "claude-channel") {
-      const launch = claudePermissionLaunch();
+      const launch = claudePermissionLaunch(peer);
       if (!launch || !(owner instanceof WsPeer) || claudePermissionGenerations.get(peer) !== owner.sessionGeneration) return { ok: false, error: "Claude has no verified ahub claude permission hook; restart with ahub claude and run a tool first" };
       if (launch.unattended) return { ok: false, error: "Claude started --unattended already skips prompts; run ahub permission claude ask after it stops to clear the hub choice, then restart without --unattended" };
     } else if (owner instanceof CodexPeer) {
@@ -5024,18 +5035,18 @@ export async function startDaemon(opts: DaemonOptions) {
             let expectedLaunch: string | undefined;
             try {
               const rows = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
-              expectedLaunch = Array.isArray(rows) ? rows.find(row => typeof row?.peer === "string" && definitionOf(row.peer)?.transport === "claude-channel" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId)?.launchId : undefined;
+              expectedLaunch = Array.isArray(rows) ? rows.find(row => row?.peer === peer && definitionOf(row.peer)?.transport === "claude-channel" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId)?.launchId : undefined;
             } catch { /* an ordinary terminal has no Orca recovery identity */ }
             try {
-              const launch = JSON.parse(readFileSync(join(opts.stateDir, "claude-launch.json"), "utf8"));
+              const launch = JSON.parse(readFileSync(join(opts.stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
               if (launch.instanceId === instanceId && typeof launch.launchId === "string") expectedLaunch = launch.launchId;
             } catch { /* older/manual launches do not have a launcher marker */ }
-            const current = claudeSession();
+            const current = claudeSession(peer);
             if ((phase === "stop" || phase === "post") && current.sessionId && current.sessionId !== sessionId) return void reply({ t: "facts", ok: false });
             if (!expectedLaunch || msg.nativeLaunchId === expectedLaunch) {
-              const transcript = claudeTranscript(sessionId, msg.transcriptPath);
+              const transcript = claudeTranscript(sessionId, msg.transcriptPath, peer);
               const launchId = typeof msg.nativeLaunchId === "string" ? msg.nativeLaunchId : undefined;
-              const file = join(opts.stateDir, "claude-session.json");
+              const file = join(opts.stateDir, claudeStateFile("claude-session", peer));
               writeFileSync(`${file}.hook.tmp`, JSON.stringify({ at: Date.now(), instanceId, sessionId, ...(launchId ? { launchId } : {}), ...(transcript ? { transcriptPath: transcript } : {}) }), { mode: 0o600 });
               chmodSync(`${file}.hook.tmp`, 0o600); renameSync(`${file}.hook.tmp`, file);
               nativeClaude = true;
@@ -5044,7 +5055,7 @@ export async function startDaemon(opts: DaemonOptions) {
           }
           if (definitionOf(peer)?.transport === "claude-channel" && msg.nativeInstanceId !== undefined && msg.nativeInstanceId !== instanceId) return void reply({ t: "facts", ok: false });
           const nativePeer = nativeClaude ? bus.peers.get(peer) : undefined;
-          const permissionLaunch = definitionOf(peer)?.transport === "claude-channel" ? claudePermissionLaunch() : undefined;
+          const permissionLaunch = definitionOf(peer)?.transport === "claude-channel" ? claudePermissionLaunch(peer) : undefined;
           const permission = nativeClaude && permissionLaunch && !permissionLaunch.unattended && msg.nativeLaunchId === permissionLaunch.launchId ? permissionMode(peer) : undefined;
           if (permission !== undefined && nativePeer instanceof WsPeer) claudePermissionGenerations.set(peer, nativePeer.sessionGeneration);
           const protectedWrite = scopedWriteBlocked(phase, permission, msg.tool, () => projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files, config.data?.readonly));
@@ -5056,9 +5067,9 @@ export async function startDaemon(opts: DaemonOptions) {
           if (phase === "session") { recordSessions(); return void reply({ t: "facts", ok: true }); }
           if ((phase === "start" || phase === "pre") && nativePeer instanceof WsPeer) {
             const previous = nativeTurnStart.get(peer);
-            const current = claudeSession();
+            const current = claudeSession(peer);
             if (phase === "start" || nativePeer.state !== "busy" || previous?.generation !== nativePeer.sessionGeneration || previous?.session !== sessionId || previous?.launch !== (current.launchId ?? "")) {
-              const session = claudeSession();
+              const session = claudeSession(peer);
               const baseline = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).filter(record => record.completedTurn).at(-1)?.id : undefined;
               nativeTurnStart.set(peer, { at: Date.now(), ...(baseline ? { baseline } : {}), generation: nativePeer.sessionGeneration, session: sessionId!, launch: session.launchId ?? "" });
             }
@@ -5078,12 +5089,12 @@ export async function startDaemon(opts: DaemonOptions) {
               event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
               hookStats.delete(peer);
               if (id && nativePeer instanceof WsPeer) nativePeer.nativeStopped(sessionId!);
-              if (factsOn()) { factSession(peer, sessionId); readbacks(peer, claudeTranscript(sessionId, msg.transcriptPath)); }
+              if (factsOn()) { factSession(peer, sessionId); readbacks(peer, claudeTranscript(sessionId, msg.transcriptPath, peer)); }
             };
             if (!nativeClaude) { finishStop(); reply({ t: "facts", ok: true }); return; } // legacy bookkeeping cannot certify native completion
-            const session = claudeSession();
-            let transcript = session.transcriptPath ?? claudeTranscript(sessionId, msg.transcriptPath);
-            const readCompletion = () => { transcript ??= claudeTranscript(sessionId, msg.transcriptPath); return session.sessionId && transcript ? readClaudeTranscriptUsage(session.sessionId, transcript).filter(record => record.completedTurn).at(-1) : undefined; };
+            const session = claudeSession(peer);
+            let transcript = session.transcriptPath ?? claudeTranscript(sessionId, msg.transcriptPath, peer);
+            const readCompletion = () => { transcript ??= claudeTranscript(sessionId, msg.transcriptPath, peer); return session.sessionId && transcript ? readClaudeTranscriptUsage(session.sessionId, transcript).filter(record => record.completedTurn).at(-1) : undefined; };
             const completionId = (id: string) => createHash("sha256").update(`${sessionId}:${session.launchId ?? "legacy"}:${id}`).digest("hex");
             const started = nativeTurnStart.get(peer);
             const activeStart = !!started && started.session === sessionId && started.launch === (session.launchId ?? "") && nativePeer instanceof WsPeer && started.generation === nativePeer.sessionGeneration;
@@ -5094,7 +5105,7 @@ export async function startDaemon(opts: DaemonOptions) {
             }
             if (!started || !activeStart || !(nativePeer instanceof WsPeer)) { log("native Stop refused for claude: current native turn start unavailable"); return void reply({ t: "facts", ok: false }); }
             const scopeCurrent = () => {
-              const now = claudeSession();
+              const now = claudeSession(peer);
               return !stopping && bus.peers.get(peer) === nativePeer && nativePeer.sessionGeneration === started.generation && now.sessionId === started.session && (now.launchId ?? "") === started.launch;
             };
             const current = () => scopeCurrent() && nativeTurnStart.get(peer) === started;
@@ -5116,7 +5127,7 @@ export async function startDaemon(opts: DaemonOptions) {
               if (!current()) { log("native Stop refused for claude: native start superseded during completion wait"); return; }
               nativeStopsSeen.add(id); nativeTurnStart.delete(peer); // consume before idle admits another native turn
               if (transcript && !session.transcriptPath) {
-                const file = join(opts.stateDir, "claude-session.json");
+                const file = join(opts.stateDir, claudeStateFile("claude-session", peer));
                 writeFileSync(`${file}.hook.tmp`, JSON.stringify({ at: Date.now(), instanceId, sessionId, launchId: session.launchId, transcriptPath: transcript }), { mode: 0o600 });
                 chmodSync(`${file}.hook.tmp`, 0o600); renameSync(`${file}.hook.tmp`, file);
               }
@@ -5130,7 +5141,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!factsOn()) return void reply({ t: "facts", ok: true, ...permissionReply });
           if (definitionOf(peer)?.transport === "claude-channel" && phase === "pre") observeProgress(peer, normalizeClaudeObservation(tool, input));
           factSession(peer, sessionId);
-          const transcript = claudeTranscript(sessionId, msg.transcriptPath);
+          const transcript = claudeTranscript(sessionId, msg.transcriptPath, peer);
           if (phase === "post") {
             factsFor(peer).postTool(peer, toolUseId, tool, input);
             readbacks(peer, transcript);
