@@ -94,7 +94,7 @@ export function taskHasStarted(task: Pick<Task, "history">): boolean {
 export function taskHasWorkEvidence(task: Pick<Task, "history" | "refs" | "sdlc">): boolean {
   return !!(task.refs.branch || task.refs.commit || task.sdlc?.localHead || task.sdlc?.localResult || task.sdlc?.reviewedHead || task.sdlc?.pr)
     || task.history.some(entry => entry.event === "done" || entry.event.startsWith("done (") || entry.event.startsWith("check ")
-      || ["changes_requested", "approved", "reopened", "integration requested", "integrated"].includes(entry.event));
+      || ["changes_requested", "approved", "reopened", "integration requested", "integration unresolved", "integrated"].includes(entry.event));
 }
 /** A successful untouched return permits replanning, without changing historical start evidence. */
 export function taskCanPlan(task: Pick<Task, "history" | "refs" | "sdlc">): boolean {

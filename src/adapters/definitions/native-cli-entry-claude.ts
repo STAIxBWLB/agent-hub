@@ -3,9 +3,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ClaudeLaunchRecord } from "../../cli/launch.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
+import { claudeStateFile } from "../../hub/claude-state.ts";
 
 export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
+  // #450 I3: a claude-<name> instance keeps its own identity, launch and recovery records; it never owns a worktree.
+  const peer = ctx.instance ?? "claude";
   const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try { return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2)); }
@@ -14,7 +17,7 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+    const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
     if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
   }
   // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
@@ -30,19 +33,20 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
   // Turn-free facts and opted-in task sweeps share native PreToolUse/PostToolUse/Stop observations.
   const facts = claudeObservationHooks(projectConfig(), { script: join(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch: unknown;
-  try { previousLaunch = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")); } catch { /* no previous managed launch */ }
+  try { previousLaunch = JSON.parse(readFileSync(join(stateDir, claudeStateFile("claude-launch", peer)), "utf8")); } catch { /* no previous managed launch */ }
   const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(cliDir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
   let result: Awaited<ReturnType<typeof runClaudeLaunch>>;
   try {
     let launchRecord: ClaudeLaunchRecord | undefined;
     if (control?.instanceId) {
       // Publish only the final launch's installed hook and effective permission flags.
-      launchRecord = { instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID!, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
+      launchRecord = { ...(ctx.instance ? { peer } : {}), instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID!, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
       recordClaudeLaunch(stateDir, launchRecord);
       cleanupStaleClaudeSettings(stateDir, previousLaunch);
     }
     if (launch.warning) console.error(launch.warning);
     const env = nativeLaunchEnv("claude", childEnv());
+    if (ctx.instance) env.AGENTHUB_PEER_ID = peer; // the channel plugin and the statusline tee write for this instance
     result = await runClaudeLaunch(launch, { cwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...(launchRecord ? { record: launchRecord } : {}) });
   } finally {
     cleanupClaudeSettings(stateDir, launch.settingsFile);

@@ -331,7 +331,12 @@ function executionRoot(peer: string, projectRoot: string, captured?: string): st
   const { instances: declarations, roles } = readInstanceRoleConfig(projectRoot);
   const definition = definitionOf(peer, declarations);
   if (!definition?.session.launchRecord) throw new Error(`${peer}: no managed terminal recovery adapter`);
-  if (definition.transport !== "codex-appserver" || !declarations?.[peer]) throw new Error(`${peer}: I2 extra instance has no managed terminal support`);
+  if (!declarations?.[peer] || definition.transport !== "codex-appserver" && definition.transport !== "claude-channel") throw new Error(`${peer}: extra instance has no managed terminal support`);
+  // #450 I3: a Claude instance reviews or plans in the canonical checkout; it never owns an execution worktree.
+  if (definition.transport === "claude-channel") {
+    if (captured !== undefined && captured !== projectRoot) throw new Error(`${peer}: recorded execution root changed; manual recovery required`);
+    return projectRoot;
+  }
   const expected = resolveInstanceExecutionCwd(projectRoot, peer, declarations, effectiveInstanceRoles(peer, declarations, roles));
   if (captured !== undefined && captured !== expected) throw new Error(`${peer}: declared execution worktree changed; manual recovery required`);
   return expected;
@@ -662,7 +667,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
   for (const [peer, ref] of requested) {
     const sessionId = ref.sessionId;
     const adapter = definitionOf(peer, instances), extra = definitionOf(peer) === undefined;
-    if (!adapter?.session.launchRecord || extra && adapter.transport !== "codex-appserver") { blockers.push(blocker("ownership-unknown", `${peer}: no declared managed-terminal recovery adapter`, peer)); continue; }
+    if (!adapter?.session.launchRecord || extra && adapter.transport !== "codex-appserver" && adapter.transport !== "claude-channel") { blockers.push(blocker("ownership-unknown", `${peer}: no declared managed-terminal recovery adapter`, peer)); continue; }
     const ownRecord = records.find(item => item.peer === peer);
     let expectedRoot: string, expectedTerminalRoot: string;
     try {

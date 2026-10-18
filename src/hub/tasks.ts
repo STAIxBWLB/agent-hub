@@ -647,6 +647,11 @@ export class Tasks {
     if (by !== USER && !this.d.roles?.[by]?.includes("planner")) throw new PreEffectToolRefusal("planning requires a person or configured planner role");
   }
 
+  private plannerWriteAuthority(by: PeerId): void {
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
+    this.planningAuthority(by);
+  }
+
   wipLimit(peer: PeerId): number {
     const limit = this.d.wipLimit?.(peer) ?? 1;
     if (!Number.isSafeInteger(limit) || limit < 0 || limit > 32) throw new PreEffectToolRefusal("invalid planner WIP capacity");
@@ -1122,8 +1127,7 @@ export class Tasks {
   }
 
   async returnUntouchedToBacklog(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
-    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
-    this.planningAuthority(by);
+    this.plannerWriteAuthority(by);
     if (!Number.isSafeInteger(input.id) || input.id < 1 || !Number.isSafeInteger(input.revision) || input.revision < 0
       || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("untouched return needs an id, revision and bounded reason");
     const validate = () => {
@@ -1136,7 +1140,7 @@ export class Tasks {
     };
     const task = validate(), flow = task.history.length;
     const withheld = await this.withholds("note", input.reason, task);
-    this.planningAuthority(by);
+    this.plannerWriteAuthority(by);
     const confirmed = validate();
     if (confirmed.history.length !== flow) throw new PreEffectToolRefusal("task changed during untouched return");
     const returned = this.d.board.update(confirmed.id, by, "backlog returned untouched", { state: "backlog", owner: null, reviewer: null }, input.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
@@ -1932,12 +1936,15 @@ export class Tasks {
 
   async groomingDigest(by: PeerId): Promise<Record<string, unknown>> {
     this.planningAuthority(by);
-    const snapshot = this.d.board.list().filter(task => !isClosedTaskState(task.state)), issues = new Map<string, PlanIssueMetadata>(), attempted = new Set<string>();
+    const included = (task: Task) => !isClosedTaskState(task.state) || task.state === "cancelled" && task.history.some(entry => !!entry.supersededBy);
+    const snapshot = this.d.board.list().filter(included), issues = new Map<string, PlanIssueMetadata>(), attempted = new Set<string>();
     const deadline = performance.now() + 4_000;
     let reads = 0, incomplete = false;
     // ponytail: at most eight metadata reads within four seconds; add paginated revision-bound readback for larger boards.
-    for (const task of snapshot) {
-      if (this.isPii(task)) continue;
+    for (const listed of snapshot) {
+      this.planningAuthority(by);
+      const task = this.d.board.get(listed.id);
+      if (!task || this.isPii(task) || isClosedTaskState(task.state)) continue;
       let source: { repo: string; issue: number } | undefined;
       try { source = this.planIssueIdentity(task); } catch { continue; }
       if (!source) continue;
@@ -1951,21 +1958,22 @@ export class Tasks {
       if (issue) issues.set(key, issue);
     }
     this.planningAuthority(by);
-    const current = this.d.board.list().filter(task => !isClosedTaskState(task.state)), visible = current.filter(task => !this.isPii(task));
+    const current = this.d.board.list().filter(included), visible = current.filter(task => !this.isPii(task));
     const peers = [...new Set([...Object.keys(this.states()), ...current.flatMap(task => task.owner ? [task.owner] : [])])];
     const reviewedIssues = new Map(visible.flatMap(task => task.sdlc?.planReview?.issue ? [[task.id, task.sdlc.planReview.issue] as const] : []));
+    const acceptedIssues = new Map(visible.flatMap(task => task.sdlc?.acceptance ? [[task.id, task.sdlc.acceptance] as const] : []));
     const blockers: { task: number; code: string }[] = this.d.board.stalls().map(stall => ({ task: stall.task, code: stall.cause.code }));
     const health = this.health(), states = this.states(), routing = this.d.routing(), hostBlocks = this.d.plannerBlocks?.() ?? {};
-    for (const task of visible.slice(0, 500)) {
+    for (const task of visible.filter(task => !isClosedTaskState(task.state)).slice(0, 500)) {
       const owner = task.owner ?? task.reserved;
       if (owner) for (const code of peerEntry(hostBlocks, owner) ?? []) blockers.push({ task: task.id, code });
-      const result = assign(task, states, routing, { ...health, waitsFor: this.waitsFor(task), ...(owner ? { candidates: [owner], namedOwner: owner } : {}) });
+      const result = assign(task.state === "backlog" ? { ...task, state: "proposed" } : task, states, routing, { ...health, waitsFor: this.waitsFor(task), ...(owner ? { candidates: [owner], namedOwner: owner } : {}) });
       if (!result.owner) for (const refusal of result.refusals ?? []) if (refusal.role === "owner") blockers.push({ task: task.id, code: refusal.code === "instance" || refusal.code === "family" ? "policy" : refusal.code });
       if (this.waitsFor(task).length) blockers.push({ task: task.id, code: "dependency" });
     }
     const digest = plannerGrooming(visible, { repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`,
       limits: Object.fromEntries(peers.map(peer => [peer, this.wipLimit(peer)])), wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])),
-      states, issues, reviewedIssues, blockers });
+      states, issues, reviewedIssues, acceptedIssues, blockers });
     return { ...digest, truncated: digest.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}) };
   }
 
@@ -1985,8 +1993,7 @@ export class Tasks {
 
   /** Planner authority and issue edit evidence are rechecked across every external await. */
   async recordPlanReview(by: PeerId, id: unknown, input: unknown): Promise<Task> {
-    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
-    this.planningAuthority(by);
+    this.plannerWriteAuthority(by);
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new PreEffectToolRefusal("plan review needs a revision and reason");
     const raw = input as Record<string, unknown>;
     if (Object.keys(raw).some(key => !["revision", "reason"].includes(key)) || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0
@@ -1995,12 +2002,15 @@ export class Tasks {
     if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
     if ((task.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("planning revision changed");
     const flow = task.history.length, withheld = await this.withholds("note", raw.reason, task);
-    const identity = this.planIssueIdentity(task);
-    if (identity?.issue && this.isPii(task)) throw new PreEffectToolRefusal("private issue plan review readback unavailable");
+    this.plannerWriteAuthority(by);
+    const observed = this.need(task.id, false, true, true);
+    if (observed.history.length !== flow || (observed.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("plan review changed during readback");
+    const identity = this.planIssueIdentity(observed);
+    if (identity?.issue && this.isPii(observed)) throw new PreEffectToolRefusal("private issue plan review readback unavailable");
     const issue = identity?.repo && identity.issue ? await readPlanIssueMetadata(identity.repo, identity.issue, this.d.sdlc?.gh ?? sdlcGh) : undefined;
     if (identity?.issue && !issue) throw new PreEffectToolRefusal("plan review issue metadata unavailable");
     if (issue && !this.isPii(task) && !this.nameable(JSON.stringify(issue))) throw new PreEffectToolRefusal("plan review metadata matches a PII pattern");
-    this.planningAuthority(by);
+    this.plannerWriteAuthority(by);
     const current = this.need(task.id, false, true, true);
     if (current.history.length !== flow || (current.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("plan review changed during readback");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);

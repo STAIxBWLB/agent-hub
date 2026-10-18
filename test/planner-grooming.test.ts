@@ -89,3 +89,54 @@ test("planner grooming compares qualified foreign pairs only within their own re
   expect(result.unknown).toContain(4);
   expect(result.items.some(item => item.task === 4 || item.related?.includes(4))).toBe(false);
 });
+
+test("planner grooming reads real cancelled supersession rows without treating closed work as an overlap candidate", () => {
+  const rows = [task(1, { state: "cancelled", refs: { repo: "owner/repo", paths: ["src/shared.ts"] },
+    cancelled: { reason: "superseded scope", supersededBy: "#2", flowRevision: 2 },
+    history: [{ at: 1, by: "user", event: "backlogged" }, { at: 2, by: "user", event: "cancelled", supersededBy: "#2" }] }),
+    task(2, { refs: { repo: "OWNER/REPO", paths: ["src/shared.ts"] } }),
+    task(3, { state: "cancelled", refs: { repo: "other/repo", paths: ["src/shared.ts"] }, history: [{ at: 2, by: "user", event: "cancelled", supersededBy: "#2" }] }),
+    task(4, { state: "approved", refs: { paths: ["src/shared.ts"] } })];
+  const before = JSON.stringify(rows), result = groom(rows);
+  expect(result.items).toEqual([{ kind: "superseded", task: 1, related: [2] }]);
+  expect(result.unknown).toContain(3);
+  expect(JSON.stringify(rows)).toBe(before);
+});
+
+test("planner grooming detects stale spec acceptance without a plan receipt and despite a fresh plan review", () => {
+  const rows = [task(1, { sdlc: { stage: "spec", repo: "owner/repo", issue: 11 } }), task(2, { sdlc: { stage: "spec", repo: "owner/repo", issue: 12 } }), task(3, { sdlc: { stage: "spec", repo: "owner/repo", issue: 13 } })];
+  const current = "2026-10-18T02:00:00Z", old = "2026-10-18T01:00:00Z";
+  const result = groom(rows, { ...options(), acceptedIssues: new Map([
+    [1, { repo: "owner/repo", issue: 11, lastEditedAt: old }],
+    [2, { repo: "OWNER/REPO", issue: 12, lastEditedAt: null }],
+    [3, { repo: "owner/repo", issue: 13, lastEditedAt: null }],
+  ]), issues: new Map([
+    ["owner/repo#11", { repo: "owner/repo", issue: 11, state: "OPEN", editedAt: current, lastEditedAt: current }],
+    ["owner/repo#12", { repo: "owner/repo", issue: 12, state: "OPEN", editedAt: current, lastEditedAt: current }],
+    ["owner/repo#13", { repo: "owner/repo", issue: 13, state: "OPEN", editedAt: old, lastEditedAt: null }],
+  ]), reviewedIssues: new Map([[2, { editedAt: current }]]) });
+  expect(result.items.filter(item => item.kind === "stale")).toEqual([{ kind: "stale", task: 1 }, { kind: "stale", task: 2 }]);
+  expect(result.unknown).not.toContain(1); expect(result.unknown).not.toContain(2); expect(result.unknown).not.toContain(3);
+  const unavailable = groom([rows[0]!], { ...options(), acceptedIssues: new Map([[1, { repo: "owner/repo", issue: 11, lastEditedAt: old }]]) });
+  expect(unavailable.items).not.toContainEqual({ kind: "stale", task: 1 }); expect(unavailable.unknown).toContain(1);
+});
+
+test("planner grooming keeps old metadata compatibility without inventing an acceptance body timestamp", () => {
+  const rows = [task(1, { sdlc: { stage: "spec", repo: "owner/repo", issue: 11 } })];
+  const result = groom(rows, { ...options(), acceptedIssues: new Map([[1, { repo: "owner/repo", issue: 11, lastEditedAt: null }]]),
+    issues: new Map([["owner/repo#11", { repo: "owner/repo", issue: 11, state: "OPEN", editedAt: "2026-10-18T02:00:00Z" }]]),
+    reviewedIssues: new Map([[1, { editedAt: "2026-10-18T01:00:00Z" }]]) });
+  expect(result.items).toContainEqual({ kind: "stale", task: 1 }); expect(result.unknown).toContain(1);
+});
+
+test("planner grooming reports reserved peer runtime blockers and directory or repository-root overlap", () => {
+  const rows = [task(1, { reserved: "worker", refs: { paths: ["src"] } }), task(2, { refs: { paths: ["src/a.ts"] } }),
+    task(3, { refs: { paths: ["src-other/a.ts"] } }), task(4, { refs: { paths: ["."] } }),
+    task(5, { refs: { repo: "other/repo", paths: ["."] } })];
+  const result = groom(rows, { ...options(), states: { worker: "offline" } });
+  expect(result.items).toContainEqual({ kind: "blocked", task: 1, code: "offline" });
+  expect(result.items).toContainEqual({ kind: "overlap", task: 1, related: [2] });
+  expect(result.items).not.toContainEqual({ kind: "overlap", task: 1, related: [3] });
+  for (const id of [1, 2, 3]) expect(result.items).toContainEqual({ kind: "overlap", task: id, related: [4] });
+  expect(result.items.some(item => item.task === 5 || item.related?.includes(5))).toBe(false);
+});

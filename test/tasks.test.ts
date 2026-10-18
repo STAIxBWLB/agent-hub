@@ -770,7 +770,7 @@ test("a board from before plans gains the column with its tasks intact", () => {
 
 // issue #34: dependencies and the ready queue.
 test("a task that waits is offered to nobody and cannot be claimed or worked; approving the last dependency assigns it", async () => {
-  const { tasks, board, peers, notices } = await setup();
+  const { tasks, board, peers, notices } = await setup(undefined, undefined, undefined, 2);
   const a = await tasks.propose("claude", { title: "schema", class: "implement" });
   const b = await tasks.propose("claude", { title: "api", class: "implement" });
   const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id, b.id] });
@@ -1110,7 +1110,7 @@ test("a board written before #67 reads back unchanged: paths as written, history
 
 // issue #69: model-written text that matches a PII pattern stays on this machine, also on an ordinary task.
 test("a done summary, review note or unmet item matching a PII pattern reaches neither claude-mem nor a cloud peer", async () => {
-  const { tasks, board, peers, saves, notices } = await setup(["claude", "codex", "local"]);
+  const { tasks, board, peers, saves, notices } = await setup(["claude", "codex", "local"], undefined, undefined, 2);
   const t = await tasks.propose("claude", { title: "follow-up list", class: "implement", owner: "codex" });
   expect(board.get(t.id)!.reviewer).toBe("claude");
   await tasks.done("codex", t.id, `exported the list; ${PII}`);
@@ -1276,7 +1276,7 @@ test("review outcomes: approvals, caught changes, contradicted approvals (once) 
 });
 
 test("review outcomes are credited to the work they judged: blame needs the same file, a catch belongs to the owner it caught", async () => {
-  const { tasks, board } = await setup(["claude", "codex", "kimi"]);
+  const { tasks, board } = await setup(["claude", "codex", "kimi"], undefined, undefined, 2);
   const outcomes = (id: number) => board.reviews({ task: id }).map((r) => `${r.implementer}/${r.reviewer}:${r.kind}`);
   // an approval of src/a.ts is not contradicted by a failure on `.`, only by one on the same file
   const a = await tasks.propose("codex", { title: "a", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
@@ -2018,7 +2018,7 @@ test("a split observation counts what happened from a hand-over to the next one:
 
 test("an escalation away is the previous owner's failure; work that waited for another task is routed when ready, and recorded", async () => {
   const recorded: { task: number; where: string }[] = [];
-  const { tasks, board } = await turnFreeRig({ recordSplit: (task, _p, where) => recorded.push({ task, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });
+  const { tasks, board } = await turnFreeRig({ recordSplit: (task, _p, where) => recorded.push({ task, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` , wipLimit: () => 2 });
   const t = await tasks.propose("claude", { title: "escalated", class: "implement", owner: "codex" });
   tasks.accept("codex", t.id);
   await tasks.escalate("user", t.id);

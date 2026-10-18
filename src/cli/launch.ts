@@ -1,4 +1,5 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
+import { claudeStateFile } from "../hub/claude-state.ts";
 import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync, openSync, closeSync, readSync, accessSync, constants, linkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
@@ -28,6 +29,13 @@ export function instanceLaunchArguments(command: string, raw: readonly string[],
     instance = id;
   }
   return { ...(instance ? { instance } : {}), args };
+}
+
+/** The running daemon bound this instance at startup; a declaration added later, or an older daemon, is not proof. */
+export function requireActiveInstance(status: unknown, instance: string): void {
+  const active = (status as { activeInstances?: unknown } | undefined)?.activeInstances;
+  if (!Array.isArray(active)) throw new Error("running hub does not report its declared instances; upgrade it before starting an extra instance");
+  if (!active.includes(instance)) throw new Error(`running hub has not loaded the declaration of ${instance}; restart the hub (ahub restart) after declaring it`);
 }
 
 /** Only an authenticated daemon hello can authorize extra-instance effects. */
@@ -92,6 +100,8 @@ export function cleanupStaleClaudeSettings(stateDir: string, previous: unknown, 
 
 export interface ClaudeLaunchRecord extends Record<string, unknown> {
   instanceId: string; launchId: string; settingsFile?: string; launcherPid: number; launcherSignature?: string;
+  /** A claude-<name> instance (#450 I3); absent for the builtin claude peer, whose file keeps its original name. */
+  peer?: string;
 }
 
 export interface ClaudeLaunchPublication { recorded: boolean; warning?: string; }
@@ -144,7 +154,7 @@ async function withClaudeLaunchRecord(stateDir: string, action: () => void): Pro
 }
 
 function writeClaudeLaunchRecord(stateDir: string, record: Record<string, unknown>): void {
-  const file = join(stateDir, "claude-launch.json"), temp = `${file}.${randomUUID()}.tmp`;
+  const file = join(stateDir, claudeStateFile("claude-launch", typeof record.peer === "string" ? record.peer : "claude")), temp = `${file}.${randomUUID()}.tmp`;
   try { writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); renameSync(temp, file); }
   finally { try { unlinkSync(temp); } catch { /* the rename normally consumed it */ } }
 }
@@ -187,7 +197,7 @@ export async function recordClaudeNative(stateDir: string, launch: ClaudeLaunchR
   const publication = await withClaudeLaunchRecord(stateDir, () => {
     let current: ClaudeLaunchRecord;
     try {
-      const file = join(stateDir, "claude-launch.json"), stat = lstatSync(file);
+      const file = join(stateDir, claudeStateFile("claude-launch", launch.peer ?? "claude")), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || !process.getuid || stat.uid !== process.getuid()) return;
       current = JSON.parse(readFileSync(file, "utf8"));
     } catch { return; }
@@ -204,7 +214,7 @@ export async function recordClaudeNative(stateDir: string, launch: ClaudeLaunchR
       writeFileSync(temp, JSON.stringify({ ...launch, nativePid: pid, nativeSignature: signature, nativeIdentity: "direct-child" }), { mode: 0o600, flag: "wx" });
       renameSync(temp, file);
     } finally { try { unlinkSync(temp); } catch { /* atomic rename consumed our private temporary file */ } }
-    try { recorded = sameClaudeLaunch(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")), launch); } catch { /* replaced or unreadable managed record */ }
+    try { recorded = sameClaudeLaunch(JSON.parse(readFileSync(join(stateDir, claudeStateFile("claude-launch", launch.peer ?? "claude")), "utf8")), launch); } catch { /* replaced or unreadable managed record */ }
   });
   if (publication.warning) report?.(publication.warning);
   return publication.recorded && recorded;

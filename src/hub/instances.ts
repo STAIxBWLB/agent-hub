@@ -54,7 +54,14 @@ export function validateInstances(raw: unknown): InstancesConfig {
     const definition = definitionOf(kind), prefix = `${kind}-`;
     if (!definition) return fail(`${path}.kind`, "unknown native kind");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length))) return fail(path, "id must be <kind>-<name>");
-    if (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp)) return fail(`${path}.kind`, "unsupported in I2; a headless factory with env or ACP-session identity is required, not channel-only or project-file identity");
+    // #450 I3: a channel-plugin kind (Claude) runs only in the person's terminal, so it reviews or plans and never owns writes.
+    const channel = definition.identity.mcp === "channel-plugin";
+    if (!channel && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp))) return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
+    if (channel) {
+      if (entry.start_mode || entry.worktree) return fail(path, "a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported");
+      const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+      if (!declared.length || declared.some(role => role !== "reviewer" && role !== "planner")) return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+    }
     const value: InstanceConfig = { kind };
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }
     if (entry.start_mode) {

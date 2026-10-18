@@ -96,7 +96,7 @@ test("a person cannot accept reserved work past the reserved owner's WIP limit (
 });
 
 test("untouched return refuses any work evidence without changing roles or history (#481 S9)", async () => {
-  for (const evidence of ["done", "check failed", "integration requested", "branch", "commit"] as const) {
+  for (const evidence of ["done", "check failed", "integration requested", "integration unresolved", "branch", "commit"] as const) {
     const { board, tasks } = rig("off");
     const task = board.propose("user", { title: "work with evidence", class: "implement" });
     board.update(task.id, "user", "accepted", { owner: "codex", state: "in_progress" });

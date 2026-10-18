@@ -9,6 +9,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - `ahub jcode` no longer leaves a project MCP entry the daemon rejects as stale when the CLI on PATH and the running hub come from different installs: the hub reports its plugin bundle in `status`, and the Jcode and Kimi TUI launchers write that path (#502).
 - A person accepts a task's spec issue with `ahub sdlc accept <task> --issue <n>`, bound to the issue's body edit time (identity and edit times only, no body). In enforce, build work starts only from a current acceptance: a body edit after acceptance asks for re-acceptance, while comments do not; advise only notifies (#481 S1).
+- Declare a second Claude session as a reviewer or planner (`"claude-review": { "kind": "claude", "roles": ["reviewer"] }` in untracked `.agenthub/config.local.json`) and start it from your terminal with `ahub claude --as claude-review`. It joins as its own channel peer with its own launch, session, context and recovery records; the hub never starts it, and it takes no implementer role or worktree (#450 I3).
 
 ## 0.12.35
 

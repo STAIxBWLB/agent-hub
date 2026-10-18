@@ -16,7 +16,7 @@ test("planner issue metadata reads no body and ignores comment-only updatedAt ch
   const first = await read("STAIxBWLB/agent-hub", 481, gh);
   updatedAt = "2026-10-18T03:00:00Z";
   expect(await read("STAIxBWLB/agent-hub", 481, gh)).toEqual(first);
-  expect(first).toEqual({ repo: "STAIxBWLB/agent-hub", issue: 481, state: "OPEN", editedAt: "2026-10-18T01:00:00Z" });
+  expect(first).toEqual({ repo: "STAIxBWLB/agent-hub", issue: 481, state: "OPEN", editedAt: "2026-10-18T01:00:00Z", lastEditedAt: "2026-10-18T01:00:00Z" });
   expect(calls).toHaveLength(2);
   expect(calls[0]?.join(" ")).toContain("lastEditedAt");
   expect(calls[0]?.join(" ")).not.toMatch(/body|comments/);
@@ -279,4 +279,77 @@ test("grooming reports host approval and quota blockers as closed codes without 
   expect(items.some(item => item.task === r.task.id && item.code === "approvals")).toBe(true);
   expect(items.some(item => item.task === r.task.id && item.code === "quota")).toBe(true);
   expect(JSON.stringify(digest)).not.toContain("ordinary implementation");
+});
+
+test("grooming uses real cancellation supersession and independent spec acceptance evidence (#481 S9)", async () => {
+  const r = reviewRig(async () => metadata());
+  const replacement = r.board.propose("user", { title: "replacement", class: "implement", backlog: true, refs: { repo: "STAIxBWLB/agent-hub" } });
+  await r.tasks.cancel(r.task.id, "user", { reason: "replaced", supersededBy: `#${replacement.id}` });
+  const afterCancel = JSON.stringify(r.board.list());
+  const cancelled = await r.tasks.groomingDigest("claude") as { items: { kind: string; task: number; related?: number[] }[] };
+  expect(cancelled.items).toContainEqual({ kind: "superseded", task: r.task.id, related: [replacement.id] });
+  expect(JSON.stringify(r.board.list())).toBe(afterCancel);
+
+  const spec = reviewRig(async () => metadata());
+  spec.tasks.acceptSpec("user", spec.task.id, { issue: 481, edit: { lastEditedAt: "2026-10-17T01:00:00Z", updatedAt: "2026-10-17T01:00:00Z" } });
+  expect((await spec.tasks.groomingDigest("claude") as { items: unknown[] }).items).toContainEqual({ kind: "stale", task: spec.task.id });
+  await spec.tasks.recordPlanReview("claude", spec.task.id, { revision: 0, reason: "reviewed new plan" });
+  expect((await spec.tasks.groomingDigest("claude") as { items: unknown[] }).items).toContainEqual({ kind: "stale", task: spec.task.id });
+});
+
+test("grooming previews reserved backlog blockers without pulling or dispatching (#481 S9)", async () => {
+  const r = reviewRig(async () => metadata());
+  r.board.plan(r.task.id, "user", { reserved: "codex" }, 0, "future work");
+  r.deps.capabilities = () => ({ codex: { spec: true, tests: false, testsReason: "fixture unavailable" } });
+  const before = JSON.stringify(r.board.list());
+  const digest = await r.tasks.groomingDigest("claude") as { items: unknown[] };
+  expect(digest.items).toContainEqual({ kind: "blocked", task: r.task.id, code: "tests" });
+  expect(JSON.stringify(r.board.list())).toBe(before);
+  expect(r.bus.queued("codex")).toBe(0);
+});
+
+test("planner write authority is rechecked after screening and metadata awaits (#481 S9)", async () => {
+  let privateTurn = false, reads = 0;
+  const screened = reviewRig(async () => { reads++; return metadata(); });
+  screened.deps.privateTurn = () => privateTurn;
+  const before = screened.board.get(screened.task.id);
+  const pending = screened.tasks.recordPlanReview("claude", screened.task.id, { revision: 0, reason: "reviewed" });
+  privateTurn = true;
+  await expect(pending).rejects.toThrow("private turn");
+  expect(reads).toBe(0);
+  expect(screened.board.get(screened.task.id)).toEqual(before);
+
+  privateTurn = false;
+  const remote = reviewRig(async () => { privateTurn = true; return metadata(); });
+  remote.deps.privateTurn = () => privateTurn;
+  const remoteBefore = remote.board.get(remote.task.id);
+  await expect(remote.tasks.recordPlanReview("claude", remote.task.id, { revision: 0, reason: "reviewed" })).rejects.toThrow("private turn");
+  expect(remote.board.get(remote.task.id)).toEqual(remoteBefore);
+
+  privateTurn = false;
+  const returned = reviewRig(async () => metadata(), "off");
+  returned.deps.privateTurn = () => privateTurn;
+  returned.board.update(returned.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex" });
+  returned.board.update(returned.task.id, "codex", "accepted", { state: "in_progress" });
+  const returnBefore = returned.board.get(returned.task.id);
+  const returning = returned.tasks.returnUntouchedToBacklog("claude", { id: returned.task.id, revision: 0, reason: "queue it" });
+  privateTurn = true;
+  await expect(returning).rejects.toThrow("private turn");
+  expect(returned.board.get(returned.task.id)).toEqual(returnBefore);
+});
+
+test("grooming rechecks each task's privacy before the next external read (#481 S9)", async () => {
+  const reads: number[] = [];
+  let second = 0;
+  const r = reviewRig(async args => {
+    reads.push(Number(args.at(-1)!.split("=")[1]));
+    if (second) r.board.update(second, "user", "privacy changed", { signals: ["pii"] });
+    return metadata();
+  });
+  const next = r.board.propose("user", { title: "later private", class: "implement", backlog: true });
+  second = next.id;
+  r.board.update(next.id, "user", "lifecycle", { sdlc: { stage: "intent", repo: "STAIxBWLB/agent-hub", issue: 482 } });
+  const digest = await r.tasks.groomingDigest("claude");
+  expect(reads).toEqual([481]);
+  expect(digest.privateTasks).toBe("withheld");
 });

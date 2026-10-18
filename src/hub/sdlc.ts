@@ -348,6 +348,8 @@ export interface PlanIssueMetadata {
   state: "OPEN" | "CLOSED";
   /** Body edit time; comment activity must never invalidate a plan review. */
   editedAt: string;
+  /** Nullable GitHub body edit field, retained to compare independent S1 acceptance evidence. */
+  lastEditedAt?: string | null;
 }
 
 /** Metadata only: never request issue bodies or comments for a planning receipt. */
@@ -363,6 +365,6 @@ export async function readPlanIssueMetadata(repository: string, number: number, 
     if (!issue || issue.number !== number || !["OPEN", "CLOSED"].includes(issue.state)) return undefined;
     const editedAt = issue.lastEditedAt === null ? issue.createdAt : issue.lastEditedAt;
     if (typeof editedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(editedAt) || !Number.isFinite(Date.parse(editedAt))) return undefined;
-    return { repo: repository, issue: number, state: issue.state, editedAt };
+    return { repo: repository, issue: number, state: issue.state, editedAt, lastEditedAt: issue.lastEditedAt };
   } catch { return undefined; }
 }
