@@ -11,7 +11,7 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "b91d2cacb80b58ec85fa4cf538cdb1f3ed6079cc",
+      "verifiedAgainst": "c1c3bf1d5494f21847ae846e3ed030166ee20484",
       "paths": [
         "src/",
         "templates/"
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "b91d2cacb80b58ec85fa4cf538cdb1f3ed6079cc",
+      "verifiedAgainst": "c1c3bf1d5494f21847ae846e3ed030166ee20484",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -171,7 +171,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "b91d2cacb80b58ec85fa4cf538cdb1f3ed6079cc",
+      "verifiedAgainst": "c1c3bf1d5494f21847ae846e3ed030166ee20484",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
