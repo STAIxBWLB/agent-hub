@@ -26,6 +26,7 @@ function immutable<T>(value: T, seen = new WeakSet<object>()): T {
 }
 
 const fixedBuiltinDefinitions = new Set<AdapterDefinition>([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION]);
+for (const definition of [...fixedBuiltinDefinitions]) if (definition.reviewerVariant) fixedBuiltinDefinitions.add(definition.reviewerVariant);
 
 /** Keep the native catalog's order, independently of the legacy default-role object order. */
 export const ADAPTERS: readonly AdapterDefinition[] = immutable([
@@ -37,6 +38,7 @@ const definitions = new Map<string, AdapterDefinition>();
 for (const definition of ADAPTERS) {
   assertDaemonEngine(definition);
   assertNativeCapabilityScope(definition);
+  if (definition.reviewerVariant) { assertDaemonEngine(definition.reviewerVariant); assertNativeCapabilityScope(definition.reviewerVariant); }
   if (definition.api !== ADAPTER_API || definitions.has(definition.kind)) throw new Error("invalid builtin adapter registry");
   definitions.set(definition.kind, definition);
 }
@@ -46,6 +48,13 @@ export const QUOTA_HANDOFF_PLATFORMS: Readonly<Record<string, string>> = Object.
   ADAPTERS.flatMap(adapter => adapter.hooks?.recallPlatform ? [[adapter.kind, adapter.hooks.recallPlatform]] : []),
 ));
 
+/** Own enumerable data field of a plain object, never a caller accessor or an inherited value. */
+function ownField(value: unknown, key: string): unknown {
+  if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return undefined;
+  const field = Object.getOwnPropertyDescriptor(value, key);
+  return field && Object.hasOwn(field, "value") && field.enumerable ? field.value : undefined;
+}
 /** Declaration reads never execute caller accessors or inherit another project's mapping. */
 function declaredKind(id: string, instances: KindMap | undefined): string | undefined {
   if (!instances || typeof instances !== "object" || types.isProxy(instances) || Array.isArray(instances)
@@ -66,7 +75,9 @@ export function kindOf(id: string, instances?: KindMap): string | undefined {
 }
 export function definitionOf(id: string, instances?: KindMap): AdapterDefinition | undefined {
   const kind = kindOf(id, instances);
-  return kind === undefined ? undefined : definitions.get(kind);
+  const definition = kind === undefined ? undefined : definitions.get(kind);
+  // #223: only a declared extra (never the builtin id) with start_mode "headless" runs as the kind's reviewer variant.
+  return definition?.reviewerVariant && kind !== id && ownField(ownField(instances, id), "start_mode") === "headless" ? definition.reviewerVariant : definition;
 }
 export function familyOf(id: string, instances?: KindMap): string | undefined {
   return definitionOf(id, instances)?.family;
@@ -113,6 +124,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
+    ["reviewerVariant", definition.reviewerVariant !== undefined],
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field) throw new Error(`${field} is restricted to fixed builtin adapter definitions`);

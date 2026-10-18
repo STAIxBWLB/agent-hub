@@ -26,6 +26,7 @@ export function instanceLaunchArguments(command: string, raw: readonly string[],
     if (!id || id.startsWith("--")) throw new Error("--as needs a declared instance id");
     const declaration = instances && Object.hasOwn(instances, id) ? instances[id] : undefined;
     if (!declaration || declaration.kind !== command || !definitionOf(id, instances)) throw new Error("--as must name a declared instance of this command's native kind");
+    if (definitionOf(id, instances) === definitionOf(command)?.reviewerVariant) throw new Error(`${id} is a headless reviewer the hub runs per review; start it with ahub start ${id}, not from a terminal`);
     instance = id;
   }
   return { ...(instance ? { instance } : {}), args };
