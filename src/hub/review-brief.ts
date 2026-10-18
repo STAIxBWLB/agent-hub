@@ -33,6 +33,8 @@ const MAX_FILES = 500, RULE_BYTES = 32_000, MAX_RULE_FILES = 8;
 const LOCKFILES = new Set(["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum", "composer.lock", "Gemfile.lock"]);
 const HEX = /^[0-9a-f]{7,40}$/i;
 
+/** Every diff of the brief reads attributes from the trusted tree, never the checkout (a head's `* -diff` cannot mark its own files binary). */
+const attrFrom = (source?: string) => source ? [`--attr-source=${source}`] : [];
 const git = (cwd: string, args: string[]) => hubGitSync(["-C", cwd, ...args], { encoding: "utf8", env: childEnv(process.env), maxBuffer: 16 * 1024 * 1024, timeout: 15_000 });
 
 /**
@@ -40,8 +42,8 @@ const git = (cwd: string, args: string[]) => hubGitSync(["-C", cwd, ...args], { 
  * private file withholds a whole group when any side is private, so content never shows up under a public name.
  * ponytail: git's 50% similarity decides what counts as a move.
  */
-export function changedPathGroups(cwd: string, head: string, base = "HEAD"): { status: string; paths: string[] }[] | undefined {
-  const r = git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--relative", "-M", "-C", "--find-copies-harder", "--name-status", "-z", `${base}...${head}`, "--"]);
+export function changedPathGroups(cwd: string, head: string, base = "HEAD", attrSource?: string): { status: string; paths: string[] }[] | undefined {
+  const r = git(cwd, [...attrFrom(attrSource), "diff", "--no-ext-diff", "--no-textconv", "--relative", "-M", "-C", "--find-copies-harder", "--name-status", "-z", `${base}...${head}`, "--"]);
   if (r.status !== 0 || typeof r.stdout !== "string") return undefined;
   const fields = r.stdout.split("\0"), groups: { status: string; paths: string[] }[] = [];
   for (let i = 0; i < fields.length - 1;) {
@@ -63,13 +65,13 @@ export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy
   const base = git(cwd, ["merge-base", from, commit]);
   if (base.status !== 0 || typeof base.stdout !== "string") return { unavailable: `commit ${head} shares no history with ${from}` };
   const mergeBase = base.stdout.trim();
-  const groups = changedPathGroups(cwd, commit, from);
+  const groups = changedPathGroups(cwd, commit, from, mergeBase);
   if (!groups) return { unavailable: `the changes of ${head} could not be read` };
   if (!groups.length) return { unavailable: `commit ${head} has no changes against ${from}` };
   const shown = groups.filter(g => !g.paths.some(path => policy.privatePath(path) || !policy.nameable(path)));
   if (shown.length > MAX_FILES) return { unavailable: `${shown.length} changed files, over the brief's ${MAX_FILES}` };
   const withheld = groups.length - shown.length;
-  const counts = numstat(cwd, commit, from);
+  const counts = numstat(cwd, commit, from, mergeBase);
   // Attributes and rules come from the merge base: a change cannot lift its own review obligations (a head that marks
   // everything generated, or edits REVIEW.md, is still reviewed under the rules it is merging into).
   // Both sides of a move: renaming a reviewed file to a generated or unscoped name must not shed its obligations.
@@ -111,16 +113,16 @@ export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy
     (byKey.get(key) ?? byKey.set(key, { sources, paths: [] }).get(key)!).paths.push(file.path);
   }
   // Cross-check with the plain name list (no rename detection), as OCR's list is checked against the PR's.
-  const plain = git(cwd, ["diff", "--relative", "--no-renames", "--name-only", "-z", `${from}...${commit}`, "--"]);
+  const plain = git(cwd, [...attrFrom(mergeBase), "diff", "--relative", "--no-renames", "--name-only", "-z", `${from}...${commit}`, "--"]);
   if (plain.status !== 0 || typeof plain.stdout !== "string") return { unavailable: `the name list of ${head} could not be read` };
   const listed = new Set(shown.flatMap(g => g.paths)), hidden = new Set(groups.filter(g => !shown.includes(g)).flatMap(g => g.paths));
   const unlisted = plain.stdout.split("\0").filter(path => path && !listed.has(path) && !hidden.has(path));
   return { head: commit, base: from, mergeBase, reviewable, excluded, withheld, rules: [...ruleText].map(([source, text]) => ({ source, text })), rulesMissing: [...rulesMissing].map(([source, reason]) => ({ source, reason })), ruleGroups: [...byKey.values()], unlisted };
 }
 
-function numstat(cwd: string, head: string, base: string): Map<string, { insertions: number; deletions: number; binary: boolean }> | undefined {
+function numstat(cwd: string, head: string, base: string, attrSource: string): Map<string, { insertions: number; deletions: number; binary: boolean }> | undefined {
   const out = new Map<string, { insertions: number; deletions: number; binary: boolean }>();
-  const r = git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--relative", "-M", "-C", "--find-copies-harder", "--numstat", "-z", `${base}...${head}`, "--"]);
+  const r = git(cwd, [...attrFrom(attrSource), "diff", "--no-ext-diff", "--no-textconv", "--relative", "-M", "-C", "--find-copies-harder", "--numstat", "-z", `${base}...${head}`, "--"]);
   if (r.status !== 0 || typeof r.stdout !== "string") return undefined;
   // -z: "ins\tdel\tpath\0", or for a move "ins\tdel\t\0old\0new\0"; a binary file has "-" counts.
   const fields = r.stdout.split("\0");

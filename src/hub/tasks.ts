@@ -2670,12 +2670,14 @@ export class Tasks {
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown): Promise<Task> {
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
-    let coveredCommit: string | undefined; // #520: the commit the coverage was checked against, pinned through every await
+    // #520: what the coverage was checked against, pinned through every await: the commit and the lifecycle receipt (the
+    // inherited reviewedHead lives there).
+    let covered: { commit: string; receipt: string } | undefined;
     const valid = (): Task => {
       const refused = authority?.();
       if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
       const t = this.need(id, false, true);
-      if (coveredCommit !== undefined && t.refs.commit !== coveredCommit) throw new PreEffectToolRefusal(`task #${t.id}'s commit changed during the verdict: review the new head`);
+      if (covered && (t.refs.commit !== covered.commit || JSON.stringify(t.sdlc ?? null) !== covered.receipt)) throw new PreEffectToolRefusal(`task #${t.id}'s commit or lifecycle receipt changed during the verdict: review the new head`);
       this.mine(t, by, "reviewer", true);
       if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');
       if (t.state !== "in_review") throw new PreEffectToolRefusal(`task #${t.id} is ${t.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
@@ -2702,7 +2704,7 @@ export class Tasks {
         // PR, the lifecycle gate binds that head to the PR's).
         const effective = typeof head === "string" ? head : t.sdlc?.reviewedHead;
         if (effective !== undefined && effective !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict ${typeof head === "string" ? "names" : "inherits"} head ${effective}, but the review brief is for ${brief.head} (the task's commit)`);
-        coveredCommit = t.refs.commit;
+        covered = { commit: t.refs.commit!, receipt: JSON.stringify(t.sdlc ?? null) };
         const gap = coverageGap(brief, coverage);
         if (gap.length && enforce) throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${list(gap)}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();

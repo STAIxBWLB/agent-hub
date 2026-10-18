@@ -34,7 +34,7 @@ function fixture(opts: { origin?: boolean } = {}): { dir: string; head: string; 
   if (opts.origin !== false) git("update-ref", "refs/remotes/origin/main", "main");
   git("checkout", "-qb", "work");
   // The head tries to lift its own obligations: everything generated, and weaker rules. Both are read from the base.
-  writeFileSync(join(dir, ".gitattributes"), "* linguist-generated\n");
+  writeFileSync(join(dir, ".gitattributes"), "* linguist-generated\n* -diff\n");
   writeFileSync(join(dir, "REVIEW.md"), "# Review\nHEAD_RULES\n");
   mkdirSync(join(dir, "lib")); writeFileSync(join(dir, "lib/x.ts"), "export const x = 1;\n");
   git("mv", "old.gen.js", "new.gen.js");
@@ -53,7 +53,10 @@ function fixture(opts: { origin?: boolean } = {}): { dir: string; head: string; 
 
 test("the brief lists reviewable files, exclusions with reasons, rules per file, and never names a private path", () => {
   const { dir, head, git } = fixture();
+  // Built from a checkout at the reviewed head itself, whose `* -diff` would make every file binary to plain git diff.
+  git("checkout", "-q", head);
   const brief = buildReviewBrief(dir, head, policy) as ReviewBrief;
+  git("checkout", "-q", "main");
   expect("unavailable" in brief).toBe(false);
   expect(brief.base).toBe("origin/main");
   expect(brief.head).toBe(head);
@@ -150,11 +153,11 @@ test("the review request carries the rendered brief for a task with a commit", a
 
 test("enforce refuses an approval when the brief is unavailable, or when the task's commit moves during the verdict", async () => {
   const { dir, head } = fixture();
-  const setup = (reviewBrief: ConstructorParameters<typeof Tasks>[0]["reviewBrief"]) => {
+  const setup = (reviewBrief: ConstructorParameters<typeof Tasks>[0]["reviewBrief"], extra: Partial<ConstructorParameters<typeof Tasks>[0]> = {}) => {
     const board = new Board(join(scratch("ahub-brief-gate-"), "hub.db")); cleanup.push(() => board.close());
     const bus = new Bus({ batchMs: 0 });
     for (const id of ["codex", "claude"]) { const p = new Idle(id, 60_000); bus.add(p); void p.start(); }
-    const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", routing: () => loadRouting(dir), notify: () => {}, sdlc: { config: () => sdlcConfig({ mode: "enforce" }) }, reviewBrief });
+    const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", routing: () => loadRouting(dir), notify: () => {}, sdlc: { config: () => sdlcConfig({ mode: "enforce" }) }, reviewBrief, ...extra });
     const t = board.propose("codex", { title: "fixture", class: "implement", refs: { commit: head } });
     board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
     board.update(t.id, "codex", "done", { state: "in_review", reviewer: "claude" }, "done");
@@ -166,7 +169,7 @@ test("enforce refuses an approval when the brief is unavailable, or when the tas
   let moved: ReturnType<typeof setup>;
   moved = setup(task => { const brief = buildReviewBrief(dir, task.refs.commit, policy); moved.board.update(task.id, "codex", "relinked", { refs: { commit: "c".repeat(40) } }); return brief; });
   const before = moved.board.get(moved.t.id)!.history.length;
-  await expect(moved.tasks.review("claude", moved.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("commit changed during the verdict");
+  await expect(moved.tasks.review("claude", moved.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("commit or lifecycle receipt changed during the verdict");
   expect(moved.board.get(moved.t.id)!.history.length).toBe(before + 1); // only the relink fixture's own write
   // A head inherited from an earlier review must be the brief's too.
   const inherited = setup(task => buildReviewBrief(dir, task.refs.commit, policy));
@@ -183,4 +186,26 @@ test("enforce refuses an approval when the brief is unavailable, or when the tas
   plain.board.update(plain.t.id, "codex", "relinked", { refs: { commit: undefined } } as never);
   const result = await plain.tasks.review("claude", plain.t.id, "approved", "ok").catch((e: Error) => e);
   if (result instanceof Error) expect(result.message).not.toContain("coverage:");
+});
+
+test("an inherited head that moves during the verdict's awaits writes nothing", async () => {
+  const { dir, head } = fixture();
+  const board = new Board(join(scratch("ahub-brief-await-"), "hub.db")); cleanup.push(() => board.close());
+  const bus = new Bus({ batchMs: 0 });
+  for (const id of ["codex", "claude"]) { const p = new Idle(id, 60_000); bus.add(p); await p.start(); }
+  const base = loadRouting(dir);
+  // The PII screen is the await: it runs after the coverage check and moves the stored receipt meanwhile.
+  let id = 0;
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", notify: () => {}, sdlc: { config: () => sdlcConfig({ mode: "enforce" }) },
+    routing: () => ({ ...base, signals: { ...base.signals, pii_screen: "local" }, constraints: { ...base.constraints, pii: "local_only" } }) as typeof base,
+    reviewBrief: task => buildReviewBrief(dir, task.refs.commit, policy),
+    piiScreen: async () => { board.update(id, "codex", "relinked", { sdlc: { stage: "review", reviewedHead: "e".repeat(40), localHead: "e".repeat(40) } } as never); return { label: "clear", ms: 0 } as never; } });
+  const t = board.propose("codex", { title: "fixture", class: "implement", refs: { commit: head } }); id = t.id;
+  board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
+  board.update(t.id, "codex", "done", { state: "in_review", reviewer: "claude", sdlc: { stage: "review", reviewedHead: head } } as never, "done");
+  const all = { reviewed: ["src/a.ts", ".gitattributes", "REVIEW.md", "lib/x.ts", "new-name.md", "keep.gen.js"] };
+  const before = board.get(t.id)!.history.length;
+  await expect(tasks.review("claude", t.id, "approved", "covered", undefined, undefined, all)).rejects.toThrow("commit or lifecycle receipt changed during the verdict");
+  expect(board.get(t.id)!.history.length).toBe(before + 1); // the screen's own receipt write only, no verdict
+  expect(board.get(t.id)!.state).toBe("in_review");
 });
