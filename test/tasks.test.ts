@@ -2519,7 +2519,7 @@ test("an offline relay move whose assignment cannot publish is noticed as saved-
 
 test("a console that throws in assignOwner's pre-write notices no longer fails a review whose verdict is saved (#297)", async () => {
   const base = await setup(["claude", "kimi"]); // no codex: nobody to escalate to
-  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
+  const tasks = new Tasks({ escalateAfter: PIN_TWO, board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
     if (line.includes("no peer can take it")) throw new Error("console unavailable");
     base.notices.push(line);
   } });

@@ -1193,7 +1193,7 @@ export async function startDaemon(opts: DaemonOptions) {
     capabilities: peerCapabilities, repository: memoryRepo,
     recordPlanning: change => event({ type: "planning", ...change }),
     wipLimit: peer => Object.hasOwn(config.tasks.wip_limits ?? {}, peer) ? config.tasks.wip_limits![peer]! : 1,
-    escalateAfter: () => config.tasks.escalate_after,
+    escalateAfter: () => config.tasks.escalate_after ?? ESCALATE_AFTER,
     profile: profileName(config.profile),
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
