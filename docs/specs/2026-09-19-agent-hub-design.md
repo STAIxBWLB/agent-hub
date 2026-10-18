@@ -3639,3 +3639,10 @@ projection mutant still removes only `text_projection`; the status mutant still
 removes only reservations. The other 411 seeds and registry baseline are
 unchanged. The PR records every old and new search/replacement and its clean
 and mutant result, per the reviewer's explicit ruling.
+
+## Amendment: roster membership in status, 2026-10-18 (#484)
+
+- The authenticated `status` reply carries `roster: {peer, on}[]` for every supported peer, optional peers included, with the same `on` that `ahub roster list` shows. The field is additive, with no protocol bump; older CLIs ignore it.
+- Launchers that check membership before starting (`ahub jcode`, `ahub kimi --mode tui`) read it through `rosterInStatus` in `src/hub/status-roster.ts` (no imports, so the registry's native CLI entries add no cycle). A reply without the field (an older hub) is unknown: the launcher stops with an upgrade-or-restart remedy and starts nothing. It never reads unknown as off (the jcode bug) or as on (the dead kimi guard; daemon admission still refused off-roster Kimi, so that one was harmless).
+- `settings_get` stays console-only.
+- With declared headless instances, status includes each startup-bound extra id as well as every built-in and optional peer, with its own roster membership. No undeclared suffix acquires a row.

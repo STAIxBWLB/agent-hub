@@ -15,6 +15,7 @@ import { startFakeAppServer } from "./fakes/app-server.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { AGENT_CONFIG_SEGMENTS, grantablePath, isAgentConfigPath, permissionDefaults } from "../src/hub/permission-mode.ts";
 import { sandboxAvailable } from "../src/local/sandbox.ts";
+import { guardPath } from "../src/local/tools.ts";
 import { renderStatus } from "../src/cli/output.ts";
 import { paint } from "../src/cli/console-state.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
@@ -307,8 +308,16 @@ for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude eve
     symlinkSync(protectedDir, join(parent, "alias"));
     targets.push(`linked-${index}/alias/policy.json`);
   }
-  for (const target of targets) for (const name of ["write", "edit"]) {
-    const file = join(rig.cwd, target); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "before");
+  for (const target of targets) { const file = join(rig.cwd, target); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "before"); }
+  // Every target goes through the production decision both peers' write and edit tools make (#219): guardPath, then grantablePath.
+  // The decision does not depend on the segment's position in the set, so full round trips cover one target per path shape.
+  const decide = (target: string) => grantablePath(realPath(rig.cwd), guardPath({ cwd: rig.cwd, deny: DEFAULT_CONFIG.local.deny }, target, "write"), target, DEFAULT_CONFIG.protect_instruction_files);
+  expect(decide("ordinary.txt")).toBe(true);
+  for (const target of targets) expect(`${target}: ${decide(target)}`).toBe(`${target}: false`);
+  const shapes = ["nested/.claude/policy.json", "nested/.CLAUDE/policy.json", "nested/.mcp.json", "linked-0/.claude/policy.json", "linked-0/alias/policy.json", "policy-alias/policy.json", "nested/.KIMI-CODE/mcp.json"];
+  expect(shapes.every(shape => targets.includes(shape))).toBe(true);
+  for (const target of shapes) for (const name of ["write", "edit"]) {
+    const file = join(rig.cwd, target); writeFileSync(file, "before");
     const before = pending.length;
     const result = call(name, name === "write" ? { path: target, content: "after" } : { path: target, old: "before", new: "after" });
     await until(() => pending.length > before);

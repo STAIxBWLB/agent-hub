@@ -2527,6 +2527,8 @@ export async function startDaemon(opts: DaemonOptions) {
     pendingRestart,
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
+    // Every supported peer's membership, for launchers that run outside the console role (#484).
+    roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
     protocol: PROTOCOL,
     features: DAEMON_FEATURES,
     stopping,

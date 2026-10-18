@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
+import { SUPPORTED_PEERS } from "../src/adapters/registry.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import type { InstancesConfig } from "../src/hub/instances.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -109,3 +110,19 @@ test("I2 optional Qwen and its declared sibling share the quota pause without lo
   expect(snapshot.budget.qwen.paused).toBeDefined();
   expect(snapshot.budget["qwen-a"].paused).toBeDefined();
 }, 20_000);
+
+
+test("I2 status roster retains every supported peer and each declared extra's own membership after #484", async () => {
+  const f = await fixture(reviewers, { roster: { "codex-b": false } });
+  const status = (await f.console_.request({ t: "status" })).status;
+  expect(Array.isArray(status.roster)).toBe(true);
+  const rows = status.roster as { peer: string; on: boolean }[];
+  expect(rows.map(row => row.peer).sort()).toEqual([...SUPPORTED_PEERS, ...Object.keys(reviewers)].sort());
+  const membership = new Map(rows.map(row => [row.peer, row.on]));
+  expect(membership.get("codex-a")).toBe(true);
+  expect(membership.get("codex-b")).toBe(false);
+  expect(membership.has("codex-ghost")).toBe(false);
+  const settings = await f.console_.request({ t: "settings_get" });
+  for (const row of settings.roster as { peer: string; on: boolean }[]) expect(membership.get(row.peer)).toBe(row.on);
+  expect(f.spawned()).toEqual([]);
+});
