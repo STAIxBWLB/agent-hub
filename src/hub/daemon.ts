@@ -4720,16 +4720,22 @@ export async function startDaemon(opts: DaemonOptions) {
       return ids.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_cancel"))
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
+    const incompatibleRecoveryTarget = () => {
+      const cancelled = incompatibleCancellationTarget();
+      if (cancelled) return cancelled;
+      if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
+      if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
+      return undefined;
+    };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;
     if (checkTarget) {
-      const error = incompatibleCancellationTarget(); if (error) return recoveryError(error);
-      if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return recoveryError("target lacks peer_instances; declared instance identities cannot be restored by that daemon");
+      const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error);
     }
 
     if (msg.op === "inspect" || msg.op === "prepare" || msg.op === "commit") {
       for (const pi of bus.peers.values()) if (pi instanceof PiPeer && pi.state === "idle") {
         try { await pi.captureResume(); } catch (error) { return recoveryError((error as Error).message); }
-        if (checkTarget) { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+        if (checkTarget) { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       }
     }
     if (msg.op === "inspect" && msg.operationId === undefined) return { t: "recovery", ok: true, recovery: recoveryView() };
@@ -4745,7 +4751,7 @@ export async function startDaemon(opts: DaemonOptions) {
         recoveryPeerSnapshot = undefined;
       }
       if (recoveryOperationId && recoveryOperationId !== op) return recoveryError("another recovery operation is active");
-      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+      { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       recoveryOperationId = op;
       if (!recoveryPhase) recoveryPhase = "preparing";
       armRecoveryLease();
@@ -4753,7 +4759,7 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.setRecoveryHold(true);
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       await bus.fenceRecovery();
-      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+      { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
       if (!blocked.length && permissions.size === 0 && recoveryReady()) {
         recoveryPeerSnapshot ??= Object.values(recoveryPeers());
@@ -4784,10 +4790,10 @@ export async function startDaemon(opts: DaemonOptions) {
       if (lifecycleConfig.mode !== "off" && board.releases().some(release => release.train && ["active", "frozen"].includes(release.state))) {
         releaseAdmission = await (opts.releaseHostAdmission ?? readReleaseHostAdmission)(opts.cwd);
         // The existing person-selected operation is the confirmation. Admission never creates one.
-        const quota = releaseQuotaSnapshot();
-        if (recoveryOperationId !== op || recoveryCommitted || stopping || (recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady() || !quota.idle || !quota.quota || !releaseAdmission.admitted || releaseAdmission.current?.() === false) {
+        const quota = releaseQuotaSnapshot(), targetError = incompatibleRecoveryTarget();
+        if (targetError || recoveryOperationId !== op || recoveryCommitted || stopping || (recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady() || !quota.idle || !quota.quota || !releaseAdmission.admitted || releaseAdmission.current?.() === false) {
           await releaseAdmission.close?.();
-          return recoveryError(`release upgrade deferred: ${releaseAdmission.reason ?? (quota.reasons.join("; ") || "operation or idle window changed")}`);
+          return recoveryError(`release upgrade deferred: ${targetError ?? releaseAdmission.reason ?? (quota.reasons.join("; ") || "operation or idle window changed")}`);
         }
       }
       try {
@@ -4813,14 +4819,14 @@ export async function startDaemon(opts: DaemonOptions) {
         peers,
         integrity: integrity(),
       };
-      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+      { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       try { writeRestartSnapshot(opts.stateDir, snapshot); } catch { return recoveryError("could not persist restart state"); }
       recoveryCommitted = true;
       clearTimeout(recoveryLeaseTimer);
       writeStatus();
       } finally {
         try { await releaseAdmission?.close?.(); }
-        catch { log("release upgrade admission cleanup incomplete; committed shutdown remains scheduled"); }
+        catch { log("release upgrade admission cleanup incomplete"); }
       }
       // Keep phase prepared in status until the replacement daemon reports restored.
       setTimeout(() => void stop().catch((error) => log(`recovery shutdown incomplete: ${(error as Error).message}`)), 0);

@@ -1,3 +1,4 @@
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,4 +116,16 @@ test("admission lease is closed when final host evidence is revoked", async () =
   tasks.changeRelease(USER, { id: release.id, revision: 0, state: "active" });
   await expect(tasks.cutRelease("claude", { id: release.id, revision: 1 })).rejects.toThrow("deferred");
   expect(board.release(release.id)?.state).toBe("active"); expect(closed).toBe(1);
+});
+
+test("train cut dates reject malformed direct inputs before any board write", async () => {
+  const { tasks, board } = rig();
+  const release = await tasks.newRelease(USER, { name: "dated", goal: "Train", order: 1 });
+  const dated = await tasks.configureRelease("claude", { id: release.id, revision: 0, cut: 1234 });
+  for (const cut of [null, false, "2000", 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 8_640_000_000_000_001]) {
+    const invalid = { id: release.id, revision: dated.revision, cut } as unknown as Parameters<Tasks["configureRelease"]>[1];
+    const error = await tasks.configureRelease("claude", invalid).catch(error => error);
+    expect(error).toBeInstanceOf(PreEffectToolRefusal);
+    expect(board.release(release.id)).toEqual(dated);
+  }
 });
