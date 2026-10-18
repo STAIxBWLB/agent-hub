@@ -161,6 +161,7 @@ test("the daemon runs the headless reviewer: review-only delivery, a fresh verdi
   expect(await console_.request({ t: "peer_stop", peer: "claude-review" }, 35_000)).toMatchObject({ ok: true });
   await until(() => daemon.bus.stateOf("claude-review") === "offline");
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("claude-review stopped by the console; start it again with ahub claude --as claude-review");
+  expect(await console_.request({ t: "peer_stop", peer: "claude-review" }, 35_000)).toMatchObject({ ok: false, error: "peer is already offline; start it with ahub claude --as claude-review before stopping it" });
   expect(calls[0].prompt).toContain(`Review task #${id}`);
   expect(calls[0].prompt).not.toContain("BUILDER NARRATIVE");
   expect(calls[0].prompt).not.toContain("half done");
