@@ -2522,15 +2522,15 @@ export async function startDaemon(opts: DaemonOptions) {
   const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
     const reservations = board.statusReservations();
     const ids = new Set([...bus.knownPeers(), ...extraIds, ...reservations]);
-    if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return byKind([...ids]);
+    if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return [...ids];
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
-    return byKind([...ids]).filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
+    return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
   const status = (includeAttentionItems = false, includeAttentionInput = false) => {
     const taskNeeds = board.statusTasks();
     const taskStalls = tasks.stalled();
     const pendingTaskOffers = tasks.pendingOffers().filter(offer => offer.pullOnly === true);
-    const peerIds = statusPeerIds(taskNeeds);
+    const peerIds = byKind(statusPeerIds(taskNeeds));
     const view = {
     ...(crashReport.length ? { crash: crashReport } : {}),
     projectId,
