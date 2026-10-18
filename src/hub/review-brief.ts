@@ -72,13 +72,17 @@ export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy
   const counts = numstat(cwd, commit, from);
   // Attributes and rules come from the merge base: a change cannot lift its own review obligations (a head that marks
   // everything generated, or edits REVIEW.md, is still reviewed under the rules it is merging into).
-  const attrs = attributes(cwd, mergeBase, shown.map(g => g.paths.at(-1)!));
+  // Both sides of a move: renaming a reviewed file to a generated or unscoped name must not shed its obligations.
+  const attrs = attributes(cwd, mergeBase, [...new Set(shown.flatMap(g => g.paths))]);
   if (!counts || !attrs) return { unavailable: `the file details of ${head} could not be read` };
   const reviewable: BriefFile[] = [], excluded: BriefExcluded[] = [];
   for (const g of shown) {
-    const path = g.paths.at(-1)!, count = counts.get(path), attr = attrs.get(path);
+    const path = g.paths.at(-1)!, count = counts.get(path);
     const sides = { status: g.status[0]!, ...(g.paths.length === 2 ? { oldPath: g.paths[0]! } : {}) };
-    const reason = attr?.generated ? "generated (linguist-generated)" : LOCKFILES.has(path.split("/").at(-1)!) ? "lockfile" : count?.binary ? "binary" : undefined;
+    // Excluded only when every side is: a move keeps the source's obligation.
+    const sideReason = (p: string) => attrs.get(p)?.generated ? "generated (linguist-generated)" : LOCKFILES.has(p.split("/").at(-1)!) ? "lockfile" : undefined;
+    const reasons = g.paths.map(sideReason);
+    const reason = count?.binary ? "binary" : reasons.every(Boolean) ? reasons.at(-1) : undefined;
     if (reason) { excluded.push({ path, ...sides, reason }); continue; }
     reviewable.push({ path, ...sides, ...(count && !count.binary ? { insertions: count.insertions, deletions: count.deletions } : {}) });
   }
@@ -100,8 +104,9 @@ export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy
   const root = readRule("REVIEW.md");
   const byKey = new Map<string, { sources: string[]; paths: string[] }>();
   for (const file of reviewable) {
-    const scoped = attrs.get(file.path)?.rules;
-    const sources = [...(root ? ["REVIEW.md"] : []), ...(scoped && readRule(scoped) ? [scoped] : [])];
+    // The rules of every side apply, so a move out of a scoped directory keeps its rule file.
+    const scoped = [...new Set([file.oldPath, file.path].flatMap(p => { const r = p ? attrs.get(p)?.rules : undefined; return r ? [r] : []; }))];
+    const sources = [...(root ? ["REVIEW.md"] : []), ...scoped.filter(readRule)];
     const key = sources.join("\0");
     (byKey.get(key) ?? byKey.set(key, { sources, paths: [] }).get(key)!).paths.push(file.path);
   }

@@ -2687,15 +2687,21 @@ export class Tasks {
     // the gap in the verdict note, off and a person's own verdict skip it.
     const mode = this.d.sdlc?.config().mode ?? "off";
     if (verdict === "approved" && by !== USER && mode !== "off") {
-      const t = valid(), brief = this.isPii(t) || !t.refs.commit ? undefined : this.d.reviewBrief?.(t);
-      const enforce = mode === "enforce", list = (paths: string[]) => `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ", ..." : ""}`;
+      const t = valid(), enforce = mode === "enforce", list = (paths: string[]) => `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ", ..." : ""}`;
+      // Code work (a commit, branch or PR) needs a brief; work with none of them is exempt and has nothing to account for.
+      const code = !this.isPii(t) && !!(t.refs.commit || t.refs.branch || t.sdlc?.pr);
+      const brief: ReviewBrief | { unavailable: string } | undefined = !code ? undefined
+        : !t.refs.commit ? { unavailable: "the task links a branch or PR but names no commit" }
+        : this.d.reviewBrief?.(t) ?? { unavailable: "this hub builds no review brief" };
       if (brief && "unavailable" in brief) {
         // An unknown inventory is never an empty one.
         if (enforce) throw new PreEffectToolRefusal(`coverage: the review brief is unavailable (${brief.unavailable}); an approval needs a complete brief of the task's commit`);
         note = `${note ?? ""}\nCoverage unknown: the review brief is unavailable (${brief.unavailable})`.trim();
       } else if (brief) {
-        // One head: the brief's, the task's commit, and the head the verdict names (with a PR, the lifecycle gate binds it).
-        if (typeof head === "string" && head !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict names head ${head}, but the review brief is for ${brief.head} (the task's commit)`);
+        // One head: the brief's, the task's commit, and the head the verdict names or inherits from an earlier review (with a
+        // PR, the lifecycle gate binds that head to the PR's).
+        const effective = typeof head === "string" ? head : t.sdlc?.reviewedHead;
+        if (effective !== undefined && effective !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict ${typeof head === "string" ? "names" : "inherits"} head ${effective}, but the review brief is for ${brief.head} (the task's commit)`);
         coveredCommit = t.refs.commit;
         const gap = coverageGap(brief, coverage);
         if (gap.length && enforce) throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${list(gap)}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);

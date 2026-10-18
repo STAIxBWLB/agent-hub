@@ -28,6 +28,7 @@ function fixture(opts: { origin?: boolean } = {}): { dir: string; head: string; 
   writeFileSync(join(dir, "docs/lib-review.md"), "LIB_RULES PII_RULE_TEXT\n");
   writeFileSync(join(dir, "old.gen.js"), "generated(1);\n".repeat(8));
   writeFileSync(join(dir, "src/a.ts"), "export const a = 1;\n");
+  writeFileSync(join(dir, "src/keep.ts"), "export const keep = 'reviewed source that moves under a generated name';\n".repeat(4));
   writeFileSync(join(dir, "old-name.md"), "moved text that stays the same across the rename\n".repeat(4));
   git("add", "."); git("commit", "-qm", "base");
   if (opts.origin !== false) git("update-ref", "refs/remotes/origin/main", "main");
@@ -37,6 +38,7 @@ function fixture(opts: { origin?: boolean } = {}): { dir: string; head: string; 
   writeFileSync(join(dir, "REVIEW.md"), "# Review\nHEAD_RULES\n");
   mkdirSync(join(dir, "lib")); writeFileSync(join(dir, "lib/x.ts"), "export const x = 1;\n");
   git("mv", "old.gen.js", "new.gen.js");
+  git("mv", "src/keep.ts", "keep.gen.js"); // a reviewed, scoped file moved to a generated, unscoped name
   writeFileSync(join(dir, "src/a.ts"), "export const a = 2;\nexport const b = 3;\n");
   writeFileSync(join(dir, "gen.js"), "generated();\n");
   writeFileSync(join(dir, "bun.lock"), "{}\n");
@@ -56,13 +58,16 @@ test("the brief lists reviewable files, exclusions with reasons, rules per file,
   expect(brief.base).toBe("origin/main");
   expect(brief.head).toBe(head);
   // The head's own `* linguist-generated` and REVIEW.md edits do not apply: the base's attributes and rules do.
-  expect(brief.reviewable.map(f => f.path).sort()).toEqual([".gitattributes", "REVIEW.md", "lib/x.ts", "new-name.md", "src/a.ts"]);
+  expect(brief.reviewable.map(f => f.path).sort()).toEqual([".gitattributes", "REVIEW.md", "keep.gen.js", "lib/x.ts", "new-name.md", "src/a.ts"]);
+  // The move keeps its source's obligations: still reviewable, under the source's scoped rules.
+  expect(brief.reviewable.find(f => f.path === "keep.gen.js")).toMatchObject({ status: "R", oldPath: "src/keep.ts" });
+  expect(brief.ruleGroups.find(g => g.paths.includes("keep.gen.js"))!.sources).toEqual(["REVIEW.md", "docs/src-review.md"]);
   expect(brief.reviewable.find(f => f.path === "new-name.md")).toMatchObject({ status: "R", oldPath: "old-name.md" });
   expect(brief.reviewable.find(f => f.path === "src/a.ts")).toMatchObject({ status: "M", insertions: 2, deletions: 1 });
   expect(brief.excluded).toEqual(expect.arrayContaining([{ path: "gen.js", status: "A", reason: "generated (linguist-generated)" }, { path: "bun.lock", status: "A", reason: "lockfile" }, { path: "blob.bin", status: "A", reason: "binary" },
     { path: "new.gen.js", status: "R", oldPath: "old.gen.js", reason: "generated (linguist-generated)" }]));
   expect(brief.withheld).toBe(1);
-  expect(brief.ruleGroups).toEqual(expect.arrayContaining([{ sources: ["REVIEW.md", "docs/src-review.md"], paths: ["src/a.ts"] }, { sources: ["REVIEW.md", "docs/lib-review.md"], paths: ["lib/x.ts"] }, { sources: ["REVIEW.md"], paths: expect.arrayContaining(["new-name.md"]) }]));
+  expect(brief.ruleGroups).toEqual(expect.arrayContaining([{ sources: ["REVIEW.md", "docs/src-review.md"], paths: expect.arrayContaining(["src/a.ts"]) }, { sources: ["REVIEW.md", "docs/lib-review.md"], paths: ["lib/x.ts"] }, { sources: ["REVIEW.md"], paths: expect.arrayContaining(["new-name.md"]) }]));
   expect(brief.unlisted).toEqual([]);
   const text = renderReviewBrief(brief);
   for (const needle of ["ROOT_RULES", "SRC_RULES", "LIB_RULES", "src/a.ts", "old-name.md -> new-name.md", "old.gen.js -> new.gen.js (R): generated", "1 withheld by the privacy policy", "coverage {reviewed"]) expect(text).toContain(needle);
@@ -104,7 +109,7 @@ test("enforce refuses an approval with unaccounted brief paths before any write;
     board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
     board.update(t.id, "codex", "done", { state: "in_review", reviewer: "claude" }, "done");
     const before = board.get(t.id)!.history.length;
-    const rest = [".gitattributes", "REVIEW.md", "lib/x.ts"];
+    const rest = [".gitattributes", "REVIEW.md", "lib/x.ts", "keep.gen.js"];
     const verdict = tasks.review("claude", t.id, "approved", "looks fine", undefined, undefined, { reviewed: ["src/a.ts", ...rest] });
     if (mode === "enforce") {
       await expect(verdict).rejects.toThrow("coverage: 1 reviewable path(s) of the review brief are not accounted for: new-name.md");
@@ -157,10 +162,25 @@ test("enforce refuses an approval when the brief is unavailable, or when the tas
   };
   const unknown = setup(() => ({ unavailable: "the changes could not be read" }));
   await expect(unknown.tasks.review("claude", unknown.t.id, "approved", "ok", undefined, undefined, { reviewed: [] })).rejects.toThrow("the review brief is unavailable");
-  const all = { reviewed: ["src/a.ts", ".gitattributes", "REVIEW.md", "lib/x.ts", "new-name.md"] };
+  const all = { reviewed: ["src/a.ts", ".gitattributes", "REVIEW.md", "lib/x.ts", "new-name.md", "keep.gen.js"] };
   let moved: ReturnType<typeof setup>;
   moved = setup(task => { const brief = buildReviewBrief(dir, task.refs.commit, policy); moved.board.update(task.id, "codex", "relinked", { refs: { commit: "c".repeat(40) } }); return brief; });
   const before = moved.board.get(moved.t.id)!.history.length;
   await expect(moved.tasks.review("claude", moved.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("commit changed during the verdict");
   expect(moved.board.get(moved.t.id)!.history.length).toBe(before + 1); // only the relink fixture's own write
+  // A head inherited from an earlier review must be the brief's too.
+  const inherited = setup(task => buildReviewBrief(dir, task.refs.commit, policy));
+  inherited.board.update(inherited.t.id, "claude", "relinked", { sdlc: { stage: "review", reviewedHead: "d".repeat(40) } } as never);
+  await expect(inherited.tasks.review("claude", inherited.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow(`inherits head ${"d".repeat(40)}`);
+  // Code work without an inventory is unknown, not empty: a branch with no commit, or a hub without a brief provider.
+  const branchOnly = setup(task => buildReviewBrief(dir, task.refs.commit, policy));
+  branchOnly.board.update(branchOnly.t.id, "codex", "relinked", { refs: { commit: undefined, branch: "work" } } as never);
+  await expect(branchOnly.tasks.review("claude", branchOnly.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("names no commit");
+  const noProvider = setup(undefined);
+  await expect(noProvider.tasks.review("claude", noProvider.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("builds no review brief");
+  // Work with no commit, branch or PR is exempt: nothing to account for, so no coverage refusal.
+  const plain = setup(undefined);
+  plain.board.update(plain.t.id, "codex", "relinked", { refs: { commit: undefined } } as never);
+  const result = await plain.tasks.review("claude", plain.t.id, "approved", "ok").catch((e: Error) => e);
+  if (result instanceof Error) expect(result.message).not.toContain("coverage:");
 });
