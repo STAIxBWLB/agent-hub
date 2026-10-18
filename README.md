@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code and Jcode optional)
 share a message bus and a task board per project and one memory on the machine,
 each attached through its own native interface.
 
-Status: 0.12.33, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.34, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -77,13 +77,13 @@ cd <your project> && ahub init && ahub up
 
 After upgrading from 0.12.30 or earlier, run `ahub jcode --mode headless` once in each
 project that uses Jcode to refresh its owned MCP entry before conductor or dashboard
-starts of Jcode. The entry's format is unchanged in 0.12.33; a daemon start that still
+starts of Jcode. The entry's format is unchanged in 0.12.34; a daemon start that still
 reports the entry missing or stale is fixed by the same command.
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. For local/Pi implementation, opt in to an
 available `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-18-0.12.33.md) for the live legs
+See [release verification](docs/verification/2026-10-18-0.12.34.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 a real upgrade with reattach (#463) and a real upgrade with a managed terminal and
 cancelled tasks (#478).
