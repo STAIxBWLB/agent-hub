@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import type { InstancesConfig } from "../src/hub/instances.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -16,13 +16,13 @@ async function until(condition: () => boolean, name: string) {
 }
 function freePort() { const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); const port = probe.port!; probe.stop(true); return port; }
 const reviewers: InstancesConfig = { "codex-a": { kind: "codex", roles: ["reviewer"], start_mode: "headless" }, "codex-b": { kind: "codex", roles: ["reviewer"], start_mode: "headless" } };
-async function fixture(instances: InstancesConfig = reviewers) {
+async function fixture(instances: InstancesConfig = reviewers, overrides: Partial<HubConfig> = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-instance-daemon-")), stateDir = join(root, "state"), record = join(root, "spawn.jsonl"), bin = join(root, "fake-codex");
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   // Record identities and endpoint metadata only, never the control token or complete MCP environment.
   writeFileSync(bin, `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nconst args=process.argv.slice(2),env=args.find(arg=>arg.startsWith("mcp_servers.agent-hub.env="))??"";\nappendFileSync(${JSON.stringify(record)},JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,mcpPeer:env.match(/AGENTHUB_PEER_ID="([^"]+)"/)?.[1],listen:args[args.indexOf("--listen")+1]})+"\\n");\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(), switchyardPort: 0,
-    config: { ...DEFAULT_CONFIG, instances, codex_bin: bin, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false } } });
+    config: { ...DEFAULT_CONFIG, instances, codex_bin: bin, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, ...overrides } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); cleanup.push(() => console_.close());
   const spawned = () => existsSync(record) ? readFileSync(record, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { peer: string; mcpPeer: string; listen: string }) : [];
@@ -92,4 +92,20 @@ test("I2 daemon account quota override is shared across sibling instances", asyn
   const snapshot = await f.console_.request({ t: "ui_snapshot" });
   const used = (peer: string) => snapshot.budget[peer].windows.find((window: { id: string }) => window.id === "5h")?.used;
   expect(used("codex-a")).toBe(0.37); expect(used("codex-b")).toBe(0.37);
+}, 20_000);
+
+
+test("I2 optional Qwen and its declared sibling share the quota pause without losing watch capability", async () => {
+  const f = await fixture({ "qwen-a": { kind: "qwen", roles: ["reviewer"] } }, {
+    roster: { qwen: true }, qwen_cmd: [process.execPath, join(import.meta.dir, "fakes/watch-acp.ts"), "--qwen"],
+  });
+  for (const peer of ["qwen", "qwen-a"]) {
+    expect(await f.console_.request({ t: "start", peer, args: { mode: "headless" } })).toMatchObject({ ok: true });
+    expect(await f.console_.request({ t: "watch", peer })).toMatchObject({ ok: true });
+  }
+  expect(await f.console_.request({ t: "budget", set: { peer: "qwen-a", used: 0.97, window: "5h", resetsInMs: 60_000 } })).toMatchObject({ ok: true });
+  await until(() => f.daemon.bus.isPaused("qwen") && f.daemon.bus.isPaused("qwen-a"), "both optional-account native owners paused");
+  const snapshot = await f.console_.request({ t: "ui_snapshot" });
+  expect(snapshot.budget.qwen.paused).toBeDefined();
+  expect(snapshot.budget["qwen-a"].paused).toBeDefined();
 }, 20_000);

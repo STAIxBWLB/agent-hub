@@ -636,7 +636,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const SETTINGS = projectSettings(declarations);
   const settingDef = (key: unknown) => instanceSettingDef(key, declarations);
   const accountOf = (peer: string) => definitionOf(peer)?.budget?.account ?? peer;
-  const accountMembers = (account: string) => KNOWN_PEERS.filter(peer => accountOf(peer) === account);
+  const accountMembers = (account: string) => SUPPORTED_PEERS.filter(peer => accountOf(peer) === account);
   let rosterChanging: string | undefined;
   let kimiSessionMode: StartMode | undefined;
   let kimiAdmissionId: string | undefined;
@@ -1604,7 +1604,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
   };
-  const activityRings: Record<string, ActivityRing> = Object.fromEntries(KNOWN_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
+  const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some(t => !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
   const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {
     // One outstanding request per peer. A quota transition may proceed without a summary rather than steal a context waiter.
