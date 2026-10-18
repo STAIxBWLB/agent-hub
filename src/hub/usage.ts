@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { normalizeUsage, safeModelLabel, type NormalizedUsage } from "../omniroute/usage.ts";
 
 export interface UsageRecord {
@@ -65,26 +65,63 @@ export function readClaudeTranscriptUsage(sessionId: string, transcriptPath: str
       // Signal unavailable coverage with a stable opaque id; a repeated poll dedupes in the report.
       return [{ id: opaqueId(sessionId, "transcript-too-large") }];
     }
-    const latest = new Map<string, { usage?: NormalizedUsage; at?: string; servedModel?: string; completedTurn?: boolean }>();
-    for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const row = JSON.parse(line) as { type?: unknown; timestamp?: unknown; sessionId?: unknown; message?: unknown };
-        if (typeof row.sessionId === "string" && row.sessionId !== sessionId) continue;
-        if (row.type !== "assistant" || !row.message || typeof row.message !== "object") continue;
-        const message = row.message as { id?: unknown; stop_reason?: unknown; usage?: unknown; model?: unknown };
-        if (typeof message.id !== "string" || !message.id || typeof message.stop_reason !== "string" || !message.stop_reason) continue;
-        const supportedStopReason = COMPLETED_STOP_REASONS.has(message.stop_reason);
-        const usage = supportedStopReason ? normalizeUsage(message.usage) : undefined;
-        const at = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? new Date(row.timestamp).toISOString() : undefined;
-        const servedModel = safeModelLabel(message.model);
-        latest.set(message.id, { ...(usage ? { usage } : {}), ...(at ? { at } : {}), ...(servedModel ? { servedModel } : {}), ...(message.stop_reason === "end_turn" ? { completedTurn: true } : {}) });
-      } catch {
-        // A streaming or crash-truncated line is not a record.
-      }
-    }
-    return [...latest].map(([messageId, value]) => ({ id: opaqueId(sessionId, messageId), ...value }));
+    return transcriptRecords(sessionId, readFileSync(transcriptPath, "utf8"));
   } catch {
     return [];
   }
+}
+
+/**
+ * The tail read for turn completion: the newest end_turn row is always near the end.
+ * ponytail: a fixed 4 MiB window; a completion written more than 4 MiB before EOF stays invisible (Claude appends the final
+ * row last, so this needs >4 MiB written after the turn ended). Upgrade: scan backwards in chunks until an assistant row.
+ */
+export const COMPLETION_TAIL_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The newest completed assistant turn (stop_reason end_turn) in a transcript of any size, from its last
+ * COMPLETION_TAIL_BYTES only (#517: a whole-file cap made every Stop unverifiable on a long session). The first,
+ * possibly partial, line of a cut tail is dropped. Undefined when there is none or the file cannot be read.
+ */
+export function readClaudeTranscriptCompletion(sessionId: string, transcriptPath: string, tailBytes = COMPLETION_TAIL_BYTES): UsageRecord | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(transcriptPath, "r");
+    const size = fstatSync(fd).size, start = Math.max(0, size - tailBytes);
+    // One byte before the window shows whether the cut falls on a line boundary.
+    const from = start > 0 ? start - 1 : 0, buffer = Buffer.alloc(size - from);
+    let read = 0;
+    while (read < buffer.length) { const n = readSync(fd, buffer, read, buffer.length - read, from + read); if (n <= 0) break; read += n; }
+    let text = buffer.subarray(0, read).toString("utf8");
+    // A cut inside a line drops up to the first newline, or all of it when it holds none; a cut right after a newline
+    // keeps the complete row that starts the window.
+    if (start > 0) { const nl = text.indexOf("\n"); text = nl < 0 ? "" : text.slice(nl + 1); }
+    return transcriptRecords(sessionId, text).filter(record => record.completedTurn).at(-1);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+function transcriptRecords(sessionId: string, text: string): UsageRecord[] {
+  const latest = new Map<string, { usage?: NormalizedUsage; at?: string; servedModel?: string; completedTurn?: boolean }>();
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as { type?: unknown; timestamp?: unknown; sessionId?: unknown; message?: unknown };
+      if (typeof row.sessionId === "string" && row.sessionId !== sessionId) continue;
+      if (row.type !== "assistant" || !row.message || typeof row.message !== "object") continue;
+      const message = row.message as { id?: unknown; stop_reason?: unknown; usage?: unknown; model?: unknown };
+      if (typeof message.id !== "string" || !message.id || typeof message.stop_reason !== "string" || !message.stop_reason) continue;
+      const supportedStopReason = COMPLETED_STOP_REASONS.has(message.stop_reason);
+      const usage = supportedStopReason ? normalizeUsage(message.usage) : undefined;
+      const at = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? new Date(row.timestamp).toISOString() : undefined;
+      const servedModel = safeModelLabel(message.model);
+      latest.set(message.id, { ...(usage ? { usage } : {}), ...(at ? { at } : {}), ...(servedModel ? { servedModel } : {}), ...(message.stop_reason === "end_turn" ? { completedTurn: true } : {}) });
+    } catch {
+      // A streaming or crash-truncated line is not a record.
+    }
+  }
+  return [...latest].map(([messageId, value]) => ({ id: opaqueId(sessionId, messageId), ...value }));
 }
