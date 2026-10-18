@@ -253,24 +253,32 @@ test("a verdict whose reviewer authority ends during the verdict's own awaits wr
 });
 
 test("a review ends only when its whole process group is gone; survivors keep the peer busy and the stop fails", async () => {
-  const dir = scratch("ahub-claude-print-group-"), stand = join(dir, "stand-in");
-  // The leader leaves a same-group descendant behind and exits 0.
-  const run = (seconds: number) => { writeFileSync(stand, `#!/bin/sh\ncat >/dev/null\nsleep ${seconds} &\nexit 0\n`); chmodSync(stand, 0o755); };
-  run(0.6);
-  const peer = new ClaudePrintPeer("claude-review", { cwd: dir, command: [stand], mcpConfig: "{}", systemPrompt: "role", watchdogMs: 20_000, verdictSince: () => true });
-  const receipts: DeliveryReceipt[] = []; peer.onDelivery = r => receipts.push(r);
-  await peer.start();
-  const t0 = Date.now();
-  await peer.deliver([review(9)], "d1");
-  await until(() => peer.state === "idle");
-  expect(Date.now() - t0).toBeGreaterThanOrEqual(500); // not idle before the descendant ended
-  expect(receipts.map(r => r.state)).toEqual(["accepted", "completed"]);
+  const dir = scratch("ahub-claude-print-group-"), stand = join(dir, "stand-in"), pidFile = join(dir, "descendant.pid");
+  // The leader leaves a same-group descendant behind, records its pid, and exits 0.
+  const run = (seconds: number) => { writeFileSync(stand, `#!/bin/sh\ncat >/dev/null\nsleep ${seconds} &\necho $! > '${pidFile}'\nexit 0\n`); chmodSync(stand, 0o755); };
+  // Only the descendant this test started, and only while it is still that sleep.
+  const killOwn = () => {
+    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : NaN;
+    if (!Number.isSafeInteger(pid) || pid <= 1) return;
+    const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout.trim();
+    if (command === "sleep 30") process.kill(pid, "SIGKILL");
+  };
+  try {
+    run(0.6);
+    const peer = new ClaudePrintPeer("claude-review", { cwd: dir, command: [stand], mcpConfig: "{}", systemPrompt: "role", watchdogMs: 20_000, verdictSince: () => true });
+    const receipts: DeliveryReceipt[] = []; peer.onDelivery = r => receipts.push(r);
+    await peer.start();
+    const t0 = Date.now();
+    await peer.deliver([review(9)], "d1");
+    await until(() => peer.state === "idle");
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(500); // not idle before the descendant ended
+    expect(receipts.map(r => r.state)).toEqual(["accepted", "completed"]);
 
-  run(30);
-  await peer.deliver([review(10)], "d2");
-  await until(() => receipts.length === 4, 8000);
-  expect(receipts[3]).toMatchObject({ id: "d2", state: "needs_review", reason: expect.stringContaining("process group still running") });
-  expect(peer.state).toBe("busy");
-  await expect(peer.stop("person stopped it")).rejects.toThrow("still has members");
-  spawnSync("pkill", ["-f", "sleep 30"]);
+    run(30);
+    await peer.deliver([review(10)], "d2");
+    await until(() => receipts.length === 4, 8000);
+    expect(receipts[3]).toMatchObject({ id: "d2", state: "needs_review", reason: expect.stringContaining("process group still running") });
+    expect(peer.state).toBe("busy");
+    await expect(peer.stop("person stopped it")).rejects.toThrow("still has members");
+  } finally { killOwn(); }
 }, 20_000);
