@@ -881,11 +881,11 @@ export async function startDaemon(opts: DaemonOptions) {
     bus.setRecoveryHold(false);
   }
   const recoveryPeerAllowed = (id: PeerId) => !recoveryActive() || !recoveryPeerSnapshot || recoveryPeerSnapshot.some((peer) => peer.id === id);
-  const armRecoveryLease = () => {
+  const armRecoveryLease = (delayMs = 10 * 60_000): void => {
     clearTimeout(recoveryLeaseTimer);
     recoveryLeaseTimer = setTimeout(() => {
       if (!recoveryOperationId || recoveryCommitted || (recoveryPhase !== "preparing" && recoveryPhase !== "prepared")) return;
-      try { bus.setRecoveryHold(false); } catch (error) { log("recovery lease release deferred; delivery storage must be restored before abort"); return; }
+      try { bus.setRecoveryHold(false); } catch (error) { log("recovery lease release deferred; delivery storage must be restored before abort"); armRecoveryLease(1000); return; }
       log(`recovery lease expired for ${recoveryOperationId}; hold aborted`);
       recoveryOperationId = undefined;
       recoveryPhase = undefined;
@@ -893,7 +893,7 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.setRecoveryHold(false);
       removeRestartSnapshot(opts.stateDir);
       writeStatus();
-    }, 10 * 60_000);
+    }, delayMs);
     recoveryLeaseTimer.unref?.();
   };
   const memory = new MemoryClient(config.memory.worker_url ?? workerUrl(), 2000, log);

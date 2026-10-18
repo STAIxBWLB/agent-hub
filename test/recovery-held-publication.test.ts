@@ -159,3 +159,18 @@ test("#478 reentrant publication joins the FIFO tail even while materializing fo
   expect(bus.queueIds("claude")).toEqual([first.id, second.id, nested.id]);
   expect(bus.isRecoveryHeld).toBe(true);
 });
+
+test("#478 a failed old-target materialization preserves its non-deferred hold mode", () => {
+  const { bus } = fixture(true); bus.setRecoveryHold(true, true);
+  const pending = newEnvelope(HUB, "pending before downgrade", { to: ["claude"] }); bus.publish(pending);
+  const journal = (bus as unknown as { journal: DeliveryJournal }).journal;
+  const persist = journal.persistBus;
+  journal.persistBus = () => { throw new Error("storage blip"); };
+  expect(() => bus.setRecoveryHold(true, false)).toThrow("recovery remains held");
+  journal.persistBus = persist;
+  bus.setManualPaused([]); // Clear only the recovered storage error, not the hold or its mode.
+  const later = newEnvelope(HUB, "later older-target notice", { to: ["claude"] }); bus.publish(later);
+  expect(bus.queueIds("claude")).toEqual([later.id]);
+  expect(bus.snapshot().deferredHub).toEqual([pending]);
+  expect(bus.isPaused("claude")).toBe(true);
+});

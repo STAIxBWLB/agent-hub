@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Preserve target capabilities on recovery lease renewals, defer hub notices until held queue verification finishes, and show recorded blocked errors (#478).
+- Discard deferred notices on reset, retry expired recovery leases after storage failures, and keep abort/archive available for corrupt snapshots (#478).
 
 ## 0.12.32
 

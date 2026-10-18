@@ -24,7 +24,7 @@ export function validateDeferredEnvelope(value: unknown, name: string): Envelope
       !Number.isSafeInteger(env.ts) || (env.ts as number) < 0 ||
       !["chat", "task", "review", "status", "budget", "presence"].includes(env.kind as string) ||
       !["important", "status", "fyi"].includes(env.priority as string) ||
-      (env.to !== undefined && (!Array.isArray(env.to) || env.to.length > 256 || !env.to.every(peer => text(peer, 256)))) ||
+      (!Array.isArray(env.to) || env.to.length > 256 || !env.to.every(peer => text(peer, 256))) ||
       (env.private !== undefined && typeof env.private !== "boolean"))
     throw new RecoveryDeferredHubError(`${name} is invalid`);
   if (env.refs !== undefined) {

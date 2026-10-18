@@ -63,6 +63,7 @@ const malformed: [string, unknown][] = [
   ["bad private marker", [{ ...original, private: "yes" }]],
   ["bad refs", [{ ...original, refs: [] }]],
   ["bad recipient", [{ ...original, to: [1] }]],
+  ["missing captured audience", [{ ...original, to: undefined }]],
   ["bad hop", [{ ...original, hop: -1 }]],
 ];
 for (const [name, value] of malformed) test(`#478: journal and restart both refuse deferred ${name}`, () => {

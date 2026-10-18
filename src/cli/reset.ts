@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync,
 import { join } from "node:path";
 import { Bus } from "../hub/bus.ts";
 import { DeliveryJournal } from "../hub/delivery-journal.ts";
+import { validateDeferredHub } from "../hub/deferred-hub.ts";
 import type { Project } from "../hub/registry.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "../hub/db-timeout.ts";
 
@@ -73,7 +74,14 @@ export function planReset(stateDir: string, projectId: string): ResetPlan {
     const bus: unknown = JSON.parse(meta?.bus_snapshot || "{}"), manual: unknown = JSON.parse(meta?.manual_paused || "[]");
     shaped(isList(manual, isText), "manual_paused");
     shaped(isObject(bus) && (bus.manualPaused === undefined || isList(bus.manualPaused, isText)) && (bus.queues === undefined || (isObject(bus.queues) && Object.values(bus.queues).every((queue) => isList(queue, isEnvelope)))), "bus_snapshot");
-    const { queues = {}, manualPaused = [] } = bus as { queues?: Record<string, { id: string }[]>; manualPaused?: string[] };
+    const { queues = {}, manualPaused = [], seen = [], deferredHub } = bus as {
+      queues?: Record<string, { id: string }[]>; manualPaused?: string[]; seen?: { id: string }[]; deferredHub?: unknown;
+    };
+    shaped(isList(seen, isEnvelope), "bus_snapshot.seen");
+    // Deferred notices are pending delivery too, but must not be published just to preview or reset them.
+    const deferred = validateDeferredHub(deferredHub, undefined, new Set([
+      ...seen.map(env => env.id), ...Object.values(queues).flat().map(env => env.id),
+    ]));
     plan.manualHolds = [...new Set([...manual as string[], ...manualPaused])].sort();
     // As Bus.queueList: a queued envelope that no open row stands for is listed as q:<peer>:<envelope id>.
     // ponytail: the rule is copied so the dry run never opens the journal for writing; the reset tests compare the
@@ -84,6 +92,9 @@ export function planReset(stateDir: string, projectId: string): ResetPlan {
       return (originals as { id: string }[]).map((env) => `${row.peer}:${env.id}`);
     }));
     for (const [peer, queue] of Object.entries(queues)) for (const env of queue) if (!recorded.has(`${peer}:${env.id}`)) plan.queued.push(`q:${peer}:${env.id}`);
+    for (const env of deferred) for (const peer of new Set(env.to)) {
+      if (!recorded.has(`${peer}:${env.id}`)) plan.queued.push(`q:${peer}:${env.id}`);
+    }
   } finally { db.close(); }
   return plan;
 }
@@ -114,6 +125,7 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
     const journal = new DeliveryJournal({ file, projectRoot: project.root, projectId: project.id, instanceId: randomUUID() });
     const bus = new Bus({ journal });
     try {
+      settled.push(...bus.discardDeferredHub("reset"));
       for (const { id } of bus.queueList().filter((row) => row.state === "queued" || row.state === "needs_review")) {
         // Read again each time: a queue entry's revision is the journal's, and every resolution moves it on.
         bus.resolveDelivery(id, bus.queueShow(id)!.revision, "discard", "reset");

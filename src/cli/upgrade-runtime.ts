@@ -19,6 +19,7 @@ import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from 
 import { readRecoveryContinuity, retireRecoveryContinuity, writeRecoveryContinuity } from "../hub/recovery-continuity.ts";
 import { recoveryLock } from "../hub/recovery-store.ts";
 import { decodeRestoreReceipt, restoreTransition, type RestoreReceipt, type RestoreEvidence, type RestoreTransition } from "./upgrade-restore-state.ts";
+import { RecoveryDeferredHubError } from "../hub/deferred-hub.ts";
 import { RecoveryPreservationError, RecoveryPresentationError, type RecoveryNativeCause } from "./upgrade-presentation-data.ts";
 
 /** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
@@ -172,12 +173,21 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
   const sourceProtocol = control?.protocol;
   const legacySupported = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]);
   // A stopped runtime reports whose unreleased restart snapshot it holds: only that one can start it again (#215).
-  const snapshot = base.state === "stopped" ? readRestartSnapshot(project.stateDir, { projectRoot: project.root, projectId: project.id })?.operationId : undefined;
+  let snapshot: string | undefined, snapshotError: Inspection["snapshotError"];
+  if (base.state === "stopped") {
+    try { snapshot = readRestartSnapshot(project.stateDir, { projectRoot: project.root, projectId: project.id })?.operationId; }
+    catch (error) {
+      if (!(error instanceof RecoveryDeferredHubError)) throw error;
+      // Corruption blocks restore, but cannot erase independently confirmed shutdown or the person's archive exit.
+      // Keep diagnostics static: the rejected snapshot may contain forged envelope fields.
+      snapshotError = { code: "recovery_deferred_hub", message: "restart snapshot deferred hub notices are invalid; restore is blocked" };
+    }
+  }
   // A dead pid or a missing project directory is final whatever protocol its manifest names: probing it would read
   // "unavailable" forever and wedge abort, resume and stop-and-archive (#215).
   if (base.state === "stopped" || base.state === "missing" || (base.state !== "running" && !legacySupported)) return {
-    state: base.state, peers: [], blockers: base.state === "stopped" ? [] : [base.state === "incompatible" ? "manual-bootstrap-required: source lacks the recovery contract; use its matching CLI" : base.error ?? base.state],
-    ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}), ...(snapshot ? { snapshot } : {}),
+    state: base.state, peers: [], blockers: base.state === "stopped" ? snapshotError ? [snapshotError.message] : [] : [base.state === "incompatible" ? "manual-bootstrap-required: source lacks the recovery contract; use its matching CLI" : base.error ?? base.state],
+    ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}), ...(snapshot ? { snapshot } : {}), ...(snapshotError ? { snapshotError } : {}),
   };
   let status = base.status;
   if (!status && control && sourceProtocol === PROTOCOL) return {
