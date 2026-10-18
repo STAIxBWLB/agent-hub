@@ -1,3 +1,4 @@
+import { releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { specRefs } from "./spec-read.ts";
 import type { InstancesConfig } from "./instances.ts";
@@ -34,7 +35,11 @@ import { readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, ty
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
+export interface ReleaseWindow { at: number; host: boolean; quota: boolean; idle: boolean; reasons: string[]; current?: () => boolean; close?: () => Promise<void>; }
+
 export interface TasksDeps {
+  /** Host-bound evidence only; absent/expired observations never admit a release cut. */
+  releaseWindow?: () => Promise<ReleaseWindow>;
   /** Effective per-peer planner capacity, taken from the existing settings loader. */
   wipLimit?: (peer: PeerId) => number;
   recordPlanning?: (change: { by: string; task?: number; release?: number; fields: string[]; revision: number }) => void;
@@ -826,7 +831,7 @@ export class Tasks {
       const own = owned.get(release.id) ?? [], ownKnown = own.filter(task => task.doneAt !== null).sort(compare);
       const cutStart = release.cut === null ? known.length : after(known, release.cut);
       const unknownPool = release.cut === null ? approved : unknown;
-      return { ...release,
+      return { ...this.publicRelease(release),
         name: this.nameable(release.name) ? release.name : "[withheld]",
         goal: this.nameable(release.goal) ? release.goal : "[withheld]",
         tasks: scopes.get(release.id) ?? [],
@@ -1016,12 +1021,110 @@ export class Tasks {
     return result;
   }
 
-  async newRelease(by: PeerId, input: { name: string; goal: string; order: number }): Promise<Release> {
+  /** Release assignment changes no execution role, dependency, reservation or state. */
+  async assignRelease(by: PeerId, input: { id: number; revision: number; release: number | null; reason: string }): Promise<Task> {
+    this.plannerWriteAuthority(by);
+    if (typeof input.reason !== "string" || !input.reason.trim() || Buffer.byteLength(input.reason) > 1000) throw new PreEffectToolRefusal("release assignment needs a bounded reason");
+    if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || input.release !== null && (!Number.isSafeInteger(input.release) || input.release <= 0)) throw new PreEffectToolRefusal("invalid release assignment");
+    const validate = () => {
+      this.plannerWriteAuthority(by);
+      const task = this.d.board.get(input.id);
+      if (!task || (task.planningRevision ?? 0) !== input.revision) throw new PreEffectToolRefusal("release assignment changed");
+      if (this.isPii(task) || by !== USER && task.pinned) throw new PreEffectToolRefusal("private or pinned release scope requires the person");
+      for (const id of new Set([task.release, input.release])) if (id != null) {
+        const release = this.d.board.release(id);
+        if (!release || ["frozen", "shipped", "dropped"].includes(release.state)) throw new PreEffectToolRefusal("release scope is frozen or final");
+      }
+      return task;
+    };
+    const before = validate(), signature = JSON.stringify(before);
+    if (!this.nameable(input.reason) || this.screenOn() && (await this.screenCall(input.reason)).label !== "clear") throw new PreEffectToolRefusal("release reason was not cleared for public planning");
+    if (JSON.stringify(validate()) !== signature) throw new PreEffectToolRefusal("release assignment changed during screening");
+    const result = this.d.board.plan(input.id, by, { release: input.release }, input.revision, input.reason.trim());
+    this.planningRecorded({ by, task: input.id, fields: ["release"], revision: result.planningRevision! });
+    return result;
+  }
+
+  async configureRelease(by: PeerId, input: { id: number; revision: number; hotfix?: unknown; state?: "active"; cut?: number }): Promise<Release> {
+    this.plannerWriteAuthority(by);
+    const validate = () => {
+      this.plannerWriteAuthority(by);
+      if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0) throw new PreEffectToolRefusal("invalid release identity or revision");
+      const release = this.d.board.release(input.id);
+      if (!release || release.revision !== input.revision || !["planning", "active"].includes(release.state)) throw new PreEffectToolRefusal("release revision changed or scope frozen");
+      if (input.state !== undefined && input.state !== "active") throw new PreEffectToolRefusal("invalid train state");
+      if (input.state === "active" && this.d.board.releases().some(row => row.id !== input.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
+      return release;
+    };
+    const release = validate();
+    let train;
+    try { train = releaseTrainData({ ...(release.train ?? { history: [] }), ...(input.hotfix === undefined ? {} : { hotfix: input.hotfix }) }); }
+    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    if (train.hotfix && (!this.nameable(train.hotfix.reason) || this.screenOn() && (await this.screenCall(train.hotfix.reason)).label !== "clear")) throw new PreEffectToolRefusal("hotfix reason was not cleared");
+    validate();
+    train.history.push({ at: Date.now(), by, event: "configured" });
+    const updated = this.d.board.updateRelease(input.id, { train: releaseTrainData(train), ...(input.state ? { state: input.state } : {}), ...(input.cut === undefined ? {} : { cut: input.cut }) }, input.revision);
+    this.planningRecorded({ by, release: input.id, fields: ["train"], revision: updated.revision });
+    return updated;
+  }
+
+  publicRelease(release: Release): Release {
+    return { ...release, name: this.nameable(release.name) ? release.name : "[withheld]", goal: this.nameable(release.goal) ? release.goal : "[withheld]", ...(release.train?.hotfix && !this.nameable(release.train.hotfix.reason) ? { train: { ...release.train, hotfix: { ...release.train.hotfix, reason: "[withheld]" } } } : {}) };
+  }
+
+  releaseReport(by: PeerId, id: number) {
     this.planningAuthority(by);
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("release report unavailable during a private turn");
+    const release = Number.isSafeInteger(id) && id > 0 ? this.d.board.release(id) : undefined;
+    if (!release) throw new PreEffectToolRefusal("no such release");
+    const all = this.d.board.list(), publicTasks = all.filter(task => !this.isPii(task));
+    if (all.some(task => task.release === id && this.isPii(task))) throw new PreEffectToolRefusal("release scope contains private work; public readiness unavailable");
+    return { release: this.publicRelease(release), readiness: releaseTrainReadiness(release, publicTasks), metrics: releaseMetrics(this.d.board.releases().filter(row => !all.some(task => task.release === row.id && this.isPii(task))), publicTasks), native: "unverified" as const };
+  }
+
+  /** Scope freeze only. This never tags, publishes, upgrades, or authorizes a release. */
+  async cutRelease(by: PeerId, input: { id: number; revision: number }): Promise<Release> {
+    const validate = () => {
+      this.plannerWriteAuthority(by);
+      if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0) throw new PreEffectToolRefusal("invalid release identity or revision");
+      const release = this.d.board.release(input.id);
+      if (!release || release.revision !== input.revision || release.state !== "active") throw new PreEffectToolRefusal("release revision changed or train is not active");
+      if (this.d.board.releases().some(row => row.id !== input.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
+      const report = this.releaseReport(by, input.id);
+      if (report.readiness.blockers.length) throw new PreEffectToolRefusal(`release cut blocked: ${report.readiness.blockers.join("; ")}`);
+      return { release, scope: this.d.board.list().filter(task => task.release === input.id) };
+    };
+    const before = validate(), signature = JSON.stringify(before);
+    const expected = new Set(before.scope.flatMap(task => task.sdlc?.repo && task.sdlc.pr ? [`${task.sdlc.repo.toLowerCase()}#${task.sdlc.pr}`] : []));
+    let ciRuns: number | undefined;
+    if (expected.size) {
+      const repositories = [...new Set(before.scope.flatMap(task => task.sdlc?.repo ? [task.sdlc.repo] : []))];
+      if (repositories.length === 1) {
+        const costs = await this.costReport(by, repositories[0]), rows = costs.rows as import("./cost-governance.ts").CostRow[];
+        const selected = rows.filter(row => expected.has(`${row.repo.toLowerCase()}#${row.pr}`));
+        if (!costs.truncated && selected.length === expected.size && selected.every(row => row.ciRuns !== null && row.ciReruns !== null)) ciRuns = selected.reduce((sum, row) => sum + row.ciRuns! + row.ciReruns!, 0);
+      }
+    }
+    if (JSON.stringify(validate()) !== signature) throw new PreEffectToolRefusal("release scope changed during cost readback");
+    const window = await this.d.releaseWindow?.();
+    try {
+    if (JSON.stringify({ release: this.d.board.release(input.id), scope: this.d.board.list().filter(task => task.release === input.id) }) !== signature) throw new PreEffectToolRefusal("release scope changed during admission");
+    const freshScope = validate();
+    if (!window || !Number.isFinite(window.at) || Date.now() - window.at > 5000 || window.at > Date.now() || window.host !== true || window.quota !== true || window.current?.() === false) throw new PreEffectToolRefusal(`release cut deferred: ${window?.reasons?.join("; ") || "host or peer quota evidence unavailable"}`);
+    const scope = freshScope.scope.map(task => task.id).sort((a, b) => a - b), train = releaseTrainData(freshScope.release.train ?? { history: [] });
+    train.scope = scope; train.history.push({ at: Date.now(), by, event: "cut", scope, reviews: freshScope.scope.reduce((sum, task) => sum + task.history.filter(row => ["approved", "changes_requested"].includes(row.event)).length, 0), ...(ciRuns === undefined ? {} : { ciRuns }) });
+    const updated = this.d.board.freezeRelease(input.id, input.revision, freshScope.scope, releaseTrainData(train));
+    this.planningRecorded({ by, release: input.id, fields: ["state", "train"], revision: updated.revision });
+    return updated;
+    } finally { await window?.close?.(); }
+  }
+
+  async newRelease(by: PeerId, input: { name: string; goal: string; order: number }): Promise<Release> {
+    this.plannerWriteAuthority(by);
     if (typeof input.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.name) || typeof input.goal !== "string" || !input.goal.trim() || input.goal.length > 1000 || !Number.isSafeInteger(input.order) || input.order < 0) throw new PreEffectToolRefusal("invalid release name, goal or order");
     const text = input.name + "\n" + input.goal;
     if (!this.nameable(text) || this.screenOn() && (await this.screenCall(text)).label !== "clear") throw new PreEffectToolRefusal("release text was not cleared for public planning");
-    this.planningAuthority(by); // #455: a person may have moved the planner while the screen ran
+    this.plannerWriteAuthority(by); // Privacy and planner identity may change while screening.
     if (this.d.board.releases().some(release => release.name === input.name)) throw new PreEffectToolRefusal("release name already exists");
     const release = this.d.board.newRelease(input.name, input.goal.trim(), input.order);
     this.planningRecorded({ by, release: release.id, fields: ["created"], revision: release.revision });
@@ -1035,9 +1138,16 @@ export class Tasks {
     if (["shipped", "dropped"].includes(release.state)) throw new PreEffectToolRefusal("settled release is final");
     if (by !== USER && (release.state === "frozen" || input.state === "frozen" || input.state === "shipped" || input.state === "dropped")) throw new PreEffectToolRefusal("freeze, ship, drop and frozen changes require a person");
     if (input.state === "shipped" && this.d.board.list().some(task => task.release === release.id && !isClosedTaskState(task.state))) throw new PreEffectToolRefusal("every release task must be approved, cancelled, or moved out before ship");
+    if (input.state === "active" && (release.train || this.d.sdlc?.config().mode !== undefined && this.d.sdlc.config().mode !== "off" || this.d.board.releases().some(row => row.train && ["active", "frozen"].includes(row.state))) && this.d.board.releases().some(row => row.id !== release.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
+    if (input.state === "frozen" && (release.train || this.d.sdlc?.config().mode !== undefined && this.d.sdlc.config().mode !== "off")) throw new PreEffectToolRefusal("use the resource-admitted release cut operation");
+    if (input.state === "shipped" && release.train) {
+      const readiness = releaseTrainReadiness(release, this.d.board.list());
+      if (readiness.blockers.length) throw new PreEffectToolRefusal(`release ship blocked: ${readiness.blockers.join("; ")}`);
+    }
     const { id, revision, ...patch } = input;
     if (!Object.keys(patch).length || Object.keys(patch).some(key => !["state", "plannedStart", "cut", "ship"].includes(key))) throw new PreEffectToolRefusal("unknown or empty release fields");
-    const updated = this.d.board.updateRelease(id, patch, revision);
+    const trained = release.train && input.state === "shipped" ? releaseTrainData({ ...release.train, history: [...release.train.history, { at: Date.now(), by, event: "shipped" }] }) : undefined;
+    const updated = this.d.board.updateRelease(id, { ...patch, ...(trained ? { train: trained } : {}) }, revision);
     this.planningRecorded({ by, release: id, fields: Object.keys(patch), revision: updated.revision });
     return updated; // a failed readback may follow a durable release write
   }
@@ -2133,6 +2243,15 @@ export class Tasks {
       if (d.path && (!this.nameable(d.path) || matchesPolicy(this.d.cwd, d.path, this.d.piiPaths ?? [], true))) { const { path: _privatePath, ...metadata } = d; return metadata; }
       return d;
     });
+    const trains = this.d.board.releases().filter(release => release.train && ["active", "frozen"].includes(release.state));
+    if (trains.length) {
+      const planned = trains.map(release => {
+        try { return this.releaseReport(USER, release.id); }
+        catch { return { release: { id: release.id }, readiness: { trigger: "waiting", tasks: [], blockers: ["release scope unavailable"] } }; }
+      });
+      if (planned.some(row => row.readiness.blockers.length)) { report.sourceReady = false; report.blockers.push("planned release scope is not approved or available"); }
+      return { ...report, trains: planned };
+    }
     return report;
   }
 

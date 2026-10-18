@@ -7010,6 +7010,11 @@ var init_hub_tools = __esm(() => {
     tool("hub_backlog_pull", "Reserve a WIP slot and pull ready unpinned backlog work into To Do at its current revision. Preserves person order/reservations and frozen scope; pending unowned work can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "reason"]),
     tool("hub_backlog_split", "Split unstarted backlog work into two to eight staged parts. The original card retains integration/acceptance and depends on the children. Use after for existing prerequisite ids and afterParts for earlier zero-based part indexes. Latest unused unchanged children can be undone with hub_backlog_undo.", { id, revision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 1000 }, parts: { type: "array", minItems: 2, maxItems: 8, items: { type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 300 }, detail: { type: "string", maxLength: 8000 }, class: str2, refs, plan, after: { type: "array", maxItems: 64, uniqueItems: true, items: { type: "integer", minimum: 1 } }, afterParts: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "integer", minimum: 0 } } }, required: ["title"], additionalProperties: false } } }, ["id", "revision", "reason", "parts"]),
     tool("hub_backlog_undo", "Undo your latest planning change at its current revision. Refuses intervening changes and another actor's edit.", { id, revision: { type: "integer", minimum: 1 } }, ["id", "revision"]),
+    tool("hub_release_new", "Create a future release planning row. Planner/person only; no activation, publish or release authorization.", { name: { type: "string", minLength: 1, maxLength: 64 }, goal: { type: "string", minLength: 1, maxLength: 1000 }, order: { type: "integer", minimum: 0 } }, ["name", "goal", "order"]),
+    tool("hub_release_report", "Read a planned release's task readiness and recorded metrics. Planner/person only. A due date never waives unfinished scope.", { id }, ["id"]),
+    tool("hub_release_assign", "Assign or move only a task's release, retaining its execution state and owner. Planner/person only; requires a reason and current planning revision. Frozen scope refuses.", { id, revision: { type: "integer", minimum: 0 }, release: { type: ["integer", "null"], minimum: 1 }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, ["id", "revision", "release", "reason"]),
+    tool("hub_release_configure", "Configure/activate a release train or record a hotfix cause. Planner/person only. At most one train is active/frozen; planning rows are future trains.", { id, revision: { type: "integer", minimum: 0 }, state: { type: "string", enum: ["active"] }, cut: { type: "integer", minimum: 1 }, hotfix: { type: "object", properties: { cause: { type: "string", enum: ["loss", "security_privacy", "upgrade_start_blocked", "core_flow_no_workaround"] }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["cause", "reason"], additionalProperties: false } }, ["id", "revision"]),
+    tool("hub_release_cut", "Freeze an active release's approved scope after host resource admission and fresh peer quota checks. Unknown evidence defers; no publish, tag, upgrade or authorization.", { id, revision: { type: "integer", minimum: 0 } }, ["id", "revision"]),
     tool("hub_release_list", "Read public release scope and planned/actual dates for phased planning. Configured planners only.", {}),
     tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str2, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str2, role: { type: "string", description: "catalog role id for this task class; guidance only, no routing or authority change" }, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it. With after, the owner is reserved: offered the task first once it is ready" }, after: { type: "array", items: { type: "integer" }, description: "ids of tasks that must be approved first; until then this one waits, offered to nobody, and cannot be claimed" }, backlog: { type: "boolean", description: "stage unoffered work; owner is only a reservation, even when naming yourself" }, urgent: { type: "boolean", description: "hand it over even when its owner is paused for quota only briefly" }, goal: { type: "string", description: "id of this project's long-term task (ahub goal list) the work is part of" } }, ["title"]),
     tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it.", { id, plan: acceptPlan }, ["id"]),
@@ -16102,6 +16107,11 @@ init_registry();
 init_hub_tools();
 init_envelope();
 
+// src/hub/sdlc-release.ts
+init_child_process();
+init_git();
+init_sdlc();
+
 // src/hub/spec-read.ts
 init_host_executable();
 init_child_process();
@@ -16170,11 +16180,6 @@ init_sdlc();
 init_planning();
 
 // src/hub/sdlc-queue.ts
-init_sdlc();
-
-// src/hub/sdlc-release.ts
-init_child_process();
-init_git();
 init_sdlc();
 
 // src/hub/tasks.ts

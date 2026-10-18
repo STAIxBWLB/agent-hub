@@ -3560,3 +3560,7 @@ fields as unknown and cannot restore them into the main checkout. The supporting
 CLI checks the saved workspace against the current declaration again before any
 context change or file restoration. Removing the declaration intentionally
 blocks that undo until the identity and workspace can be reviewed.
+
+# Planner release scheduling
+
+Use `ahub sdlc train report <release-id>` for scope readiness and recorded release metrics. The planner creates future release rows, activates one train, and assigns tasks through the release-only hub tools. A due date requests a cut review; it never clears unfinished work. Move missed tasks to the next row with a reason, then use `ahub sdlc train cut <release-id> <revision>` from the person's terminal or `hub_release_cut` as the planner. The cut retains a short host admission lease through freeze and defers on held gate slots or unknown/quota-limited peer windows. It does not run release preparation or publish anything. Schedule bundle/check/docs work under separate heavy admission and retain the person's native verification, authorization and upgrade window. A hotfix records its enumerated cause and keeps every gate.

@@ -1,3 +1,4 @@
+import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied } from "../local/deny.ts";
@@ -438,6 +439,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
+  /** Host-only admission transport; never selected by project config or tools. */
+  releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   projectId?: string;
   instanceId?: string;
   cwd: string;
@@ -1292,7 +1295,28 @@ export async function startDaemon(opts: DaemonOptions) {
       specReason: !may(peer, "spec_read") ? `capabilities.${peer}` : specState.reason ?? "gh unauthenticated" }];
     }));
   };
+  const releaseQuotaSnapshot = () => {
+    const headroom = budget.headroom(), rows = [...bus.peers].filter(([, peer]) => peer.state !== "offline");
+    const reasons: string[] = [];
+    if (!rows.length) reasons.push("peer quota window unavailable: no attached peers");
+    for (const [id] of rows) {
+      const definition = definitionOf(id), account = definition?.budget?.account ?? id;
+      if (manualPaused.has(id) || budget.record(account)) reasons.push(`${id}: paused quota window`);
+      if (definition && (!definition.budget || definition.budget.quotaExempt)) continue;
+      const reading = headroom[account];
+      if (!reading || !Number.isFinite(reading.headroom)) reasons.push(`${id}: quota window unknown or stale`);
+      else if (reading.headroom <= 1 - config.budget.gate) reasons.push(`${id}: quota window below release headroom`);
+    }
+    const idle = rows.length > 0 && rows.every(([, peer]) => peer.state === "idle");
+    return { quota: reasons.length === 0, idle, reasons, signature: JSON.stringify({ gate: config.budget.gate, rows: rows.map(([id, peer]) => [id, peer.state]), headroom, paused: rows.map(([id]) => manualPaused.has(id)), records: Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused?.since, row.paused?.resetsAt]) }) };
+  };
+  const releaseWindow = async () => {
+    const host = await (opts.releaseHostAdmission ?? readReleaseHostAdmission)(opts.cwd), quota = releaseQuotaSnapshot();
+    if (stopping || recoveryActive()) quota.reasons.push("recovery or shutdown is holding release planning");
+    return { at: Date.now(), host: host.admitted && !stopping && !recoveryActive(), quota: quota.quota, idle: quota.idle, reasons: [...(host.reason ? [host.reason] : []), ...quota.reasons], close: host.close, current: () => host.current?.() !== false && !stopping && !recoveryActive() && releaseQuotaSnapshot().signature === quota.signature };
+  };
   const tasks: Tasks = new Tasks({
+    releaseWindow,
     capabilities: peerCapabilities, repository: memoryRepo,
     plannerBlocks: () => Object.fromEntries(bus.knownPeers().map(peer => {
       const codes: ("approvals" | "quota")[] = [];
@@ -2022,7 +2046,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -2136,6 +2160,16 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_backlog_list":
         return JSON.stringify(tasks.backlogList(by));
+      case "hub_release_new":
+        return JSON.stringify(tasks.publicRelease(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order })));
+      case "hub_release_report":
+        return JSON.stringify(tasks.releaseReport(by, a.id));
+      case "hub_release_configure":
+        return JSON.stringify(tasks.publicRelease(await tasks.configureRelease(by, { id: a.id, revision: a.revision, hotfix: a.hotfix, state: a.state, cut: a.cut })));
+      case "hub_release_assign":
+        return JSON.stringify(tasks.publicView(await tasks.assignRelease(by, { id: a.id, revision: a.revision, release: a.release, reason: a.reason })));
+      case "hub_release_cut":
+        return JSON.stringify(tasks.publicRelease(await tasks.cutRelease(by, { id: a.id, revision: a.revision })));
       case "hub_release_list":
         return JSON.stringify(tasks.releaseList(by));
       case "hub_planner_groom":
@@ -4743,6 +4777,17 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (msg.op === "commit") {
       if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle, approvals are complete and completion checks have finished");
+      let releaseAdmission: ReleaseHostAdmission | undefined;
+      if (lifecycleConfig.mode !== "off" && board.releases().some(release => release.train && ["active", "frozen"].includes(release.state))) {
+        releaseAdmission = await (opts.releaseHostAdmission ?? readReleaseHostAdmission)(opts.cwd);
+        // The existing person-selected operation is the confirmation. Admission never creates one.
+        const quota = releaseQuotaSnapshot();
+        if (recoveryOperationId !== op || recoveryCommitted || stopping || (recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady() || !quota.idle || !quota.quota || !releaseAdmission.admitted || releaseAdmission.current?.() === false) {
+          await releaseAdmission.close?.();
+          return recoveryError(`release upgrade deferred: ${releaseAdmission.reason ?? (quota.reasons.join("; ") || "operation or idle window changed")}`);
+        }
+      }
+      try {
       recoveryPhase = "prepared";
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
@@ -4770,6 +4815,10 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryCommitted = true;
       clearTimeout(recoveryLeaseTimer);
       writeStatus();
+      } finally {
+        try { await releaseAdmission?.close?.(); }
+        catch { log("release upgrade admission cleanup incomplete; committed shutdown remains scheduled"); }
+      }
       // Keep phase prepared in status until the replacement daemon reports restored.
       setTimeout(() => void stop().catch((error) => log(`recovery shutdown incomplete: ${(error as Error).message}`)), 0);
       return { t: "recovery", ok: true, committed: true, recovery: { ...recoveryView(), phase: "prepared" } };
