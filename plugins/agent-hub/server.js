@@ -15422,9 +15422,13 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     const properties = { ...tool.inputSchema.properties };
     if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt;
-      const { phase, ...current } = receipt.properties;
-      const { tasks: _retiredImport, ...checklist } = phase.properties;
-      properties.receipt = { ...receipt, properties: { ...current, stage: { type: "string", enum: [...stages ?? SDLC_STAGES] }, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } } };
+      let fields = { ...receipt.properties, ...customStages ? { stage: { type: "string", enum: [...stages ?? SDLC_STAGES] } } : {} };
+      if (criteria) {
+        const { phase, ...current } = fields;
+        const { tasks: _retiredImport, ...checklist } = phase.properties;
+        fields = { ...current, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
+      }
+      properties.receipt = { ...receipt, properties: fields };
     }
     if (customProfile && tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };

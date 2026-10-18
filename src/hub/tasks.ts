@@ -1863,8 +1863,13 @@ export class Tasks {
     return criteriaView(this.d.sdlc?.config() ?? sdlcConfig(undefined), task, t => this.isPii(t));
   }
   workflowExport(id: unknown): Record<string, unknown> {
-    const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    const state = { id: task.id, state: task.state, stage: task.sdlc?.stage ?? config.stages[0] ?? "spec", ...(this.isPii(task) ? { private: true } : { criteria: this.workflowView(task) ?? null }) };
+    const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined), stage = task.sdlc?.stage ?? config.stages[0] ?? "spec";
+    // Off keeps the #257 export bytes; schema 2 (criteria, no workflow framing) is for an enabled or retired-setting lifecycle.
+    if (config.mode === "off" && !config.workflow) {
+      const legacy = { id: task.id, state: task.state, stage, ...(this.isPii(task) ? { private: true } : { phase: null }) };
+      return { schema: 1, workflow: "none", state: legacy, stateHash: workflowHash(legacy), sourceHash: workflowHash(config) };
+    }
+    const state = { id: task.id, state: task.state, stage, ...(this.isPii(task) ? { private: true } : { criteria: this.workflowView(task) ?? null }) };
     return { schema: 2, state, stateHash: workflowHash(state), sourceHash: workflowHash(config) };
   }
   async lifecycleStatus(id: unknown, refresh = true): Promise<SdlcStatus> {

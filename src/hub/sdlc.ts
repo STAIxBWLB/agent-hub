@@ -132,8 +132,10 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
     return { mode, requiredChecks: [...checks] as string[], ...custom, ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
   }
   // Off keeps the #257 seven stages byte for byte; an enabled lifecycle defaults to the playbook (#481 S0).
-  const stages = raw.stages ?? (mode === "off" ? [...SDLC_STAGES] : [...PLAYBOOK_STAGES]);
-  const exactly = (list: readonly string[]) => Array.isArray(stages) && stages.length === list.length && stages.every((stage, i) => stage === list[i]);
+  const given = raw.stages ?? (mode === "off" ? [...SDLC_STAGES] : [...PLAYBOOK_STAGES]);
+  const exactly = (list: readonly string[]) => Array.isArray(given) && given.length === list.length && given.every((stage, i) => stage === list[i]);
+  // An enabled #257 list keeps its order under canonical ids, so implement/verify stay read-only aliases there too.
+  const stages = mode !== "off" && exactly(SDLC_STAGES) ? SDLC_STAGES.map(canonicalStage) : given;
   if (!exactly(SDLC_STAGES) && !exactly(PLAYBOOK_STAGES)) throw new Error(`sdlc.stages: use ${PLAYBOOK_STAGES.join(", ")} in that order (or the #257 list ${SDLC_STAGES.join(", ")}); other lists need definitions`);
   return { mode, requiredChecks: [...checks] as string[], stages: [...stages as string[]], ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
 }
@@ -164,7 +166,9 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
   previous ??= { stage: config.stages[0] ?? "spec" };
   const next = { ...previous };
   const checklist = raw.criteria ?? raw.phase;
-  if (checklist !== undefined) { next.criteria = criteriaReceipt(checklist); delete next.phase; }
+  // Off keeps the #257 receipt bytes for a phase write (task import stays retired); everything else stores criteria.
+  if (raw.phase !== undefined && config.mode === "off" && !config.workflow) { const legacy = criteriaReceipt(raw.phase); next.phase = { id: legacy.id, ...(legacy.head ? { head: legacy.head } : {}), tasks: [], criteria: legacy.criteria }; delete next.criteria; }
+  else if (checklist !== undefined) { next.criteria = criteriaReceipt(checklist); delete next.phase; }
   if (raw.stage !== undefined) {
     if (typeof raw.stage !== "string" || !stageDefinition(config, raw.stage)) throw new Error("sdlc receipt.stage: unknown stage");
     // A legacy id is accepted from older clients but stored under the stage the config actually lists (#481 S0).

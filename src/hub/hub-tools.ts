@@ -118,10 +118,14 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
     const properties = { ...tool.inputSchema.properties };
     if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt as { type: string; properties: Record<string, unknown>; additionalProperties: boolean };
-      // #481 S8: an enabled lifecycle advertises the acceptance-criteria checklist; `phase` is only its retired alias.
-      const { phase, ...current } = receipt.properties as { phase: { properties: Record<string, unknown> } } & Record<string, unknown>;
-      const { tasks: _retiredImport, ...checklist } = phase.properties;
-      properties.receipt = { ...receipt, properties: { ...current, stage: { type: "string", enum: [...(stages ?? SDLC_STAGES)] }, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } } };
+      let fields: Record<string, unknown> = { ...receipt.properties, ...(customStages ? { stage: { type: "string", enum: [...(stages ?? SDLC_STAGES)] } } : {}) };
+      // #481 S8: only an enabled lifecycle (whose daemon accepts it) advertises the criteria checklist; off and older daemons keep phase.
+      if (criteria) {
+        const { phase, ...current } = fields as { phase: { properties: Record<string, unknown> } } & Record<string, unknown>;
+        const { tasks: _retiredImport, ...checklist } = phase.properties;
+        fields = { ...current, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
+      }
+      properties.receipt = { ...receipt, properties: fields };
     }
     if (customProfile && tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
     if (customProfile && properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };

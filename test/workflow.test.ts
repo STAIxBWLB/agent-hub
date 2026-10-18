@@ -98,3 +98,11 @@ test("new gsd-lite tasks expose checklist guidance before the first receipt and 
   const plain = rig("off", false, "none"), old = plain.board.propose(USER, { title: "fresh task", class: "implement" });
   expect(plain.tasks.publicView(old).lifecycle).toBeUndefined();
 });
+
+test("a plain off lifecycle keeps the #257 export bytes; enabled and retired-setting lifecycles export schema 2 (#481 S8)", () => {
+  const off = rig("off", false, "none"), exported = off.tasks.workflowExport(off.parent) as any;
+  const state = { id: off.parent, state: "in_progress", stage: "spec", phase: null };
+  expect(exported).toEqual({ schema: 1, workflow: "none", state, stateHash: workflowHash(state), sourceHash: workflowHash(off.config) });
+  const enabled = rig("advise", false, "none"); expect((enabled.tasks.workflowExport(enabled.parent) as any).schema).toBe(2);
+  const retired = rig("off"); expect((retired.tasks.workflowExport(retired.parent) as any).schema).toBe(2);
+});
