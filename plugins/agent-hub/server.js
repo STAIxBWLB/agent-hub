@@ -7609,13 +7609,17 @@ var init_claude_print = __esm(() => {
       return { launch: { kind: "claude-print", peer: this.id } };
     }
     async start() {
+      if (this.child)
+        throw new Error(`${this.id}: an earlier review's process group is still running; stop it first`);
       this.setState("idle");
     }
     async stop(reason) {
       this.generation++;
       this.settle("needs_review", reason ?? "review stopped before settlement");
-      this.setState("offline");
+      if (this.child)
+        this.setState("busy");
       await this.kill();
+      this.setState("offline");
     }
     onWatchdog() {
       this.generation++;

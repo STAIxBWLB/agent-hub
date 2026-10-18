@@ -280,5 +280,11 @@ test("a review ends only when its whole process group is gone; survivors keep th
     expect(receipts[3]).toMatchObject({ id: "d2", state: "needs_review", reason: expect.stringContaining("process group still running") });
     expect(peer.state).toBe("busy");
     await expect(peer.stop("person stopped it")).rejects.toThrow("still has members");
+    expect(peer.state).toBe("busy"); // never offline while the survivors run
+    await expect(peer.start()).rejects.toThrow("still running");
+    expect(peer.state).toBe("busy");
+    killOwn();
+    await peer.stop("after cleanup"); // the group is gone now: the stop completes
+    expect(peer.state).toBe("offline");
   } finally { killOwn(); }
 }, 20_000);

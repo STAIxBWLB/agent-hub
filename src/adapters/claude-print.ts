@@ -109,13 +109,18 @@ export class ClaudePrintPeer extends BasePeer {
 
   recoveryMetadata(): Record<string, unknown> { return { launch: { kind: "claude-print", peer: this.id } }; }
 
-  async start(): Promise<void> { this.setState("idle"); }
+  async start(): Promise<void> {
+    // A retained child means a review's process group was never confirmed gone: no new review beside it.
+    if (this.child) throw new Error(`${this.id}: an earlier review's process group is still running; stop it first`);
+    this.setState("idle");
+  }
 
   async stop(reason?: string): Promise<void> {
     this.generation++; // fence before the first await: a late exit settles nothing
     this.settle("needs_review", reason ?? "review stopped before settlement");
+    if (this.child) this.setState("busy"); // unavailable, not offline, until the group is confirmed gone
+    await this.kill(); // throws when the child could not be stopped; its handle is kept and the peer stays busy
     this.setState("offline");
-    await this.kill(); // throws when the child could not be stopped; its handle is kept
   }
 
   protected override onWatchdog(): void {
