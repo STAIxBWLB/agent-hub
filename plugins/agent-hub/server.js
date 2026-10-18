@@ -13823,7 +13823,7 @@ var init_local_worker = __esm(() => {
             throw new Error("route belongs to an ended turn");
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
-          const tools = judge ? undefined : [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+          const tools = judge ? undefined : [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
           const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
@@ -14127,7 +14127,7 @@ var init_local_worker = __esm(() => {
       const route = policy?.route ?? this.opts.route;
       const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
       const task = policy?.task === undefined ? undefined : Number(policy.task);
-      const tools = [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+      const tools = [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
       const signal = this.abort.signal;
       const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
       const routed = await this.hubCall(route, messages, policy, signal);
@@ -15412,15 +15412,15 @@ function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev"
   return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
 `);
 }
-function profileTaskTools(profile = "dev", stages) {
+function profileTaskTools(profile = "dev", stages, criteria = false) {
   const customStages = stages && (stages.length !== SDLC_STAGES.length || stages.some((s, i) => s !== SDLC_STAGES[i]));
   const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
-  if (!customStages && !customProfile)
+  if (!customStages && !customProfile && !criteria)
     return TASK_TOOLS2;
   const data = profileData(profile);
   return TASK_TOOLS2.map((tool) => {
     const properties = { ...tool.inputSchema.properties };
-    if (customStages && tool.name === "hub_sdlc_record") {
+    if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt;
       const { phase, ...current } = receipt.properties;
       const { tasks: _retiredImport, ...checklist } = phase.properties;
@@ -15641,7 +15641,7 @@ class ControlClient {
 
 // src/hub/lifecycle-schema.ts
 init_sdlc();
-async function activeLifecycleStages(stateDir, peer, projectRoot, active) {
+async function activeLifecycle(stateDir, peer, projectRoot, active) {
   let client;
   try {
     client = active ?? await ControlClient.connect(stateDir, { role: "tools", peer, projectRoot }, 1000);
@@ -15649,11 +15649,11 @@ async function activeLifecycleStages(stateDir, peer, projectRoot, active) {
     if (reply.t !== "status" || !reply.status || typeof reply.status !== "object" || Array.isArray(reply.status))
       return;
     if (!Object.hasOwn(reply.status, "lifecycleStages"))
-      return [...SDLC_STAGES];
+      return { stages: [...SDLC_STAGES], criteria: false };
     const stages = reply.status.lifecycleStages;
     if (!Array.isArray(stages) || !stages.length || stages.length > 32 || stages.some((s) => typeof s !== "string" || !/^[a-z][a-z0-9_-]{0,47}$/.test(s)) || new Set(stages).size !== stages.length)
       return;
-    return [...stages];
+    return { stages: [...stages], criteria: reply.status.lifecycleCriteria === true };
   } catch {
     return;
   } finally {
@@ -24310,7 +24310,7 @@ async function connectLoop() {
   }
 }
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const lifecycleStages = await activeLifecycleStages(stateDir, peerId, projectRoot2, hub);
+  const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, hub);
   return {
     tools: [
       {
@@ -24341,7 +24341,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           }
         ] : []
       ],
-      ...profileTaskTools(profile2, lifecycleStages).filter((tool) => (lifecycleStages !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
+      ...profileTaskTools(profile2, lifecycle?.stages, lifecycle?.criteria).filter((tool) => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
       ...CONDUCTOR_TOOLS
     ]
   };

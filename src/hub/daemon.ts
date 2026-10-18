@@ -2399,6 +2399,8 @@ export async function startDaemon(opts: DaemonOptions) {
     pendingRestart,
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
+    // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
+    ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
     protocol: PROTOCOL,
     features: DAEMON_FEATURES,
     stopping,
@@ -3402,7 +3404,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, peer, unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile, lifecycleConfig.stages), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off"), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
           if (signal?.aborted) return "error: turn cancelled before tool effects";
@@ -3571,6 +3573,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(capture ? { capture } : {}),
         profile: resolvedProfile,
         sdlcStages: lifecycleConfig.stages,
+        sdlcCriteria: lifecycleConfig.mode !== "off",
         taskTool: (name, a, turn) => taskOp(peer, name, a, true, turn.pii),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);

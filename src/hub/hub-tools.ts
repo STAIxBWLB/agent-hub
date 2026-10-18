@@ -108,14 +108,15 @@ export function roleContract(peer: string, roles: Record<string, string[]> = DEF
 }
 
 /** Profile schemas are data over the existing tools; dev retains the exact existing definitions. */
-export function profileTaskTools(profile: ProfileSelection = "dev", stages?: readonly string[]): HubTool[] {
+/** `criteria`: an enabled lifecycle, whose receipts take the #481 S8 checklist whatever its stage list. */
+export function profileTaskTools(profile: ProfileSelection = "dev", stages?: readonly string[], criteria = false): HubTool[] {
   const customStages = stages && (stages.length !== SDLC_STAGES.length || stages.some((s, i) => s !== SDLC_STAGES[i]));
   const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
-  if (!customStages && !customProfile) return TASK_TOOLS;
+  if (!customStages && !customProfile && !criteria) return TASK_TOOLS;
   const data = profileData(profile);
   return TASK_TOOLS.map(tool => {
     const properties = { ...tool.inputSchema.properties };
-    if (customStages && tool.name === "hub_sdlc_record") {
+    if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt as { type: string; properties: Record<string, unknown>; additionalProperties: boolean };
       // #481 S8: an enabled lifecycle advertises the acceptance-criteria checklist; `phase` is only its retired alias.
       const { phase, ...current } = receipt.properties as { phase: { properties: Record<string, unknown> } } & Record<string, unknown>;
