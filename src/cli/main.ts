@@ -1210,9 +1210,14 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   review: async () => {
+    // #520: the review brief a reviewer gets, for a person or an outside tool.
+    if (args[0] === "brief") {
+      if (args.length !== 2 || !/^\d+$/.test(args[1]!)) fail("usage: ahub review brief <task id>");
+      return console.log(await taskOp("review_brief", { id: Number(args[1]) }));
+    }
     const { one, many, rest } = takeFlags(args, ["--head"], ["--unmet"]);
     const [id, verdict, ...note] = rest;
-    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]...");
+    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]... | ahub review brief <id>");
     console.log(await taskOp("hub_review", { id: Number(id), verdict, ...(one["--head"] ? { head: one["--head"] } : {}), note: note.join(" "), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
   },
 

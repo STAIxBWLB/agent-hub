@@ -14,6 +14,7 @@ import { needs, type NeedsInput } from "../ui/needs.ts";
 import { loadPetConfig } from "../pet/config.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
+import { buildReviewBrief } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
@@ -639,6 +640,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...extraIds.filter(id => !channelExtras.includes(id))]);
   // #223 R2: a declared instance whose effective roles are exactly reviewer gets review requests and its own task notices only.
   const reviewOnlyPeer = (peer: string): boolean => Object.hasOwn(declarations, peer) && config.roles[peer]?.length === 1 && config.roles[peer]![0] === "reviewer";
+  /** #520: a task under review shows its review brief to whoever may read it (owner, reviewer, conductor). */
+  const briefField = (task: Task): { brief?: string } => { if (task.state !== "in_review") return {}; const text = tasks.briefText(task); return text ? { brief: text } : {}; };
   /** #223 R2: a review-only instance reads the spec, refs and earlier verdicts of a task, never the builder's narrative. */
   const reviewerView = (peer: string, view: Record<string, unknown>): Record<string, unknown> => !reviewOnlyPeer(peer) || !Array.isArray(view.history) ? view
     : { ...view, history: (view.history as { event?: unknown; note?: unknown }[]).map(({ note, ...h }) => h.event === "approved" || h.event === "changes_requested" ? { ...h, note } : h) };
@@ -1322,6 +1325,10 @@ export async function startDaemon(opts: DaemonOptions) {
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     projectedReview: task => reviewProjection(task),
+    reviewBrief: task => {
+      const root = executionRoot(task.owner ?? "");
+      return buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
+    },
     sdlc: { config: () => lifecycleConfig, gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound) },
     board,
     bus,
@@ -2010,7 +2017,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
       if (piiTurn && ["hub_task_assign", "hub_task_escalate", "hub_peer_start"].includes(op)) throw new PreEffectToolRefusal("conductor mutations are unavailable during a PII turn");
       const result = await conductor.execute(by, op, a);
-      return JSON.stringify(op === "hub_task_show" && result && typeof result === "object" ? reviewerView(by, result as Record<string, unknown>) : result);
+      const shown = op === "hub_task_show" && result && typeof result === "object" ? board.get(Number(a.id)) : undefined;
+      return JSON.stringify(shown ? { ...reviewerView(by, result as Record<string, unknown>), ...briefField(shown) } : result);
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
@@ -2195,7 +2203,7 @@ export async function startDaemon(opts: DaemonOptions) {
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(tasks.recordLifecycle(by, a.id, a.receipt));
       case "hub_review":
-        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head));
+        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage));
       case "hub_remember":
         return tasks.remember(by, a);
       case "hub_checkpoint": {
@@ -2236,7 +2244,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const task = board.get(Number(a.id));
       if (task?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
       if (!task) return JSON.stringify(`no task #${a.id}`);
-      return JSON.stringify({ ...reviewerView(by, publicConductorTask(task, (t) => tasks.publicView(t, true))), flowRevision: task.history.length });
+      return JSON.stringify({ ...reviewerView(by, publicConductorTask(task, (t) => tasks.publicView(t, true))), ...briefField(task), flowRevision: task.history.length });
     }
     if (op === "route_explain" && by !== USER) {
       if (a.id !== undefined && board.get(Number(a.id))?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
@@ -2263,6 +2271,10 @@ export async function startDaemon(opts: DaemonOptions) {
       case "backlog_pull":
       case "backlog_return":
         return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
+      case "review_brief": {
+        const task = board.get(Number(a.id));
+        return task ? tasks.briefText(task) || `task #${task.id} names no commit, or is private: no brief` : `no task #${a.id}`;
+      }
       case "task_show": {
         const task = board.get(Number(a.id));
         return JSON.stringify(task ? { ...task, flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) } : `no task #${a.id}`, null, 2);

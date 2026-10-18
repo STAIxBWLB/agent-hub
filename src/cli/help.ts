@@ -88,6 +88,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]", "person only: close obsolete work with a reason; retain its history without stopping native work or releasing dependents"],
     ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned", "your later verdict on an approved task, kept in the research records (research must be on)"],
     ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]...", "give a review verdict on a task"],
+    ["ahub review brief <id>", "print the review brief of a task's commit: reviewable and excluded files, rules, coverage to account for"],
     ["ahub route explain <id>", "why a task went where it went, its reserved owner included"],
     ["ahub route explain --class <c> <title...>", "what would happen to such a task now"],
     ["ahub ask [--remember] <question...>", "answer from the task board, shared memory and this run's log, with the ids it rests on"],
