@@ -1,3 +1,4 @@
+import { specRefs } from "./spec-read.ts";
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { VERSION } from "../version.ts";
@@ -16,7 +17,7 @@ import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
-import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
+import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -26,8 +27,8 @@ import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.t
 import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
-import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { checklistOf, readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
+import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
+import { readPlanIssueMetadata, checklistOf, readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -93,6 +94,8 @@ export interface TasksDeps {
   failing?: () => Record<PeerId, string>;
   /** Peers whose queue a needs_review delivery holds, with the hold detail (issue #90); routing explains the hold, never rejects. */
   held?: () => Record<PeerId, string>;
+  /** Closed host facts only; approval text and quota reasons never enter the grooming projection. */
+  plannerBlocks?: () => Record<PeerId, ("approvals" | "quota")[]>;
   /** Roles from `.agenthub/config.json` (issue #92): peers with the reviewer role join the reviewer candidates. */
   roles?: Record<string, string[]>;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
@@ -681,7 +684,7 @@ export class Tasks {
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
     const validate = () => {
       const task = this.d.board.get(input.id);
-      if (!task || (task.planningRevision ?? 0) !== input.revision || task.state !== "backlog" || task.owner || taskHasStarted(task) || task.pinned) throw new PreEffectToolRefusal("planner pull changed, pinned or already started");
+      if (!task || (task.planningRevision ?? 0) !== input.revision || task.state !== "backlog" || task.owner || !taskCanPlan(task) || task.pinned) throw new PreEffectToolRefusal("planner pull changed, pinned or already started");
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
       if (this.waitsFor(task).length) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
@@ -719,6 +722,7 @@ export class Tasks {
     for (const id of ids) if (this.d.board.get(id)?.state === "backlog") pending.add(id);
     if (pending.size) this.plannerBacklog.set(peer, pending);
   }
+  private readonly groomingNotified = new Map<string, number>();
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
   flushPlannerNotices(): number {
     const configured = Object.entries(this.d.roles ?? {}).filter(([, roles]) => roles.includes("planner")).map(([peer]) => peer);
@@ -732,6 +736,18 @@ export class Tasks {
     }
     const planners = configured.filter(peer => this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline");
     if (!planners.length) return 0;
+    if ((this.d.sdlc?.config().mode ?? "off") !== "off") {
+      const revision = this.d.board.statusRevision();
+      const body = "The board changed. Before offering or accepting build work, read hub_planner_groom, consolidate dependencies and priorities, and record hub_plan_review against the current planning revision.";
+      for (const peer of planners) if (this.groomingNotified.get(peer) !== revision) {
+        const queued = this.d.bus.pendingEnvelopes(peer).some(env => env.from === HUB && env.kind === "task" && env.body === body);
+        if (queued) continue;
+        this.releaseNotice(`could not notify planner ${peer} about grooming`, () => {
+          const recipients = this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task" }));
+          if (recipients.includes(peer)) this.groomingNotified.set(peer, revision);
+        });
+      }
+    }
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
     const incoming = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
     if (incoming.length) {
@@ -815,11 +831,14 @@ export class Tasks {
       const task = this.d.board.get(input.id);
       if (!task || (task.planningRevision ?? 0) !== input.revision) throw new PreEffectToolRefusal("planning revision changed");
       if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
-      if (by !== USER && (task.state !== "backlog" || taskHasStarted(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
+      if (by !== USER && (task.state !== "backlog" || !taskCanPlan(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
       if (by !== USER && Object.hasOwn(patch, "reserved") && this.hasPersonReservation(task)) throw new PreEffectToolRefusal("a person's reservation is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
-        if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
+        const returnedUntouched = task.state === "backlog" && !task.owner && taskHasStarted(task) && taskCanPlan(task);
+        if (!returnedUntouched) {
+          if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
+        }
         if (patch.reserved && !definitionOf(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
         if (patch.reserved) this.requireCapabilities(task, patch.reserved);
@@ -1011,6 +1030,12 @@ export class Tasks {
     if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
     const backlog = input.backlog === true;
+    const claiming = !backlog && input.owner === by;
+    if (claiming) {
+      this.acceptanceCapacity({ id: -1, owner: by, state: "proposed" });
+      this.pendingClaims.set(by, (this.pendingClaims.get(by) ?? 0) + 1);
+    }
+    try {
     if (backlog && input.owner && !this.d.bus.isRostered(input.owner)) throw new PreEffectToolRefusal(`${input.owner} is off roster; add it before reserving work`);
     // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
@@ -1060,6 +1085,7 @@ export class Tasks {
     const defaulted = !backlog && !cls && input.owner === by;
     if (defaulted) cls = "implement";
     if (!cls) throw new PreEffectToolRefusal(`class is required (one of ${CLASSES.join(", ")}); ${fenced ? "the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one" : "the hub could not name one for you"}`);
+    if (claiming) this.acceptanceCapacity({ id: -1, owner: by, state: "proposed" }, 1);
     let selected;
     try { selected = taskRole(input.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
@@ -1086,7 +1112,41 @@ export class Tasks {
       return this.d.board.update(task.id, HUB, "blocked", {}, `waits for ${still.map((id) => `#${id}`).join(", ")}`);
     }
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
-    return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], namedOwner: input.owner, claim: input.owner === by } : {});
+    return await this.assignOwner(task, by, input.owner ? { candidates: [input.owner], namedOwner: input.owner, claim: input.owner === by } : {});
+    } finally {
+      if (claiming) {
+        const remaining = (this.pendingClaims.get(by) ?? 1) - 1;
+        if (remaining) this.pendingClaims.set(by, remaining); else this.pendingClaims.delete(by);
+      }
+    }
+  }
+
+  async returnUntouchedToBacklog(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
+    this.planningAuthority(by);
+    if (!Number.isSafeInteger(input.id) || input.id < 1 || !Number.isSafeInteger(input.revision) || input.revision < 0
+      || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("untouched return needs an id, revision and bounded reason");
+    const validate = () => {
+      const task = this.need(input.id, false, true);
+      if (!["proposed", "in_progress"].includes(task.state) || (task.planningRevision ?? 0) !== input.revision || taskHasWorkEvidence(task)) throw new PreEffectToolRefusal("work has execution evidence or its planning revision changed");
+      if (by !== USER && task.pinned) throw new PreEffectToolRefusal("pinned work requires the person");
+      const release = task.release == null ? undefined : this.d.board.release(task.release);
+      if (release && (["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("settled or frozen release scope cannot return");
+      return task;
+    };
+    const task = validate(), flow = task.history.length;
+    const withheld = await this.withholds("note", input.reason, task);
+    this.planningAuthority(by);
+    const confirmed = validate();
+    if (confirmed.history.length !== flow) throw new PreEffectToolRefusal("task changed during untouched return");
+    const returned = this.d.board.update(confirmed.id, by, "backlog returned untouched", { state: "backlog", owner: null, reviewer: null }, input.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
+    this.offered.delete(confirmed.id);
+    this.cohorts.leave(confirmed.id);
+    this.withdrawRoleRequest(confirmed, returned, "owner");
+    this.withdrawRoleRequest(confirmed, returned, "reviewer");
+    this.incomingBacklog.add(confirmed.id);
+    this.planningRecorded({ by, task: confirmed.id, fields: ["return"], revision: confirmed.planningRevision ?? 0 });
+    return returned;
   }
 
   /** Person-owned staging only. Flow transitions remain with their existing owners and reviewers. */
@@ -1495,6 +1555,19 @@ export class Tasks {
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number } = {}): Promise<Task> {
     if (task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
+    const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
+    if (mode !== "off" && this.isBuildTask(task)) {
+      const gap = task.sdlc?.planReview ? await this.planReviewGap(task) : "plan not reviewed since proposal";
+      const current = this.d.board.get(task.id);
+      if (!current || current.history.length !== task.history.length) return current ?? task;
+      if (gap) {
+        this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}; planner: call hub_planner_groom then hub_plan_review`);
+        if (mode === "enforce") {
+          this.reportStall(current, { kind: "no-eligible-peer", code: "policy" });
+          return current;
+        }
+      }
+    }
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
@@ -1835,6 +1908,101 @@ export class Tasks {
     if (by !== USER && task[role] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
   }
 
+  private planIssueIdentity(task: Task): { repo: string; issue: number } | undefined {
+    const source = task.external ?? task.sdlc;
+    if (source?.repo && source.issue) return { repo: source.repo, issue: source.issue };
+    const repository = task.refs.repo ?? this.d.repository ?? "";
+    let issues: number[];
+    try { issues = specRefs(task, repository); }
+    catch { throw new PreEffectToolRefusal("plan review issue identity unavailable"); }
+    if (issues.length > 1) throw new PreEffectToolRefusal("plan review needs one explicit issue identity");
+    return issues[0] ? { repo: repository, issue: issues[0] } : undefined;
+  }
+
+  async groomingDigest(by: PeerId): Promise<Record<string, unknown>> {
+    this.planningAuthority(by);
+    const snapshot = this.d.board.list().filter(task => !isClosedTaskState(task.state)), issues = new Map<string, PlanIssueMetadata>(), attempted = new Set<string>();
+    const deadline = performance.now() + 4_000;
+    let reads = 0, incomplete = false;
+    // ponytail: at most eight metadata reads within four seconds; add paginated revision-bound readback for larger boards.
+    for (const task of snapshot) {
+      if (this.isPii(task)) continue;
+      let source: { repo: string; issue: number } | undefined;
+      try { source = this.planIssueIdentity(task); } catch { continue; }
+      if (!source) continue;
+      const key = `${source.repo.toLowerCase()}#${source.issue}`;
+      if (attempted.has(key)) continue;
+      attempted.add(key);
+      if (reads >= 8 || performance.now() >= deadline) { incomplete = true; break; }
+      reads++;
+      const run = this.d.sdlc?.gh ?? sdlcGh;
+      const issue = await readPlanIssueMetadata(source.repo, source.issue, (args, timeout, cwd, cap) => run(args, Math.max(1, Math.min(timeout ?? 10_000, deadline - performance.now())), cwd, cap));
+      if (issue) issues.set(key, issue);
+    }
+    this.planningAuthority(by);
+    const current = this.d.board.list().filter(task => !isClosedTaskState(task.state)), visible = current.filter(task => !this.isPii(task));
+    const peers = [...new Set([...Object.keys(this.states()), ...current.flatMap(task => task.owner ? [task.owner] : [])])];
+    const reviewedIssues = new Map(visible.flatMap(task => task.sdlc?.planReview?.issue ? [[task.id, task.sdlc.planReview.issue] as const] : []));
+    const blockers: { task: number; code: string }[] = this.d.board.stalls().map(stall => ({ task: stall.task, code: stall.cause.code }));
+    const health = this.health(), states = this.states(), routing = this.d.routing(), hostBlocks = this.d.plannerBlocks?.() ?? {};
+    for (const task of visible.slice(0, 500)) {
+      const owner = task.owner ?? task.reserved;
+      if (owner) for (const code of peerEntry(hostBlocks, owner) ?? []) blockers.push({ task: task.id, code });
+      const result = assign(task, states, routing, { ...health, waitsFor: this.waitsFor(task), ...(owner ? { candidates: [owner], namedOwner: owner } : {}) });
+      if (!result.owner) for (const refusal of result.refusals ?? []) if (refusal.role === "owner") blockers.push({ task: task.id, code: refusal.code === "instance" || refusal.code === "family" ? "policy" : refusal.code });
+      if (this.waitsFor(task).length) blockers.push({ task: task.id, code: "dependency" });
+    }
+    const digest = plannerGrooming(visible, { repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`,
+      limits: Object.fromEntries(peers.map(peer => [peer, this.wipLimit(peer)])), wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])),
+      states, issues, reviewedIssues, blockers });
+    return { ...digest, truncated: digest.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}) };
+  }
+
+  async planReviewGap(task: Task): Promise<string | undefined> {
+    const receipt = task.sdlc?.planReview;
+    if (!receipt) return "plan not reviewed since proposal";
+    if (!receipt.planner || !Number.isFinite(receipt.recordedAt) || receipt.planningRevision !== (task.planningRevision ?? 0)) return "plan not reviewed since planning revision change";
+    const identity = this.planIssueIdentity(task);
+    if (identity?.issue && this.isPii(task)) return "private issue plan review evidence unavailable";
+    if (!identity?.issue) return receipt.issue ? "plan not reviewed since issue identity change" : undefined;
+    if (!identity.repo || typeof receipt.issue?.repo !== "string" || receipt.issue.repo.toLowerCase() !== identity.repo.toLowerCase() || receipt.issue.issue !== identity.issue) return "plan not reviewed since issue identity change";
+    const current = await readPlanIssueMetadata(identity.repo, identity.issue, this.d.sdlc?.gh ?? sdlcGh);
+    if (!current) return "plan review issue metadata unavailable";
+    if (current.state !== "OPEN") return "plan review issue is closed";
+    return current.editedAt !== receipt.issue.editedAt ? "plan not reviewed since issue edit" : undefined;
+  }
+
+  /** Planner authority and issue edit evidence are rechecked across every external await. */
+  async recordPlanReview(by: PeerId, id: unknown, input: unknown): Promise<Task> {
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
+    this.planningAuthority(by);
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new PreEffectToolRefusal("plan review needs a revision and reason");
+    const raw = input as Record<string, unknown>;
+    if (Object.keys(raw).some(key => !["revision", "reason"].includes(key)) || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0
+      || typeof raw.reason !== "string" || !raw.reason.trim() || raw.reason.length > 1000) throw new PreEffectToolRefusal("plan review needs a current revision and bounded reason");
+    const task = this.need(id, false, true, true), revision = raw.revision as number;
+    if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
+    if ((task.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("planning revision changed");
+    const flow = task.history.length, withheld = await this.withholds("note", raw.reason, task);
+    const identity = this.planIssueIdentity(task);
+    if (identity?.issue && this.isPii(task)) throw new PreEffectToolRefusal("private issue plan review readback unavailable");
+    const issue = identity?.repo && identity.issue ? await readPlanIssueMetadata(identity.repo, identity.issue, this.d.sdlc?.gh ?? sdlcGh) : undefined;
+    if (identity?.issue && !issue) throw new PreEffectToolRefusal("plan review issue metadata unavailable");
+    if (issue && !this.isPii(task) && !this.nameable(JSON.stringify(issue))) throw new PreEffectToolRefusal("plan review metadata matches a PII pattern");
+    this.planningAuthority(by);
+    const current = this.need(task.id, false, true, true);
+    if (current.history.length !== flow || (current.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("plan review changed during readback");
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    const updated = this.d.board.update(current.id, by, "plan reviewed", { sdlc: { ...current.sdlc, stage: current.sdlc?.stage ?? lifecycleStage(config, "plan"),
+      planReview: { planner: by, planningRevision: revision, recordedAt: Date.now(), ...(issue ? { issue } : {}) } } }, raw.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
+    if (updated.state === "proposed" && !updated.owner) {
+      this.offered.delete(updated.id);
+      try { await this.offerReady(updated, "planner review recorded"); }
+      catch { this.releaseNotice(`task #${updated.id}: plan review saved; inspect its owner delivery before retrying`); }
+    }
+    return this.d.board.get(updated.id) ?? updated;
+  }
+
   /** Artifact links and claimed local gates stay on the board; no outside text is accepted. */
   recordLifecycle(by: PeerId, id: unknown, input: unknown): Task {
     const task = this.need(id, false, true);
@@ -1928,6 +2096,51 @@ export class Tasks {
     return task;
   }
 
+  private readonly pendingClaims = new Map<PeerId, number>();
+  private readonly reviewedAdmissions = new Map<number, { flow: number; owner: string | null }>();
+  private isBuildTask(task: Task): boolean {
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    if (["implement", "bulk_edit"].includes(task.class)) return true;
+    const base = task.sdlc ? stageDefinition(config, task.sdlc.stage)?.base : undefined;
+    return base === "build" || base === "implement";
+  }
+  async acceptReviewed(by: PeerId, id: unknown, plan?: unknown): Promise<Task> {
+    const task = this.need(id, false, true);
+    this.mine(task, by, "owner", true);
+    this.acceptanceCapacity(task);
+    const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
+    if (mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan);
+    const gap = await this.planReviewGap(task);
+    const current = this.need(id, false, true);
+    this.mine(current, by, "owner", true);
+    if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during plan readback");
+    if (gap && mode === "enforce") throw new PreEffectToolRefusal(gap);
+    if (gap) this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}`);
+    this.reviewedAdmissions.set(current.id, { flow: current.history.length, owner: current.owner });
+    try { return this.accept(by, id, plan); }
+    finally { this.reviewedAdmissions.delete(current.id); }
+  }
+
+  private acceptanceCapacity(task: Pick<Task, "id" | "owner" | "reserved" | "state"> & Partial<Pick<Task, "history">>, excludePending = 0): void {
+    const owner = task.owner ?? task.reserved;
+    if (!owner) return;
+    if (task.state === "in_progress" && task.history) {
+      let boundary = 0, previous: PeerId | null | undefined;
+      task.history.forEach((entry, index) => {
+        if (entry.owner !== undefined) {
+          if (entry.owner !== previous) boundary = index;
+          previous = entry.owner;
+        } else if (OWNERSHIP_EVENTS.has(entry.event)) { boundary = index; previous = undefined; }
+      });
+      if (task.history.slice(boundary).some(entry => entry.event === "accepted" && (entry.by === owner || entry.by === USER))) return;
+    }
+    const limit = this.wipLimit(owner), pending = Math.max(0, (this.pendingClaims.get(owner) ?? 0) - excludePending);
+    if (this.wip(owner, task.id) + pending < limit) return;
+    const open = this.d.board.list().filter(other => other.id !== task.id && !["backlog", "approved", "cancelled"].includes(other.state)
+      && (other.owner === owner || !other.owner && other.reserved === owner && this.plannerPullRecord(other)?.pull)).map(other => `#${other.id}`);
+    throw new PreEffectToolRefusal(`planner WIP capacity for ${owner}: limit ${limit}; open tasks ${open.join(", ") || "none"}${pending ? `; pending claims ${pending}` : ""}`);
+  }
+
   /**
    * With a plan, the owners of overlapping tasks get it as a ride-along line, and an overlap only the plan reveals is
    * announced like one found at assignment (issue #31).
@@ -1937,6 +2150,12 @@ export class Tasks {
     this.mine(task, by, "owner", true);
     this.ready(task, true);
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
+    this.acceptanceCapacity(task);
+    if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "enforce" && this.isBuildTask(task)) {
+      const readback = this.reviewedAdmissions.get(task.id);
+      this.reviewedAdmissions.delete(task.id);
+      if (!readback || readback.flow !== task.history.length || readback.owner !== task.owner) throw new PreEffectToolRefusal("current plan-review readback required before acceptance");
+    }
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
     const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
     const cleaned = given && Object.keys(given).length ? given : undefined;

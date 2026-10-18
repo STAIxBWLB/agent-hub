@@ -78,7 +78,7 @@ test("glob-private task scopes stay private before triage and refuse public acce
   for (const id of ["codex", "local"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const notices: string[] = [];
   let calls = 0, saved = 0; const memory = new MemoryClient("http://127.0.0.1:1"); memory.save = async () => { saved++; return undefined; };
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", profile: "research", notify: line => notices.push(line), piiPaths: ["data/**/*.csv"], memory, routing: () => loadRouting(dir), triage: { onCampus: async () => false, classify: async () => { calls++; return "implement"; } } });
+  const tasks = new Tasks({ wipLimit: () => 2, board, bus, cwd: dir, project: "fixture", profile: "research", notify: line => notices.push(line), piiPaths: ["data/**/*.csv"], memory, routing: () => loadRouting(dir), triage: { onCampus: async () => false, classify: async () => { calls++; return "implement"; } } });
   const task = await tasks.propose("local", { title: "GLOB_PRIVATE_MARKER", owner: "local", plan: { paths: ["data/future/input.csv"] } });
   expect(tasks.isPii(task)).toBe(true); expect(calls).toBe(0); expect(saved).toBe(0);
   expect(JSON.stringify(tasks.publicView(task))).not.toContain("GLOB_PRIVATE_MARKER"); expect(notices.join(" ")).not.toContain("GLOB_PRIVATE_MARKER");

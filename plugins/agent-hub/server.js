@@ -6941,7 +6941,7 @@ var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submi
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
-}), BOUNDED_TASK_TOOLS, TASK_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, ROLE_TEXT, DEFAULT_ROLES;
+}), BOUNDED_TASK_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_sdlc();
   init_profiles();
@@ -6996,6 +6996,12 @@ var init_hub_tools = __esm(() => {
     tool("hub_memory_correct", "Propose a correction to a visible memory entry. This creates a machine-local candidate only; a person accepts or rejects it with amem review. It never edits a note. id is an exact id or unique visible prefix; text and reason must each fit 4000 UTF-8 bytes.", { id: str2, text: str2, reason: str2 }, ["id", "text", "reason"]),
     tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's memory and claude-mem); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } })
   ];
+  PLANNER_REVIEW_TOOLS = [
+    tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
+    tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 } }, ["id", "revision", "reason"]),
+    tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 } }, ["id", "revision", "reason"])
+  ];
+  TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
   TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
   CONDUCTOR_TOOLS = [
     tool("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
@@ -15779,6 +15785,13 @@ import { join as join22 } from "path";
 init_registry();
 init_hub_tools();
 init_envelope();
+
+// src/hub/spec-read.ts
+init_host_executable();
+init_child_process();
+var BODY_LIMIT = 64 * 1024;
+var RESULT_LIMIT = 80 * 1024;
+var STDOUT_LIMIT = 512 * 1024;
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
@@ -15902,13 +15915,6 @@ init_registry();
 init_board();
 import { join as join20, resolve as resolve12 } from "path";
 
-// src/hub/spec-read.ts
-init_host_executable();
-init_child_process();
-var BODY_LIMIT = 64 * 1024;
-var RESULT_LIMIT = 80 * 1024;
-var STDOUT_LIMIT = 512 * 1024;
-
 // src/models/route/config.ts
 var TYPES = new Set(["stage", "plan_execute", "advisor", "escalation"]);
 
@@ -15927,6 +15933,11 @@ init_board();
 init_envelope();
 init_project();
 init_registry();
+
+// src/hub/task-sweep.ts
+var GROOMING_CODES = new Set(["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "runner", "approvals", "quota", "dependency"]);
+
+// src/hub/tasks.ts
 init_sdlc();
 var DEMOTION_HALF_LIFE_MS = 24 * 3600000;
 var CONTRADICTION_WINDOW_MS = 7 * 86400000;

@@ -74,7 +74,7 @@ import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
@@ -1278,6 +1278,12 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const tasks: Tasks = new Tasks({
     capabilities: peerCapabilities, repository: memoryRepo,
+    plannerBlocks: () => Object.fromEntries(bus.knownPeers().map(peer => {
+      const codes: ("approvals" | "quota")[] = [];
+      if ([...permissions.values()].some(request => request.peer === peer && request.expiresAt > Date.now())) codes.push("approvals");
+      if (budget.record(peer)) codes.push("quota");
+      return [peer, codes];
+    })),
     instances: () => declarations,
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
     // reload cannot turn a canonical reviewer process into an isolated implementation owner.
@@ -1925,7 +1931,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
   // What the hub's MCP server offers a native peer. Codex approves them in config, Kimi's requests for exactly these
   // names are answered by the hub; every call still passes daemon role/capability checks before its effects.
-  const HUB_TOOLS = ["hub_send", ...TASK_TOOLS.map((t) => t.name), ...CONDUCTOR_TOOLS.map((t) => t.name)];
+  const HUB_TOOLS = ["hub_send", ...TASK_TOOL_NAMES, ...CONDUCTOR_TOOLS.map((t) => t.name)];
   const HUB_TOOL_TITLES = new Set(HUB_TOOLS.map((name) => `mcp__agent-hub__${name}`));
   const toolEnv = (peer: PeerId, deliveryOnly = false) => ({ ...(deliveryOnly ? { AGENTHUB_DELIVERY_ONLY: "true" } : {}), AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
@@ -1984,7 +1990,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -2100,6 +2106,14 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(tasks.backlogList(by));
       case "hub_release_list":
         return JSON.stringify(tasks.releaseList(by));
+      case "hub_planner_groom":
+        return JSON.stringify(await tasks.groomingDigest(by));
+      case "hub_plan_review": {
+        const { id, ...review } = a;
+        return JSON.stringify(tasks.publicView(await tasks.recordPlanReview(by, id, review)));
+      }
+      case "hub_backlog_return_untouched":
+        return JSON.stringify(tasks.publicView(await tasks.returnUntouchedToBacklog(by, { id: a.id, revision: a.revision, reason: a.reason })));
       case "hub_backlog_plan":
         return JSON.stringify(tasks.publicView(await tasks.planBacklog(by, { id: a.id, revision: a.revision, fields: a.fields, reason: a.reason })));
       case "hub_backlog_pull":
@@ -2120,7 +2134,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return [line(t), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : ""].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
-        const t = tasks.accept(by, a.id, a.plan);
+        const t = await tasks.acceptReviewed(by, a.id, a.plan);
         // A silent cohort (issue #107): the owners' plans come with every accept, as what the newcomer works from.
         const silent = tasks.silentFor(t.id);
         const overlap = a.plan == null && !silent ? "" : tasks.overlaps(t);
@@ -3559,7 +3573,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const result = await piReceipts!.execute(sessionId ?? "", callId, name, humanBash ? { origin: "verified-user-bash", args: raw } : raw, async () => {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
             const nativeTurn = pi.observationTurn;
-            const output = TASK_TOOLS.some((t) => t.name === name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp(peer, name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
+            const output = TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp(peer, name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
               ...(humanBash ? { onProcessExit: (code: number | null) => { exitCode = code; } } : {}),
               permit: async (title, tool, toolSignal, path, _observe, originalPath) => {
                 const picked = humanBash ? (toolSignal?.aborted || context?.isCurrent() !== true ? "aborted" : true) : await piPermit(title, tool ?? name, toolSignal, path, context?.isCurrent, context?.onApproval, originalPath);

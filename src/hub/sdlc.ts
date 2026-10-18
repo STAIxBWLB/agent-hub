@@ -29,8 +29,15 @@ export interface StageDefinition { base: SdlcBaseStage; actor: string; entry_gat
 export type SdlcMode = "off" | "advise" | "enforce";
 /** `workflow: "gsd-lite"` marks the retired setting during its window (#481 S8): every task then needs a criteria checklist. */
 export interface SdlcConfig { workflow?: "gsd-lite"; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
+export interface PlanReviewReceipt {
+  planner: string;
+  planningRevision: number;
+  recordedAt: number;
+  issue?: PlanIssueMetadata;
+}
 export interface SdlcReceipt {
   stage: SdlcStage;
+  planReview?: PlanReviewReceipt;
   criteria?: CriteriaReceipt;
   /** Stored before #481 S8 and read as `criteria`; never written again. */
   phase?: LegacyPhaseReceipt;
@@ -296,5 +303,30 @@ export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh): Pr
       else if (current?.headRefOid && current.headRefOid !== p.headRefOid) return undefined;
     }
     return parsePrEvidence(p);
+  } catch { return undefined; }
+}
+
+export interface PlanIssueMetadata {
+  repo: string;
+  issue: number;
+  state: "OPEN" | "CLOSED";
+  /** Body edit time; comment activity must never invalidate a plan review. */
+  editedAt: string;
+}
+
+/** Metadata only: never request issue bodies or comments for a planning receipt. */
+export async function readPlanIssueMetadata(repository: string, number: number, run: SdlcGh = sdlcGh): Promise<PlanIssueMetadata | undefined> {
+  if (!repo(repository) || !id(number)) return undefined;
+  const [owner, name] = repository.split("/");
+  try {
+    const result = await run(["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number state createdAt lastEditedAt}}}", "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], 10_000, undefined, 8 * 1024);
+    if (result.code !== 0 || Buffer.byteLength(result.stdout) > 8 * 1024) return undefined;
+    const response = JSON.parse(result.stdout);
+    if (response.errors !== undefined) return undefined;
+    const issue = response.data?.repository?.issue;
+    if (!issue || issue.number !== number || !["OPEN", "CLOSED"].includes(issue.state)) return undefined;
+    const editedAt = issue.lastEditedAt === null ? issue.createdAt : issue.lastEditedAt;
+    if (typeof editedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(editedAt) || !Number.isFinite(Date.parse(editedAt))) return undefined;
+    return { repo: repository, issue: number, state: issue.state, editedAt };
   } catch { return undefined; }
 }

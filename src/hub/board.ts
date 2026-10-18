@@ -90,6 +90,19 @@ export interface Task extends PlanningFields {
 export function taskHasStarted(task: Pick<Task, "history">): boolean {
   return task.history.some(entry => ["accepted", "done", "done (checking)", "check passed", "check failed", "changes_requested", "approved", "reopened", "integration requested", "integrated"].includes(entry.event));
 }
+/** S9 return eligibility never erases the historical acceptance used by cancellation and undo. */
+export function taskHasWorkEvidence(task: Pick<Task, "history" | "refs" | "sdlc">): boolean {
+  return !!(task.refs.branch || task.refs.commit || task.sdlc?.localHead || task.sdlc?.localResult || task.sdlc?.reviewedHead || task.sdlc?.pr)
+    || task.history.some(entry => entry.event === "done" || entry.event.startsWith("done (") || entry.event.startsWith("check ")
+      || ["changes_requested", "approved", "reopened", "integration requested", "integrated"].includes(entry.event));
+}
+/** A successful untouched return permits replanning, without changing historical start evidence. */
+export function taskCanPlan(task: Pick<Task, "history" | "refs" | "sdlc">): boolean {
+  if (!taskHasStarted(task)) return true;
+  const returned = task.history.findLastIndex(entry => entry.event === "backlog returned untouched");
+  const accepted = task.history.findLastIndex(entry => entry.event === "accepted");
+  return returned > accepted && !taskHasWorkEvidence(task);
+}
 /** First offer boundary; staged work has none until it is pulled. */
 export function taskProposalAt(task: Pick<Task, "history">): number | undefined {
   return task.history.find(entry => entry.event === "proposed" || entry.event === "backlog pulled")?.at;
@@ -274,13 +287,17 @@ export class Board {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
-    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
+    const untouchedReturn = event === "backlog returned untouched" && patch.state === "backlog" && patch.owner === null && patch.reviewer === null
+      && ["proposed", "in_progress"].includes(task.state) && expectedFlowRevision !== undefined && !!note?.trim() && !taskHasWorkEvidence(task);
+    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
     if (next.state === "backlog" && (next.owner || next.reviewer)) throw new Error(`task #${id}: backlog cannot have an owner or reviewer`);
-    if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
-    if (patch.state === "backlog" && taskHasStarted(task)) throw new Error(`task #${id}: started work cannot return to backlog`);
+    if (!untouchedReturn) {
+      if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
+    }
+    if (patch.state === "backlog" && taskHasStarted(task) && !untouchedReturn) throw new Error(`task #${id}: started work cannot return to backlog`);
     const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
@@ -309,7 +326,7 @@ export class Board {
   /** A planner reserves a routing slot without claiming or dispatching the work. */
   pullPlanned(id: number, by: PeerId, reserved: PeerId, revision: number, note: string, withheld = false): Task {
     const task = this.get(id);
-    if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || taskHasStarted(task)) throw new Error("planner pull changed or already started");
+    if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || !taskCanPlan(task)) throw new Error("planner pull changed or already started");
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
     const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
       .run(reserved, JSON.stringify([...task.history, entry]), now, id, revision));

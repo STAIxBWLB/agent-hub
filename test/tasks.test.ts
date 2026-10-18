@@ -51,7 +51,7 @@ const PII = "patient 900101-1234567 needs a follow-up";
 // configurable default (three, tasks.escalate_after) has its own tests below (#488).
 const PIN_TWO = () => 2;
 
-async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>, capabilities?: Record<string, import("../src/hub/routing.ts").PeerCapabilities>) {
+async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>, capabilities?: Record<string, import("../src/hub/routing.ts").PeerCapabilities>, wipLimit?: number) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
   const bus = new Bus({ batchMs: 0 });
   const peers = Object.fromEntries(peerIds.map((id) => [id, new FakePeer(id)]));
@@ -66,7 +66,7 @@ async function setup(peerIds = ["claude", "codex", "kimi", "local"], observation
   const shared: string[] = [];
   const told: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ escalateAfter: PIN_TWO, board, bus, ...(capabilities ? { capabilities: () => capabilities, repository: "STAIxBWLB/agent-hub" } : {}), routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
+  const tasks = new Tasks({ ...(wipLimit === undefined ? {} : { wipLimit: () => wipLimit! }), escalateAfter: PIN_TWO, board, bus, ...(capabilities ? { capabilities: () => capabilities, repository: "STAIxBWLB/agent-hub" } : {}), routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
   const saves = () => mem.calls.filter((c) => c.path === "/api/memory/save").map((c) => c.body as any);
   return { dir, bus, peers, board, tasks, notices, shared, told, mem, saves };
 }
@@ -315,7 +315,7 @@ test("hub_remember carries peer, kind and task; with the worker down the board w
 });
 
 test("budget pause: open work goes to local first through the constraints, reviews move on, PII gets no handoff text", async () => {
-  const { tasks, peers, board, bus } = await setup();
+  const { tasks, peers, board, bus } = await setup(undefined, undefined, undefined, 2);
   await tasks.propose("claude", { title: "implement parser", class: "implement", owner: "codex" }); // #1 explicit cloud owner
   await tasks.propose("user", { title: "plan the release", class: "plan", owner: "codex" }); // #2 -> codex, local not allowed
   await tasks.propose("claude", { title: "note for 900101-1234567", class: "implement" }); // #3 pii -> local
@@ -428,7 +428,7 @@ test("a claim: naming yourself as owner starts the task in progress with its rev
 });
 
 test("overlaps: open tasks of other owners on the same paths or a directory of them; the newcomer hears it, the other owner is not interrupted", async () => {
-  const { tasks, peers, notices } = await setup();
+  const { tasks, peers, notices } = await setup(undefined, undefined, undefined, 3);
   await tasks.propose("kimi", { title: "hub refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/"] } });
   const codex = await tasks.propose("codex", { title: "retry backoff", class: "implement", owner: "codex", refs: { paths: ["./src/hub/bus.ts", "README.md"] } });
   expect(tasks.overlaps(codex)).toBe("Overlaps #1 (owner kimi) on src/hub/bus.ts. Settle it with that owner via hub_send before editing those paths."); // stored in one spelling (#67)
@@ -471,7 +471,7 @@ test("a self-claim without a class and without a triage answer is implementation
 });
 
 test("the earlier owner is told of an overlap through a ride-along line; the newcomer's claim is unchanged", async () => {
-  const { tasks, told, peers } = await setup();
+  const { tasks, told, peers } = await setup(undefined, undefined, undefined, 2);
   await tasks.propose("kimi", { title: "hub refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub"] } });
   await tasks.propose("codex", { title: "retry backoff", class: "implement", owner: "codex", refs: { paths: ["src/hub/bus.ts"] } });
   await tick();
@@ -482,7 +482,7 @@ test("the earlier owner is told of an overlap through a ride-along line; the new
 });
 
 test("an owner that is gone loses its open tasks to a peer that can take them, and keeps them when nobody can", async () => {
-  const { tasks, board, peers, notices } = await setup(["claude", "codex", "kimi"]);
+  const { tasks, board, peers, notices } = await setup(["claude", "codex", "kimi"], undefined, undefined, 2);
   const t = await tasks.propose("kimi", { title: "half done", class: "implement", owner: "kimi" });
   peers.kimi!.set("offline");
   const moved = await tasks.releaseFromGone("kimi", 31);
@@ -512,8 +512,8 @@ test("a released owner is told on its next delivery; a peer back online keeps it
 });
 
 test("a release re-reads each task: one reassigned by the console meanwhile stays where it went", async () => {
-  const ctx = await setup(["claude", "codex", "kimi"]);
-  const slow = new Tasks({ board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: () => {}, briefs: { forTask: async () => (await new Promise((r) => setTimeout(r, 60)), undefined) } as any });
+  const ctx = await setup(["claude", "codex", "kimi"], undefined, undefined, 2);
+  const slow = new Tasks({ wipLimit: () => 2, board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: () => {}, briefs: { forTask: async () => (await new Promise((r) => setTimeout(r, 60)), undefined) } as any });
   const a = await slow.propose("kimi", { title: "first", class: "implement", owner: "kimi" });
   const b = await slow.propose("kimi", { title: "second", class: "implement", owner: "kimi" });
   ctx.peers.kimi!.set("offline");
@@ -526,7 +526,7 @@ test("a release re-reads each task: one reassigned by the console meanwhile stay
 });
 
 test("tasks of the owner being released are no one to settle an overlap with", async () => {
-  const { tasks, peers, told } = await setup(["claude", "codex", "kimi"]);
+  const { tasks, peers, told } = await setup(["claude", "codex", "kimi"], undefined, undefined, 2);
   await tasks.propose("kimi", { title: "one", class: "implement", owner: "kimi", refs: { paths: ["src/hub"] } });
   await tasks.propose("kimi", { title: "two", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] } });
   peers.kimi!.set("offline");
@@ -539,12 +539,12 @@ test("tasks of the owner being released are no one to settle an overlap with", a
 });
 
 // issue #7: a configured check decides whether a done task goes to review or back to its owner.
-async function checked(result: { code: number | null; timedOut: boolean; interrupted?: boolean; tail: string }) {
+async function checked(result: { code: number | null; timedOut: boolean; interrupted?: boolean; tail: string }, wipLimit?: number) {
   const ctx = await setup(["claude", "codex", "kimi"]);
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   const ran: string[] = [];
-  const tasks = new Tasks({
+  const tasks = new Tasks({ ...(wipLimit === undefined ? {} : { wipLimit: () => wipLimit! }),
     board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), memory: new MemoryClient(ctx.mem.url),
     check: (cls) => (cls === "implement" ? "make test" : undefined),
     runCheck: async (command) => (ran.push(command), await gate, result),
@@ -586,7 +586,7 @@ test("a failing check keeps the task with its owner, tells it what failed, and a
 });
 
 test("a class without a check completes at once; a task that moved on during its check only records the result", async () => {
-  const { tasks, board, release } = await checked({ code: 1, timedOut: true, tail: "" });
+  const { tasks, board, release } = await checked({ code: 1, timedOut: true, tail: "" }, 2);
   const docs = await tasks.propose("codex", { title: "docs", class: "summarize", owner: "codex" });
   expect((await tasks.done("codex", docs.id, "written")).state).not.toBe("in_progress");
   const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
@@ -709,7 +709,7 @@ test("the completed-change notice waits for the check, and a failed check sends 
 });
 
 test("nothing of a PII task's plan or completion reaches another peer, and a plan cannot bring PII into an ordinary task", async () => {
-  const { tasks, told, peers, board } = await setup();
+  const { tasks, told, peers, board } = await setup(undefined, undefined, undefined, 2);
   await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/"] } });
   // a PII pattern in the plan alone makes the task a PII task
   const viaPlan = await tasks.propose("claude", { title: "ordinary title", class: "implement", plan: { paths: ["src/hub/bus.ts"], signatures: [PII] } });
@@ -1057,7 +1057,7 @@ test("an approval and the sweep releasing the same dependents at once offer each
 
 // issue #67: outcomes credited to the right work, whatever spelling the paths came in.
 test("a contradiction matches a file in any spelling, never `.`; a reassignment to the same owner keeps a catch", async () => {
-  const { tasks, board } = await setup(["claude", "codex", "kimi"]);
+  const { tasks, board } = await setup(["claude", "codex", "kimi"], undefined, undefined, 3);
   const outcomes = (id: number) => board.reviews({ task: id }).map((r) => `${r.implementer}/${r.reviewer}:${r.kind}`);
   expect((await tasks.propose("claude", { title: "p", class: "implement", refs: { paths: ["./src//a.ts", "src/a.ts", "docs/"] } })).refs.paths).toEqual(["src/a.ts", "docs"]);
   const a = await tasks.propose("codex", { title: "a", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
@@ -1235,7 +1235,7 @@ test("waiting out a short reset moves only urgent work", async () => {
 
 // issue #35: the review checklist, unmet items, and recorded review outcomes.
 test("the review envelope carries a checklist against the plan and the check result; unmet items reach the owner", async () => {
-  const { tasks, board, peers, release } = await checked({ code: 0, timedOut: false, tail: "12 pass" });
+  const { tasks, board, peers, release } = await checked({ code: 0, timedOut: false, tail: "12 pass" }, 2);
   const t = await tasks.propose("codex", { title: "cache", class: "implement", owner: "codex", plan: { signatures: ["set(key: string): void"] } });
   await tasks.done("codex", t.id, "added set");
   release();
@@ -1360,7 +1360,7 @@ test("failing peers are skipped by assignment, and a held owner queue is named i
 });
 
 // issue #106: the completed-change notice is about the recipient's open task; it is dropped at delivery once that is closed.
-async function staleRig() {
+async function staleRig(wipLimit?: number) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
   let relevant: (peer: string, env: Envelope) => boolean = () => true;
   const events: BusEvent[] = [];
@@ -1372,7 +1372,7 @@ async function staleRig() {
     await p.start();
   }
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
+  const tasks = new Tasks({ ...(wipLimit === undefined ? {} : { wipLimit: () => wipLimit! }), board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
   relevant = tasks.relevant;
   return { bus, peers, board, tasks, events, dir, rebind: (t: Tasks) => (relevant = t.relevant) };
 }
@@ -1434,14 +1434,14 @@ test("a notice to an owner who lost the task is dropped; check results, reviews 
 });
 
 test("after a restart, or once its record is evicted, a notice is delivered as before: its kind alone never makes it stale", async () => {
-  const { peers, tasks, board, bus, dir, rebind } = await staleRig();
+  const { peers, tasks, board, bus, dir, rebind } = await staleRig(2);
   const kimis = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const codexs = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
   peers.kimi!.set("busy");
   await tasks.done("codex", codexs.id, "changed a");
   await tasks.done("kimi", kimis.id, "kimi's part");
   // A new hub run: the queue came back from the journal, the records did not.
-  const restarted = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
+  const restarted = new Tasks({ wipLimit: () => 2, board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
   rebind(restarted);
   // An unrecorded notice about a closed task, kind task and all, is not guessed to be stale either.
   bus.publish(newEnvelope(HUB, `Task #${codexs.id} (owner codex) is done and touches your open #${kimis.id}`, { to: ["kimi"], kind: "task", refs: { task: String(kimis.id) } }));
@@ -1658,7 +1658,7 @@ test("edits between calls, owner replacement and a changed cohort move the targe
 });
 
 test("the integrating owner's own other task in the cohort never counts as a member still at work", async () => {
-  const { tasks, stop, later } = await turnFreeRig();
+  const { tasks, stop, later } = await turnFreeRig({ wipLimit: () => 2 });
   const a = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/x.ts"] } });
   const b = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/x.ts"] } });
   const c = await tasks.propose("kimi", { title: "c", class: "implement", owner: "kimi", refs: { paths: ["src/x.ts"] } });
@@ -1963,7 +1963,7 @@ test("a silent cohort publishes no completed-change notice: the integrating memb
 // never changes assignment.
 test("split observations: tasks handed out with the peer's current profile, claims and accepts made by the done left out of the stages, failures typed", async () => {
   let profile: string | undefined = "hub 0.12.5; kimi 2.1.1; turn-free";
-  const { tasks, board } = await turnFreeRig({ splitProfile: () => profile });
+  const { tasks, board } = await turnFreeRig({ ...({ splitProfile: () => profile }), wipLimit: () => 2 });
   let now = 1_800_000_000_000;
   const realNow = Date.now;
   Date.now = () => now;
@@ -2043,7 +2043,7 @@ test("an escalation away is the previous owner's failure; work that waited for a
 
 test("the shadow prediction never changes assignment: routed and named work go where routing sends them; explain and the record show it", async () => {
   const recorded: { task: number; verdict: string; where: string }[] = [];
-  const { tasks } = await turnFreeRig({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });
+  const { tasks } = await turnFreeRig({ ...({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` }), wipLimit: () => 5 });
   const kimiPart = await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const routed = await tasks.propose("claude", { title: "routed part", class: "implement", refs: { paths: ["src/a.ts"] } });
   expect(routed.owner).toBe("codex"); // the configured order, whatever the records say
@@ -2466,7 +2466,7 @@ test("a ready offer whose assignment cannot publish is noticed as saved-but-unco
 });
 
 test("a budget relay move whose assignment cannot publish is noticed as saved-but-unconfirmed, the relay goes on, and the resend delivers (#297)", async () => {
-  const { tasks, board, bus, peers, notices } = await setup();
+  const { tasks, board, bus, peers, notices } = await setup(undefined, undefined, undefined, 2);
   await tasks.propose("claude", { title: "write docs", class: "implement", owner: "kimi" });
   await tasks.propose("claude", { title: "write tests", class: "implement", owner: "kimi" });
   tasks.accept("kimi", 1);
@@ -2808,13 +2808,13 @@ test("manual escalation preserves typed undelivered evidence across late checks 
   }
 });
 
-async function rosterTaskFixture(ids = ["claude", "codex", "kimi", "local"]) {
+async function rosterTaskFixture(ids = ["claude", "codex", "kimi", "local"], wipLimit?: number) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-roster-tasks-")), off = new Set<string>();
   const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0, rostered: peer => !off.has(peer) });
   const peers = Object.fromEntries(ids.map(id => [id, new FakePeer(id)]));
   for (const peer of Object.values(peers)) { bus.add(peer); await peer.start(); }
   const notices: string[] = [];
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "roster", routing: () => loadRouting(dir), notify: line => notices.push(line) });
+  const tasks = new Tasks({ ...(wipLimit === undefined ? {} : { wipLimit: () => wipLimit! }), board, bus, cwd: dir, project: "roster", routing: () => loadRouting(dir), notify: line => notices.push(line) });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
   return { dir, off, board, bus, peers, notices, tasks };
 }
@@ -2842,7 +2842,7 @@ test("manual assignment refuses off-roster peers before ordinary assignment or w
 });
 
 test("roster removal offers proposed and in-progress work to another peer through the shared relay (#315)", async () => {
-  const f = await rosterTaskFixture();
+  const f = await rosterTaskFixture(undefined, 2);
   const offered = await f.tasks.propose(USER, { title: "offered work", class: "implement", owner: "codex" });
   const running = await f.tasks.propose(USER, { title: "running work", class: "implement", owner: "codex" });
   f.tasks.accept("codex", running.id);
@@ -2893,7 +2893,7 @@ test("roster removal replaces an in-review reviewer and preserves it if nobody e
 });
 
 test("a roster relay's saved assignment failure remains typed, noticed once, and does not stop later moves (#315)", async () => {
-  const f = await rosterTaskFixture();
+  const f = await rosterTaskFixture(undefined, 2);
   const first = await f.tasks.propose(USER, { title: "first relay", class: "implement", owner: "kimi" });
   const second = await f.tasks.propose(USER, { title: "second relay", class: "implement", owner: "kimi" }); f.tasks.accept("kimi", first.id);
   f.off.add("kimi");
@@ -2972,7 +2972,7 @@ test("removal hands over an in-review owner's work while preserving an irreplace
 });
 
 class PullTaskPeer extends FakePeer { readonly pullOnly = true; }
-async function pullTaskFixture(sweep = false) {
+async function pullTaskFixture(sweep = false, wipLimit?: number) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-pull-tasks-")), off = new Set<string>(), notices: string[] = [];
   const bus = new Bus({ batchMs: 0, rostered: peer => !off.has(peer) });
   const peers = { claude: new FakePeer("claude"), codex: new FakePeer("codex"), kimi: new PullTaskPeer("kimi") };
@@ -2982,14 +2982,14 @@ async function pullTaskFixture(sweep = false) {
   routing.classes.review!.peers = ["kimi", "claude"];
   const roles: Record<string, string[]> = { claude: ["planner", "reviewer", "conductor"], codex: ["implementer"], kimi: ["implementer", "reviewer"] };
   let board = new Board(join(dir, "hub.db"));
-  const makeTasks = () => new Tasks({ board, bus, routing: () => routing, cwd: dir, project: "pull", roles, ...(sweep ? { sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, auto_reassign: true, unaccepted_min: 1, ladder_min: 1 } } : {}), notify: line => notices.push(line) });
+  const makeTasks = () => new Tasks({ ...(wipLimit === undefined ? {} : { wipLimit: () => wipLimit! }), board, bus, routing: () => routing, cwd: dir, project: "pull", roles, ...(sweep ? { sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, auto_reassign: true, unaccepted_min: 1, ladder_min: 1 } } : {}), notify: line => notices.push(line) });
   let tasks = makeTasks();
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
   return { dir, off, bus, peers, routing, roles, notices, get board() { return board; }, get tasks() { return tasks; }, reopen() { board.close(); board = new Board(join(dir, "hub.db")); tasks = makeTasks(); } };
 }
 
 test("Tasks routes past pull-only peers but explicit proposer, own claim and assign targets take queued work (#316)", async () => {
-  const f = await pullTaskFixture();
+  const f = await pullTaskFixture(undefined, 2);
   const automatic = await f.tasks.propose(USER, { title: "automatic implementation", class: "implement" });
   expect(automatic).toMatchObject({ owner: "codex", reviewer: "claude" });
   expect(f.tasks.explain(automatic.id).join("\n")).toContain("owner candidate kimi: skipped, pull-only");
@@ -3005,7 +3005,7 @@ test("Tasks routes past pull-only peers but explicit proposer, own claim and ass
 });
 
 test("persisted explicit pull-only reservations survive dependency completion and automatic candidate overrides do not name them (#316)", async () => {
-  const f = await pullTaskFixture();
+  const f = await pullTaskFixture(undefined, 2);
   const prerequisite = await f.tasks.propose(USER, { title: "prerequisite", class: "review", owner: "codex" });
   const waiting = await f.tasks.propose("claude", { title: "reserved watched work", class: "implement", owner: "kimi", after: [prerequisite.id] });
   expect(waiting).toMatchObject({ owner: null, reserved: "kimi", state: "proposed" });
@@ -3050,7 +3050,7 @@ for (const actor of [USER, "claude"]) test(`named pull-only reviewer assigned by
 });
 
 test("reviewer naming refuses proposer and invalid targets before any board write (#316)", async () => {
-  const f = await pullTaskFixture();
+  const f = await pullTaskFixture(undefined, 2);
   const task = await f.tasks.propose("kimi", { title: "proposer cannot choose reviewer", class: "implement", owner: "codex" });
   for (const request of [
     { actor: "kimi", peer: "kimi", role: "reviewer" },
@@ -3151,7 +3151,7 @@ test("a named reviewer change withdraws its unread request without a replacement
 // issue #264 (phase 3): the dashboard's warning links are task and peer ids only, from the board's own overlap
 // test and the live cohorts; PII tasks never join a link.
 test("dashboard links: overlap and cohort rows carry task and peer ids only", async () => {
-  const { tasks } = await setup(["claude", "codex", "kimi"]);
+  const { tasks } = await setup(["claude", "codex", "kimi"], undefined, undefined, 3);
   const first = await tasks.propose("kimi", { title: "one part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const second = await tasks.propose("codex", { title: "other part", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
   expect(tasks.overlapLinks()).toEqual([{ tasks: [first.id, second.id], peers: ["codex", "kimi"] }]);
