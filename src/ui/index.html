@@ -72,6 +72,7 @@ const dashboardTheme = (() => {
 /* TASK_PROGRESS_MODEL */
 /* PEER_START_RETRY_MS */
 /* BOARD_MODEL */
+/* ADAPTER_DISPLAY */
 /* NEEDS_MODEL */
 /* OFFICE_MODEL */
 const officeView = (() => {
@@ -284,7 +285,7 @@ function renderTaskStage(stage) {
   row.append(el('span', ` / Stage ${stage.stage}/4: ${stage.label}`)); return row;
 }
 function renderApprovals(permissions) {
-  const terminalWaiting = permissions.filter((permission) => permission.peer === 'pi' || permission.peer === 'local').length;
+  const terminalWaiting = permissions.filter((permission) => adapterDisplay[permission.peer]?.terminalApproval).length;
   $('permission-count').textContent = permissions.length + ' waiting' + (terminalWaiting ? ', ' + terminalWaiting + ' Pi/local: answer in the console or ahub tail / ahub permit' : '');
   update('permissions', permissions, (target) => {
     if (!permissions.length) return empty(target, 'No approvals waiting.');
@@ -783,7 +784,7 @@ function render(snapshot) {
       if (peer.attached === false) row.append(el('p', 'Disconnected recipient; work is retained.', 'meta'));
       if (peer.toolsOnly) row.append(el('p', peer.toolsOnly, 'meta'));
       if (peer.permissionNote) row.append(el('p', peer.permissionNote, 'meta'));
-      if (peer.pullOnly && id === 'kimi') row.append(el('p', 'Last hub_inbox read: ' + (typeof peer.lastInboxAt === 'number' ? Math.max(0, Math.floor((Date.now() - peer.lastInboxAt) / 1000)) + 's ago' : 'never'), 'meta'));
+      if (peer.pullOnly && adapterDisplay[id]?.pullOnlyRead) row.append(el('p', 'Last hub_inbox read: ' + (typeof peer.lastInboxAt === 'number' ? Math.max(0, Math.floor((Date.now() - peer.lastInboxAt) / 1000)) + 's ago' : 'never'), 'meta'));
       if (peer.paused) row.append(el('p', peer.paused, 'meta'));
       if (peer.requestedModel) row.append(el('p', 'Requested: ' + peer.requestedModel, 'meta'));
       for (const backend of peer.backends || []) {

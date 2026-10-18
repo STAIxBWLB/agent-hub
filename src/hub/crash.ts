@@ -61,45 +61,12 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
     const launch = (meta.launch && typeof meta.launch === "object" ? meta.launch : {}) as Record<string, unknown>;
     const model = str(launch.model);
     const adapter = definitionOf(peer);
-    if (adapter?.transport === "acp" && adapter.start.create) {
+    if (adapter?.session.resumeById) {
       const sessionId = adapter.session.crashIdentity?.(meta).sessionId;
       if (!sessionId) return { peer, how: `${peer}: saved ACP session identity unavailable; start it deliberately with ahub ${peer}` };
       return { peer, resume: { sessionId, ...(model ? { model } : {}) }, how: `${peer}: the recorded conversation can be loaded again (ACP session/load)` };
     }
-    switch (peer) {
-      case "claude":
-        return { peer, how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
-      case "codex":
-        return { peer, how: `codex: its app-server died with the hub; run ahub codex again${str(meta.threadId) ? ` (its conversation was thread ${meta.threadId})` : ""}` };
-      case "jcode":
-        return { peer, how: "jcode: native 0.94.0 load does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
-      case "kimi": {
-        const sessionId = str(meta.sessionId);
-        if (!sessionId) return { peer, how: "kimi: no session id was recorded; start it again with ahub kimi" };
-        return { peer, resume: { sessionId, ...(model ? { model } : {}) }, how: `kimi: session ${sessionId} can be loaded again (ACP session/load)` };
-      }
-      case "pi": {
-        // `fresh`: what a new headless session keeps of the recorded one (pi.auto_start's fallback, #66).
-        const fresh: Record<string, string> = {};
-        for (const k of ["backend", "model"] as const) if (str(launch[k])) fresh[k] = str(launch[k])!;
-        const sessionFile = str(meta.sessionFile) ?? str(launch.sessionFile);
-        // #269: a terminal Pi stays marked as one without a session file too, so nothing headless is started in its place.
-        if (!sessionFile) return { peer, fresh, ...(str(launch.mode) === "tui" ? { tui: true } : {}), how: "pi: no session file was recorded; start it again with ahub pi" };
-        // A terminal Pi is run by the CLI that launched it, not by the hub: nothing here could start it again.
-        if (str(launch.mode) === "tui") return { peer, fresh, tui: true, how: `pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file ${sessionFile}` };
-        const args: Record<string, string> = { sessionFile };
-        for (const k of ["mode", "backend", "model"] as const) if (str(launch[k])) args[k] = str(launch[k])!;
-        return { peer, fresh, resume: args, how: `pi: its session file can be resumed (${sessionFile})` };
-      }
-      case "local": {
-        // `model` is also recorded as the route's fallback, and a model given at start pins it: pass one or the other.
-        const route = str(launch.route);
-        const args: Record<string, string> = route ? { route } : model ? { model } : {};
-        return { peer, resume: args, how: "local: starts again without its history (the worker keeps none across a hub stop)" };
-      }
-      default:
-        return { peer, how: `${peer}: reconnects by itself if its client is still running` };
-    }
+    return { peer, ...(adapter?.session.crashPlan?.(meta) ?? { how: `${peer}: reconnects by itself if its client is still running` }) };
   });
 }
 

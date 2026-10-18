@@ -1,4 +1,4 @@
-import { PLANNER_PEERS, SUPPORTED_PEERS } from "./peer-catalog.ts";
+import { definitionOf, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { CLASSES, type TaskClass } from "./board.ts";
 import { configTracked, configRepositoryPresent } from "./config-trust.ts";
 import { PERMISSION_MODES, permissionBoundary } from "./permission-mode.ts";
-import { START_MODE_PEERS, START_MODES } from "./start-mode.ts";
+import { START_MODES } from "./start-mode.ts";
 import { OVERLAY_FILE, overlayToml, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "./routing.ts";
 
 /**
@@ -53,10 +53,10 @@ export const SETTINGS: readonly SettingDef[] = [
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "next use", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
-  ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
-  ...SETTING_PEERS.filter(peer => peer !== "jcode").map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at next peer start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "next use", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
+  ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
+  ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at next peer start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "next use", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
   ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "next use", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),
-  { key: "pi.auto_start", group: "Start", label: "Start Pi with the hub", type: "boolean", store: "config", applies: "next use", risk: "raises", floor: false, path: ["pi", "auto_start"] },
+  ...ADAPTERS.flatMap(adapter => adapter.configuration?.settings ?? []),
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
   ...CLASSES.flatMap(perClass),
   { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["research", "enabled"] },

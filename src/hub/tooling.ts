@@ -1,7 +1,8 @@
+import { definitionOf } from "../adapters/registry.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, relative, resolve, isAbsolute } from "node:path";
+import { delimiter, relative, resolve, isAbsolute } from "node:path";
 import { realPath } from "./project.ts";
 
 /**
@@ -15,11 +16,6 @@ export const ADDONS = ["claude-mem", "ponytail", "ripwire", "open-code-review", 
 export type AddonName = (typeof ADDONS)[number];
 export interface Addon { name: AddonName; version: string | null }
 
-/** Plugin names (before the `@marketplace`) that stand for an add-on. */
-// Maps, not objects: a plugin named `constructor` or `toString` must find nothing, not an inherited property.
-const PLUGINS = new Map<string, AddonName>([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
-/** Claude Code only: the Codex plugin is a Claude plugin named `codex` from the `openai-codex` marketplace. */
-const CLAUDE_ONLY = new Map<string, AddonName>([["codex@openai-codex", "codex-plugin"]]);
 /**
  * Executables any peer with a shell can run, and how each is told apart from another program of the same name: the
  * first one on PATH is asked for its version (bounded, no stdin), so Graphviz's `dot` is never resource admission.
@@ -32,59 +28,8 @@ const PROBE_MS = 2000, PROBE_BYTES = 4096;
 /** `env` supplies CLAUDE_CONFIG_DIR and CODEX_HOME, the runtimes' own config roots (the hub's environment by default). */
 export interface ToolingSources { home?: string; cwd?: string; path?: string; env?: Record<string, string | undefined> }
 
-/** A regular file of at most 1 MiB, opened without blocking: a FIFO or device under a project's `.claude/` reads as absent. */
-const text = (file: string): string | undefined => {
-  let fd: number | undefined;
-  try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
-    const st = fstatSync(fd);
-    if (!st.isFile() || st.size > 1024 * 1024) return undefined;
-    return readFileSync(fd, "utf8");
-  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
-};
-const json = (file: string): Record<string, unknown> | undefined => {
-  try { const v = JSON.parse(text(file) ?? ""); return v && typeof v === "object" ? v as Record<string, unknown> : undefined; } catch { return undefined; }
-};
 /** A version string as data, never anything longer or stranger. */
 const version = (v: unknown): string | null => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null;
-
-function claudePlugins(root: string, cwd: string | undefined): Addon[] {
-  const enabled = new Map<string, boolean>();
-  for (const file of [join(root, "settings.json"), ...(cwd ? [join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")] : [])]) {
-    const map = json(file)?.enabledPlugins;
-    if (map && typeof map === "object") for (const [key, on] of Object.entries(map)) enabled.set(key, on === true);
-  }
-  const installed = (json(join(root, "plugins", "installed_plugins.json"))?.plugins ?? {}) as Record<string, { scope?: string; projectPath?: string; version?: unknown }[]>;
-  const out: Addon[] = [];
-  for (const [key, on] of enabled) {
-    if (!on) continue;
-    const name = CLAUDE_ONLY.get(key) ?? PLUGINS.get(key.split("@")[0]!);
-    const entries = Array.isArray(installed[key]) ? installed[key]! : [];
-    // An install for another project is not this one's.
-    const entry = entries.find((e) => e?.scope === "user") ?? entries.find((e) => e?.projectPath === cwd);
-    if (name && entry) out.push({ name, version: version(entry.version) });
-  }
-  return out;
-}
-
-function codexPlugins(root: string): Addon[] {
-  const config = text(join(root, "config.toml"));
-  if (config === undefined) return [];
-  const found = new Map<string, string>(), disabled = new Set<string>(); // plugin name -> marketplace
-  // `[plugins."name@market"]` with no `enabled = false` below it, and plugins whose hooks Codex was told to trust
-  // unless their plugin entry disables them: a trust entry outlives the plugin's own switch.
-  for (const m of config.matchAll(/^\[plugins\."([^"@]+)@([^"]+)"\]\s*\n((?:(?!\[)[^\n]*\n?)*)/gm)) if (!/^\s*enabled\s*=\s*false\b/m.test(m[3] ?? "")) found.set(m[1]!, m[2]!); else disabled.add(m[1]! + "@" + m[2]!);
-  for (const m of config.matchAll(/^\[hooks\.state\."([^"@]+)@([^":]+):/gm)) if (!disabled.has(m[1]! + "@" + m[2]!)) found.set(m[1]!, m[2]!);
-  const out: Addon[] = [];
-  for (const [plugin, market] of found) {
-    const name = PLUGINS.get(plugin);
-    if (!name) continue;
-    let versions: string[] = [];
-    try { versions = readdirSync(join(root, "plugins", "cache", market, plugin)); } catch { /* no cache: version unknown */ }
-    out.push({ name, version: versions.length === 1 ? version(versions[0]) : null });
-  }
-  return out;
-}
 
 /** Never throws: a path that cannot be resolved (a project directory that went away) is compared as given. */
 const real = (path: string): string => { try { return realPath(path); } catch { return resolve(path); } };
@@ -145,8 +90,7 @@ export async function detectTooling(peer: string, src: ToolingSources = {}): Pro
   const found = new Map<AddonName, Addon>();
   const add = (a: Addon) => { if (!found.has(a.name) || (found.get(a.name)!.version === null && a.version !== null)) found.set(a.name, a); };
   const env = src.env ?? process.env;
-  if (peer === "claude") claudePlugins(env.CLAUDE_CONFIG_DIR?.trim() || join(home, ".claude"), src.cwd).forEach(add);
-  if (peer === "codex") codexPlugins(env.CODEX_HOME?.trim() || join(home, ".codex")).forEach(add);
+  definitionOf(peer)?.hooks?.pluginInventory?.({ env, home, cwd: src.cwd }).forEach(add);
   const path = src.path ?? process.env.PATH ?? "";
   for (const [bin, spec] of Object.entries(BINARIES)) {
     const file = onPath(bin, path, src.cwd ?? process.cwd());

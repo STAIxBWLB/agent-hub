@@ -3,6 +3,7 @@
 // Ported to TypeScript from NVIDIA NeMo Switchyard crates/libsy/src/algorithms/util/tool_signals.rs at c8848511, modified.
 
 import type { Conversation, NormalizedToolCall } from './normalize.ts';
+import { definitionOf } from '../../adapters/registry.ts';
 
 export const DEFAULT_RECENT_WINDOW = 3;
 export const SOFT = 0.3;
@@ -133,7 +134,8 @@ function shellClassification(command: string): Semantic {
 function semantic(name: string, command?: string, source?: string): Semantic {
   if (source?.toLowerCase() === 'filechange') return 'edit';
   const lower = name.toLowerCase();
-  if (source === 'codex' && lower === 'filechange') return 'edit';
+  const native = source === undefined ? undefined : definitionOf(source)?.hooks?.classifyTool?.(name, command);
+  if (native !== undefined) return native;
   if (WRITE.has(lower)) return 'write';
   if (EDITOR.has(lower) && command === 'view') return 'read';
   if (EDIT.has(lower)) return 'edit';

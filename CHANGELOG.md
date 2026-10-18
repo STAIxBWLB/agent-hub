@@ -2,6 +2,11 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Move built-in native launch, permission, recovery, reporting and configuration policy behind the adapter registry, retaining host authority and native behavior; add transport conformance and reject new core vendor tables (#451).
+- Fence late Codex turn reports and acceptance after watchdog cancellation so expired answers cannot reach a later audience (#451).
+
 ## 0.12.33
 
 Upgrades with cancelled tasks and a managed terminal no longer stop at the lease renewal, and a notice the target sends right after it starts no longer blocks queue verification (#478). The upgrade runs with the target release's own coordinator, so an upgrade from 0.12.32 to this release already uses these fixes. A real upgrade with a managed TUI and cancelled rows (#478) and installed managed-Pi #418 AC8 (#142) remain unverified by this release preparation. Installation and the person's restart require separate receipts.

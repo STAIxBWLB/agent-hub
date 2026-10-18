@@ -11,16 +11,13 @@ import { realPath } from "../src/hub/project.ts";
 import { readRecoveryContinuity, retireRecoveryContinuity, writeRecoveryContinuity, type RecoveryContinuityBookmark } from "../src/hub/recovery-continuity.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { TerminalOpener } from "../src/hub/terminal-open.ts";
+import { parsePiFlags as parseNativePiFlags } from "../src/adapters/definitions/native-cli-pi.ts";
 
 const OP = "00000000-0000-4000-8000-000000000463";
 function parsePiFlags(args: string[]): Record<string, unknown> {
-  // ponytail: main.ts dispatches when imported. Keep its real pure parser until the CLI extracts a parser module.
-  const source = readFileSync(new URL("../src/cli/main.ts", import.meta.url), "utf8");
-  const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
-  const parser = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "piFlags");
+  const parser = parseNativePiFlags;
   expect(parser).toBeDefined();
-  const js = ts.transpileModule(parser!.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
-  return runInNewContext(`${js}; piFlags();`, { args: [...args], fail: (message: string) => { throw new Error(message); } });
+  return parser([...args], (message: string) => { throw new Error(message); });
 }
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });

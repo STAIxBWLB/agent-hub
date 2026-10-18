@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { compareRegistryBaseline, groupRegistrySites, scanRegistrySources, type BaselineEntry } from "./helpers/registry-inventory.ts";
+import { compareRegistryBaseline, groupRegistrySites, scanRegistrySources, splitRegistryInventory, type BaselineEntry } from "./helpers/registry-inventory.ts";
 
 const root = join(import.meta.dir, "..");
 function readBaseline(): BaselineEntry[] {
@@ -31,7 +31,14 @@ function inventory() {
   if (!cached) {
     const baseline = readBaseline(); // A missing frozen baseline fails before any whole-source inventory.
     const sources = sourceFiles();
-    cached = { baseline, sources, actual: groupRegistrySites(scanRegistrySources(sources)) };
+    const split = splitRegistryInventory(sources);
+    expect(split.issues).toEqual([]);
+    expect(split.compatibility.map(({ file, symbol, count, reason }) => ({ file, symbol, count, reason }))).toEqual([
+      { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", count: 5, reason: "cross-release source probe" },
+      { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 2, reason: "cross-release source probe" },
+      { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 3, reason: "cross-release source probe" },
+    ]);
+    cached = { baseline, sources, actual: groupRegistrySites(split.policy) };
   }
   return cached;
 }

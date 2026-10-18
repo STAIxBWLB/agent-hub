@@ -1,3 +1,5 @@
+import { OFFICE_PEER_ORDER } from "../adapters/registry.ts";
+
 /**
  * Pure office scene model for the dashboard (#264, phase 1: the static Flat view).
  * Self-contained so `src/hub/ui.ts` injects it into the page by toString(), exactly like
@@ -178,7 +180,7 @@ export interface OfficeScene {
 }
 
 export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene | null, options: { cols?: number; now?: number }): OfficeScene {
-  const FIXED = ["claude", "codex", "kimi", "pi", "local"];
+  const FIXED = OFFICE_PEER_ORDER;
   const KNOWN = ["proposed", "in_progress", "in_review", "changes_requested", "approved", "cancelled"];
   const GLYPHS: Record<string, string> = { idle: "○", busy: "●", offline: "×", paused: "‖", waiting: "⚑", unknown: "?" };
   const LABELS: Record<string, string> = { idle: "idle", busy: "busy", offline: "offline", paused: "paused", waiting: "waiting on approval" };

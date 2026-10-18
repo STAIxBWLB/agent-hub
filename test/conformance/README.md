@@ -1,0 +1,14 @@
+# Adapter conformance
+
+`bun test test/conformance` runs actual adapter implementations against synthetic local transports. It requires no provider account and proves no live native client compatibility. The shared runner in `kit.ts` accepts an adapter fixture and checks delivery occupancy, a real transport round trip, safe recovery metadata and observed teardown. Native-specific assertions live beside it.
+
+- All seven builtins participate: Claude, Codex, Kimi, Pi, local, Qwen and Jcode.
+- ACP fixtures use the existing fake stdio agent; Jcode uses its fake private daemon plus ACP client, Codex uses its fake app-server and TUI proxy, Pi uses its fake RPC owner and authenticated extension bridge, local uses its fake HTTP gateway, Claude uses an authenticated channel against the real daemon.
+- Kimi, Qwen, Jcode and Codex perform actual resume RPCs. Pi opens a persisted session and checks its exact identity. Local has no persisted conversation resume protocol. Claude reattaches a channel; its native transcript/session remains owned by the native client.
+- Kimi, Qwen, Jcode and Pi assert owned-process disappearance on stop. The additional Codex launcher test checks both the launcher and native child disappear as a group. Local's model transport and Claude's native terminal are not daemon-owned child processes.
+- Synchronous busy is mandatory for driven peers. Claude channel insertion deliberately stays idle: native hooks own its occupancy and turn completion. This is the existing native-hook contract, not an exemption introduced by the registry.
+- Kimi and Qwen exercise permission approval, exact hub-tool autoapproval, lookalike refusal, mode change and a late acknowledgement after mode timeout. Local checks denied filesystem mutation and direct host hub-tool dispatch. Jcode verifies that unmanaged runtime mode changes are refused. Claude permissions are launch flags and Pi/local permissions are hub gates, so neither has an ACP mode-ack timeout to test.
+- Kimi's verified pre-activity quota refusal produces `failed_safe` only after confirmed pause. Codex's accepted native quota failure remains `needs_review`; its definitive admission refusal produces `failed_safe`. No pinned quota classifier exists for Qwen or Jcode. Local has no native account quota; Pi/Claude report host/native-session quota through their respective integrations.
+- Explicit watchdog expiry follows observed native acceptance. Ordered transport barriers consume late ACP/Codex results before checking their generation fences. The local fake returns despite cancellation and the real parser consumes that response before the stale-answer assertion. Pi's authenticated bridge rejects stale generation completion and retains the current turn.
+
+The broader existing native-hook, permission, Pi extension, crash/recovery and teardown regression suites remain required. This kit does not replace them or claim to simulate provider accounts.

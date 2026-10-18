@@ -2,7 +2,7 @@ import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attent
 import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
-import { PLANNER_PEERS } from "../hub/peer-catalog.ts";
+import { PLANNER_PEERS, definitionOf, nativeStreamTone } from "../adapters/registry.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
@@ -114,7 +114,6 @@ export function paint(line: Span[], color: boolean): string {
 export function streamTokens(value: string, eventTone?: Tone, kind?: string): Span[] {
   const text = terminalText(value);
   if (kind === "command" || kind === "console") return [{ text }];
-  const peers: Readonly<Record<string, Tone>> = { claude: "peerClaude", codex: "peerCodex" };
   // Hub-written peer slots only; words such as local/pi/hub in a title do not identify a speaker.
   const peerSlots = new Set<number>();
   const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission:| permission )/);
@@ -143,6 +142,7 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
     const gap = text.slice(end, start);
     if (gap) out.push({ text: gap });
     let tone: Tone | undefined;
+    const peerTone = nativeStreamTone(token);
     // ponytail: legacy notices have no typed reference ranges. Classify task/review prefixes textually;
     // assign/which #N remains an issue reference until notices carry structured reference spans.
     if (token.startsWith("#")) {
@@ -152,7 +152,7 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
     }
     else if (start === taskKeywordAt) tone = "taskKeyword";
     else if (/^[0-9]/.test(token) && !permissionIds.has(start)) tone = "number";
-    else if (peerSlots.has(start) && Object.hasOwn(peers, token)) tone = peers[token];
+    else if (peerSlots.has(start) && peerTone) tone = peerTone;
     else if (start === markerAt || start === stateAt || (route && token === "->" && start < route[0].length)) tone = eventTone;
     out.push({ text: token, ...(tone ? { tone } : {}) });
     previousToken = token; previousStart = start; end = start + token.length;
@@ -749,7 +749,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
     return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === "offline" ? undefined : "info"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),
       ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
-      span(row.pullOnly && row.id === "kimi" ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
+      span(row.pullOnly && definitionOf(row.id)?.attach?.pullOnlyForms?.includes("tui") ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
       span(b?.windows?.length ? b.windows.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%${typeof w.resetsAt === "number" ? ` ${relative(w.resetsAt, now)}` : ""}`).join(", ") : "-"),
@@ -890,7 +890,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (p.permissionMode && p.permissionMode !== "ask") summary.push(span(` ${p.permissionMode}`, "attention"));
     if (p.needsReview) summary.push(span(` review${p.needsReview}`, "failure"));
     if (p.paused) summary.push(span(" paused", "attention"));
-    if (p.toolsOnly) summary.push(span(id === "kimi" ? ` pull-only, read ${typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never"}` : " tools-only: ahub claude", "attention"));
+    if (p.toolsOnly) summary.push(span(definitionOf(id)?.attach?.pullOnlyForms?.includes("tui") ? ` pull-only, read ${typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never"}` : " tools-only: ahub claude", "attention"));
   }
   if (s.pendingRestart?.length) summary.push(span(`${summary.length ? " | " : ""}restart pending: ${s.pendingRestart.map(row => row.key).join(", ")}`, "attention"));
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");

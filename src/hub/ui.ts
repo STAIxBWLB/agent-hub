@@ -5,6 +5,7 @@ import { PEER_PALETTE, peerPaletteCss } from "../ui/peer-palette.ts";
 import { PEER_START_RETRY_MS } from "./start-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { officeModel } from "../ui/office-model.ts";
+import { OFFICE_PEER_ORDER, ADAPTER_DISPLAY } from "../adapters/registry.ts";
 import { needs } from "../ui/needs.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -35,10 +36,11 @@ export function startDashboard(options: DashboardOptions) {
   // Inject the same pure public-board model used by the console before computing CSP hashes.
   const html = readFileSync(new URL("../ui/index.html", import.meta.url), "utf8")
     .replace("/* BOARD_MODEL */", () => `const boardColumns = ${boardColumns.toString()}; const peerPalette = ${JSON.stringify(PEER_PALETTE)};`)
+    .replace("/* ADAPTER_DISPLAY */", () => `const adapterDisplay = ${JSON.stringify(ADAPTER_DISPLAY)};`)
     .replace("/* PEER_PALETTE_CSS */", () => peerPaletteCss())
     .replace("/* TASK_PROGRESS_MODEL */", () => `const taskProgress = ${taskProgress.toString()};`)
     .replace("/* PEER_START_RETRY_MS */", () => `const PEER_START_RETRY_MS = ${PEER_START_RETRY_MS};`)
-    .replace("/* OFFICE_MODEL */", () => `const officeModel = ${officeModel.toString()};`)
+    .replace("/* OFFICE_MODEL */", () => `const officeModel = ((OFFICE_PEER_ORDER) => ${officeModel.toString()})(${JSON.stringify(OFFICE_PEER_ORDER)});`)
     .replace("/* NEEDS_MODEL */", () => `const needs = ${needs.toString()};`);
   const hashes = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))]
     .map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`).join(" ");

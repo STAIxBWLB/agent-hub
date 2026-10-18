@@ -1,10 +1,11 @@
+import { definitionOf, SUPPORTED_PEERS } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
 import { HUB, USER } from "./envelope.ts";
 import { OWNERSHIP_EVENTS, type TaskAssignmentRole } from "./tasks.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
-import { isStartablePeer, type StartablePeer, type StartMode } from "./start-mode.ts";
+import type { StartMode } from "./start-mode.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
@@ -103,6 +104,8 @@ export class ConductorHolds {
   close(): void { this.db.close(); }
 }
 
+type StartablePeer = typeof SUPPORTED_PEERS[number];
+
 export type ConductorStart = { peer: StartablePeer; mode: "headless" } | { peer: "claude" | "codex" | "pi"; mode: "tui"; command: string };
 /**
  * What a conductor's start of `peer` is (#269): the peer's own start mode, which a person sets. A `mode` argument may
@@ -111,10 +114,11 @@ export type ConductorStart = { peer: StartablePeer; mode: "headless" } | { peer:
 export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: StartablePeer) => StartMode): ConductorStart {
   const refuse = (text: string) => new (preEffect ? PreEffectToolRefusal : Error)(text);
   if (mode !== undefined && mode !== "headless" && mode !== "tui") throw refuse("mode must be headless or tui");
-  if (!isStartablePeer(peer)) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen/jcode, may be started by the conductor");
-  const own = startMode(peer);
+  if (!(typeof peer === "string" && definitionOf(peer)?.start.conductorStartable)) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen/jcode, may be started by the conductor");
+  const selected = peer as StartablePeer;
+  const own = startMode(selected);
   if (mode !== undefined && mode !== own) throw refuse(`${peer} starts ${own} here; a person sets a start mode (ahub settings), the conductor cannot choose one`);
-  return own === "tui" ? { peer: peer as "claude" | "codex" | "pi", mode: "tui", command: preview(peer as "claude" | "codex" | "pi") } : { peer, mode: "headless" };
+  return own === "tui" ? { peer: peer as "claude" | "codex" | "pi", mode: "tui", command: preview(peer as "claude" | "codex" | "pi") } : { peer: selected, mode: "headless" };
 }
 
 const numberOrNull = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
