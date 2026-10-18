@@ -47,7 +47,7 @@ const readinessReply = (state = "SUCCESS", answered = true) => ({ data: { reposi
   headRefOid: head, state: "OPEN", commits: { nodes: [{ commit: { oid: head, tree: { oid: "b".repeat(40) },
     statusCheckRollup: { contexts: { nodes: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, status: "COMPLETED", conclusion: state })), pageInfo: { hasNextPage: false } } },
   } }] },
-  reviewThreads: { nodes: [{ comments: { nodes: [
+  reviewThreads: { nodes: [{ isResolved: false, comments: { nodes: [
     { author: { __typename: "Bot" }, createdAt: "2026-10-18T01:00:00Z" },
     ...(answered ? [{ author: { __typename: "User" }, createdAt: "2026-10-18T02:00:00Z" }] : []),
   ], pageInfo: { hasNextPage: false } } }], pageInfo: { hasNextPage: false } },
@@ -116,11 +116,11 @@ import type { SdlcGh } from "../src/hub/sdlc.ts";
 function admissionRig(mode: "off" | "advise" | "enforce", ready = true, answered = true) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-review-admission-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   let reads = 0;
-  const roles: Record<string, string[]> = { codex: ["implementer"], claude: ["reviewer"], director: ["conductor"] }, hooks: { onRead?: (args: string[]) => void; reply?: unknown } = {};
+  const roles: Record<string, string[]> = { codex: ["implementer"], claude: ["reviewer"], director: ["conductor"] }, hooks: { onRead?: (args: string[]) => void; reply?: unknown; prReply?: unknown } = {};
   const notices: string[] = [];
   const gh: SdlcGh = async args => {
     reads++; hooks.onRead?.(args);
-    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
+    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify(hooks.prReply ?? { headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
     return { code: 0, stdout: JSON.stringify(hooks.reply ?? readinessReply(ready ? "SUCCESS" : "PENDING", answered)) };
   };
   const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode }), gh } });
@@ -285,4 +285,91 @@ test("a private transition during review metadata stops later reuse-proof reads 
   await expect(r.tasks.done("codex", r.task.id, "ready")).rejects.toThrow("changed during review admission");
   expect(r.reads()).toBe(3); // lifecycle view + thread snapshot + review admission; no Actions proof read
   expect(r.board.get(r.task.id)?.history.filter(entry => entry.event === "done")).toHaveLength(0);
+});
+
+import { profileTaskTools, PLANNER_REVIEW_TOOLS } from "../src/hub/hub-tools.ts";
+import { PROFILE_NAMES } from "../src/hub/profiles.ts";
+import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
+test("enabled managed plan schemas advertise cost scopes across profiles without widening plain off (#481 S10)", () => {
+  for (const profile of PROFILE_NAMES) {
+    const enabled = profileTaskTools(profile, undefined, true).find(tool => tool.name === "hub_task_propose")!;
+    const schema = enabled.inputSchema.properties.plan as { properties: Record<string, unknown> };
+    expect(schema.properties.review).toMatchObject({ type: "object", required: ["scope", "reviewers"] });
+    expect(schema.properties.ci).toMatchObject({ enum: ["focused", "full", "reuse"] });
+  }
+  const off = profileTaskTools("dev").find(tool => tool.name === "hub_task_propose")!.inputSchema.properties.plan as { properties: Record<string, unknown> };
+  expect(off.properties).not.toHaveProperty("review");
+  expect(PLANNER_REVIEW_TOOLS.find(tool => tool.name === "hub_plan_review")!.inputSchema.properties.review).toBeDefined();
+  expect(classifyPeerCommand("sdlc", ["plan-review", "1", "0", "scope", "--review", "full", "--reviewers", "1", "--ci", "full"])).toBe("console");
+  expect(liveTestRefusal("sdlc", ["plan-review", "1", "0", "scope", "--review", "full", "--reviewers", "1", "--ci", "full"])).toBe(true);
+});
+
+import { mkdirSync, writeFileSync } from "node:fs";
+import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
+test("the real daemon exposes a read-only planner cost report and typed receipt scopes (#481 S10)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-cost-surface-")), stateDir = join(cwd, ".agenthub/state");
+  mkdirSync(join(cwd, ".agenthub")); writeFileSync(join(cwd, ".agenthub/sdlc.toml"), 'mode = "enforce"\n');
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, roles: { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });
+  const clients: ControlClient[] = [];
+  try {
+    const connect = async (role: "console" | "tools", peer?: string) => { const client = await ControlClient.connect(stateDir, { role, ...(peer ? { peer } : {}) }); clients.push(client); return client; };
+    const person = await connect("console"), planner = await connect("tools", "claude"), other = await connect("tools", "codex");
+    const request = (client: ControlClient, op: string, args: unknown) => client.request({ t: "task", op, args });
+    expect(await request(other, "hub_sdlc_costs", { repo: "o/r" })).toMatchObject({ ok: false });
+    const before = (await request(person, "hub_task_list", {})).text;
+    const report = await request(planner, "hub_sdlc_costs", { repo: "o/r" });
+    expect(report.ok).toBe(true); expect(JSON.parse(report.text)).toMatchObject({ rows: [], truncated: false });
+    expect((await request(person, "hub_task_list", {})).text).toBe(before);
+    const proposed = await request(person, "hub_task_propose", { title: "scoped task", class: "implement", backlog: true, plan: { review: { scope: "full", reviewers: 1 }, ci: "full" } });
+    expect(proposed.ok).toBe(true);
+    const task = JSON.parse((await request(person, "hub_task_list", {})).text)[0]!;
+    const reviewed = await request(planner, "hub_plan_review", { id: task.id, revision: 0, reason: "scope checked" });
+    expect(reviewed.ok).toBe(true);
+    expect(JSON.parse(reviewed.text).sdlc.planReview.scope).toEqual({ review: { scope: "full", reviewers: 1 }, ci: "full" });
+  } finally { for (const client of clients) client.close(); await daemon.stop(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("review readiness honours explicit project check names instead of imposing the hub CI catalog (#481 S10)", async () => {
+  const fixture = readinessReply();
+  fixture.data.repository.pullRequest.commits.nodes[0]!.commit.statusCheckRollup.contexts.nodes = [{ name: "project gate", status: "COMPLETED", conclusion: "SUCCESS" }];
+  const result = await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(fixture) }), ["project gate"]);
+  expect(result.ready).toBe(true);
+});
+
+test("a running check or unresolved bot follow-up cannot masquerade as review-ready (#481 S10)", async () => {
+  const running = readinessReply();
+  running.data.repository.pullRequest.commits.nodes[0]!.commit.statusCheckRollup.contexts.nodes[0]!.status = "IN_PROGRESS";
+  expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(running) }))).ready).toBe(false);
+  const resolved = readinessReply("SUCCESS", false); resolved.data.repository.pullRequest.reviewThreads.nodes[0]!.isResolved = true;
+  expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(resolved) }))).ready).toBe(true);
+});
+
+test("a privacy change during the reusable lifecycle snapshot stops its next external read (#481 S10)", async () => {
+  const r = admissionRig("enforce");
+  r.hooks.onRead = args => { if (args[0] === "pr") r.board.update(r.task.id, "user", "screened", { signals: ["pii"] }); };
+  await expect(r.tasks.done("codex", r.task.id, "ready")).rejects.toThrow("changed during lifecycle readback");
+  expect(r.reads()).toBe(1);
+});
+
+test("advise discards a clean lifecycle snapshot when the task relinks to another same-head PR (#481 S10)", async () => {
+  const r = admissionRig("advise", true, false);
+  r.hooks.prReply = { headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], files: [], changedFiles: 0, unresolvedThreads: 0,
+    statusCheckRollup: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, conclusion: "SUCCESS" })) };
+  let relinked = false;
+  r.hooks.onRead = args => {
+    if (!relinked && args[0] === "api") {
+      relinked = true;
+      const clean = readinessReply(); clean.data.repository.pullRequest.reviewThreads.nodes[0]!.isResolved = true;
+      r.hooks.reply = clean;
+      const task = r.board.get(r.task.id)!;
+      r.board.update(task.id, "user", "relinked", { sdlc: { ...task.sdlc!, pr: 2 } });
+    } else if (args[0] === "api") r.hooks.reply = readinessReply("SUCCESS", false);
+  };
+  const done = await r.tasks.done("codex", r.task.id, "ready");
+  expect(done.state).toBe("in_review");
+  expect(r.notices.join("\n")).toContain("bot review threads unanswered");
+  expect(done.history.findLast(entry => entry.event === "done")?.reviewCost?.head).toBeUndefined();
+  expect(r.reads()).toBeGreaterThan(2);
 });

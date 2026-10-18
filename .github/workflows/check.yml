@@ -24,6 +24,7 @@ concurrency:
   group: ${{ github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20' && 'macos-timing' || 'check' }}
   # Hold the whole controller until its admitted gate ends. A decision-job-only lock races queued gate jobs.
   cancel-in-progress: false
+  queue: max
 
 jobs:
   decision:

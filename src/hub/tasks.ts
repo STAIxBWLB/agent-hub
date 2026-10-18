@@ -29,7 +29,7 @@ import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { readPrCostHistory, readReviewReadiness, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -225,7 +225,7 @@ function cleanPlan(input: unknown, profile: ProfileSelection = "dev"): TaskPlan 
   const r = fields(input);
   let scope: CostPlan;
   try { scope = cleanCostPlan(r); } catch { throw new PreEffectToolRefusal("invalid review or CI cost scope"); }
-  return { ...Object.fromEntries((profileData(profile).plan_keys as (typeof ALL_PLAN_KEYS[number])[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length)), ...scope };
+  return { ...Object.fromEntries((profileData(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length)), ...scope };
 }
 
 /** A plan as one line for other owners; the whole plan is on the board. */
@@ -2217,17 +2217,25 @@ export class Tasks {
     this.d.notify(this.specText(task, state, "advice"));
   }
 
-  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<void> {
+  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
-    const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, this.d.sdlc?.gh) : undefined;
+    const read: SdlcGh = (args, timeout, cwd, cap) => {
+      const current = this.need(task.id, false, true);
+      if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || this.isPii(current) !== this.isPii(task)) return Promise.resolve({ code: 1, stdout: "" });
+      return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap);
+    };
+    const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, read) : undefined;
     const current = this.need(task.id, false, true);
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
+    // Advise may continue on the current task, but evidence from its previous link cannot admit that task's review.
+    if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
     const status = sdlcStatus(config, receipt, evidence, this.workflowView(current));
     const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
     if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);
+    return evidence;
   }
 
   private need(id: unknown, open = false, preEffect = false, allowBacklog = false): Task {
@@ -2429,8 +2437,9 @@ export class Tasks {
       await this.planEntryGate(by, admission);
       task = valid();
     }
-    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "review"); task = valid(); }
-    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by) : undefined;
+    let reviewEvidence: PrEvidence | undefined;
+    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = valid(); }
+    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence) : undefined;
     task = valid();
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
@@ -2590,9 +2599,9 @@ export class Tasks {
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
   private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness): Promise<Task> {
-    let reviewer = task.reviewer;
+    let reviewer = task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
-      await this.lifecycleGate(task, reviewer ? "review" : "approval");
+      reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
       task = this.need(task.id, false, true);
       this.mine(task, by, "owner", true);
       // In every mode: another done may have landed during the readback.
@@ -2602,13 +2611,13 @@ export class Tasks {
     // A delayed local check needs a new readback; the immediate done path already admitted before effects.
     if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
       const observed = task;
-      admission = await this.reviewRequestAdmission(task, refs, false, by);
+      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence);
       task = this.need(task.id);
       this.mine(task, by, "owner");
       if (task.history.length !== observed.history.length || task.state === "in_review" || isClosedTaskState(task.state)) throw new Error("task changed during review admission");
     }
     const reviewCost: ReviewCost | undefined = reviewer && task.plan && (task.plan.review || task.plan.ci)
-      ? { ...cleanCostPlan(task.plan), ...(admission?.head ? { head: admission.head } : {}) } : undefined;
+      ? { ...cleanCostPlan(task.plan), ...(admission?.ready && admission.head ? { head: admission.head } : {}) } : undefined;
     const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined, ...(reviewCost ? { reviewCost } : {}) });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
@@ -2695,10 +2704,14 @@ export class Tasks {
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
   /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
-  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER): Promise<ReviewReadiness | undefined> {
+  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off") return undefined;
     const guard = () => {
+      if (actor !== USER && actor !== task.owner) {
+        const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
+        if (holders.length !== 1 || holders[0] !== actor) throw new (preEffect ? PreEffectToolRefusal : Error)("review admission authority changed");
+      }
       const current = this.need(task.id, false, preEffect);
       if ((this.d.sdlc?.config().mode ?? "off") !== mode || current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer
         || this.isPii(current) !== this.isPii(task) || JSON.stringify(current.sdlc ?? null) !== JSON.stringify(task.sdlc ?? null)
@@ -2706,11 +2719,11 @@ export class Tasks {
       return current;
     };
     guard();
-    const expected = cleanRefs(refs).commit ?? task.refs.commit ?? task.sdlc?.head;
+    const expected = cleanRefs(refs).commit ?? task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
     const read: SdlcGh = (args, timeout, cwd, cap) => { guard(); return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap); };
     const evidence: ReviewReadiness = this.isPii(task)
       ? { ready: false, blockers: ["private review readiness unavailable"] }
-      : task.sdlc ? await readReviewReadiness(task.sdlc, expected, read) : { ready: false, blockers: ["review PR identity missing"] };
+      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
     const current = guard();
     if (!evidence.ready) {
       const message = `task ${this.publicTitle(current)}: premature review: ${evidence.blockers.join("; ")}`;

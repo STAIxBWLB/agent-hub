@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Planner cost governance records review/CI scope on plans and receipts, gates premature reviews by current CI and bot replies, reuses identical-tree full CI and reports bounded merged-PR review/CI costs without board writes (#481 S10).
+
 - Planner grooming reports repository-scoped dependencies, overlaps, WIP and capability/issue blockers without changing the board. Plan-review receipts bind the planner, planning revision and metadata-only issue edit evidence; enforce requires a current receipt before offering or accepting build work, advise reports gaps and off does not gate (#481 S9).
 - WIP admission now applies in every lifecycle mode. Planner/person actions can return accepted but untouched work with history and planning retained; work evidence still refuses return, and ordinary accepted-work cancellation/unassignment remains person-only (#481 S9).
 

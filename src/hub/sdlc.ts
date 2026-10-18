@@ -212,7 +212,7 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     const name = c.name ?? c.context;
     if (typeof name !== "string" || !name || name.length > 120) throw new Error("PR readback: invalid check identity");
     const native = c.conclusion ?? c.state;
-    const state = native === "SUCCESS" ? "passed" : ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"].includes(String(native)) ? "failed" : ["PENDING", "QUEUED", "IN_PROGRESS"].includes(String(c.status ?? native)) ? "pending" : "unknown";
+    const state = ["PENDING", "QUEUED", "IN_PROGRESS"].includes(String(c.status ?? native)) ? "pending" : native === "SUCCESS" ? "passed" : ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"].includes(String(native)) ? "failed" : "unknown";
     return { name, state } as PrEvidence["checks"][number];
   });
   const paths = p.files.map((f: Record<string, unknown>) => { if (typeof f.path !== "string" || !f.path || f.path.length > 1000) throw new Error("PR readback: invalid file identity"); return f.path; });
@@ -371,13 +371,26 @@ export async function readPlanIssueMetadata(repository: string, number: number, 
   } catch { return undefined; }
 }
 
+/** A complete resolved-thread snapshot already proves there is no pending unanswered bot thread. */
+export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, expected: string | undefined, required: readonly string[]): ReviewReadiness | undefined {
+  if (!evidence || evidence.unresolved !== 0) return undefined;
+  const checks = required.length ? [...required] : ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
+  if (!checks.every(name => evidence.checks.some(check => check.name === name)) || evidence.checks.some(check => check.state === "unknown")) return undefined;
+  const blockers: string[] = [];
+  if (!expected || !sha(expected)) blockers.push("review head missing");
+  else if (evidence.head !== expected) blockers.push("review head changed");
+  if (evidence.state !== "OPEN") blockers.push("review PR is not open");
+  if (!checks.every(name => { const matched = evidence.checks.filter(check => check.name === name); return matched.length === 1 && matched[0]?.state === "passed"; })) blockers.push("exact-head full CI is not green");
+  return { head: evidence.head, ready: blockers.length === 0, blockers };
+}
+
 export interface ReviewReadiness { head?: string; ready: boolean; blockers: string[]; reusedRun?: number }
 /** Metadata-only pre-review admission; no remote body or comment text is requested. */
-export async function readReviewReadiness(receipt: SdlcReceipt, expected: string | undefined, run: SdlcGh = sdlcGh): Promise<ReviewReadiness> {
+export async function readReviewReadiness(receipt: SdlcReceipt, expected: string | undefined, run: SdlcGh = sdlcGh, requiredChecks: readonly string[] = []): Promise<ReviewReadiness> {
   const unknown = (): ReviewReadiness => ({ ready: false, blockers: ["review readiness unavailable"] });
   if (!repo(receipt.repo) || !id(receipt.pr)) return unknown();
   const [owner, name] = receipt.repo.split("/");
-  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
+  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
   try {
     const deadline = performance.now() + 20_000;
     const bounded: SdlcGh = (args, timeout, cwd, cap) => performance.now() < deadline
@@ -396,16 +409,16 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     if (!commit || commit.oid !== pr.headRefOid) blockers.push("review head changed");
     const contexts = commit?.statusCheckRollup?.contexts;
     const nodes: unknown[] | undefined = contexts?.nodes;
-    const full = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
+    const full = requiredChecks.length ? [...requiredChecks] : ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
     let reusedRun: number | undefined;
     if (contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100
       || !full.every(name => {
         const matches = (nodes as { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[]).filter(node => (node?.name ?? node?.context) === name);
-        return matches.length === 1 && (matches[0]?.conclusion ?? matches[0]?.state) === "SUCCESS";
+        return matches.length === 1 && (matches[0]?.name ? matches[0].status === "COMPLETED" && matches[0].conclusion === "SUCCESS" : matches[0]?.state === "SUCCESS");
       })) blockers.push("exact-head full CI is not green");
     if (blockers.includes("exact-head full CI is not green") && contexts?.pageInfo?.hasNextPage === false && Array.isArray(nodes)
       && full.every(name => { const matches = (nodes as { name?: string; conclusion?: string }[]).filter(node => node?.name === name); return matches.length === 1 && matches[0]?.conclusion === "SKIPPED"; }) && sha(commit?.tree?.oid)) {
-      reusedRun = await identicalTreeGate(receipt.repo, commit.tree.oid, bounded);
+      reusedRun = await identicalTreeGate(receipt.repo, commit.tree.oid, bounded, full);
       if (reusedRun !== undefined) {
         // Proof reads can await several API calls: recheck the complete head/check/thread snapshot before admission.
         const after = await bounded(args, 10_000, undefined, 512 * 1024);
@@ -417,6 +430,8 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     const threads = pr.reviewThreads;
     if (threads?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100) blockers.push("bot review thread evidence unavailable");
     else for (const thread of threads.nodes) {
+      if (thread?.isResolved === true) continue;
+      if (thread?.isResolved !== false) { blockers.push("bot review thread evidence unavailable"); continue; }
       const comments = thread?.comments;
       if (comments?.pageInfo?.hasNextPage !== false || !Array.isArray(comments.nodes) || comments.nodes.length > 100
         || comments.nodes.some((comment: { author?: { __typename?: string }; createdAt?: string }) => !["Bot", "User"].includes(comment?.author?.__typename ?? "") || !Number.isFinite(Date.parse(comment.createdAt ?? "")))) {
@@ -434,7 +449,7 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
 }
 
 /** Same proof floor as scripts/ci-gates.mjs: the identical tree includes the workflow itself. No skipped proof. */
-async function identicalTreeGate(repository: string, tree: string, run: SdlcGh): Promise<number | undefined> {
+async function identicalTreeGate(repository: string, tree: string, run: SdlcGh, required: readonly string[]): Promise<number | undefined> {
   try {
     const list = await run(["api", `repos/${repository}/actions/workflows/check.yml/runs?status=success&per_page=20`, "--jq", "{total_count,workflow_runs:[.workflow_runs[]|{id,event,conclusion,head_sha}]}"], 10_000, undefined, 64 * 1024);
     if (list.code !== 0) return;
@@ -448,7 +463,7 @@ async function identicalTreeGate(repository: string, tree: string, run: SdlcGh):
       if (jobs.code !== 0) continue;
       const proof = JSON.parse(jobs.stdout);
       if (!Array.isArray(proof.jobs) || proof.jobs.length > 100 || proof.total_count !== proof.jobs.length) continue;
-      if (["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].every(name => {
+      if (required.every(name => {
         const found = proof.jobs.filter((job: { name?: string }) => job?.name === name); return found.length === 1 && found[0]?.conclusion === "success";
       })) return candidate.id;
     }
