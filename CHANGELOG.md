@@ -2,7 +2,9 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.33
+
+Upgrades with cancelled tasks and a managed terminal no longer stop at the lease renewal, and a notice the target sends right after it starts no longer blocks queue verification (#478). The upgrade runs with the target release's own coordinator, so an upgrade from 0.12.32 to this release already uses these fixes. A real upgrade with a managed TUI and cancelled rows (#478) and installed managed-Pi #418 AC8 (#142) remain unverified by this release preparation. Installation and the person's restart require separate receipts.
 
 - Preserve target capabilities on recovery lease renewals, defer hub notices until held queue verification finishes, and show recorded blocked errors (#478).
 - Discard deferred notices on reset, retry expired recovery leases after storage failures, and keep abort/archive available for corrupt snapshots (#478).
