@@ -855,7 +855,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const hub = await nativeConnect(); hub.close();
     }
     const context: NativeCliEntryContext = { args, cwd, stateDir, cliDir: import.meta.dir, unattendedEnv, definition: entry.definition,
-      ...(selectedInstance ? { instance: selectedInstance } : {}),
+      ...(selectedInstance ? { instance: selectedInstance } : {}), ...(nativeSelection.hubStarted ? { hubStarted: true as const } : {}),
       projectConfig, connect: nativeConnect, fail,
       exec: (bin, argv, tool) => exec(bin, argv, tool, context.executionCwd),
       execWithEnv: (bin, argv, env) => execWithEnv(bin, argv, env, context.executionCwd), takeFlags,

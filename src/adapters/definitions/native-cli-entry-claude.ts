@@ -9,6 +9,16 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
   // #450 I3: a claude-<name> instance keeps its own identity, launch and recovery records; it never owns a worktree.
   const peer = ctx.instance ?? "claude";
+  if (ctx.hubStarted) {
+    // #223: the hub starts a headless reviewer and runs one `claude -p` per review; nothing runs in this terminal.
+    if (args.includes("--print-command") || args.includes("--dry-run")) return console.log(JSON.stringify({ peer, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
+    const hub = await ctx.connect();
+    try {
+      const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+      if (res.ok !== true) fail(String(res.error ?? `${peer} was not started`));
+    } finally { hub.close(); }
+    return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
+  }
   const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try { return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2)); }

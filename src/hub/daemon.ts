@@ -63,7 +63,7 @@ import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
-import { reviewDiff, type ClaudePrintPeer } from "../adapters/claude-print.ts";
+import { reviewDiff, ClaudePrintPeer } from "../adapters/claude-print.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
@@ -3242,7 +3242,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     const stopNotice = definitionOf(peer)?.cli.stopNotice?.(owner instanceof WsPeer ? "tui" : !owner ? startMode(peer) : "headless", owner);
     if (stopNotice) return { ok: false, error: stopNotice };
-    if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
+    if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer || owner instanceof ClaudePrintPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
     if (owner instanceof PiPeer && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
     if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ahub ${peer} before stopping it` };
     if (starting.has(peer) || requestedPeerStops.has(peer) || permissionChanges.has(peer)) return { ok: false, error: "peer lifecycle or permission change is in progress; wait for ahub status before retrying" };
@@ -3261,7 +3261,7 @@ export async function startDaemon(opts: DaemonOptions) {
         writeStatus();
         const state = bus.stateOf(peer);
         if (state !== "offline" || bus.peers.get(peer) !== owner) return { ok: false, error: "peer stop did not reach offline on its owner; inspect ahub status and its terminal before retrying" };
-        try { notify(rosterRemoval ? `${peer} stopped for roster removal; add it with ahub roster add ${peer} before starting it again` : `${peer} stopped by the console; start it again with ahub ${peer}`); } catch { /* owner stop and readback remain authoritative */ }
+        try { notify(rosterRemoval ? `${peer} stopped for roster removal; add it with ahub roster add ${peer} before starting it again` : `${peer} stopped by the console; start it again with ahub ${definitionOf(peer)?.kind && definitionOf(peer)!.kind !== peer ? `${definitionOf(peer)!.kind} --as ${peer}` : peer}`); } catch { /* owner stop and readback remain authoritative */ }
         return { ok: true, state };
       });
     } catch {

@@ -43,7 +43,11 @@ test("a headless Claude instance is the reviewer variant only with roles exactly
   expect(definitionOf("claude-review", { "claude-review": { kind: "claude" } })!.transport).toBe("claude-channel");
   for (const roles of [["planner"], ["reviewer", "planner"], []]) expect(() => validateInstances({ "claude-x": { kind: "claude", roles, start_mode: "headless" } })).toThrow('exactly ["reviewer"]');
   expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], start_mode: "headless", worktree: "../wt" } })).toThrow("worktree is not supported");
-  expect(() => instanceLaunchArguments("claude", ["--as", "claude-review"], validateInstances(reviewer))).toThrow("ahub start claude-review");
+  // `ahub claude --as <id>` hands a headless reviewer to the hub; it takes no launch arguments.
+  expect(instanceLaunchArguments("claude", ["--as", "claude-review"], validateInstances(reviewer))).toEqual({ instance: "claude-review", args: [], hubStarted: true });
+  expect(instanceLaunchArguments("claude", ["--as", "claude-review", "--print-command"], validateInstances(reviewer)).hubStarted).toBe(true);
+  expect(() => instanceLaunchArguments("claude", ["--as", "claude-review", "--model", "x"], validateInstances(reviewer))).toThrow("takes no launch arguments");
+  expect(instanceLaunchArguments("claude", ["--as", "claude-review"], validateInstances({ "claude-review": { kind: "claude", roles: ["reviewer"] } })).hubStarted).toBeUndefined();
 });
 
 test("each review runs a new unpersisted session with read-only tools, and settles by the verdict", async () => {
@@ -153,6 +157,10 @@ test("the daemon runs the headless reviewer: review-only delivery, a fresh verdi
   // Its verdict authority ends with its child: a later hub_review from its identity is refused.
   const late = await connect({ role: "tools", peer: "claude-review" });
   expect(await late.request({ t: "task", op: "hub_review", args: { id, verdict: "changes_requested", note: "late" } })).toMatchObject({ ok: false, error: expect.stringContaining(`no review of task #${id} is running`) });
+  // `ahub stop claude-review` stops it.
+  expect(await console_.request({ t: "peer_stop", peer: "claude-review" }, 35_000)).toMatchObject({ ok: true });
+  await until(() => daemon.bus.stateOf("claude-review") === "offline");
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("claude-review stopped by the console; start it again with ahub claude --as claude-review");
   expect(calls[0].prompt).toContain(`Review task #${id}`);
   expect(calls[0].prompt).not.toContain("BUILDER NARRATIVE");
   expect(calls[0].prompt).not.toContain("half done");
