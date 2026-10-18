@@ -1837,7 +1837,8 @@ push `accepted` and show none of them.
   selection excludes pull-only peers; only explicit role-specific naming or an
   honored owner reservation permits assignment.
 - `hub_inbox` sends `inbox`. The daemon answers "not attached yet; retry"
-  between welcome and attach, and refuses it for a session with pushes.
+  between welcome and attach. Since #493 the current channel owner may also
+  explicitly pull its queued work, including while its native turn is busy.
   `Bus.pull` is held by every hold a drain respects (`Bus.held`: recovery, an
   uncertain delivery, a console, budget or conductor pause), though unlike a
   drain it does not wait for the peer to be idle; a held pull journals nothing
@@ -1876,6 +1877,45 @@ push `accepted` and show none of them.
 - Control protocol 16 adds the hello `channel` field and `inbox`. Recovery
   sources add protocol 15 (0.12.17 through 0.12.19); the transition from a real
   0.12.19 hub is not yet proven.
+
+## Amendment: channel queue visibility and explicit pull (issue #493)
+
+- A channel session's `hub_inbox` reads the daemon queue through the same
+  authenticated `peer` socket as a tools-only Claude session. The daemon checks
+  current socket ownership and the shared roster, pause, recovery, lifecycle and
+  uncertain-delivery holds. It does not require an idle native turn. Tools-role
+  sockets cannot consume another transport's queue.
+- `Bus.pull` claims one batch synchronously and completes it with its bus
+  checkpoint in the existing journal transaction. A later idle drain or another
+  concurrent inbox call cannot hand those originals out again. Existing accepted
+  pushes remain independent; a pull does not complete them. The hand-out-before-
+  model-read ceiling documented above remains. Framing, `sanitize`, public PII
+  projections and task-offer read evidence retain their existing paths.
+- The plugin also returns its existing bounded local buffer of failed pushes
+  without journal ids. Journaled failed pushes stay in `needs_review`; the plugin
+  never consumes them from this local buffer. A daemon refusal or an unavailable
+  connection cannot prevent reading that local fallback.
+- `delivery_holds` adds optional same-peer `queued` and `important` counts, with
+  no bodies or caller-selected target. Every agent-hub tool-call result can show
+  fresh counts when important work waits. Channel and tools-mode sessions remain
+  silent when an older daemon supplies no counts. Plain pull-only sessions keep
+  their old advisory nudge compatibility. A current zero clears old nudges;
+  unavailable metadata never changes a saved result or its effect classification.
+  Inbox replies show counts without suggesting a repeated refused read, and a
+  tools-mode hint does not grant an inbox capability to that transport.
+- `[FYI]` remains record-only. PR ready, done or submitted, ruling-needed,
+  blocker and changed-contract/path messages require an unmarked or important
+  update. `hub_task_done` and `hub_review` already notify the assigned audience;
+  an extra chat with the same outcome is unnecessary.
+- Native busy-notification evidence and the decision about channel steering are
+  recorded separately in `docs/verification/2026-10-18-493-claude-busy-channel.md`.
+  Claude Code 2.1.302 / Sonnet 5.5 returned the random notification token before
+  the original interactive turn ended. Push-capable `WsPeer` therefore exposes
+  important-only steer through the existing journal/generation-bound push path;
+  detach and pull-only attach remove that capability. Ordinary messages remain
+  queued while busy. A notification write alone is not proof that the native
+  model saw it; the earlier print-mode probe was inconclusive.
+
 ## Amendment: owner and reviewer read their task (issue #208)
 
 `hub_task_show` stays a conductor tool, and a task's current owner and current
