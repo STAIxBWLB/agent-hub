@@ -42,6 +42,14 @@ test("cost reports withhold private counterparts and preserve unknown or incompl
   expect(JSON.stringify(result)).not.toContain('"pr":1');
 });
 
+test("a none-scope handoff still counts an observed review and its elapsed time (#481 S10)", () => {
+  const report = costMetrics([{ repo: "o/r", pr: 1, history: [
+    { event: "done", at: 100, reviewCost: { review: { scope: "none", reviewers: 0 }, ci: "full", head } },
+    { event: "approved", at: 160 },
+  ] }], [{ repo: "o/r", pr: 1, state: "MERGED", mergedAt: 200, complete: true, ciRuns: [], reviews: 1 }]);
+  expect(report.rows[0]).toMatchObject({ reviewRounds: 1, reviewMs: 60, complete: true });
+});
+
 import { readReviewReadiness } from "../src/hub/sdlc.ts";
 const readinessReply = (state = "SUCCESS", answered = true) => ({ data: { repository: { pullRequest: {
   headRefOid: head, state: "OPEN", commits: { nodes: [{ commit: { oid: head, tree: { oid: "b".repeat(40) },
@@ -105,6 +113,17 @@ test("legacy scopes stay unspecified, while enforce requires explicit scope for 
   expect(saved.plan).toMatchObject(scope);
   expect(saved.sdlc?.planReview).toMatchObject({ scope });
 });
+test("an owner cannot add cost scope to a legacy enforce receipt at acceptance (#481 S10)", async () => {
+  const r = scopeRig("enforce"), task = r.board.propose("user", { title: "legacy acceptance", class: "summarize" });
+  r.board.update(task.id, "user", "assigned", { owner: "codex", sdlc: { stage: "plan", planReview: { planner: "claude", planningRevision: 0, recordedAt: 1 } } });
+  const before = r.board.get(task.id);
+  await expect(r.tasks.acceptReviewed("codex", task.id, { paths: ["a.ts"], review: { scope: "full", reviewers: 1 }, ci: "full" })).rejects.toThrow("cost scope");
+  expect(r.board.get(task.id)).toEqual(before);
+  const accepted = await r.tasks.acceptReviewed("codex", task.id, { paths: ["a.ts"] });
+  expect(accepted.plan).not.toHaveProperty("review");
+  expect(accepted.sdlc?.planReview).not.toHaveProperty("scope");
+});
+
 test("advise records an unspecified scope as unknown and reports the gap (#481 S10)", async () => {
   const r = scopeRig("advise"), task = r.board.propose("user", { title: "legacy advice", class: "summarize", backlog: true });
   const saved = await r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "review legacy" });

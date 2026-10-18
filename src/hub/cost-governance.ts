@@ -45,7 +45,6 @@ export function costMetrics(tasks: CostTask[], prs: CostPr[]): CostReport {
       for (const event of [...history].sort((a, b) => a.at - b.at)) {
         if (!Number.isFinite(event.at) || event.at < 0 || !Number.isFinite(pr.mergedAt) || event.at > pr.mergedAt!) continue;
         if (event.event === "done") {
-          if (event.reviewCost?.review?.scope === "none") continue;
           pending = { at: event.at, scope: event.reviewCost?.review?.scope }; rounds.push(pending);
         } else if (pending && ["approved", "changes_requested"].includes(event.event)) { pending.elapsed = event.at - pending.at; pending = undefined; }
       }

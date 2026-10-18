@@ -2327,6 +2327,8 @@ export class Tasks {
     const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
     // File-list intent still replaces the old lists; omitted budget keys retain the planner-reviewed scope.
     const cleaned = given && Object.keys(given).length ? { ...cleanCostPlan(task.plan ?? {}), ...given } : undefined;
+    if (this.d.sdlc?.config().mode === "enforce" && task.sdlc?.planReview && !task.sdlc.planReview.scope
+      && given && Object.keys(cleanCostPlan(given)).length) throw new PreEffectToolRefusal("legacy plan cost scope is unspecified; record a scoped planner review before acceptance");
     if (this.d.sdlc?.config().mode === "enforce" && task.sdlc?.planReview?.scope
       && JSON.stringify(cleanCostPlan(cleaned ?? task.plan ?? {})) !== JSON.stringify(task.sdlc.planReview.scope)) {
       throw new PreEffectToolRefusal("plan cost scope changed; record a new planner review before acceptance");
