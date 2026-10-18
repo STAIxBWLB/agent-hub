@@ -388,8 +388,8 @@
     {
       "id": "kimi-code-scoped-grant",
       "file": "src/hub/permission-mode.ts",
-      "search": "export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([\".claude\", \".codex\", \".qwen\", \".kimi\", \".kimi-code\", \".jcode\", \".pi\", \".mcp.json\", \".agents\", \".claude.json\"]);",
-      "replacement": "export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([\".claude\", \".codex\", \".qwen\", \".kimi\", \".jcode\", \".pi\", \".mcp.json\", \".agents\", \".claude.json\"]);",
+      "search": "export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([\".claude\", \".codex\", \".qwen\", \".kimi\", \".kimi-code\", \".jcode\", \".pi\", \".mcp.json\", \".agents\", \".agent\", \"_agents\", \"_agent\", \".gemini\", \".grok\", \".claude.json\"]);",
+      "replacement": "export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([\".claude\", \".codex\", \".qwen\", \".kimi\", \".jcode\", \".pi\", \".mcp.json\", \".agents\", \".agent\", \"_agents\", \"_agent\", \".gemini\", \".grok\", \".claude.json\"]);",
       "testFile": "test/permission-modes.test.ts",
       "testName": "Kimi Code project policy is outside scoped grants under literal and folded spellings (#316)"
     },
