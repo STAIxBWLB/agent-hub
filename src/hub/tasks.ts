@@ -1566,6 +1566,12 @@ export class Tasks {
     }
     // A claim is its own hand-over, with no delivery: its accepted write and its line stay as they were (#297).
     if (opts.claim && a.owner === by) {
+      // #481 S1: a claim of build work starts it only from an accepted spec. In enforce the claim stays an assignment
+      // (owner set, still proposed); hub_task_accept starts it once the person accepted the spec.
+      if (this.specGated(next) && specState(next.sdlc, undefined) === "missing") {
+        if (this.d.sdlc?.config().mode === "enforce") { this.releaseNotice(`${this.specText(next, "missing", "blocked")}; the claim stays assigned to ${by}`); return next; }
+        this.releaseNotice(this.specText(next, "missing", "advice"));
+      }
       const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
       this.releaseNotice(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
@@ -1935,24 +1941,39 @@ export class Tasks {
     if (!this.specGated(task) || task.owner !== by && by !== USER) return; // accept reports its own refusals
     const accepted = task.sdlc?.acceptance;
     const edit = accepted && !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
-    const state = task.sdlc?.issue ? specState(task.sdlc, edit) : "missing";
-    if (state === "current") return;
-    if (this.d.sdlc?.config().mode === "enforce") throw new PreEffectToolRefusal(this.specText(task, state, "blocked"));
-    this.d.notify(this.specText(task, state, "advice"));
+    if (this.specMoved(task)) return;
+    this.specVerdict(task, task.sdlc?.issue ? specState(task.sdlc, edit) : "missing");
   }
 
-  /** #481 S1: a build stage change by an agent in enforce re-reads the body edit time first, as accept does. */
+  /** #481 S1: a build stage change by an agent re-reads the body edit time first, as accept does. */
   async specStageGate(by: PeerId, id: unknown, input: unknown): Promise<void> {
     const task = this.need(id, false, true), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    if (config.mode !== "enforce" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
+    if (config.mode === "off" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
     let next: ReturnType<typeof sdlcReceipt>;
     try { next = sdlcReceipt(input, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
     const definition = stageDefinition(config, next.stage);
     if (next.stage === task.sdlc?.stage || !definition || canonicalStage(definition.base) !== "build") return;
     const accepted = next.acceptance;
     const edit = accepted && !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
-    const state = next.issue ? specState(next, edit) : "missing";
-    if (state !== "current") throw new PreEffectToolRefusal(this.specText(task, state, "blocked"));
+    if (this.specMoved(task)) return;
+    this.specVerdict(task, next.issue ? specState(next, edit) : "missing");
+  }
+
+  /**
+   * The task a spec readback started from changed while it was awaited (flow, link, acceptance, owner or privacy): the
+   * reading belongs to other work. Enforce refuses before any write; advise drops the stale advice.
+   */
+  private specMoved(before: Task): boolean {
+    const now = this.need(before.id, false, true);
+    if (now.history.length === before.history.length && now.owner === before.owner && this.isPii(now) === this.isPii(before)
+      && JSON.stringify(now.sdlc ?? null) === JSON.stringify(before.sdlc ?? null)) return false;
+    if (this.d.sdlc?.config().mode === "enforce") throw new PreEffectToolRefusal(`task #${before.id}: changed during the spec readback; nothing was recorded, retry on current work`);
+    return true;
+  }
+  private specVerdict(task: Task, state: SpecState): void {
+    if (state === "current") return;
+    if (this.d.sdlc?.config().mode === "enforce") throw new PreEffectToolRefusal(this.specText(task, state, "blocked"));
+    this.d.notify(this.specText(task, state, "advice"));
   }
 
   private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<void> {
@@ -2092,6 +2113,8 @@ export class Tasks {
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("summary", summary, valid());
     let task = valid();
+    // #481 S1: done without a separate accept starts build work too: the same live spec check as accept, before any write.
+    if ((task.state === "proposed" || task.state === "changes_requested") && this.specGated(task)) { await this.specGate(by, task.id); task = valid(); }
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "review"); task = valid(); }
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);

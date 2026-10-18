@@ -20,20 +20,23 @@ function rig(mode: SdlcMode, taskClass: TaskClass = "implement") {
   const dir = mkdtempSync(join(tmpdir(), "ahub-spec-")), board = new Board(join(dir, "hub.db")), notices: string[] = [];
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   const issue = { lastEditedAt: EDITED as string | null, updatedAt: EDITED, fail: false };
-  let calls = 0;
+  let calls = 0, pause: Promise<void> | undefined;
   const gh: SdlcGh = async args => {
     calls++;
+    await pause;
     if (issue.fail) return { code: 1, stdout: "" };
     if (!args.join(" ").includes("issue(number")) return { code: 1, stdout: "" };
     return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 7, lastEditedAt: issue.lastEditedAt, updatedAt: issue.updatedAt } } } }) };
   };
   const config = sdlcConfig({ mode, required_checks: ["gate"] });
-  const tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), cwd: dir, project: "spec", routing: () => loadRouting(dir), notify: text => notices.push(text), sdlc: { config: () => config, gh } });
+  const bus = new Bus({ batchMs: 0 });
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "spec", routing: () => loadRouting(dir), notify: text => notices.push(text), sdlc: { config: () => config, gh } });
   const task = board.propose(USER, { title: "build it", class: taskClass });
   board.update(task.id, USER, "assigned", { owner: "codex", reviewer: USER });
   const accept = async () => { await tasks.specGate("codex", task.id); return tasks.accept("codex", task.id); };
   const acceptSpec = async () => tasks.acceptSpec(USER, task.id, { repo: "owner/repo", issue: 7, edit: (await readSpecEdit("owner/repo", 7, gh))! });
-  return { board, tasks, id: task.id, notices, issue, gh, calls: () => calls, accept, acceptSpec };
+  const hold = () => { let release!: () => void; pause = new Promise<void>(r => { release = r; }); return () => { pause = undefined; release(); }; };
+  return { board, bus, tasks, id: task.id, notices, issue, gh, calls: () => calls, accept, acceptSpec, hold };
 }
 
 test("acceptance is the person's, stores identity and edit times only, and is dropped when the receipt is relinked", async () => {
@@ -89,6 +92,46 @@ test("an owner's build stage change re-reads the body edit time; other stages an
   await r.tasks.specStageGate("codex", r.id, { stage: "review" });
   await r.tasks.specStageGate(USER, r.id, { stage: "build" });
   expect(rig("advise").tasks.specStageGate("codex", 1, { stage: "build" })).resolves.toBeUndefined();
+});
+
+test("a self-claim and a done without accept start build work only from an accepted spec in enforce; advise notifies", async () => {
+  const r = rig("enforce");
+  r.bus.add({ id: "codex", state: "idle", deliver: async () => {}, start: async () => {}, stop: async () => {} });
+  const claimed = await r.tasks.propose("codex", { title: "claim it", class: "implement", owner: "codex" });
+  expect(claimed).toMatchObject({ owner: "codex", state: "proposed" });
+  expect(claimed.history.map(h => h.event)).not.toContain("accepted");
+  expect(r.notices.join(" ")).toContain("SDLC build entry blocked: spec issue unknown");
+  await expect(r.tasks.done("codex", r.id, "finished")).rejects.toThrow("spec issue unknown");
+  expect(r.board.get(r.id)?.state).toBe("proposed");
+  expect(r.board.get(r.id)?.history.map(h => h.event)).toEqual(["proposed", "assigned"]);
+  const advise = rig("advise");
+  advise.bus.add({ id: "codex", state: "idle", deliver: async () => {}, start: async () => {}, stop: async () => {} });
+  expect((await advise.tasks.propose("codex", { title: "claim it", class: "implement", owner: "codex" })).state).toBe("in_progress");
+  expect(advise.notices.join(" ")).toContain("SDLC build entry advice: spec issue unknown");
+});
+
+test("a spec readback is fenced: a relink and acceptance during the read refuse the stale reading", async () => {
+  for (const stage of [false, true]) {
+    const r = rig("enforce");
+    r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
+    await r.acceptSpec();
+    const release = r.hold();
+    const gate = stage ? r.tasks.specStageGate("codex", r.id, { stage: "build" }) : r.tasks.specGate("codex", r.id);
+    const outcome = gate.then(() => "passed", (e: Error) => e.message);
+    await Bun.sleep(0);
+    r.tasks.recordLifecycle(USER, r.id, { issue: 8 });
+    r.tasks.acceptSpec(USER, r.id, { repo: "owner/repo", issue: 8, edit: { lastEditedAt: EDITED, updatedAt: EDITED } });
+    release();
+    expect(await outcome).toContain("changed during the spec readback");
+  }
+});
+
+test("advise notifies an owner's build stage change without a current acceptance", async () => {
+  const r = rig("advise");
+  r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
+  await r.tasks.specStageGate("codex", r.id, { stage: "build" });
+  expect(r.notices.join(" ")).toContain("SDLC build entry advice: ");
+  expect(r.notices.join(" ")).toContain("spec acceptance missing");
 });
 
 test("advise only notifies, off reads nothing, and non-build classes are not gated", async () => {
