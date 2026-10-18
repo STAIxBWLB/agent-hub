@@ -1,3 +1,4 @@
+import type { CostPlan } from "./cost-governance.ts";
 import { criteriaReceipt, type CriteriaReceipt, type CriteriaView, type LegacyPhaseReceipt } from "./workflow.ts";
 import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
@@ -33,6 +34,7 @@ export interface PlanReviewReceipt {
   planner: string;
   planningRevision: number;
   recordedAt: number;
+  scope?: CostPlan;
   issue?: PlanIssueMetadata;
 }
 export interface SdlcReceipt {
@@ -367,4 +369,118 @@ export async function readPlanIssueMetadata(repository: string, number: number, 
     if (typeof editedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(editedAt) || !Number.isFinite(Date.parse(editedAt))) return undefined;
     return { repo: repository, issue: number, state: issue.state, editedAt, lastEditedAt: issue.lastEditedAt };
   } catch { return undefined; }
+}
+
+export interface ReviewReadiness { head?: string; ready: boolean; blockers: string[]; reusedRun?: number }
+/** Metadata-only pre-review admission; no remote body or comment text is requested. */
+export async function readReviewReadiness(receipt: SdlcReceipt, expected: string | undefined, run: SdlcGh = sdlcGh): Promise<ReviewReadiness> {
+  const unknown = (): ReviewReadiness => ({ ready: false, blockers: ["review readiness unavailable"] });
+  if (!repo(receipt.repo) || !id(receipt.pr)) return unknown();
+  const [owner, name] = receipt.repo.split("/");
+  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
+  try {
+    const deadline = performance.now() + 20_000;
+    const bounded: SdlcGh = (args, timeout, cwd, cap) => performance.now() < deadline
+      ? run(args, Math.max(1, Math.min(timeout ?? 10_000, deadline - performance.now())), cwd, cap)
+      : Promise.resolve({ code: 1, stdout: "" });
+    const args = ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${receipt.pr}`];
+    const response = await bounded(args, 10_000, undefined, 512 * 1024);
+    if (response.code !== 0 || Buffer.byteLength(response.stdout) > 512 * 1024) return unknown();
+    const parsed = JSON.parse(response.stdout), pr = parsed.data?.repository?.pullRequest;
+    if (parsed.errors || !pr || !sha(pr.headRefOid)) return unknown();
+    const blockers: string[] = [];
+    if (!expected || !sha(expected)) blockers.push("review head missing");
+    else if (pr.headRefOid !== expected) blockers.push("review head changed");
+    if (pr.state !== "OPEN") blockers.push("review PR is not open");
+    const commit = pr.commits?.nodes?.[0]?.commit;
+    if (!commit || commit.oid !== pr.headRefOid) blockers.push("review head changed");
+    const contexts = commit?.statusCheckRollup?.contexts;
+    const nodes: unknown[] | undefined = contexts?.nodes;
+    const full = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
+    let reusedRun: number | undefined;
+    if (contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100
+      || !full.every(name => {
+        const matches = (nodes as { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[]).filter(node => (node?.name ?? node?.context) === name);
+        return matches.length === 1 && (matches[0]?.conclusion ?? matches[0]?.state) === "SUCCESS";
+      })) blockers.push("exact-head full CI is not green");
+    if (blockers.includes("exact-head full CI is not green") && contexts?.pageInfo?.hasNextPage === false && Array.isArray(nodes)
+      && full.every(name => { const matches = (nodes as { name?: string; conclusion?: string }[]).filter(node => node?.name === name); return matches.length === 1 && matches[0]?.conclusion === "SKIPPED"; }) && sha(commit?.tree?.oid)) {
+      reusedRun = await identicalTreeGate(receipt.repo, commit.tree.oid, bounded);
+      if (reusedRun !== undefined) {
+        // Proof reads can await several API calls: recheck the complete head/check/thread snapshot before admission.
+        const after = await bounded(args, 10_000, undefined, 512 * 1024);
+        try { if (after.code !== 0 || JSON.stringify(JSON.parse(after.stdout)?.data?.repository?.pullRequest) !== JSON.stringify(pr)) reusedRun = undefined; }
+        catch { reusedRun = undefined; }
+        if (reusedRun !== undefined) blockers.splice(blockers.indexOf("exact-head full CI is not green"), 1);
+      }
+    }
+    const threads = pr.reviewThreads;
+    if (threads?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100) blockers.push("bot review thread evidence unavailable");
+    else for (const thread of threads.nodes) {
+      const comments = thread?.comments;
+      if (comments?.pageInfo?.hasNextPage !== false || !Array.isArray(comments.nodes) || comments.nodes.length > 100
+        || comments.nodes.some((comment: { author?: { __typename?: string }; createdAt?: string }) => !["Bot", "User"].includes(comment?.author?.__typename ?? "") || !Number.isFinite(Date.parse(comment.createdAt ?? "")))) {
+        blockers.push("bot review thread evidence unavailable"); continue;
+      }
+      let unanswered = false;
+      for (const comment of comments.nodes) {
+        if (comment.author.__typename === "Bot") unanswered = true;
+        else if (comment.author.__typename === "User") unanswered = false;
+      }
+      if (unanswered) blockers.push("bot review threads unanswered");
+    }
+    return { head: pr.headRefOid, ready: blockers.length === 0, blockers: [...new Set(blockers)], ...(reusedRun !== undefined ? { reusedRun } : {}) };
+  } catch { return unknown(); }
+}
+
+/** Same proof floor as scripts/ci-gates.mjs: the identical tree includes the workflow itself. No skipped proof. */
+async function identicalTreeGate(repository: string, tree: string, run: SdlcGh): Promise<number | undefined> {
+  try {
+    const list = await run(["api", `repos/${repository}/actions/workflows/check.yml/runs?status=success&per_page=20`, "--jq", "{total_count,workflow_runs:[.workflow_runs[]|{id,event,conclusion,head_sha}]}"], 10_000, undefined, 64 * 1024);
+    if (list.code !== 0) return;
+    const runs = JSON.parse(list.stdout)?.workflow_runs;
+    if (!Array.isArray(runs) || runs.length > 20) return;
+    for (const candidate of runs) {
+      if (!id(candidate?.id) || candidate.conclusion !== "success" || !["pull_request", "push"].includes(candidate.event) || !sha(candidate.head_sha)) continue;
+      const commit = await run(["api", `repos/${repository}/git/commits/${candidate.head_sha}`, "--jq", "{tree:{sha:.tree.sha}}"], 10_000, undefined, 4096);
+      if (commit.code !== 0 || JSON.parse(commit.stdout)?.tree?.sha !== tree) continue;
+      const jobs = await run(["api", `repos/${repository}/actions/runs/${candidate.id}/jobs?per_page=100`, "--jq", "{total_count,jobs:[.jobs[]|{name,conclusion}]}"], 10_000, undefined, 32 * 1024);
+      if (jobs.code !== 0) continue;
+      const proof = JSON.parse(jobs.stdout);
+      if (!Array.isArray(proof.jobs) || proof.jobs.length > 100 || proof.total_count !== proof.jobs.length) continue;
+      if (["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].every(name => {
+        const found = proof.jobs.filter((job: { name?: string }) => job?.name === name); return found.length === 1 && found[0]?.conclusion === "success";
+      })) return candidate.id;
+    }
+  } catch { return; }
+}
+
+/** PR cost evidence excludes titles, bodies and comment text; unknown/truncated coverage never becomes zero. */
+export async function readPrCostHistory(repository: string, number: number, run: SdlcGh = sdlcGh): Promise<import("./cost-governance.ts").CostPr | undefined> {
+  if (!repo(repository) || !id(number)) return;
+  const [owner, name] = repository.split("/");
+  try {
+    const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number state headRefOid mergedAt commits(first:100){nodes{commit{oid}} pageInfo{hasNextPage}} reviews(first:100){nodes{databaseId commit{oid}} pageInfo{hasNextPage}}}}}";
+    const reply = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], 10_000, undefined, 128 * 1024);
+    if (reply.code !== 0) return;
+    const parsed = JSON.parse(reply.stdout), pr = parsed.data?.repository?.pullRequest;
+    if (parsed.errors || pr?.number !== number || !["OPEN", "CLOSED", "MERGED"].includes(pr.state)) return;
+    const result: import("./cost-governance.ts").CostPr = { repo: repository, pr: number, state: pr.state, complete: false,
+      ...(typeof pr.mergedAt === "string" && Number.isFinite(Date.parse(pr.mergedAt)) ? { mergedAt: Date.parse(pr.mergedAt) } : {}) };
+    if (pr.state !== "MERGED") return result; // Cost metrics count merged PRs, not an active work queue.
+    const reviews = pr.reviews, commits = pr.commits;
+    const reviewComplete = reviews?.pageInfo?.hasNextPage === false && Array.isArray(reviews.nodes) && reviews.nodes.length <= 100 && reviews.nodes.every((node: { databaseId?: number }) => id(node?.databaseId));
+    const commitComplete = commits?.pageInfo?.hasNextPage === false && Array.isArray(commits.nodes) && commits.nodes.length <= 100 && sha(pr.headRefOid) && commits.nodes.every((node: { commit?: { oid?: string } }) => sha(node?.commit?.oid));
+    if (reviewComplete) result.reviews = new Set(reviews.nodes.map((review: { databaseId?: unknown }) => review.databaseId).filter((id: unknown) => Number.isSafeInteger(id))).size;
+    const heads = new Set<string>([pr.headRefOid, ...(commits?.nodes ?? []).map((node: { commit?: { oid?: string } }) => node?.commit?.oid), ...(reviews?.nodes ?? []).map((node: { commit?: { oid?: string } }) => node?.commit?.oid)].filter(sha));
+    const checks = await run(["api", `repos/${repository}/actions/workflows/check.yml/runs?per_page=100`, "--jq", "{total_count,workflow_runs:[.workflow_runs[]|{id,run_attempt,head_sha,pull_requests:[.pull_requests[].number]}]}"], 10_000, undefined, 128 * 1024);
+    if (checks.code !== 0) return result;
+    const runs = JSON.parse(checks.stdout);
+    if (!Array.isArray(runs.workflow_runs) || runs.workflow_runs.length > 100 || !Number.isSafeInteger(runs.total_count) || runs.total_count < runs.workflow_runs.length) return result;
+    const linked = runs.workflow_runs.filter((row: { head_sha?: string; pull_requests?: number[] }) => heads.has(row.head_sha ?? "") || Array.isArray(row.pull_requests) && row.pull_requests.includes(number));
+    if (linked.some((row: { id?: number; run_attempt?: number }) => !id(row.id) || !id(row.run_attempt))) return result;
+    result.ciRuns = linked.map((row: { id: number; run_attempt: number }) => ({ id: row.id, attempt: row.run_attempt }));
+    result.complete = reviewComplete && commitComplete && runs.total_count === runs.workflow_runs.length;
+    return result;
+  } catch { return; }
 }

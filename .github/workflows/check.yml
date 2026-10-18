@@ -21,8 +21,9 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20' && 'macos-timing' || 'check' }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20' && 'macos-timing' || 'check' }}
+  # Hold the whole controller until its admitted gate ends. A decision-job-only lock races queued gate jobs.
+  cancel-in-progress: false
 
 jobs:
   decision:
@@ -42,12 +43,7 @@ jobs:
       - id: reuse
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            node scripts/ci-reuse.mjs
-          else
-            echo "run_gate=true" >> "$GITHUB_OUTPUT"
-          fi
+        run: node scripts/ci-reuse.mjs
 
   prepare-bundle:
     if: github.event_name == 'workflow_dispatch' && inputs.prepare_bundle && inputs.timing_runs != '20'

@@ -16,7 +16,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const c of cleanups.splice(0).reverse()) c(); });
 const EDITED = "2026-10-18T01:00:00Z", LATER = "2026-10-18T02:00:00Z";
 
-function rig(mode: SdlcMode, taskClass: TaskClass = "implement", scenario: { plannerReview?: boolean; capacity?: number } = {}) {
+function rig(mode: SdlcMode, taskClass: TaskClass = "implement", scenario: { plannerReview?: boolean; capacity?: number; plannerScope?: import("../src/hub/cost-governance.ts").CostPlan } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-spec-")), board = new Board(join(dir, "hub.db")), notices: string[] = [];
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   const issue = { lastEditedAt: EDITED as string | null, updatedAt: EDITED, fail: false };
@@ -36,7 +36,7 @@ function rig(mode: SdlcMode, taskClass: TaskClass = "implement", scenario: { pla
   const accept = async () => { await tasks.specGate("codex", task.id); return scenario.plannerReview ? tasks.acceptReviewed("codex", task.id) : tasks.accept("codex", task.id); };
   const acceptSpec = async () => {
     const accepted = tasks.acceptSpec(USER, task.id, { repo: "owner/repo", issue: 7, edit: (await readSpecEdit("owner/repo", 7, gh))! });
-    if (scenario.plannerReview) await tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "S1 fixture: plan reviewed independently" });
+    if (scenario.plannerReview) await tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "S1 fixture: plan reviewed independently", ...scenario.plannerScope });
     return accepted;
   };
   const hold = () => { let release!: () => void; pause = new Promise<void>(r => { release = r; }); return () => { pause = undefined; release(); }; };
@@ -57,7 +57,7 @@ test("acceptance is the person's, stores identity and edit times only, and is dr
 });
 
 test("enforce refuses build entry until the spec is accepted, and again after a body edit; comments do not count", async () => {
-  const r = rig("enforce", "implement", { plannerReview: true });
+  const r = rig("enforce", "implement", { plannerReview: true, plannerScope: { review: { scope: "full", reviewers: 1 }, ci: "full" } });
   await expect(r.accept()).rejects.toThrow("spec issue unknown");
   r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
   await expect(r.accept()).rejects.toThrow("spec acceptance missing");

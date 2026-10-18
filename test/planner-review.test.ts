@@ -99,12 +99,12 @@ test("enforce acceptance reads a current plan receipt and fences direct and stal
   const before = JSON.stringify(r.board.get(r.task.id));
   await expect(r.tasks.acceptReviewed("codex", r.task.id)).rejects.toThrow("plan not reviewed");
   expect(JSON.stringify(r.board.get(r.task.id))).toBe(before);
-  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed before build" });
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed before build" , review: { scope: "full", reviewers: 1 }, ci: "full" });
   expect(() => r.tasks.accept("codex", r.task.id)).toThrow("readback");
   editedAt = "2026-10-18T02:00:00Z";
   r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: editedAt, updatedAt: editedAt } });
   await expect(r.tasks.acceptReviewed("codex", r.task.id)).rejects.toThrow("issue edit");
-  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed edited issue" });
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed edited issue" , review: { scope: "full", reviewers: 1 }, ci: "full" });
   expect((await r.tasks.acceptReviewed("codex", r.task.id)).state).toBe("in_progress");
 });
 
@@ -152,10 +152,10 @@ test("combined acceptance rechecks spec evidence instead of trusting an earlier 
   } } } }) }), "enforce");
   r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex" });
   r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: editedAt, updatedAt: editedAt } });
-  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "initial review" });
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "initial review" , review: { scope: "full", reviewers: 1 }, ci: "full" });
   await r.tasks.specGate("codex", r.task.id);
   editedAt = "2026-10-18T02:00:00Z";
-  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed updated plan" });
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed updated plan" , review: { scope: "full", reviewers: 1 }, ci: "full" });
   const before = r.board.get(r.task.id);
   await expect(r.tasks.acceptReviewed("codex", r.task.id)).rejects.toThrow("spec changed after acceptance");
   expect(r.board.get(r.task.id)).toEqual(before);
@@ -197,7 +197,7 @@ test("real daemon exposes planner review and grooming with role checks and durab
   try {
     const connect = async (role: "console" | "tools", peer?: string) => { const c = await ControlClient.connect(stateDir, { role, ...(peer ? { peer } : {}) }); clients.push(c); return c; };
     const person = await connect("console"), planner = await connect("tools", "claude"), other = await connect("tools", "codex");
-    const request = (client: ControlClient, op: string, args: unknown = {}) => client.request({ t: "task", op, args });
+    const request = (client: ControlClient, op: string, args: unknown = {}) => client.request({ t: "task", op, args: op === "hub_plan_review" ? { review: { scope: "full", reviewers: 1 }, ci: "full", ...(args as Record<string, unknown>) } : args });
     expect(await request(person, "hub_task_propose", { title: "future scope", class: "implement", backlog: true })).toMatchObject({ ok: true });
     const backlog = await request(planner, "hub_backlog_list"), id = JSON.parse(backlog.text)[0].id;
     expect(await request(other, "hub_planner_groom")).toMatchObject({ ok: false });
@@ -361,7 +361,7 @@ test("quiet reviewer or bookkeeping changes do not cancel an owner assignment du
       if (mutate) { mutate = false; r.board.update(r.task.id, "user", event, event === "reviewer changed" ? { reviewer: "reviewer-b" } : {}); }
       return metadata();
     }, "enforce");
-    await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed" });
+    await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed" , review: { scope: "full", reviewers: 1 }, ci: "full" });
     r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed" });
     class Peer extends BasePeer { async start() { this.setState("idle"); } async stop() {} async deliver(_envs: Envelope[]) {} }
     const peer = new Peer("codex"); r.bus.add(peer); await peer.start();
@@ -380,7 +380,7 @@ test("enforce redo after an issue edit requires current spec acceptance and plan
   r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex" });
   const acceptSpec = () => r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: editedAt, updatedAt: editedAt } });
   acceptSpec();
-  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "initial review" });
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "initial review" , review: { scope: "full", reviewers: 1 }, ci: "full" });
   await r.tasks.acceptReviewed("codex", r.task.id);
   r.board.update(r.task.id, "codex", "done", { state: "in_review" });
   r.board.update(r.task.id, "user", "changes_requested", { state: "changes_requested" }, "fix it");
@@ -394,6 +394,6 @@ test("enforce redo after an issue edit requires current spec acceptance and plan
   const beforePlan = r.board.get(r.task.id);
   await expect(r.tasks.done("codex", r.task.id, "fixed")).rejects.toThrow("issue edit");
   expect(r.board.get(r.task.id)).toEqual(beforePlan);
-  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed edited issue before redo" });
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed edited issue before redo" , review: { scope: "full", reviewers: 1 }, ci: "full" });
   expect((await r.tasks.acceptReviewed("codex", r.task.id)).state).toBe("in_progress");
 });
