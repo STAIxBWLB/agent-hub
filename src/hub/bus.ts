@@ -148,6 +148,7 @@ export class Bus {
   private deferHub = true;
   private readonly deferredHub = new Map<string, Envelope>();
   private flushingHub = false;
+  private replayingHub = false;
   private deferredEvents: BusEvent[] = [];
   private steering = 0;
   private condensing = 0;
@@ -281,6 +282,7 @@ export class Bus {
 
   /** Stop new deliveries while a coordinator takes a stable snapshot. Existing adapter turns are left alone. */
   setRecoveryHold(held: boolean, deferHub = true): void {
+    if (this.replayingHub) throw new RecoveryDeferredHubError("recovery notice release is already in progress");
     if (held) {
       this.recoveryHeld = true;
       this.deferHub = deferHub;
@@ -299,7 +301,8 @@ export class Bus {
   private flushDeferredHub(): void {
     if (this.flushingHub) return;
     if (this.storageError) this.persist();
-    while (this.deferredHub.size) {
+    this.replayingHub = true;
+    try { while (this.deferredHub.size) {
       const env = this.deferredHub.values().next().value!;
       const before = this.snapshot(false), paused = [...this.paused], outcomes = this.pendingOutcomes.length;
       this.flushingHub = true;
@@ -318,7 +321,7 @@ export class Bus {
       const events = this.deferredEvents; this.deferredEvents = [];
       for (const event of events) this.emit(event);
       this.onQueues?.();
-    }
+    } } finally { this.replayingHub = false; }
   }
 
   get isRecoveryHeld(): boolean {
@@ -658,7 +661,7 @@ export class Bus {
   publish(env: Envelope): PeerId[] {
     if (this.storageError) throw new Error("delivery journal unavailable");
     if (this.seen.has(env.id) || this.deferredHub.has(env.id)) return [];
-    if (this.recoveryHeld && this.deferHub && env.from === HUB && env.priority !== "fyi" && env.hop <= MAX_HOP) {
+    if (this.recoveryHeld && (this.deferHub || this.replayingHub) && env.from === HUB && env.priority !== "fyi" && env.hop <= MAX_HOP) {
       if (this.deferredHub.size >= MAX_DEFERRED_HUB) throw new RecoveryDeferredHubError();
       const targets = this.audience(env);
       const copy = structuredClone({ ...env, to: targets });

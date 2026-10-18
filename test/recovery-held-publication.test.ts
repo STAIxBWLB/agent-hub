@@ -147,3 +147,15 @@ test("#478 an online peer receives a deferred notice only after recovery release
   bus.setRecoveryHold(false); await Bun.sleep(0);
   expect(peer.delivered).toEqual([notice.id]);
 });
+
+test("#478 reentrant publication joins the FIFO tail even while materializing for an older target", () => {
+  const { bus } = fixture(); bus.setRecoveryHold(true);
+  const first = newEnvelope(HUB, "first", { to: ["claude"] });
+  const second = newEnvelope(HUB, "second", { to: ["claude"] });
+  const nested = newEnvelope(HUB, "nested", { to: ["claude"] });
+  bus.publish(first); bus.publish(second);
+  bus.tap(event => { if (event.t === "envelope" && event.env.id === first.id) bus.publish(nested); });
+  bus.setRecoveryHold(true, false);
+  expect(bus.queueIds("claude")).toEqual([first.id, second.id, nested.id]);
+  expect(bus.isRecoveryHeld).toBe(true);
+});
