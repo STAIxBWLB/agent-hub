@@ -3536,7 +3536,7 @@ planner you start yourself: declare it with `roles` only (for example
 
 A headless Claude reviewer is run by the hub instead (#223): declare
 `"claude-review": { "kind": "claude", "roles": ["reviewer"], "start_mode": "headless" }`
-and start it with `ahub start claude-review`. It holds no process while idle; each
+and start it with `ahub claude --as claude-review`, which asks the running hub to start it (nothing runs in that terminal); `ahub stop claude-review` stops it. It holds no process while idle; each
 review request runs one new `claude -p` session (never resumed) that may only read
 the checkout and call `hub_review` and `hub_task_show`, with no user settings,
 hooks or plugins. It gets the review facts and a bounded diff of the head, never
