@@ -7540,6 +7540,237 @@ var init_local_worker = __esm(() => {
   };
 });
 
+// src/adapters/claude-print.ts
+import { spawn as spawn6 } from "child_process";
+import { randomUUID as randomUUID5 } from "crypto";
+function claudePrintArgs(sessionId, mcpConfig, systemPrompt, privatePaths = []) {
+  return [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--no-session-persistence",
+    "--session-id",
+    sessionId,
+    "--strict-mcp-config",
+    "--mcp-config",
+    mcpConfig,
+    "--setting-sources",
+    "",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "mcp__agent-hub__hub_review",
+    "mcp__agent-hub__hub_task_show",
+    "Read",
+    "Grep",
+    "Glob",
+    ...privatePaths.length ? ["--disallowedTools", ...readDenyRules(privatePaths)] : [],
+    "--permission-mode",
+    "dontAsk",
+    "--append-system-prompt",
+    systemPrompt
+  ];
+}
+function readDenyRules(paths) {
+  return paths.flatMap((entry) => {
+    const rule = entry.startsWith("/") ? `/${entry}` : `./${entry.replace(/^\.\//, "")}`;
+    return /[*?]/.test(entry) ? [`Read(${rule})`] : [`Read(${rule})`, `Read(${rule.replace(/\/$/, "")}/**)`];
+  });
+}
+var GroupCleanupError, reviewTask = (env) => {
+  if (env.from !== HUB || env.kind !== "review")
+    return;
+  const id = Number(env.refs?.task);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}, ClaudePrintPeer;
+var init_claude_print = __esm(() => {
+  init_child_process();
+  init_git();
+  init_envelope();
+  GroupCleanupError = class GroupCleanupError extends Error {
+  };
+  ClaudePrintPeer = class ClaudePrintPeer extends BasePeer {
+    opts;
+    hubNative = true;
+    generation = 0;
+    child;
+    activeDeliveryId;
+    reviewing;
+    reviewSeq = 0;
+    reviewToken(task) {
+      return this.reviewing === task ? this.reviewSeq : undefined;
+    }
+    constructor(id, opts) {
+      super(id, opts.watchdogMs);
+      this.opts = opts;
+    }
+    recoveryMetadata() {
+      return { launch: { kind: "claude-print", peer: this.id } };
+    }
+    async start() {
+      if (this.child)
+        throw new Error(`${this.id}: an earlier review's process group is still running; stop it first`);
+      this.setState("idle");
+    }
+    async stop(reason) {
+      this.generation++;
+      this.settle("needs_review", reason ?? "review stopped before settlement");
+      if (this.child)
+        this.setState("busy");
+      await this.kill();
+      this.setState("offline");
+    }
+    onWatchdog() {
+      this.generation++;
+      this.settle("needs_review", "review watchdog timeout");
+      this.kill().then(() => {
+        if (this.state === "busy")
+          super.onWatchdog();
+      }, (error) => this.opts.log?.(`[${this.id}] watchdog stop failed, staying busy: ${error.message}`));
+    }
+    async deliver(envs, deliveryId) {
+      if (this.state !== "idle") {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
+        throw new Error(`${this.id} is ${this.state}`);
+      }
+      const generation = ++this.generation;
+      this.activeDeliveryId = deliveryId;
+      this.setState("busy");
+      if (deliveryId)
+        this.delivery({ id: deliveryId, state: "accepted" });
+      this.run(envs, generation).catch((error) => {
+        if (generation !== this.generation)
+          return;
+        this.settle("needs_review", `claude reviewer failed: ${error.message}`);
+        this.kill().then(() => this.setState("idle"), () => {
+          return;
+        });
+      });
+    }
+    async run(envs, generation) {
+      const missing = [];
+      let started = false;
+      let failure;
+      for (const env of envs) {
+        const task = reviewTask(env);
+        if (task === undefined)
+          continue;
+        if (env.private) {
+          failure = { state: "needs_review", reason: "a private review is the person's, never a cloud reviewer's" };
+          break;
+        }
+        const since = Date.now();
+        let code;
+        try {
+          code = await this.review(env, task, generation);
+        } catch (error) {
+          if (generation !== this.generation)
+            return;
+          if (error instanceof GroupCleanupError) {
+            this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
+            this.settle("needs_review", `review process group still running: ${error.message}`);
+            return;
+          }
+          failure = { state: started ? "needs_review" : "failed_safe", reason: `claude reviewer could not start: ${error.message}` };
+          break;
+        }
+        started = true;
+        if (generation !== this.generation)
+          return;
+        let recorded = false;
+        try {
+          recorded = this.opts.verdictSince(task, since);
+        } catch (error) {
+          this.opts.log?.(`[${this.id}] verdict check for task #${task} failed: ${error.message}`);
+        }
+        if (!recorded)
+          missing.push(task);
+        if (code !== 0)
+          this.opts.log?.(`[${this.id}] review of task #${task} exited ${code}`);
+      }
+      if (generation !== this.generation)
+        return;
+      this.settle(failure?.state ?? (missing.length ? "needs_review" : "completed"), failure?.reason ?? (missing.length ? `no verdict recorded for task ${missing.map((id) => `#${id}`).join(", ")}` : undefined));
+      this.setState("idle");
+    }
+    review(env, task, generation) {
+      const [cmd = "claude", ...prefix] = this.opts.command ?? ["claude"];
+      const args = [...prefix, ...claudePrintArgs(randomUUID5(), this.opts.mcpConfig, this.opts.systemPrompt, this.opts.privatePaths)];
+      return new Promise((resolve, reject) => {
+        const child = spawn6(cmd, args, { cwd: this.opts.cwd, detached: true, env: peerChildEnv(this.id), stdio: ["pipe", "pipe", "ignore"] });
+        this.child = child;
+        child.once("error", (error) => {
+          if (this.child === child)
+            this.child = undefined;
+          reject(error);
+        });
+        child.stdin.on("error", () => {});
+        child.once("spawn", () => {
+          trackGroup(child);
+          if (generation !== this.generation) {
+            child.stdin.destroy();
+            return;
+          }
+          this.reviewing = task;
+          this.reviewSeq++;
+          let facts;
+          try {
+            facts = this.opts.facts?.(env);
+          } catch (error) {
+            this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${error.message}`);
+          }
+          child.stdin.end(`${frame(env)}${facts ? `
+
+${facts}` : ""}`);
+        });
+        let buffer = "";
+        child.stdout.on("data", (chunk) => {
+          if (generation !== this.generation)
+            return;
+          this.touch();
+          buffer += chunk.toString("utf8");
+          for (let i;(i = buffer.indexOf(`
+`)) >= 0; ) {
+            const line = buffer.slice(0, i);
+            buffer = buffer.slice(i + 1);
+            try {
+              const event = JSON.parse(line);
+              if (event.type === "result" && event.usage)
+                this.opts.onUsage?.(event.usage, task);
+            } catch {}
+          }
+        });
+        child.once("exit", (code) => {
+          if (this.child === child)
+            this.reviewing = undefined;
+          stopOwnedProcess(child, { group: true }).then(() => {
+            if (this.child === child)
+              this.child = undefined;
+            resolve(code);
+          }, (error) => reject(new GroupCleanupError(error.message)));
+        });
+      });
+    }
+    settle(state, reason) {
+      const id = this.activeDeliveryId;
+      this.activeDeliveryId = undefined;
+      if (id)
+        this.delivery({ id, state, ...reason ? { reason } : {} });
+    }
+    async kill() {
+      this.reviewing = undefined;
+      const child = this.child;
+      if (!child)
+        return;
+      await stopOwnedProcess(child, { group: true });
+      if (this.child === child)
+        this.child = undefined;
+    }
+  };
+});
+
 // src/adapters/definitions/native-factories.ts
 function createCodex(ctx) {
   if (!("codex" in ctx.daemon))
@@ -7581,6 +7812,12 @@ function createLocal(ctx) {
   init_local_worker();
   return new LocalPeer(ctx.instance, ctx.daemon.local);
 }
+function createClaudeReviewer(ctx) {
+  if (!("claudePrint" in ctx.daemon))
+    throw new Error("Claude reviewer requires its print transport options");
+  init_claude_print();
+  return new ClaudePrintPeer(ctx.instance, ctx.daemon.claudePrint);
+}
 var DAEMON_PORTS;
 var init_native_factories = __esm(() => {
   DAEMON_PORTS = {
@@ -7588,7 +7825,8 @@ var init_native_factories = __esm(() => {
     acp: (options) => ({ acp: options }),
     "owned-acp": (options) => ({ jcode: options }),
     "pi-rpc": (options) => ({ pi: options }),
-    "local-worker": (options) => ({ local: options })
+    "local-worker": (options) => ({ local: options }),
+    "claude-print": (options) => ({ claudePrint: options })
   };
 });
 
@@ -7837,7 +8075,7 @@ var init_native_cli_launch_common = __esm(() => {
 
 // src/adapters/definitions/native-cli-claude-launch.ts
 import { mkdirSync as mkdirSync4, writeFileSync as writeFileSync2, renameSync, unlinkSync, readFileSync as readFileSync7 } from "fs";
-import { randomUUID as randomUUID5 } from "crypto";
+import { randomUUID as randomUUID6 } from "crypto";
 import { resolve as resolve11, join as join17 } from "path";
 function claudeChannel(userArgs) {
   const bundle = resolve11(import.meta.dir, "../../../plugins/agent-hub/server.js");
@@ -7900,7 +8138,7 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join17(stateDir, `claude-settings-${randomUUID5()}.json`);
+      const file = join17(stateDir, `claude-settings-${randomUUID6()}.json`);
       try {
         mkdirSync4(stateDir, { recursive: true, mode: 448 });
         writeFileSync2(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
@@ -8163,7 +8401,7 @@ function sessionId(field) {
     return typeof value === "string" && value ? value : undefined;
   };
 }
-var terminal = (form) => form === "tui", headless = () => false, switches, implementerRoles, dualForms, headlessForms, hubGrants, NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, palette = (fg) => ({ palette: { fg, bg: "transparent" } }), BUILTIN_DEFINITIONS_WITHOUT_QWEN;
+var terminal = (form) => form === "tui", headless = () => false, switches, implementerRoles, dualForms, headlessForms, hubGrants, CLAUDE_REVIEWER_VARIANT, NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, palette = (fg) => ({ palette: { fg, bg: "transparent" } }), BUILTIN_DEFINITIONS_WITHOUT_QWEN;
 var init_builtin_metadata = __esm(() => {
   init_native_config_policy();
   init_native_policy_aux();
@@ -8180,6 +8418,27 @@ var init_builtin_metadata = __esm(() => {
     ask: "every write, edit and shell command asks",
     "ask-when-needed": "write and edit inside the project run without asking; shell and git writes still ask",
     "never-ask": "every tool runs without asking, inside the hub sandbox and path guard"
+  };
+  CLAUDE_REVIEWER_VARIANT = {
+    api: 1,
+    kind: "claude",
+    displayName: "Claude Code reviewer",
+    family: "claude",
+    transport: "hub-native",
+    roles: Object.freeze(["reviewer"]),
+    defaultOnRoster: true,
+    trust: { onPrem: false, hubSandboxed: false },
+    start: { create: createClaudeReviewer, daemonPort: "claude-print", forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: (ctx) => compatibilityLaunch("claude", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    identity: { mcp: "env" },
+    permission: { modes: {}, unmanaged: "each review runs read-only (Read, Grep, Glob) and may call only hub_review and hub_task_show" },
+    session: { idField: "sessionId", currentId: () => {
+      return;
+    }, freshOnRestore: true, launchKind: "claude-print", crashPlan: () => ({ resume: {}, how: "claude reviewer: starts again; every review runs in a new session" }) },
+    turnEnd: "adapter",
+    budget: { account: "claude" },
+    routing: { reviewOnly: true },
+    cli: { command: "claude", startWords: () => ["claude"] },
+    display: CLAUDE_DISPLAY
   };
   NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN = Object.freeze([
     {
@@ -8215,7 +8474,8 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
       cli: { command: "claude", retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] },
       display: CLAUDE_DISPLAY,
-      hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory }
+      hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory },
+      reviewerVariant: CLAUDE_REVIEWER_VARIANT
     },
     {
       api: 1,
@@ -8620,6 +8880,12 @@ function immutable(value, seen = new WeakSet) {
     immutable(member, seen);
   return Object.freeze(value);
 }
+function ownField(value, key) {
+  if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    return;
+  const field = Object.getOwnPropertyDescriptor(value, key);
+  return field && Object.hasOwn(field, "value") && field.enumerable ? field.value : undefined;
+}
 function declaredKind(id, instances) {
   if (!instances || typeof instances !== "object" || types.isProxy(instances) || Array.isArray(instances) || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)))
     return;
@@ -8640,7 +8906,8 @@ function kindOf(id, instances) {
 }
 function definitionOf(id, instances) {
   const kind = kindOf(id, instances);
-  return kind === undefined ? undefined : definitions.get(kind);
+  const definition = kind === undefined ? undefined : definitions.get(kind);
+  return definition?.reviewerVariant && kind !== id && ownField(ownField(instances, id), "start_mode") === "headless" ? definition.reviewerVariant : definition;
 }
 function defaultPeerRoles(includeOptional = false) {
   return Object.fromEntries(ROLE_ORDER.filter((peer) => includeOptional || !definitionOf(peer).optional).map((peer) => [peer, [...definitionOf(peer).roles]]));
@@ -8660,7 +8927,8 @@ function assertNativeCapabilityScope(definition) {
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
-    ["routing", definition.routing !== undefined]
+    ["routing", definition.routing !== undefined],
+    ["reviewerVariant", definition.reviewerVariant !== undefined]
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field)
@@ -8680,6 +8948,9 @@ var init_registry = __esm(() => {
   OPTIONAL_PEERS = ["qwen", "jcode"];
   SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS];
   fixedBuiltinDefinitions = new Set([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION]);
+  for (const definition of [...fixedBuiltinDefinitions])
+    if (definition.reviewerVariant)
+      fixedBuiltinDefinitions.add(definition.reviewerVariant);
   ADAPTERS = immutable([
     ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter((definition) => definition.kind !== "jcode"),
     QWEN_DEFINITION,
@@ -8689,6 +8960,10 @@ var init_registry = __esm(() => {
   for (const definition of ADAPTERS) {
     assertDaemonEngine(definition);
     assertNativeCapabilityScope(definition);
+    if (definition.reviewerVariant) {
+      assertDaemonEngine(definition.reviewerVariant);
+      assertNativeCapabilityScope(definition.reviewerVariant);
+    }
     if (definition.api !== ADAPTER_API || definitions.has(definition.kind))
       throw new Error("invalid builtin adapter registry");
     definitions.set(definition.kind, definition);
@@ -16075,11 +16350,18 @@ function validateInstances(raw) {
     if (!channel && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp)))
       return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
     if (channel) {
-      if (entry.start_mode || entry.worktree)
-        return fail(path, "a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported");
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
-      if (!declared.length || declared.some((role) => role !== "reviewer" && role !== "planner"))
-        return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+      if (entry.start_mode && definition.reviewerVariant) {
+        if (entry.worktree)
+          return fail(path, "a headless reviewer reads the project checkout: worktree is not supported");
+        if (declared.length !== 1 || declared[0] !== "reviewer")
+          return fail(`${path}.roles`, 'a headless channel-kind instance is a reviewer: roles must be exactly ["reviewer"]');
+      } else {
+        if (entry.start_mode || entry.worktree)
+          return fail(path, `a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles ["reviewer"] and start_mode "headless"`);
+        if (!declared.length || declared.some((role) => role !== "reviewer" && role !== "planner"))
+          return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+      }
     }
     const value = { kind };
     if (entry.roles) {

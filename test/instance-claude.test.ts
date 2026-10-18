@@ -19,7 +19,7 @@ test("a Claude instance declares reviewer or planner roles and no headless start
   expect(validateInstances(instances)["claude-review"]).toEqual({ kind: "claude", roles: ["reviewer"] });
   expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } })["claude-plan"]!.roles).toEqual(["planner", "reviewer"]);
   for (const entry of [{ kind: "claude" }, { kind: "claude", roles: [] }, { kind: "claude", roles: ["implementer"] }, { kind: "claude", roles: ["reviewer", "verifier"] }]) expect(() => validateInstances({ "claude-x": entry })).toThrow("must declare its roles");
-  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], start_mode: "headless" } })).toThrow("person's terminal");
+  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer", "planner"], start_mode: "headless" } })).toThrow('exactly ["reviewer"]'); // #223: reviewer-only may be headless
   expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], worktree: "../wt" } })).toThrow("person's terminal");
 });
 

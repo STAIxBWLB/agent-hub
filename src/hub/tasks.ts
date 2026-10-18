@@ -61,6 +61,12 @@ export interface TasksDeps {
   candidateScreen?: MemoryScreen;
   /** Authenticated live turn context, not a model-supplied flag. */
   privateTurn?: (peer: PeerId) => boolean;
+  /** #223 R4: the hub's reading of a verdict's context (`fresh` only for a reviewer session started for this review). */
+  reviewContext?: (by: PeerId, task: number) => "fresh" | "continuing" | undefined;
+  /** #223 R2: a reviewer-only instance gets review facts, not the builder's done summary. */
+  reviewOnly?: (peer: PeerId) => boolean;
+  /** #223: captured when a verdict call starts; a non-undefined result refuses the verdict at every later check. */
+  reviewAuthority?: (by: PeerId, task: number) => (() => string | undefined) | undefined;
   memory?: MemoryClient;
   /** Captured native profile fence at our memory operation boundaries; no board mutation. */
   memoryCheck?: () => void;
@@ -1544,7 +1550,8 @@ export class Tasks {
   }
 
   private assignmentNote(note: string, assignment: Assignment): string {
-    return assignment.sameFamilyFallback ? `${note}; sameFamilyFallback=true` : note;
+    const tagged = assignment.sameFamilyFallback ? `${note}; sameFamilyFallback=true` : note;
+    return assignment.plannerFallback ? `${tagged}; reviewer=planner (fallback)` : tagged;
   }
 
   /** A later move to another owner means the caller's assignment was superseded, so its success tail is not authoritative. */
@@ -2633,17 +2640,25 @@ export class Tasks {
       `- ${check ? `Check result: ${(check.note ?? "").split("\n")[0]}` : "No check ran for this class: run the affected tests yourself."}`,
       `- List what is unmet in hub_review's unmet, one item each.`,
     ].join("\n");
-    const summary = last?.note ? this.screen(task, last.note, "summary", reviewer, last.withheld) : "(no summary)";
+    // #223 R2: a reviewer-only instance judges from facts; the builder's narrative stays out, earlier findings go in.
+    const reviewOnly = this.d.reviewOnly?.(reviewer) === true;
+    const summary = reviewOnly ? "(summary withheld from a review-only reviewer; judge the change itself)" : last?.note ? this.screen(task, last.note, "summary", reviewer, last.withheld) : "(no summary)";
+    const specRepo = task.sdlc?.repo ?? task.external?.repo, specIssue = task.sdlc?.issue ?? task.external?.issue;
+    const spec = reviewOnly && specRepo && specIssue ? `Spec issue: ${specRepo}#${specIssue}\n` : "";
+    const findings = reviewOnly ? task.history.filter(h => h.event === "changes_requested" && h.note).map(h => `- ${h.by}: ${this.screen(task, h.note!, "review note", reviewer, h.withheld)}`) : [];
     const guidance = this.roleGuidance(task, reviewer, true);
     let projection = "";
     try { const text = this.d.projectedReview?.(task); if (text) projection = this.screen(task, sanitize(text), "document projection", reviewer); }
     catch { projection = "(document projection unavailable)"; }
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown): Promise<Task> {
+    const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
     const valid = (): Task => {
+      const refused = authority?.();
+      if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
       const t = this.need(id, false, true);
       this.mine(t, by, "reviewer", true);
       if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');
@@ -2673,7 +2688,8 @@ export class Tasks {
       if (cleared && context === JSON.stringify({ title: task.title, detail: task.detail, refs: task.refs, plan: task.plan, signals: task.signals })) candidate = input; // Async screening cannot authorize a verdict under an obsolete role/state.
     }
     const pii = this.isPii(task);
-    const flag = { withheld: withheld || undefined };
+    const reviewContext = by === USER ? undefined : this.d.reviewContext?.(by, task.id);
+    const flag = { withheld: withheld || undefined, ...(reviewContext ? { reviewContext } : {}) };
     if (verdict === "approved") {
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
       if (next.owner) {

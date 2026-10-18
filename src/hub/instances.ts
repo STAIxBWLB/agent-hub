@@ -58,9 +58,15 @@ export function validateInstances(raw: unknown): InstancesConfig {
     const channel = definition.identity.mcp === "channel-plugin";
     if (!channel && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp))) return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
     if (channel) {
-      if (entry.start_mode || entry.worktree) return fail(path, "a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported");
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
-      if (!declared.length || declared.some(role => role !== "reviewer" && role !== "planner")) return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+      // #223: a headless one is the kind's reviewer variant, one fresh hub-run session per review request.
+      if (entry.start_mode && definition.reviewerVariant) {
+        if (entry.worktree) return fail(path, "a headless reviewer reads the project checkout: worktree is not supported");
+        if (declared.length !== 1 || declared[0] !== "reviewer") return fail(`${path}.roles`, "a headless channel-kind instance is a reviewer: roles must be exactly [\"reviewer\"]");
+      } else {
+        if (entry.start_mode || entry.worktree) return fail(path, "a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles [\"reviewer\"] and start_mode \"headless\"");
+        if (!declared.length || declared.some(role => role !== "reviewer" && role !== "planner")) return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+      }
     }
     const value: InstanceConfig = { kind };
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }
@@ -87,13 +93,14 @@ export function instanceCatalog(declarations?: InstancesConfig): readonly Instan
   const instances = validateInstances(declarations);
   return Object.freeze([
     ...ADAPTERS.map(definition => Object.freeze({ id: definition.kind, kind: definition.kind, definition })),
-    ...Object.entries(instances).map(([id, config]) => Object.freeze({ id, kind: config.kind, definition: definitionOf(config.kind)!, config })),
+    ...Object.entries(instances).map(([id, config]) => Object.freeze({ id, kind: config.kind, definition: definitionOf(id, instances)!, config })),
   ]);
 }
 export function instancePeerIds(declarations?: InstancesConfig): string[] { return instanceCatalog(declarations).map(entry => entry.id); }
 export function instanceDefaultRoles(declarations?: InstancesConfig, includeOptional = true): Record<string, string[]> {
   const result = defaultPeerRoles(includeOptional);
-  for (const [id, config] of Object.entries(validateInstances(declarations))) result[id] = [...(config.roles ?? definitionOf(config.kind)!.roles)];
+  const instances = validateInstances(declarations);
+  for (const [id, config] of Object.entries(instances)) result[id] = [...(config.roles ?? definitionOf(id, instances)!.roles)];
   return result;
 }
 

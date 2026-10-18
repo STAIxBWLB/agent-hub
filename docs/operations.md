@@ -3523,7 +3523,18 @@ Extra Jcode instances are unavailable. An extra Claude instance is a reviewer or
 planner you start yourself: declare it with `roles` only (for example
 `"claude-review": { "kind": "claude", "roles": ["reviewer"] }`, no `start_mode` or
 `worktree`) and run `ahub claude --as claude-review` in a terminal. It keeps its own
-`claude-*.claude-review.json` state files. A missing
+`claude-*.claude-review.json` state files.
+
+A headless Claude reviewer is run by the hub instead (#223): declare
+`"claude-review": { "kind": "claude", "roles": ["reviewer"], "start_mode": "headless" }`
+and start it with `ahub start claude-review`. It holds no process while idle; each
+review request runs one new `claude -p` session (never resumed) that may only read
+the checkout and call `hub_review` and `hub_task_show`, with no user settings,
+hooks or plugins. It gets the review facts and a bounded diff of the head, never
+the builder's summary or agent chat, and the board records its verdicts as
+`reviewContext: fresh`. Review requests go to it first; while it is not started,
+the planner reviews and the task's assignment note says `reviewer=planner (fallback)`.
+A missing
 `peer_instances` feature on an old daemon or upgrade target requires a supporting
 version before launching or restoring extras.
 

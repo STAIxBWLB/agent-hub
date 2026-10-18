@@ -6,7 +6,7 @@ import { piRecoveryContinuity } from "./native-recovery-continuity.ts";
 import { piConductorStartArgs } from "./native-cli-pi.ts";
 import { claudeNativeLaunch, CLAUDE_LAUNCH_POLICY } from "./native-cli-claude-launch.ts";
 import { codexNativeLaunch, CODEX_LAUNCH_POLICY } from "./native-cli-codex-launch.ts";
-import { createCodex, createKimi, createJcode, createPi, createLocal } from "./native-factories.ts";
+import { createCodex, createKimi, createJcode, createPi, createLocal, createClaudeReviewer } from "./native-factories.ts";
 import { CLAUDE_DISPLAY, CODEX_DISPLAY, KIMI_DISPLAY, PI_DISPLAY, LOCAL_DISPLAY, JCODE_DISPLAY } from "./native-display.ts";
 import { CLAUDE_RECOVERY_SESSION, CODEX_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, PI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION } from "./native-recovery.ts";
 import { claudeWindows, codexWindows } from "./native-quota.ts";
@@ -54,6 +54,21 @@ const hubGrants = {
   "never-ask": "every tool runs without asking, inside the hub sandbox and path guard",
 };
 
+/**
+ * #223: a declared `claude-*` instance with `start_mode: "headless"` and roles exactly ["reviewer"]. The hub runs one
+ * fresh `claude -p` session per review request (src/adapters/claude-print.ts); it never owns a terminal or a session.
+ */
+const CLAUDE_REVIEWER_VARIANT: AdapterDefinition = {
+  api: 1, kind: "claude", displayName: "Claude Code reviewer", family: "claude", transport: "hub-native",
+  roles: Object.freeze(["reviewer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
+  start: { create: createClaudeReviewer, daemonPort: "claude-print", forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: ctx => compatibilityLaunch("claude", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+  identity: { mcp: "env" },
+  permission: { modes: {}, unmanaged: "each review runs read-only (Read, Grep, Glob) and may call only hub_review and hub_task_show" },
+  session: { idField: "sessionId", currentId: () => undefined, freshOnRestore: true, launchKind: "claude-print", crashPlan: () => ({ resume: {}, how: "claude reviewer: starts again; every review runs in a new session" }) },
+  turnEnd: "adapter", budget: { account: "claude" }, routing: { reviewOnly: true },
+  cli: { command: "claude", startWords: () => ["claude"] }, display: CLAUDE_DISPLAY,
+};
+
 // Sources: peer-catalog.ts roles, roster.ts defaults, start-mode.ts forms, permission-mode.ts grants,
 // daemon.ts runtime mappings/stop policy, budget.ts exemptions, and ui/peer-palette.ts CSS foregrounds.
 export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Object.freeze([
@@ -70,6 +85,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     session: { idField: "sessionId", currentId: sessionId("sessionId"), configDirEnv: "CLAUDE_CONFIG_DIR", zeroTurnFresh: true, launchKind: "claude-channel", launchRecord: true, ...CLAUDE_RECOVERY_SESSION, crashPlan: claudeCrashPlan, unrecordedTerminal: "always" },
     turnEnd: "native-hook", budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
     cli: { command: "claude", retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] }, display: CLAUDE_DISPLAY, hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory },
+    reviewerVariant: CLAUDE_REVIEWER_VARIANT,
   },
   {
     api: 1, kind: "codex", displayName: "Codex", family: "codex", transport: "codex-appserver",
