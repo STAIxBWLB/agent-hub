@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
+import { rosterInStatus } from "../../hub/status-roster.ts";
 
 export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
@@ -26,7 +27,9 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
     if (mode === "tui") {
       const launch = buildKimiTuiLaunch(projectConfig().kimi_cmd, model);
       const snapshot = (await hub.request({ t: "status" })).status;
-      if (snapshot?.roster?.find((row: any) => row.peer === "kimi")?.on === false) fail("kimi is off roster; add it with ahub roster add kimi");
+      const rostered = rosterInStatus(snapshot, "kimi");
+      if (rostered === undefined) fail("cannot read kimi's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
+      if (!rostered) fail("kimi is off roster; add it with ahub roster add kimi");
       const peer = snapshot?.peers?.kimi;
       if (peer && !["offline"].includes(peer.state) && !peer.pullOnly) fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
       const admission = await hub.request({ t: "start", peer: "kimi", args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });

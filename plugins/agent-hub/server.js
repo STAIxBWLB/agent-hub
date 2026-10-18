@@ -8225,6 +8225,15 @@ async function runCodexEntry(ctx) {
   exec(launch.cmd, launch.args, "codex");
 }
 
+// src/hub/status-roster.ts
+function rosterInStatus(status, peer) {
+  const rows = status?.roster;
+  if (!Array.isArray(rows))
+    return;
+  const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
+  return typeof row?.on === "boolean" ? row.on : undefined;
+}
+
 // src/adapters/definitions/native-cli-entry-jcode.ts
 import { resolve as resolve3 } from "path";
 async function runJcodeEntry(ctx) {
@@ -8245,7 +8254,10 @@ async function runJcodeEntry(ctx) {
   const hub = await connect();
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
-    if (snapshot?.roster?.find((row) => row.peer === "jcode")?.on !== true)
+    const rostered = rosterInStatus(snapshot, "jcode");
+    if (rostered === undefined)
+      fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
+    if (!rostered)
       fail("jcode is off roster; add it with ahub roster add jcode");
     const written = configureJcodeMcp(cwd, stateDir, resolve3(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
@@ -8323,7 +8335,10 @@ async function runKimiEntry(ctx) {
     if (mode === "tui") {
       const launch = buildKimiTuiLaunch(projectConfig().kimi_cmd, model);
       const snapshot = (await hub.request({ t: "status" })).status;
-      if (snapshot?.roster?.find((row) => row.peer === "kimi")?.on === false)
+      const rostered = rosterInStatus(snapshot, "kimi");
+      if (rostered === undefined)
+        fail("cannot read kimi's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
+      if (!rostered)
         fail("kimi is off roster; add it with ahub roster add kimi");
       const peer = snapshot?.peers?.kimi;
       if (peer && !["offline"].includes(peer.state) && !peer.pullOnly)
