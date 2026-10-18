@@ -3542,3 +3542,9 @@ The guard resolves immutable peer-id constant aliases and supplied-source
 import/reexport bindings through lexical symbols before classifying comparisons.
 Shadowed and unrelated bindings remain independent; named non-peer enum exceptions
 keep their exact scope. It performs no filesystem or package lookup.
+
+## Amendment: roster membership in status, 2026-10-18 (#484)
+
+- The authenticated `status` reply carries `roster: {peer, on}[]` for every supported peer, optional peers included, with the same `on` that `ahub roster list` shows. The field is additive, with no protocol bump; older CLIs ignore it.
+- Launchers that check membership before starting (`ahub jcode`, `ahub kimi --mode tui`) read it through `rosterInStatus` in `src/hub/roster.ts`. A reply without the field (an older hub) is unknown: the launcher stops with an upgrade-or-restart remedy and starts nothing. It never reads unknown as off (the jcode bug) or as on (the dead kimi guard; daemon admission still refused off-roster Kimi, so that one was harmless).
+- `settings_get` stays console-only.

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
+import { rosterInStatus } from "../../hub/roster.ts";
 
 export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, unattendedEnv, connect, fail, takeFlags } = ctx;
@@ -14,7 +15,9 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
   const hub = await connect();
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
-    if (snapshot?.roster?.find((row: any) => row.peer === "jcode")?.on !== true) fail("jcode is off roster; add it with ahub roster add jcode");
+    const rostered = rosterInStatus(snapshot, "jcode");
+    if (rostered === undefined) fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
+    if (!rostered) fail("jcode is off roster; add it with ahub roster add jcode");
     const written = configureJcodeMcp(cwd, stateDir, resolve(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked) console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
     const reply = await hub.request({ t: "start", peer: "jcode", args: { mode: "headless", model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65_000);
