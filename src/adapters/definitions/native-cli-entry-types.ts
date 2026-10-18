@@ -5,6 +5,8 @@ import type { AdapterDefinition } from "../registry-types.ts";
 /** Private static builtin relocation ports. The CLI binds identity, project and authority before invocation. */
 export interface NativeCliEntryContext {
   instance?: string; executionCwd?: string;
+  /** #223: the selected instance is started by the hub (a headless reviewer), never as a terminal launch. */
+  hubStarted?: true;
   args: string[]; cwd: string; stateDir: string; cliDir: string; unattendedEnv: boolean; definition: AdapterDefinition;
   projectConfig(): HubConfig;
   connect(): Promise<ControlClient>;

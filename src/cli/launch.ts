@@ -13,10 +13,10 @@ import { kimiAcpCommand } from "../adapters/definitions/native-daemon-kimi.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
 /** Consume only ahub's selector, never native arguments after the passthrough delimiter. */
-export function instanceLaunchArguments(command: string, raw: readonly string[], instances?: InstancesConfig): { instance?: string; args: string[] } {
+export function instanceLaunchArguments(command: string, raw: readonly string[], instances?: InstancesConfig): { instance?: string; args: string[]; hubStarted?: true } {
   if (!definitionOf(command)) return { args: [...raw] };
   const args: string[] = [];
-  let instance: string | undefined;
+  let instance: string | undefined, hubStarted = false;
   for (let index = 0; index < raw.length; index++) {
     const arg = raw[index]!;
     if (arg === "--") { args.push(...raw.slice(index)); break; }
@@ -26,10 +26,12 @@ export function instanceLaunchArguments(command: string, raw: readonly string[],
     if (!id || id.startsWith("--")) throw new Error("--as needs a declared instance id");
     const declaration = instances && Object.hasOwn(instances, id) ? instances[id] : undefined;
     if (!declaration || declaration.kind !== command || !definitionOf(id, instances)) throw new Error("--as must name a declared instance of this command's native kind");
-    if (definitionOf(id, instances) === definitionOf(command)?.reviewerVariant) throw new Error(`${id} is a headless reviewer the hub runs per review; start it with ahub start ${id}, not from a terminal`);
+    // #223: a headless reviewer is started by the hub, never from this terminal.
+    hubStarted = definitionOf(id, instances) === definitionOf(command)?.reviewerVariant;
     instance = id;
   }
-  return { ...(instance ? { instance } : {}), args };
+  if (hubStarted && args.some(arg => arg !== "--print-command" && arg !== "--dry-run")) throw new Error(`${instance} is a headless reviewer the hub runs per review: ahub ${command} --as ${instance} takes no launch arguments`);
+  return { ...(instance ? { instance } : {}), args, ...(hubStarted ? { hubStarted: true as const } : {}) };
 }
 
 /** The running daemon bound this instance at startup; a declaration added later, or an older daemon, is not proof. */
