@@ -4792,7 +4792,8 @@ export async function startDaemon(opts: DaemonOptions) {
         // The existing person-selected operation is the confirmation. Admission never creates one.
         const quota = releaseQuotaSnapshot(), targetError = incompatibleRecoveryTarget();
         if (targetError || recoveryOperationId !== op || recoveryCommitted || stopping || (recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady() || !quota.idle || !quota.quota || !releaseAdmission.admitted || releaseAdmission.current?.() === false) {
-          await releaseAdmission.close?.();
+          try { await releaseAdmission.close?.(); }
+          catch { log("release upgrade admission cleanup incomplete"); }
           return recoveryError(`release upgrade deferred: ${targetError ?? releaseAdmission.reason ?? (quota.reasons.join("; ") || "operation or idle window changed")}`);
         }
       }

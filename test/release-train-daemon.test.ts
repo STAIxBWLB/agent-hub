@@ -59,11 +59,11 @@ test("daemon release tools preserve planner identity and defer unknown peer quot
     hostAllowed = false;
     expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("host slot held") });
     expect((await person.request({ t: "status" })).status.stopping).toBe(false);
-    hostAllowed = true;
+    hostAllowed = true; closeFails = true;
     duringAdmission = async () => { expect(await person!.request({ ...operation, op: "abort" })).toMatchObject({ ok: true }); };
     expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("window changed") });
     expect((await person.request({ t: "status" })).status.stopping).toBe(false);
-    duringAdmission = undefined;
+    duringAdmission = undefined; closeFails = false;
     expect(await person.request({ ...operation, op: "prepare" })).toMatchObject({ ok: true });
     duringAdmission = async () => { daemon!.bus.add({ ...idlePeer("local"), state: "busy" }); };
     expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("window changed") });
