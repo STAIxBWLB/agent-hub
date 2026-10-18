@@ -34,7 +34,7 @@ class Implementer extends BasePeer {
   }
 }
 
-async function fixture(args: string[] = [], recordProtocol = false, routingOptions: { implementPeers?: string[]; roster?: { codex: boolean } } = {}) {
+async function fixture(args: string[] = [], recordProtocol = false, routingOptions: { implementPeers?: string[]; roster?: { codex: boolean }; wipLimits?: Record<string, number> } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-acp-quota-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -43,7 +43,7 @@ async function fixture(args: string[] = [], recordProtocol = false, routingOptio
     .replace('[classes.implement]\npeers = ["pi", "local", "codex", "kimi"]', `[classes.implement]\npeers = ${JSON.stringify(routingOptions.implementPeers ?? ["kimi", "codex"])}`);
   writeFileSync(join(dir, ".agenthub/routing.toml"), routing);
   const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, ...(routingOptions.roster ? { roster: routingOptions.roster } : {}),
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, ...(routingOptions.wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: routingOptions.wipLimits } } : {}), ...(routingOptions.roster ? { roster: routingOptions.roster } : {}),
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal", ...args, ...(recordProtocol ? ["--record-protocol", join(dir, "protocol.jsonl")] : [])],
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 1 },
@@ -60,7 +60,7 @@ async function fixture(args: string[] = [], recordProtocol = false, routingOptio
 }
 
 test("a Kimi quota refusal pauses before safe requeue and automatically relays tasks and routing (#306)", async () => {
-  const { dir, daemon, console_, implementer, tools } = await fixture();
+  const { dir, daemon, console_, implementer, tools } = await fixture([], false, { wipLimits: { kimi: 2 } });
   for (const id of [1, 2]) {
     expect((await console_.request({ t: "task", op: "hub_task_propose", args: {
       title: `implement piece ${id}`, class: "implement", owner: "kimi", refs: { paths: [`piece${id}.ts`] },
@@ -161,7 +161,7 @@ test("repeated early budget overrides leave only one pending resume notice (#306
 
 
 test("the delivered coalesced resume notice retains moves across two unread refusal cycles (#306)", async () => {
-  const { dir, daemon, console_, tools, implementer } = await fixture(["--quota-refusals", "3"], true);
+  const { dir, daemon, console_, tools, implementer } = await fixture(["--quota-refusals", "3"], true, { wipLimits: { kimi: 2 } });
   for (const id of [1, 2]) {
     expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: `retain move ${id}`, class: "implement", owner: "kimi", refs: { paths: [`move${id}.ts`] } } })).ok).toBe(true);
     expect((await tools.request({ t: "task", op: "hub_task_accept", args: { id } })).ok).toBe(true);

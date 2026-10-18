@@ -353,3 +353,21 @@ test("grooming rechecks each task's privacy before the next external read (#481 
   expect(reads).toEqual([481]);
   expect(digest.privateTasks).toBe("withheld");
 });
+
+test("quiet reviewer or bookkeeping changes do not cancel an owner assignment during plan readback (#481 S9)", async () => {
+  for (const event of ["reviewer changed", "memory reference started"]) {
+    let mutate = false;
+    const r = reviewRig(async () => {
+      if (mutate) { mutate = false; r.board.update(r.task.id, "user", event, event === "reviewer changed" ? { reviewer: "reviewer-b" } : {}); }
+      return metadata();
+    }, "enforce");
+    await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed" });
+    r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed" });
+    class Peer extends BasePeer { async start() { this.setState("idle"); } async stop() {} async deliver(_envs: Envelope[]) {} }
+    const peer = new Peer("codex"); r.bus.add(peer); await peer.start();
+    mutate = true;
+    const assigned = await r.tasks.assignTo(r.task.id, "codex", "user");
+    expect(assigned.owner).toBe("codex");
+    expect(assigned.history.some(entry => entry.event === event)).toBe(true);
+  }
+});

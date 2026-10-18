@@ -1564,7 +1564,8 @@ export class Tasks {
     if (mode !== "off" && this.isBuildTask(task)) {
       const gap = task.sdlc?.planReview ? await this.planReviewGap(task) : "plan not reviewed since proposal";
       const current = this.d.board.get(task.id);
-      if (!current || current.history.length !== task.history.length) return current ?? task;
+      if (!current || !this.ownerAssignmentCurrent(task, current)) return current ?? task;
+      task = current; // Reviewer-only and quiet bookkeeping updates do not supersede ownership authority.
       if (gap) {
         this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}; planner: call hub_planner_groom then hub_plan_review`);
         if (mode === "enforce") {
