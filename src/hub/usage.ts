@@ -88,7 +88,8 @@ export function readClaudeTranscriptCompletion(sessionId: string, transcriptPath
     let read = 0;
     while (read < buffer.length) { const n = readSync(fd, buffer, read, buffer.length - read, start + read); if (n <= 0) break; read += n; }
     let text = buffer.subarray(0, read).toString("utf8");
-    if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+    // A cut tail starts inside a line: drop up to the first newline, or all of it when it holds none.
+    if (start > 0) { const nl = text.indexOf("\n"); text = nl < 0 ? "" : text.slice(nl + 1); }
     return transcriptRecords(sessionId, text).filter(record => record.completedTurn).at(-1);
   } catch {
     return undefined;

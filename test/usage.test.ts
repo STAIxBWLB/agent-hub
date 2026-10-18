@@ -98,6 +98,11 @@ test("turn completion reads the transcript tail at any size: the 32 MiB usage ca
     expect(readClaudeTranscriptCompletion("s", two, b.length + 10)?.at).toBe("2026-10-02T00:00:06.000Z");
     expect(readClaudeTranscriptCompletion("s", two, b.length - 10)).toBeUndefined();
     expect(readClaudeTranscriptCompletion("s", join(dir, "missing.jsonl"))).toBeUndefined();
+    // A cut tail without any newline is one partial line: never parsed, even when its suffix is valid JSON.
+    const corrupt = join(dir, "corrupt.jsonl"), last = row("suffix-turn", "end_turn", "2026-10-02T00:00:07Z");
+    writeFileSync(corrupt, "garbage-prefix" + last);
+    expect(readClaudeTranscriptUsage("s", corrupt).some(r => r.completedTurn)).toBe(false);
+    expect(readClaudeTranscriptCompletion("s", corrupt, last.length)).toBeUndefined();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
