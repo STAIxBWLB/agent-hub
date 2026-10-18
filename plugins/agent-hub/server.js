@@ -202,7 +202,9 @@ var init_project = __esm(() => {
 });
 
 // src/hub/workflow.ts
-var init_workflow = () => {};
+var init_workflow = __esm(() => {
+  init_sdlc();
+});
 
 // src/hub/child-process.ts
 function childEnv(source = process.env) {
@@ -462,12 +464,16 @@ var init_host_executable = __esm(() => {
 });
 
 // src/hub/sdlc.ts
-var SDLC_STAGES;
+var SDLC_STAGES, PLAYBOOK_STAGES, BASES, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
   init_workflow();
   init_child_process();
   init_host_executable();
   SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"];
+  PLAYBOOK_STAGES = ["intent", "spec", "plan", "build", "test", "review", "merge", "release", "maintain"];
+  BASES = [...new Set([...SDLC_STAGES, ...PLAYBOOK_STAGES])];
+  STAGE_GATES = ["issue", "pr", "local", "review", "checks", "phase"];
+  GATES = STAGE_GATES.map((gate) => gate === "phase" ? "criteria" : gate);
 });
 
 // templates/profiles/dev.json
@@ -1072,7 +1078,7 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES2), body, review, layer, hash: createHash2("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash2("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -1164,12 +1170,12 @@ function catalogSection(roles) {
 
 `);
 }
-var ROLE_SECTIONS, BASES, CLASSES2, ID, PEER;
+var ROLE_SECTIONS, BASES2, CLASSES2, ID, PEER;
 var init_roles = __esm(() => {
   init_envelope();
   init_shipped_roles();
   ROLE_SECTIONS = ["Scope", "Not in scope", "Deliverables", "Hub use", "Review duties", "Evidence"];
-  BASES = ["planner", "implementer", "verifier", "reviewer"];
+  BASES2 = ["planner", "implementer", "verifier", "reviewer"];
   CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   ID = /^[a-z][a-z0-9-]{0,47}$/;
   PEER = /^[a-z][a-z0-9-]{0,31}$/;
@@ -15416,7 +15422,9 @@ function profileTaskTools(profile = "dev", stages) {
     const properties = { ...tool.inputSchema.properties };
     if (customStages && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt;
-      properties.receipt = { ...receipt, properties: { ...receipt.properties, stage: { type: "string", enum: [...stages ?? SDLC_STAGES] } } };
+      const { phase, ...current } = receipt.properties;
+      const { tasks: _retiredImport, ...checklist } = phase.properties;
+      properties.receipt = { ...receipt, properties: { ...current, stage: { type: "string", enum: [...stages ?? SDLC_STAGES] }, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } } };
     }
     if (customProfile && tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };

@@ -1,4 +1,4 @@
-# SDLC for agent-hub (#257)
+# Playbook lifecycle for agent-hub (#257, #481)
 
 ## Authority and evidence
 
@@ -8,15 +8,37 @@ A reviewed head is a full lowercase 40-character SHA observed through a successf
 
 ## Default lifecycle
 
-| Stage | Acting role | Artifact or exit gate | Enforcement |
-| --- | --- | --- | --- |
-| spec | person/planner | issue identity and scope | shown |
-| plan | planner/owner | plan, branch, existing predecessor gates | existing Tasks rules |
-| implement | owner | PR identity/current head and local check on that head | entering review, when enabled |
-| review | assigned reviewer | current head-bound verdict, no pending change request/open thread | approval, when enabled |
-| verify | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled |
-| merge | person | current-head readiness, ordered touching PRs | shown; no mutation |
-| release | person | merged commit, version/tag, docs freshness/live receipt checklist | shown; no mutation |
+The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/resources/articles/the-ai-native-sdlc-playbook). Stage ids describe the hub's artifacts and handoffs; the playbook labels group them into Plan, Design, Build, Test, Deploy and Maintain.
+
+| Stage id | Playbook stage | Acting role | Artifact or exit gate | Current enforcement |
+| --- | --- | --- | --- | --- |
+| intent | Plan | person/planner | intent or backlog identity | shown; acceptance gate pending S1 |
+| spec | Design | person/planner | issue identity and scope | shown; acceptance/drift gate pending S1 |
+| plan | Build | planner/owner | plan, branch, existing predecessor gates | existing Tasks rules; conformance pending S2 |
+| build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled |
+| test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; integrity/evals pending S4/S5 |
+| review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; structured findings pending S3 |
+| merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation |
+| release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | shown; authorization pending S6 |
+| maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics/control bands pending S7 |
+
+Stored `implement` and `verify` stage ids read as `build` and `test`. A write that names the old id stores the id the configuration lists, so new enabled-lifecycle receipts use the canonical ids. The default remains off, preserving existing off-mode output, receipt and schema shapes. Status, explain, console and dashboard name the playbook stage beside enabled lifecycle ids.
+
+## Playbook alignment
+
+| Slice | Playbook play | Delivery in this slice |
+| --- | --- | --- |
+| S0 | Plan, Design, Build, Test, Deploy, Maintain stage model | Nine built-in bases, canonical ids, stored receipt aliases and playbook labels |
+| S1 | Accepted intent/spec and spec drift | Pending; issue metadata acceptance is not yet a hub gate |
+| S2 | Accepted plan and diff conformance | Pending; existing task plans remain authoritative without a conformance readback |
+| S3 | Bugs, Security and Compliance review passes | Pending structured findings; existing reviewer separation and head-bound review remain |
+| S4 | Red-first tests and test integrity | Pending receipts/gates; repository test-integrity rules still apply |
+| S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
+| S6 | Production approval gate | Pending person-only release authorization; release report stays read-only |
+| S7 | Metrics, deterministic control bands and follow-up intent | Pending; no automated metric triage or security baseline claimed |
+| S8 | Compliance acceptance-criteria checklist | Head-bound checklist retained; legacy workflow and phase compatibility deprecated; task import removed |
+
+S0/S8 establish vocabulary and checklist compatibility only. Later slices must retain the same authority contract: the issue is the spec, Tasks owns mutations, GitHub owns PR/check/tag facts, and the hub stores bounded identities, timestamps, hashes and counts instead of remote bodies. No slice writes GitHub or grants capabilities. Advise shows readiness without blocking; enforce applies only the named implemented gates. A full live advise cycle through S1, merge, release and S6 authorization remains pending and cannot be certified by S0/S8 source tests.
 
 The repository uses feature branches and PRs. Release PRs require merge commits because documentation stamps name release-branch ancestors. Do not describe squash as a universal release practice. Worktree/branch cleanup follows confirmed merge; installation and native readback are separate live receipts. A successful source gate cannot certify those receipts.
 
@@ -36,54 +58,57 @@ ahub sdlc status and explain expose mode, stage, gate, observed/reviewed/local-c
 
 ## Composition and measurement
 
-The #252 gsd-lite option remains guidance, bounded predecessor edges and criterion/evidence-ref checklists over the same board. It creates no second STATE/PLAN/HANDOFF authority and cannot auto-advance. #259 profiles supply project defaults without changing gate authority. #247 records store ids, timings and outcomes, not plan text. #251 compares off/advise/enforce and default/gsd-lite on a sealed common suite, with failures, unknowns, operator interventions and overhead retained. No experiment was run for this design.
+The acceptance-criteria checklist belongs to the Compliance pass over the same board. It creates no second STATE/PLAN/HANDOFF authority and cannot auto-advance. #259 profiles supply project defaults without changing gate authority. #247 records store ids, timings and outcomes, not plan text. #251/#266 provide the separate evaluation work; no effectiveness comparison or native lifecycle experiment is claimed here.
 
 ## Delivery and verification state
 
-The initial implementation adds built-in configuration validation, optional board receipts, fake-gh stale-head/required-check tests, Tasks transition gates and CLI/console/dashboard projections. Bounded custom stage/gate definitions and read-only merge-queue/release-source reports are implemented in the source slices below. Dependency editing/import and the actual native advise-through-merge/release cycle remain pending. The bounded checklist guidance slice below is implemented separately. A native/account cycle must be recorded separately; no merge or release is implied by this document.
+Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports and the S0/S8 vocabulary/checklist migration are implemented in source. S1-S7 and the native advise-through-merge/release cycle remain pending. Installation, native acceptance and release authorization require separate receipts.
 
 ## Initial commands
 
-A per-project `.agenthub/sdlc.toml` may set `mode = "advise"` and `required_checks = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"]`. Omit the file for off. A missing/empty check set is unknown, never a green approval gate. The built-in stage order is fixed in this slice; changing the file applies at the next hub start.
+A per-project `.agenthub/sdlc.toml` may set `mode = "advise"` and `required_checks = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"]`. Omit the file for off. A missing/empty check set is unknown, never a green approval gate. The built-in stage order follows the table above; changing the file applies at the next hub start.
 
-A person records ids and a claimed local receipt with `ahub sdlc record 12 '{"repo":"owner/repo","issue":109,"pr":325,"localHead":"<full SHA>","localResult":"passed","stage":"implement"}'`. Owners/reviewers have the bounded `hub_sdlc_record` tool; it accepts no remote bodies or external-check results. Only the assigned reviewer or person records a reviewed head. `ahub review 12 approved --head <full SHA>` rechecks current evidence before approval. Changes requested does not require green CI.
+A person records ids and a claimed local receipt with `ahub sdlc record 12 '{"repo":"owner/repo","issue":109,"pr":325,"localHead":"<full SHA>","localResult":"passed","stage":"build"}'`. Owners/reviewers have the bounded `hub_sdlc_record` tool; it accepts no remote bodies or external-check results. Only the assigned reviewer or person records a reviewed head. `ahub review 12 approved --head <full SHA>` rechecks current evidence before approval. Changes requested does not require green CI.
 
 `ahub sdlc status` lists bounded local projections without polling every remote PR. `ahub sdlc explain 12` or `status 12` performs a fresh structured readback, with a console-only boundary and no remote body retention. Shared console/dashboard projections explicitly show unknown external evidence; they do not certify freshness from cached data. Default task rows and contracts remain unchanged when off.
 
-# gsd-lite checklist guidance
+# Acceptance-criteria checklist
 
-- Select `workflow = "none" | "gsd-lite"` in `.agenthub/sdlc.toml`; none is the default and preserves existing receipts, contracts and traces. Like the SDLC mode, this file is loaded at daemon start. Workflow choice adds guidance; it does not select enforcement.
-- A task's reviewer or the person records `phase` through `hub_sdlc_record` or `ahub sdlc record`. The board owns the receipt, with its actor/history. No writable STATE/PLAN/HANDOFF file is introduced.
-- A phase names a bounded slug `id`, a full `head`, up to 64 existing task/predecessor records and 1..32 criterion records. `tasks` entries use `{ "id": 2, "after": [1] }`; after must match current Tasks.after edges exactly. Imports refuse missing ids, cycles, closures above 256 tasks and ordinary-parent references to private work. They do not edit dependencies, accepted owners or reservations. Create dependencies through the existing `ahub task propose --after` flow.
-- Each criterion has a bounded `id`, boolean `required`, `result` verified|failed|unverified and up to eight hashed refs. Accepted refs are `sha256:<64-hex>`, or `artifact|check|source:<ASCII-reference>@<64-hex>`. Whole phase JSON is at most 32 KiB. The hub never fetches those refs or treats a model's claim as a deterministic check. Verified outcomes are reviewer claims, separately labelled from fresh GitHub checks.
-- Required failed/unverified criteria, unfinished child tasks, changed/unavailable dependencies and missing/stale checklist heads make phase readiness false. In advise/off, board transitions retain their existing behavior; readiness can remain false after a historical approval. Enforce adds phase blockers only to the existing approval transition. Entering review remains possible while criteria are unverified, so the reviewer can inspect and record them.
-- `ahub sdlc status <id>` and `explain` expose the same workflow/phase projection used by the console and dashboard; `ahub route explain` names active workflow guidance. `ahub sdlc export <id>` emits sanitized ids, states, criteria/hashes and two SHA-256 values: `stateHash` hashes that exact projection, `sourceHash` hashes the normalized effective lifecycle configuration (not a code/build attestation). Private exports contain a stub and no phase refs. Exports are read-only derived views and cannot be imported as task authority.
-- Full GSD import, dependency editing, native acceptance and the actual advise-through-merge/release cycle remain pending. Bounded custom gates and the read-only release-source report are implemented below. No automatic advance, merge, release, permission change or experiment is included. The default versus gsd-lite #251 comparison is not run during the solo implementation.
+- A task's reviewer or the person records a head-bound `criteria` receipt through `hub_sdlc_record` or `ahub sdlc record`. Its ids name the issue's acceptance criteria. The board owns the receipt and its actor/history; no writable STATE/PLAN/HANDOFF file is introduced.
+- A checklist names a bounded slug `id`, a full `head` and 1..32 criterion records. Each criterion has a bounded `id`, boolean `required`, `result` verified|failed|unverified and up to eight hashed refs. Accepted refs are `sha256:<64-hex>`, or `artifact|check|source:<ASCII-reference>@<64-hex>`. Whole receipt JSON is at most 32 KiB. The hub never fetches those refs or treats a model claim as a deterministic check. Verified outcomes are reviewer claims, separately labelled from fresh GitHub checks.
+- Required failed/unverified criteria and missing/stale checklist heads keep readiness false. Advise/off preserve existing transition behavior. Enforce adds criteria blockers only at approval. Entering review remains possible with unverified criteria so the reviewer can inspect and record them. Criteria claims do not replace exact-head local/CI checks.
+- Once recorded, a checklist adds its blockers in any enabled lifecycle; off ignores it, as #257 did. The `criteria` entry/exit gate uses the same checklist without a workflow selector, and a missing checklist is a blocker the reviewer clears by recording one. Task dependencies remain with `Tasks.after`, created through `ahub task propose --after`. Checklist task import is removed.
+- `ahub sdlc status <id>`, `explain` and console/dashboard projections show the same criteria view. `ahub sdlc export <id>` emits sanitized state, criteria/hashes and `stateHash`/`sourceHash`: the exact projection hash and normalized effective lifecycle-configuration hash. These are derived hashes, not code/build attestations or import authority. Private exports contain a stub and no checklist refs.
 
-Example reviewer receipt (task 2 already depends on task 1):
+Example reviewer receipt:
 
 ```json
 {
-  "phase": {
+  "criteria": {
     "id": "delivery-one",
     "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "tasks": [{ "id": 2, "after": [1] }],
-    "criteria": [{ "id": "native-smoke", "required": true, "result": "unverified", "refs": [] }]
+    "criteria": [{ "id": "AC0", "required": true, "result": "unverified", "refs": [] }]
   }
 }
 ```
 
-The repeated SHA is a syntax example, not verification evidence. Replace it with the head actually reviewed. A verified criterion requires hashed evidence refs and still does not replace the configured exact-head local/CI gates.
+The repeated SHA is syntax only. Replace it with the reviewed head; a verified criterion also requires hashed evidence refs.
+
+## Retired workflow compatibility (#252, #481 S8)
+
+The old `gsd-lite` workflow is retired. Omit `workflow` from `.agenthub/sdlc.toml` and use the criteria checklist above. Until hub 0.13.0, `workflow = "none"` loads silently and `workflow = "gsd-lite"` loads with a migration warning in `hub.log` and makes a criteria checklist required on every task. The `phase` gate and receipt name are compatibility aliases for `criteria` during that same window; use `criteria` for new configuration and writes. From 0.13.0, `workflow`, the `phase` gate and the `phase` receipt name are refused with a field-level reason.
+
+Stored phase receipts remain readable: their criteria are shown, while legacy task lists are ignored with a visible note. Reading historical receipts never imports or edits task edges. [The retired analysis](gsd-collaboration-analysis.md) preserves the original rationale and unrun measurement plan; it is not current workflow guidance.
 
 # Custom lifecycle definition contract (#257)
 
 - The sdlc.toml loader reads a single regular single-link file up to 64 KiB, checks its identity/size across a bounded read and refuses symlinks or changing files.
-- Optional `definitions` in sdlc.toml maps a stage id to bounded data: `base`, `actor`, `entry_gates`, `exit_gates` and `after`. `stages` is the explicit ordered list, at most 32 distinct lower-case ASCII ids of at most 48 characters. Built-in names retain their original base; custom ids map to one of the seven existing semantic stages. Unknown keys, gates, actors, duplicate gates and references refuse before startup.
+- Optional `definitions` in sdlc.toml maps a stage id to bounded data: `base`, `actor`, `entry_gates`, `exit_gates` and `after`. `stages` is the explicit ordered list, at most 32 distinct lower-case ASCII ids of at most 48 characters. Built-in names retain their original base; custom ids map to one of the nine semantic bases above. Unknown keys, gates, actors, duplicate gates and references refuse before startup.
 - The list must contain a review-base and merge-base stage because existing Tasks done/review transitions need those destinations. Other stages can be renamed, inserted or omitted. `after` has at most eight distinct earlier ids; self, forward, missing and cyclic dependencies refuse. Configuration defines no new task states, runnable commands or capability.
 - Actors are owner, reviewer, person or planner (defaulting to the base's existing actor guidance). A configured actor never grants lifecycle write authority to a new caller. Existing task owner/reviewer/person eligibility remains the outer boundary. In enforce, an explicit custom stage change additionally requires its configured actor; a person may record every stage. A planner must already be an eligible task holder with the existing planner flow role. Off/advise preserve their nonblocking claim behavior.
-- Gate names are issue, pr, local, review, checks and phase. A phase gate requires workflow = "gsd-lite"; otherwise configuration refuses before startup. They read only the existing artifact identities, exact-head GitHub readback, claimed local receipt or current board-owned phase checklist. Entry/exit readiness is shown separately from approval readiness. Custom gates cannot remove the existing review/approval floor, turn a missing required-check set green or treat a phase claim as external verification.
+- Gate names are issue, pr, local, review, checks and criteria. The legacy phase gate is accepted only during the deprecation window. They read only the existing artifact identities, exact-head GitHub readback, claimed local receipt or current board-owned acceptance-criteria checklist. Entry/exit readiness is shown separately from approval readiness. Custom gates cannot remove the existing review/approval floor, turn a missing required-check set green or treat a criteria claim as external verification.
 - Receipts keep their configured stage id. Tasks validates stage names against the active definition before storing. A definition removed after a restart makes the old stage visibly unknown until an eligible person/holder records a valid one; it is never silently remapped. Existing state-derived completion/approval selects the first configured review/merge base destination, not a hard-coded name; no arbitrary stage auto-advance is added.
-- CLI, console and dashboard use the same definition/base/actor and entry/exit blocker projection. Every managed native/local task schema advertises the same active stage ids. Separate MCP processes read authenticated daemon status, not a mutable sdlc.toml; a live older daemon without the optional field retains the seven-stage schema. An unavailable/malformed read withholds hub_sdlc_record until a successful tools-list read rather than inventing stages. The default definition produces the old seven-stage config, receipts, schemas and projections unchanged. Native model ingestion and an actual advise/release cycle remain unverified.
+- CLI, console and dashboard use the same definition/base/actor and entry/exit blocker projection. Every managed native/local task schema advertises the same active stage ids. Separate MCP processes read authenticated daemon status, not a mutable sdlc.toml; a live older daemon without the optional field retains the seven-stage schema. An unavailable/malformed read withholds hub_sdlc_record until a successful tools-list read rather than inventing stages. Enabled defaults use the nine playbook bases; off-mode config, receipts, schemas and projections retain their prior shapes. Native model ingestion and an actual advise/release cycle remain unverified.
 
 Example:
 
@@ -98,13 +123,13 @@ actor = "planner"
 entry_gates = ["issue"]
 
 [definitions.draft]
-base = "implement"
+base = "build"
 actor = "owner"
 after = ["question"]
 exit_gates = ["local"]
 
 [definitions.fact-check]
-base = "verify"
+base = "test"
 actor = "reviewer"
 after = ["draft"]
 exit_gates = ["checks"]
@@ -121,7 +146,7 @@ actor = "person"
 after = ["approve"]
 ```
 
-These ids are guidance/receipt destinations. Publish neither merges nor releases. The read-only source-readiness report is implemented below. Native acceptance/release permission, bidirectional GSD import and research measurements remain unverified or pending.
+These ids are guidance/receipt destinations. Publish neither merges nor releases. The read-only source-readiness report is implemented below. Native acceptance/release authorization and research measurements remain unverified or pending.
 
 
 # Structured documentation readiness evidence (#257)
@@ -167,4 +192,4 @@ After dashboard authentication, those two delivery operations get a 35-second HT
 
 The connection idle setting is not a guaranteed 10-second deadline for an active handler. The actual HTTP fixture records that an ordinary action also completes after 11.5 seconds; that legacy behavior is retained. The owner approved correcting only the newly added test's mistaken ordinary-action failure expectation. Manager control request caps are separate from HTTP connection idle behavior. Delivery HTTP results omit the internal control-request rid.
 
-- Runtime doc checker ships explicitly in the npm tarball and package verification asserts its presence. Merge queue phase readiness derives each holder's current board phase view under gsd-lite; absent or blocked phases remain unknown/blocked.
+- Runtime doc checker ships explicitly in the npm tarball and package verification asserts its presence. Merge queue criteria readiness derives each holder's current board checklist view; absent or blocked required checklists remain unknown/blocked.

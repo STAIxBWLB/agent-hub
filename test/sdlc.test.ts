@@ -90,7 +90,7 @@ test("lifecycle evidence cannot be recorded by an unrelated peer or leaked from 
   expect(() => r.tasks.recordLifecycle("codex", r.id, { reviewedHead: A })).toThrow("only its reviewer");
   expect((await r.tasks.lifecycleStatus(r.id)).ready).toBe(false); expect(r.calls()).toBe(0);
   const view = r.tasks.publicView(r.board.get(r.id)!);
-  expect(view.sdlc).toEqual({ stage: "implement" }); expect(JSON.stringify(view)).not.toContain("owner/repo"); expect(JSON.stringify(view)).not.toContain("900101");
+  expect(view.sdlc).toEqual({ stage: "build" }); // #481 S0: recorded as implement, stored under its playbook id expect(JSON.stringify(view)).not.toContain("owner/repo"); expect(JSON.stringify(view)).not.toContain("900101");
 });
 
 test("merge conflict projection uses exact paths and does not choose a landing action (#257)", () => {

@@ -604,10 +604,26 @@
     {
       "id": "workflow-reviewer-only",
       "file": "src/hub/tasks.ts",
-      "search": "if (input && typeof input === \"object\" && \"phase\" in input) {",
-      "replacement": "if (false && input && typeof input === \"object\" && \"phase\" in input) {",
+      "search": "if (input && typeof input === \"object\" && (\"criteria\" in input || \"phase\" in input)) {",
+      "replacement": "if (false && input && typeof input === \"object\" && (\"criteria\" in input || \"phase\" in input)) {",
       "testFile": "test/workflow.test.ts",
       "testName": "only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)"
+    },
+    {
+      "id": "criteria-task-import-retired",
+      "file": "src/hub/workflow.ts",
+      "search": "if (p.tasks !== undefined && (!Array.isArray(p.tasks) || p.tasks.length))",
+      "replacement": "if (false)",
+      "testFile": "test/workflow.test.ts",
+      "testName": "checklist task import is retired: a task list is refused before any write, and a stored one reads with a note (#481 S8)"
+    },
+    {
+      "id": "sdlc-workflow-window-closes",
+      "file": "src/hub/sdlc.ts",
+      "search": "if (raw.workflow !== undefined && !window)",
+      "replacement": "if (false)",
+      "testFile": "test/sdlc-playbook.test.ts",
+      "testName": "the retired workflow setting and phase receipt load with a warning in the window and refuse after it (AC8b)"
     },
     {
       "id": "workflow-required-verdict",
@@ -616,14 +632,6 @@
       "replacement": "if (false)",
       "testFile": "test/workflow.test.ts",
       "testName": "only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)"
-    },
-    {
-      "id": "workflow-exact-after",
-      "file": "src/hub/workflow.ts",
-      "search": "if (actual.length !== link.after.length || actual.some(id => !link.after.includes(id)))",
-      "replacement": "if (false)",
-      "testFile": "test/workflow.test.ts",
-      "testName": "phase imports require exact current after edges and preserve accepted owners and reservations (#257)"
     },
     {
       "id": "watch-discard-cancel-buffer",
@@ -1184,14 +1192,6 @@
       "replacement": "task.sdlc?.stage ?? \"spec\"",
       "testFile": "test/lifecycle-definitions.test.ts",
       "testName": "custom lifecycle export and public status agree on the initial configured stage before a receipt (#257)"
-    },
-    {
-      "id": "lifecycle-phase-view-required",
-      "file": "src/hub/sdlc.ts",
-      "search": "if (workflow !== \"gsd-lite\" && Object.values(custom.definitions)",
-      "replacement": "if (false && Object.values(custom.definitions)",
-      "testFile": "test/lifecycle-definitions.test.ts",
-      "testName": "phase gates require board phase views and cannot silently deadlock a none workflow (#257)"
     },
     {
       "id": "lifecycle-active-daemon-stages",

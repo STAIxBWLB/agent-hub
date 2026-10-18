@@ -1,20 +1,39 @@
-import { phaseReceipt, type PhaseReceipt, type PhaseView } from "./workflow.ts";
+import { criteriaReceipt, type CriteriaReceipt, type CriteriaView, type LegacyPhaseReceipt } from "./workflow.ts";
 import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
 import { hostExecutable } from "./host-executable.ts";
 
+/** The off-mode default (#257). Off output, receipts and schemas keep this shape. */
 export const SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"] as const;
-export type SdlcBaseStage = typeof SDLC_STAGES[number];
+/** The enabled default (#481 S0): the AI-Native SDLC Playbook stage model. */
+export const PLAYBOOK_STAGES = ["intent", "spec", "plan", "build", "test", "review", "merge", "release", "maintain"] as const;
+export type SdlcBaseStage = typeof SDLC_STAGES[number] | typeof PLAYBOOK_STAGES[number];
+const BASES: readonly string[] = [...new Set<string>([...SDLC_STAGES, ...PLAYBOOK_STAGES])];
+/** Legacy ids read as their playbook stage; a receipt written with one stores the canonical id. */
+const ALIASES: Record<string, string> = { implement: "build", verify: "test" };
+export const canonicalStage = (stage: string): string => ALIASES[stage] ?? stage;
+const PLAYBOOK_LABEL: Record<string, string> = { intent: "Plan", spec: "Design", plan: "Build", build: "Build", test: "Test", review: "Deploy", merge: "Deploy", release: "Deploy", maintain: "Maintain" };
+export const playbookStage = (base: string): string | undefined => PLAYBOOK_LABEL[canonicalStage(base)];
+/** #481 S8: `workflow` and the `phase` gate/receipt name load with a warning before this hub version and refuse from it. */
+export const RETIRED_WORKFLOW_FROM = "0.13.0";
+const olderThan = (version: string, limit: string): boolean => {
+  const a = version.split(/[.-]/).slice(0, 3).map(Number), b = limit.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  return false;
+};
 export type SdlcStage = string;
-export type StageGate = "issue" | "pr" | "local" | "review" | "checks" | "phase";
+export type StageGate = "issue" | "pr" | "local" | "review" | "checks" | "criteria";
 export interface StageDefinition { base: SdlcBaseStage; actor: string; entry_gates: StageGate[]; exit_gates: StageGate[]; after: string[]; }
 export type SdlcMode = "off" | "advise" | "enforce";
-export interface SdlcConfig { workflow?: "gsd-lite"; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; }
+/** `workflow: "gsd-lite"` marks the retired setting during its window (#481 S8): every task then needs a criteria checklist. */
+export interface SdlcConfig { workflow?: "gsd-lite"; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface SdlcReceipt {
   stage: SdlcStage;
-  phase?: PhaseReceipt;
+  criteria?: CriteriaReceipt;
+  /** Stored before #481 S8 and read as `criteria`; never written again. */
+  phase?: LegacyPhaseReceipt;
   repo?: string;
   issue?: number;
   pr?: number;
@@ -43,33 +62,42 @@ const repo = (value: unknown): value is string => typeof value === "string" && /
 const id = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 const STAGE_ID = /^[a-z][a-z0-9_-]{0,47}$/;
-const STAGE_GATES: StageGate[] = ["issue", "pr", "local", "review", "checks", "phase"];
-const baseActor = (base: SdlcBaseStage) => base === "review" || base === "verify" ? "reviewer" : base === "merge" || base === "release" ? "person" : "owner/planner";
+// #451 froze this literal as non-peer gate names ("local" is the local-check gate). "phase" is read as criteria (#481 S8).
+const STAGE_GATES = ["issue", "pr", "local", "review", "checks", "phase"];
+const GATES = STAGE_GATES.map(gate => gate === "phase" ? "criteria" : gate) as StageGate[];
+const baseActor = (base: string) => base === "review" || canonicalStage(base) === "test" ? "reviewer" : base === "merge" || base === "release" ? "person" : "owner/planner";
+/** A receipt's checklist under either stored name. */
+export const checklistOf = (receipt: SdlcReceipt | undefined): CriteriaReceipt | undefined => receipt?.criteria ?? receipt?.phase;
 export function stageDefinition(config: SdlcConfig, stage: string): StageDefinition | undefined {
-  if (!config.stages.includes(stage)) return undefined;
+  if (!config.stages.includes(stage)) return stage !== canonicalStage(stage) ? stageDefinition(config, canonicalStage(stage)) : undefined;
   if (config.definitions && Object.hasOwn(config.definitions, stage)) return config.definitions[stage];
-  if (!(SDLC_STAGES as readonly string[]).includes(stage)) return undefined;
+  if (!BASES.includes(stage)) return undefined;
   const base = stage as SdlcBaseStage;
   return { base, actor: baseActor(base), entry_gates: [], exit_gates: [], after: [] };
 }
 export function lifecycleStage(config: SdlcConfig, base: SdlcBaseStage): string {
   return config.stages.find(stage => stageDefinition(config, stage)?.base === base) ?? base;
 }
-function definitions(raw: unknown, stages: unknown): { stages: string[]; definitions: Record<string, StageDefinition> } {
+function definitions(raw: unknown, stages: unknown, phaseAlias: { allowed: boolean; used: boolean }): { stages: string[]; definitions: Record<string, StageDefinition> } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length > 32) throw new Error("sdlc.definitions: expected at most 32 stage definitions");
   if (!Array.isArray(stages) || !stages.length || stages.length > 32 || stages.some(s => typeof s !== "string" || !STAGE_ID.test(s)) || new Set(stages).size !== stages.length) throw new Error("sdlc.stages: expected 1..32 distinct bounded stage ids");
   const result: Record<string, StageDefinition> = Object.create(null);
   for (const [id, value] of Object.entries(raw)) {
     if (!STAGE_ID.test(id) || !stages.includes(id) || !value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc.definitions: invalid or unlisted stage");
     const def = value as Record<string, unknown>;
-    if (Object.keys(def).some(k => !["base", "actor", "entry_gates", "exit_gates", "after"].includes(k)) || !(SDLC_STAGES as readonly unknown[]).includes(def.base)) throw new Error("sdlc.definitions: unknown field or base");
+    if (Object.keys(def).some(k => !["base", "actor", "entry_gates", "exit_gates", "after"].includes(k)) || !BASES.includes(def.base as string)) throw new Error("sdlc.definitions: unknown field or base");
     const base = def.base as SdlcBaseStage;
     if ((SDLC_STAGES as readonly string[]).includes(id) && id !== base) throw new Error("sdlc.definitions: built-in stage base cannot change");
+    if (!(SDLC_STAGES as readonly string[]).includes(id) && (PLAYBOOK_STAGES as readonly string[]).includes(id) && canonicalStage(id) !== canonicalStage(base)) throw new Error("sdlc.definitions: built-in playbook stage base cannot change");
     const actor = def.actor ?? baseActor(base);
     if (typeof actor !== "string" || actor !== baseActor(base) && !["owner", "reviewer", "person", "planner"].includes(actor)) throw new Error("sdlc.definitions.actor: unknown actor");
     const gates = (key: string): StageGate[] => {
-      const list = def[key] ?? [];
-      if (!Array.isArray(list) || list.length > 6 || list.some(g => !STAGE_GATES.includes(g)) || new Set(list).size !== list.length) throw new Error(`sdlc.definitions.${key}: unknown or duplicate gate`);
+      const given = def[key] ?? [];
+      const retired = Array.isArray(given) && given.includes("phase");
+      if (retired && !phaseAlias.allowed) throw new Error(`sdlc.definitions.${key}: the phase gate was retired in ${RETIRED_WORKFLOW_FROM} (#481); name it criteria`);
+      if (retired) phaseAlias.used = true;
+      const list = Array.isArray(given) ? given.map(g => g === "phase" ? "criteria" : g) : given;
+      if (!Array.isArray(list) || list.length > 6 || list.some(g => !GATES.includes(g)) || new Set(list).size !== list.length) throw new Error(`sdlc.definitions.${key}: unknown or duplicate gate`);
       return [...list] as StageGate[];
     };
     const after = def.after ?? [];
@@ -81,28 +109,36 @@ function definitions(raw: unknown, stages: unknown): { stages: string[]; definit
   return { stages: [...stages], definitions: result };
 }
 
-export function sdlcConfig(value: unknown): SdlcConfig {
+/** `version` is the running hub's, which closes the #481 S8 window; the daemon and Tasks pass it. Without one the window is open. */
+export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
   for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const mode = raw.mode ?? "off";
   if (mode !== "off" && mode !== "advise" && mode !== "enforce") throw new Error("sdlc.mode: expected off, advise or enforce");
+  // ponytail: the #481 S8 window is a fixed version; delete `workflow`, the phase aliases and their tests once it passes.
+  const window = version === undefined || olderThan(version, RETIRED_WORKFLOW_FROM);
+  if (raw.workflow !== undefined && !window) throw new Error(`sdlc.workflow: retired in ${RETIRED_WORKFLOW_FROM} (#481); remove it and record a criteria checklist instead`);
   const workflow = raw.workflow ?? "none";
   if (workflow !== "none" && workflow !== "gsd-lite") throw new Error("sdlc.workflow: expected none or gsd-lite");
+  const notes = workflow === "gsd-lite" ? [`sdlc.workflow = "gsd-lite" is deprecated and stops loading in ${RETIRED_WORKFLOW_FROM} (#481): remove it; every task then needs a criteria checklist recorded with hub_sdlc_record`] : [];
+  const phaseAlias = { allowed: window, used: false };
   const checks = raw.required_checks ?? [];
   if (!Array.isArray(checks) || checks.length > 32 || checks.some(c => typeof c !== "string" || !c.trim() || c.length > 120 || /[\r\n\x00-\x1f]/.test(c)) || new Set(checks).size !== checks.length) throw new Error("sdlc.required_checks: expected at most 32 unique nonempty names");
   if (raw.definitions !== undefined) {
-    const custom = definitions(raw.definitions, raw.stages);
-    if (workflow !== "gsd-lite" && Object.values(custom.definitions).some(d => [...d.entry_gates, ...d.exit_gates].includes("phase"))) throw new Error("sdlc.definitions: phase gates require workflow = gsd-lite");
-    return { mode, requiredChecks: [...checks] as string[], ...custom, ...(workflow === "gsd-lite" ? { workflow } : {}) };
+    const custom = definitions(raw.definitions, raw.stages, phaseAlias);
+    if (phaseAlias.used) notes.push(`the sdlc phase gate is deprecated and stops loading in ${RETIRED_WORKFLOW_FROM} (#481): name it criteria`);
+    return { mode, requiredChecks: [...checks] as string[], ...custom, ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
   }
-  const stages = raw.stages ?? [...SDLC_STAGES];
-  if (!Array.isArray(stages) || stages.length !== SDLC_STAGES.length || stages.some((stage, i) => stage !== SDLC_STAGES[i])) throw new Error("sdlc.stages: use spec, plan, implement, review, verify, merge, release in that order; custom stages are not supported yet");
-  return { mode, requiredChecks: [...checks] as string[], stages: [...stages] as SdlcStage[], ...(workflow === "gsd-lite" ? { workflow } : {}) };
+  // Off keeps the #257 seven stages byte for byte; an enabled lifecycle defaults to the playbook (#481 S0).
+  const stages = raw.stages ?? (mode === "off" ? [...SDLC_STAGES] : [...PLAYBOOK_STAGES]);
+  const exactly = (list: readonly string[]) => Array.isArray(stages) && stages.length === list.length && stages.every((stage, i) => stage === list[i]);
+  if (!exactly(SDLC_STAGES) && !exactly(PLAYBOOK_STAGES)) throw new Error(`sdlc.stages: use ${PLAYBOOK_STAGES.join(", ")} in that order (or the #257 list ${SDLC_STAGES.join(", ")}); other lists need definitions`);
+  return { mode, requiredChecks: [...checks] as string[], stages: [...stages as string[]], ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
 }
 
-export function loadSdlc(cwd: string): SdlcConfig {
+export function loadSdlc(cwd: string, version?: string): SdlcConfig {
   try {
     const fd = openSync(join(cwd, ".agenthub", "sdlc.toml"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
@@ -112,23 +148,27 @@ export function loadSdlc(cwd: string): SdlcConfig {
       while ((n = readSync(fd, bytes, length, bytes.length - length, null)) > 0) { length += n; if (length > cap) throw new Error("sdlc.toml exceeds 64 KiB"); }
       const after = fstatSync(fd);
       if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size) throw new Error("sdlc.toml changed during read");
-      return sdlcConfig(Bun.TOML.parse(bytes.subarray(0, length).toString("utf8")));
+      return sdlcConfig(Bun.TOML.parse(bytes.subarray(0, length).toString("utf8")), version);
     } finally { closeSync(fd); }
   }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return sdlcConfig(undefined); throw error; }
 }
 
 /** Identities and claimed local receipts only. External facts are read, never accepted as input. */
-export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = undefined, config: SdlcConfig = sdlcConfig(undefined)): SdlcReceipt {
+export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = undefined, config: SdlcConfig = sdlcConfig(undefined), version?: string): SdlcReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc receipt: expected an object");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["stage", "repo", "issue", "pr", "reviewedHead", "localHead", "localResult", "phase"].includes(key)) throw new Error(`sdlc receipt.${key}: unsupported or externally observed field`);
+  for (const key of Object.keys(raw)) if (!["stage", "repo", "issue", "pr", "reviewedHead", "localHead", "localResult", "criteria", "phase"].includes(key)) throw new Error(`sdlc receipt.${key}: unsupported or externally observed field`);
+  if (raw.criteria !== undefined && raw.phase !== undefined) throw new Error("sdlc receipt: give criteria only; phase is its retired name");
+  if (raw.phase !== undefined && version !== undefined && !olderThan(version, RETIRED_WORKFLOW_FROM)) throw new Error(`sdlc receipt.phase: retired in ${RETIRED_WORKFLOW_FROM} (#481); use criteria`);
   previous ??= { stage: config.stages[0] ?? "spec" };
   const next = { ...previous };
-  if (raw.phase !== undefined) next.phase = phaseReceipt(raw.phase);
+  const checklist = raw.criteria ?? raw.phase;
+  if (checklist !== undefined) { next.criteria = criteriaReceipt(checklist); delete next.phase; }
   if (raw.stage !== undefined) {
     if (typeof raw.stage !== "string" || !stageDefinition(config, raw.stage)) throw new Error("sdlc receipt.stage: unknown stage");
-    next.stage = raw.stage as SdlcStage;
+    // A legacy id is accepted from older clients but stored under the stage the config actually lists (#481 S0).
+    next.stage = (config.stages.includes(raw.stage) ? raw.stage : canonicalStage(raw.stage)) as SdlcStage;
   }
   if (raw.repo !== undefined) { if (!repo(raw.repo)) throw new Error("sdlc receipt.repo: expected owner/repository"); next.repo = raw.repo; }
   for (const key of ["issue", "pr"] as const) if (raw[key] !== undefined) { if (!id(raw[key])) throw new Error(`sdlc receipt.${key}: expected a positive integer`); next[key] = raw[key]; }
@@ -140,7 +180,7 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
   // A new artifact cannot inherit another PR's review or local gate.
   if (next.repo !== previous.repo || next.pr !== previous.pr) {
     delete next.head; delete next.observed;
-    if (raw.phase === undefined) delete next.phase;
+    if (checklist === undefined) { delete next.criteria; delete next.phase; }
     if (raw.reviewedHead === undefined) delete next.reviewedHead;
     if (raw.localHead === undefined) delete next.localHead;
     if (raw.localResult === undefined) delete next.localResult;
@@ -166,8 +206,10 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     ...(sha(p.mergeCommit?.oid) ? { mergeCommit: p.mergeCommit.oid } : {}) };
 }
 
-export interface SdlcStatus { workflow?: "gsd-lite"; phase?: PhaseView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, phase?: PhaseView): SdlcStatus {
+export interface SdlcStatus { playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
+/** The acceptance-criteria checklist (#481 S8, Compliance pass) counts once recorded, and on every task under the retired gsd-lite setting. Off keeps #257's output. */
+export const criteriaRequired = (config: SdlcConfig, receipt: SdlcReceipt | undefined): boolean => config.workflow === "gsd-lite" || (config.mode !== "off" && !!checklistOf(receipt));
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView): SdlcStatus {
   const stage = receipt?.stage ?? config.stages[0] ?? "spec", blockers: string[] = [];
   const definition = stageDefinition(config, stage);
   if (!definition) blockers.push("lifecycle stage definition unknown");
@@ -187,20 +229,20 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
     if (evidence.pendingReviews !== 0) blockers.push("review requests pending or unknown");
     if (evidence.unresolved !== 0) blockers.push("review threads unresolved or unknown");
   }
-  if (config.workflow === "gsd-lite") {
-    blockers.unshift(...(phase?.blockers ?? ["phase board evidence unknown"]));
-    if (!evidence || receipt?.phase?.head !== evidence.head) blockers.push("phase checklist head missing or stale");
-  }
-  const custom = config.definitions && definition ? stageGates(definition, blockers, receipt, evidence, phase) : undefined;
+  const viewBlockers = criteria?.blockers ?? ["criteria board evidence unknown"];
+  const staleHead = !evidence || checklistOf(receipt)?.head !== evidence.head ? ["criteria checklist head missing or stale"] : [];
+  if (criteriaRequired(config, receipt)) { blockers.unshift(...viewBlockers); blockers.push(...staleHead); }
+  const custom = config.definitions && definition ? stageGates(definition, blockers, [...viewBlockers, ...staleHead]) : undefined;
   if (custom) for (const blocker of [...custom.entry, ...custom.exit]) if (!blockers.includes(blocker)) blockers.push(blocker);
-  return { ...(config.workflow ? { workflow: config.workflow, ...(phase ? { phase } : {}) } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
-    actor: !definition ? "person" : phase?.blockers.length ? "reviewer/person" : config.definitions && definition ? definition.actor : stage === "review" || stage === "verify" ? "reviewer" : stage === "merge" || stage === "release" ? "person" : "owner/planner",
+  const shown = criteria && (criteriaRequired(config, receipt) || definition && [...definition.entry_gates, ...definition.exit_gates].includes("criteria"));
+  return { ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
+    actor: !definition ? "person" : shown && criteria.blockers.length ? "reviewer/person" : config.definitions ? definition.actor : baseActor(definition.base),
     next: blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
 }
 
-function stageGates(def: StageDefinition, blockers: string[], receipt: SdlcReceipt | undefined, evidence: PrEvidence | undefined, phase: PhaseView | undefined): { entry: string[]; exit: string[] } {
+function stageGates(def: StageDefinition, blockers: string[], checklist: string[]): { entry: string[]; exit: string[] } {
   const select = (gates: StageGate[]) => [...new Set(gates.flatMap(gate => {
-    if (gate === "phase") return [...(phase?.blockers ?? ["phase board evidence unknown"]), ...(!evidence || receipt?.phase?.head !== evidence.head ? ["phase checklist head missing or stale"] : [])];
+    if (gate === "criteria") return checklist;
     const matching = (text: string) => gate === "issue" ? text === "issue identity missing" : gate === "pr" ? ["PR identity missing", "current PR evidence unknown", "PR is not open"].includes(text) : gate === "local" ? ["current PR evidence unknown", "local gate on current head missing or failed"].includes(text) : gate === "checks" ? text === "current PR evidence unknown" || text === "required check set unknown" || text.startsWith("required check ") : ["current PR evidence unknown", "current head has not been reviewed", "GitHub review approval missing or changes requested", "review requests pending or unknown", "review threads unresolved or unknown"].includes(text);
     return blockers.filter(matching);
   }))];

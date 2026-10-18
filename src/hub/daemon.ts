@@ -576,7 +576,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   const loadedConfig = opts.config ?? loadConfig(opts.cwd);
-  const lifecycleConfig = loadSdlc(opts.cwd);
+  const lifecycleConfig = loadSdlc(opts.cwd, VERSION);
   // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
   const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
   const config = { ...ownedConfig, roster: peerRosterConfig(loadedConfig.roster), permission_modes: permissionDefaults(loadedConfig.permission_modes), roles: { ...loadedConfig.roles }, conductor: { ...DEFAULT_CONFIG.conductor, ...loadedConfig.conductor } };
@@ -630,6 +630,7 @@ export async function startDaemon(opts: DaemonOptions) {
   settlePlanner();
   const catalog = loadRoleCatalog(opts.cwd);
   for (const error of catalog.errors) log(`catalog role ${error.id}: ${error.reason}`);
+  for (const note of lifecycleConfig.deprecations ?? []) log(note);
   const resolvedProfile = resolveProfile(config.profile, config.profile_overrides);
   let roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(config.catalog_roles) };
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {

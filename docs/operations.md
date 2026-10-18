@@ -3047,7 +3047,7 @@ that the file is untracked; a dropped value is reported by the settings result.
 
 ## SDLC artifact receipts and gates
 
-The initial #257 lifecycle is off without .agenthub/sdlc.toml. Advise shows blockers; enforce checks head-bound review and approval transitions. See [the SDLC contract](sdlc.md) for the fixed stage order, required check names, claimed local receipts, console-only readbacks and pending custom/release/live parts. Owners/reviewers record bounded identities through hub_sdlc_record; these grant no additional authority.
+The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. S1-S7 and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
 ## Optional Qwen Code peer
 
 Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
@@ -3090,11 +3090,12 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 - Protocol stays 16; a same-protocol older daemon answers the new request as unknown, which the CLI reports. No automatic pane opening is included in this slice.
 - Native T0 limits: [ACP watch verification](verification/2026-10-11-acp-watch-t0.md).
 
-# gsd-lite lifecycle guidance (#257)
+# Acceptance-criteria checklist (#481)
 
-- Set `workflow = "gsd-lite"` in `.agenthub/sdlc.toml` for the next daemon start; default none preserves the existing flow. Mode advise displays checklist blockers without blocking, while enforce checks them at approval.
-- The task reviewer/person records phase criteria via `ahub sdlc record <id> '<receipt JSON>'`. Existing tasks and predecessor ids must match the board; import does not move owners or edit dependencies. Use the existing task propose `--after` command to create edges.
-- `ahub sdlc status <id>`, `explain <id>` and `export <id>` read the same current board/config projection. Export hashes are projection/config hashes, with no external text, extra authority or verification claim. Schema and example: [SDLC](sdlc.md#gsd-lite-checklist-guidance).
+- The task reviewer/person records a head-bound `criteria` receipt with criterion ids matching the issue's AC ids, required/result fields and hashed evidence refs. This checklist belongs to the Compliance review pass. Use `ahub sdlc record <id> '<receipt JSON>'`; [schema and example](sdlc.md#acceptance-criteria-checklist).
+- Advise shows incomplete/stale checklist blockers; enforce checks them at approval. The `criteria` gate does not need a workflow selector. Dependencies stay with `ahub task propose --after`; checklist task import is removed.
+- `status <id>`, `explain <id>` and `export <id>` use the same current board/config projection. Export keeps sanitized state and source hashes, with no external text, extra authority or verification claim.
+- Migration from the retired workflow and its compatibility window (until hub 0.13.0) are described in [Retired workflow compatibility](sdlc.md#retired-workflow-compatibility-252-481-s8). Stored checklist task lists are ignored with a visible note; they never change board dependencies.
 
 # Catalog session guidance (#295)
 
