@@ -974,7 +974,7 @@ export class Bus {
   }
 
   /**
-   * What one push delivery would take (the preface, then `take`'s batch), handed to a pull-only peer and recorded as
+   * What one push delivery would take (the preface, then `take`'s batch), explicitly pulled by its attached session and recorded as
    * completed: the tool result that returns it is the readback, so nothing waits for settlement and nothing is ever
    * `accepted` (issue #205). It is checkpointed like a push, so queued rows of the same envelopes (an operator retry)
    * are grouped into it, and registered for `reply_to` like a push. Undefined while held. A failed journal write puts

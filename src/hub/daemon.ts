@@ -473,6 +473,7 @@ class WsPeer extends BasePeer {
   private nativeActive = false;
   /** The attached session said it cannot show channel pushes (issue #205): the bus keeps its queue for `inbox`. */
   pullOnly = false;
+  steer: PeerAdapter["steer"] = undefined;
   lastInboxAt: number | undefined;
   private claimedPullOnly = false;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
@@ -500,6 +501,12 @@ class WsPeer extends BasePeer {
     this.nativeSession = undefined;
     this.nativeActive = false;
     this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
+    // Native TUI readback in #493 proves important channel input can be consumed before the turn ends.
+    // Pull-only transports expose no steer capability; the bus keeps their important work queued.
+    this.steer = this.pullOnly ? undefined : async (envs, deliveryId) => {
+      if (this.state !== "busy" || !envs.length || envs.some(env => env.priority !== "important")) throw new Error("channel steering requires important work in the current busy turn");
+      await this.deliver(envs, deliveryId);
+    };
     this.lastInboxAt = undefined;
     this.setState("idle");
   }
@@ -507,6 +514,7 @@ class WsPeer extends BasePeer {
     if (this.claimed === sock) this.claimed = undefined;
     if (this.sock !== sock) return;
     this.sock = undefined;
+    this.steer = undefined;
     this.nativeActive = false;
     this.pullOnly = false;
     this.setState("offline");
@@ -516,6 +524,7 @@ class WsPeer extends BasePeer {
     this.sock?.close(4000, "peer is off roster; retry when a person adds it");
     this.claimed = undefined;
     this.sock = undefined;
+    this.steer = undefined;
     this.nativeActive = false;
     this.pullOnly = false;
     this.setState("offline");
@@ -4746,7 +4755,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!c.peer || (c.role !== "peer" && c.role !== "tools")) return void reply({ ok: false, error: "held metadata requires a peer identity" });
         try {
           const held = bus.heldDeliveryHints(c.peer);
-          return void reply(held ? { ok: true, held } : { ok: false, error: "held metadata unavailable" });
+          return void reply(held ? { ok: true, held, queued: bus.queued(c.peer), important: bus.queuedImportant(c.peer) } : { ok: false, error: "held metadata unavailable" });
         } catch { return void reply({ ok: false, error: "held metadata unavailable" }); }
       }
       case "delivery_receipt": {
@@ -4758,10 +4767,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: true });
       }
       case "inbox": {
-        // A Claude session that cannot show channel pushes reads its queue here; nothing it reads is ever `accepted` (issue #205).
+        // The attached session can explicitly claim queued work even during a native turn (#493).
+        // Pull and push share holds and journal settlement; work read here is completed, never pushed again.
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
         if (c.role !== "peer" || !(peer instanceof WsPeer) || !peer.owns(sock)) return void reply({ ok: false, error: "not attached to the hub yet; retry hub_inbox in a moment" });
-        if (!peer.pullOnly) return void reply({ ok: false, error: "messages are pushed to this session; hub_inbox only drains failed pushes" });
         try {
           const envs = bus.pull(peer.id);
           if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
