@@ -32,7 +32,7 @@ terminal: it reviews the plan with you, applies it and follows it.
 
 ## Upgrading to 0.12.35
 
-A Claude session started with `ahub claude` now gets its hub messages while it is busy (#493). Its tool results report how many queued and important messages wait, `hub_inbox` reads the daemon queue even in a channel session, and an important message reaches the running turn instead of waiting for the turn to end. Nothing needs configuring. A Claude session keeps the plugin server it started with, so restart it after the upgrade to get this.
+A Claude session started with `ahub claude` now gets its hub messages while it is busy (#493). Its tool results report how many queued and important messages wait, `hub_inbox` reads the daemon queue even in a channel session, and an important message reaches the running turn instead of waiting for the turn to end. Nothing needs configuring. A Claude session keeps the plugin server it started with, so restart it after the upgrade to get this. `ahub jcode` no longer refuses every start as off roster (#484).
 
 The upgrade runs with the target release's own coordinator, so an upgrade from 0.12.32 with cancelled tasks and a managed terminal, or with a notice the target sends right after it starts, no longer blocks (#478). If the operation blocks because a restored Codex, Claude or Pi terminal disappeared, the person runs `ahub recovery reattach <operation-id> codex|claude|pi` to relaunch that peer with its recorded session (one relaunch per receipt), then `ahub recovery resume` to finish.
 
