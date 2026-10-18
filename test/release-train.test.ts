@@ -166,3 +166,19 @@ test("mixed linked and unlinked scope keeps the whole train CI cost unknown", as
   tasks.changeRelease(USER, { id: release.id, revision: cut.revision, state: "shipped" });
   expect(tasks.releaseReport(USER, release.id).metrics).toMatchObject({ ciRuns: null, unknown: [release.id] });
 });
+
+test("configured cut ordering is refused before screening or board effects", async () => {
+  let screens = 0;
+  const { tasks, board } = rig(undefined, { routing: () => { const routing = loadRouting(process.cwd()); return { ...routing, signals: { ...routing.signals, pii_screen: "local" }, constraints: { ...routing.constraints, pii: "local_only" } }; }, piiScreen: async () => { screens++; return { label: "clear", ms: 0 }; } });
+  const release = await tasks.newRelease(USER, { name: "ordered", goal: "Train", order: 1 });
+  const dated = tasks.changeRelease(USER, { id: release.id, revision: 0, plannedStart: 100, ship: 300 });
+  const baselineScreens = screens;
+  for (const cut of [99, 301]) {
+    const error = await tasks.configureRelease("claude", { id: release.id, revision: dated.revision, cut, hotfix: { cause: "loss", reason: "restore messages" } }).catch(error => error);
+    expect(error).toBeInstanceOf(PreEffectToolRefusal);
+    expect(board.release(release.id)).toEqual(dated);
+    expect(screens).toBe(baselineScreens);
+  }
+  const configured = await tasks.configureRelease("claude", { id: release.id, revision: dated.revision, cut: 100 });
+  expect((await tasks.configureRelease("claude", { id: release.id, revision: configured.revision, cut: 300 })).cut).toBe(300);
+});
