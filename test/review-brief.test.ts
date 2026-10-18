@@ -179,10 +179,15 @@ test("enforce refuses an approval when the brief is unavailable, or when the tas
   const branchOnly = setup(task => buildReviewBrief(dir, task.refs.commit, policy));
   branchOnly.board.update(branchOnly.t.id, "codex", "relinked", { refs: { commit: undefined, branch: "work" } } as never);
   await expect(branchOnly.tasks.review("claude", branchOnly.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("names no commit");
-  const noProvider = setup(undefined);
-  await expect(noProvider.tasks.review("claude", noProvider.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("builds no review brief");
+  // A provider that builds nothing is an unknown inventory too.
+  const empty = setup(() => undefined);
+  await expect(empty.tasks.review("claude", empty.t.id, "approved", "ok", undefined, undefined, all)).rejects.toThrow("could not be built");
+  // A PR task without refs.commit is reviewed at the head its receipt names.
+  const viaReceipt = setup(task => buildReviewBrief(dir, task.refs.commit, policy));
+  viaReceipt.board.update(viaReceipt.t.id, "codex", "relinked", { refs: { commit: undefined }, sdlc: { stage: "review", pr: 2, localHead: head } } as never);
+  await expect(viaReceipt.tasks.review("claude", viaReceipt.t.id, "approved", "ok", undefined, undefined, { reviewed: [] })).rejects.toThrow("not accounted for");
   // Work with no commit, branch or PR is exempt: nothing to account for, so no coverage refusal.
-  const plain = setup(undefined);
+  const plain = setup(task => buildReviewBrief(dir, task.refs.commit, policy));
   plain.board.update(plain.t.id, "codex", "relinked", { refs: { commit: undefined } } as never);
   const result = await plain.tasks.review("claude", plain.t.id, "approved", "ok").catch((e: Error) => e);
   if (result instanceof Error) expect(result.message).not.toContain("coverage:");

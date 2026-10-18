@@ -2672,7 +2672,7 @@ export class Tasks {
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
     // #520: what the coverage was checked against, pinned through every await: the commit and the lifecycle receipt (the
     // inherited reviewedHead lives there).
-    let covered: { commit: string; receipt: string } | undefined;
+    let covered: { commit: string | undefined; receipt: string } | undefined;
     const valid = (): Task => {
       const refused = authority?.();
       if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
@@ -2688,13 +2688,16 @@ export class Tasks {
     // #520: an approval accounts for every reviewable path of the brief. enforce refuses before any effect, advise records
     // the gap in the verdict note, off and a person's own verdict skip it.
     const mode = this.d.sdlc?.config().mode ?? "off";
-    if (verdict === "approved" && by !== USER && mode !== "off") {
+    // A Tasks without a brief provider (library use; the daemon always has one) has no coverage gate.
+    if (verdict === "approved" && by !== USER && mode !== "off" && this.d.reviewBrief) {
       const t = valid(), enforce = mode === "enforce", list = (paths: string[]) => `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ", ..." : ""}`;
       // Code work (a commit, branch or PR) needs a brief; work with none of them is exempt and has nothing to account for.
       const code = !this.isPii(t) && !!(t.refs.commit || t.refs.branch || t.sdlc?.pr);
+      // The commit under review: the task's, else the head the verdict names, else the lifecycle receipt's.
+      const commit = t.refs.commit ?? (typeof head === "string" ? head : undefined) ?? t.sdlc?.reviewedHead ?? t.sdlc?.localHead;
       const brief: ReviewBrief | { unavailable: string } | undefined = !code ? undefined
-        : !t.refs.commit ? { unavailable: "the task links a branch or PR but names no commit" }
-        : this.d.reviewBrief?.(t) ?? { unavailable: "this hub builds no review brief" };
+        : !commit ? { unavailable: "the task links a branch or PR but names no commit" }
+        : this.d.reviewBrief({ ...t, refs: { ...t.refs, commit } }) ?? { unavailable: "the review brief could not be built" };
       if (brief && "unavailable" in brief) {
         // An unknown inventory is never an empty one.
         if (enforce) throw new PreEffectToolRefusal(`coverage: the review brief is unavailable (${brief.unavailable}); an approval needs a complete brief of the task's commit`);
@@ -2703,8 +2706,8 @@ export class Tasks {
         // One head: the brief's, the task's commit, and the head the verdict names or inherits from an earlier review (with a
         // PR, the lifecycle gate binds that head to the PR's).
         const effective = typeof head === "string" ? head : t.sdlc?.reviewedHead;
-        if (effective !== undefined && effective !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict ${typeof head === "string" ? "names" : "inherits"} head ${effective}, but the review brief is for ${brief.head} (the task's commit)`);
-        covered = { commit: t.refs.commit!, receipt: JSON.stringify(t.sdlc ?? null) };
+        if (effective !== undefined && effective !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict ${typeof head === "string" ? "names" : "inherits"} head ${effective}, but the review brief is for ${brief.head} (the commit under review)`);
+        covered = { commit: t.refs.commit, receipt: JSON.stringify(t.sdlc ?? null) };
         const gap = coverageGap(brief, coverage);
         if (gap.length && enforce) throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${list(gap)}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();
