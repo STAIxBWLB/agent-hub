@@ -1,4 +1,3 @@
-import { isSupportedPeer } from "./peer-catalog.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { lstatSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -14,8 +13,9 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("permission_modes must be an object with ask, ask-when-needed or never-ask values");
   const result: Record<string, PermissionMode> = {};
   for (const [peer, mode] of Object.entries(value)) {
-    if (!isSupportedPeer(peer)) throw new Error(`permission_modes.${peer}: unsupported peer`);
-    if (peer === "jcode") throw new Error("Jcode native policy is unmanaged; no hub permission_modes.jcode mapping exists");
+    const definition = typeof peer === "string" ? definitionOf(peer) : undefined;
+    if (!definition) throw new Error(`permission_modes.${peer}: unsupported peer`);
+    if (definition.permission.unmanaged) throw new Error(`${definition.displayName} native policy is unmanaged; no hub permission_modes.${peer} mapping exists`);
     if (!isPermissionMode(mode)) throw new Error(`permission_modes.${peer} must be ask, ask-when-needed or never-ask`);
     result[peer] = mode;
   }
@@ -23,20 +23,17 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
 }
 /** Approval frequency does not create a common sandbox across native peers. */
 export function permissionBoundary(peer: string): string {
-  if (peer === "jcode") return "jcode: native policy unmanaged; NO hub sandbox; approvals belong to its native tools";
-  if (peer === "pi" || peer === "local") return `${peer}: inside hub sandbox, path guard and denylist`;
-  if (peer === "claude" || peer === "codex") return `${peer}: native vendor bounds; no hub sandbox`;
+  const definition = definitionOf(peer);
+  if (definition?.permission.unmanaged) return `${peer}: native policy unmanaged; NO hub sandbox; approvals belong to its native tools`;
+  if (definition?.trust.hubSandboxed) return `${peer}: inside hub sandbox, path guard and denylist`;
+  if (definition?.transport === "claude-channel" || definition?.transport === "codex-appserver") return `${peer}: native vendor bounds; no hub sandbox`;
   return `${peer}: runs its own tools; NO hub sandbox`;
 }
 /** What a mode lets a peer do without asking, in one line a person reads before choosing it (#269). */
 export function permissionGrant(peer: string, mode: PermissionMode): string {
   const grant = definitionOf(peer)?.permission.grants?.[mode];
   if (grant !== undefined) return grant;
-  if (peer === "jcode") return "no verified hub mode mapping; native policy only";
-  if (mode === "ask") return peer === "codex" ? "the session's own approval policy applies again" : peer === "kimi" ? "Kimi asks as it does on its own" : peer === "claude" ? "Claude's own permission rules decide" : "every write, edit and shell command asks";
-  if (peer === "kimi") return mode === "never-ask" ? "Kimi's auto mode: nothing asks" : "Kimi's yolo mode: it asks only where it judges it must";
-  if (peer === "codex") return mode === "never-ask" ? "approval policy never on every turn: nothing asks" : "approval policy on-request on every turn";
-  if (peer === "claude") return mode === "never-ask" ? "every tool runs without asking" : "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules";
+  if (mode === "ask") return "every write, edit and shell command asks";
   return mode === "never-ask" ? "every tool runs without asking, inside the hub sandbox and path guard" : "write and edit inside the project run without asking; shell and git writes still ask";
 }
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);

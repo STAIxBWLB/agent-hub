@@ -1,5 +1,5 @@
 import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
-import { isSupportedPeer } from "../hub/peer-catalog.ts";
+import { definitionOf } from "../adapters/registry.ts";
 
 /** Recovery reads this declaration before delegating to another package's CLI. */
 export const LIVE_TEST_SUPPORTED = true;
@@ -52,7 +52,8 @@ export type PeerCommandAccess = "allowed" | "conductor" | "console";
 /** A closed list: unknown commands cannot acquire console authority through an agent shell. */
 export function classifyPeerCommand(command: string, args: readonly string[]): PeerCommandAccess {
   if (command === "recovery" && recoveryAction(args) === "reattach") return "console";
-  if (command === "pi" && args.includes("--replace-session")) return "console";
+  const native = definitionOf(command);
+  if (native?.cli.personOnlyFlags?.some(flag => args.includes(flag))) return "console";
   if (command === "pet" && args.includes("--window")) return "console";
   if (command === "permission" || command === "stop" || command === "watch") return "console";
   if (args.some((arg) => arg === "--as-user" || arg.startsWith("--as-user="))) return "console";
@@ -72,8 +73,8 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
   // The subcommand is the first argument that is not --json, which the command accepts anywhere.
   if (command === "bench") return args.find((arg) => arg !== "--json") === "run" ? "console" : "allowed";
   if (command === "budget") return !args.length || args.every((arg) => arg === "--json" || arg === "--full" || arg.startsWith("--color=")) ? "allowed" : "console";
-  if (command === "jcode") return "console"; // the person launcher alone writes its project MCP entry
-  if (isSupportedPeer(command) || ["pause", "resume"].includes(command)) return "conductor";
+  if (native?.cli.authority === "person") return "console";
+  if (native || ["pause", "resume"].includes(command)) return "conductor";
   if (command === "board" && args[0] === "import") return "console";
   if (["help", "version", "--version", "say", "status", "pet", "board", "report", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
   return "console";
@@ -84,7 +85,7 @@ export function cliCommandLabel(command: string, args: readonly string[]): strin
   if (command === "backlog") return ["list", "add", "pull", "pull-ready", "split", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";
   if (command === "board" && args[0] === "import") return "board import";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
-  if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "qwen", "jcode", "pi", "local", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
+  if (!definitionOf(command) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "unassign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take"].includes(sub)) return `${command} ${sub}`;

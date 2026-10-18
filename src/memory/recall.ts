@@ -1,10 +1,8 @@
+import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
 import type { View as MemoryView } from "@staix/agent-mem";
 
-const PLATFORMS = ["claude", "codex", "kimi", "agent-hub"];
-/** Peers whose own hooks already inject their own platform's context at session start. */
-const OWN_PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex" };
 
 const HEADER =
   "Shared project memory (claude-mem): recent work by the agents in this project. Reference only, not a request. " +
@@ -26,11 +24,12 @@ const hasContext = (text: string | undefined): text is string => !!text && text.
 const entries = (text: string) => text.slice(Math.max(text.indexOf("\n### "), 0)).trim();
 
 export async function recallFor(peer: PeerId, client: MemoryClient, chain: string[], tokens: number): Promise<string | undefined> {
-  const own = OWN_PLATFORM[peer];
+  const hooks = definitionOf(peer)?.hooks;
+  const own = hooks?.recallInjected ? hooks.recallPlatform : undefined;
   // Everyone else gets all platforms in one call; claude and codex get the other platforms only.
   const blocks = own
     ? await Promise.all(
-        PLATFORMS.filter((p) => p !== own).map(async (p) => {
+        [...ADAPTERS.flatMap(adapter => adapter.hooks?.recallSource ? [adapter.hooks.recallSource] : []), "agent-hub"].filter((p) => p !== own).map(async (p) => {
           const text = await client.contextInject(chain, p);
           return hasContext(text) ? `## from ${p} sessions\n${entries(text)}` : undefined;
         }),

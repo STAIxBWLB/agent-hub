@@ -1,3 +1,4 @@
+import { definitionOf } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import type { PeerId } from "./envelope.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -70,8 +71,6 @@ const WAIT_NOTE = "; keeps its work:";
 const WAITED_NOTE = "; waited, then the reset moved to";
 const waitedNote = (min: number, max: number) => `${WAITED_NOTE} ${min} min, beyond wait_max_min ${max}`;
 const FALLBACK_WINDOW_MINS = 300;
-/** Peers the coordinator never pauses: the local worker has no quota. */
-const EXEMPT = new Set<PeerId>(["local", "user", "hub"]);
 
 /**
  * Budget relay. Readings come from the adapters (Codex rate limits, Claude's status line, Kimi tokens) or from
@@ -156,7 +155,10 @@ export class Budget {
   /** `hard`: the peer cannot run another turn (its provider refused one), so there is nobody to ask for a checkpoint. */
   /** `at`: when the numbers were measured, for sources that arrive through a file (a leftover file is not a fresh reading). */
   report(peer: PeerId, windows: UsageWindow[], hard = false, at = this.now()): void {
-    if (EXEMPT.has(peer) || this.closed) return;
+    // Execution-budget instrumentation is independent of native quota accounting.
+    // Explicit quota exemption or absent budget metadata exempts registered kinds; external ids keep accounting.
+    const adapter = definitionOf(peer);
+    if (peer === "user" || peer === "hub" || adapter && (!adapter.budget || adapter.budget.quotaExempt === true) || this.closed) return;
     // An override ignores soft readings, not a provider that has actually refused another turn.
     if (hard && this.ignoreUntil.delete(peer)) {
       try { this.hooks.notify(`budget: ${peer} provider refused again; budget override ended`); } catch { /* a notice cannot prevent the hard pause */ }
@@ -356,30 +358,4 @@ export class Budget {
   }
 }
 
-/** Codex `rateLimits` snapshot (account/rateLimits/read, account/rateLimits/updated) -> windows. */
-export function codexWindows(rateLimits: any): UsageWindow[] {
-  const out: UsageWindow[] = [];
-  // The slot decides (primary = short window, secondary = long one) and the duration overrides it when present:
-  // readings are keyed by window id, so two windows must never both come out as "5h".
-  for (const [w, slot] of [[rateLimits?.primary, "5h"], [rateLimits?.secondary, "week"]] as const) {
-    if (!w || typeof w.usedPercent !== "number") continue;
-    const mins = typeof w.windowDurationMins === "number" ? w.windowDurationMins : undefined;
-    const id = mins === undefined ? slot : mins > 600 ? "week" : "5h";
-    if (out.some((o) => o.id === id)) continue; // both slots claim the same window: keep the first, never overwrite
-    out.push({ id, used: w.usedPercent / 100, ...(w.resetsAt ? { resetsAt: w.resetsAt * 1000 } : {}), ...(mins ? { windowMins: mins } : {}), source: "codex rateLimits" });
-  }
-  if (rateLimits?.rateLimitReachedType && !out.some((w) => w.used >= 1)) out.push({ id: "5h", used: 1, source: `codex ${rateLimits.rateLimitReachedType}` });
-  return out;
-}
-
-/** Claude Code status line `rate_limits` -> windows. */
-export function claudeWindows(rateLimits: any): UsageWindow[] {
-  const out: UsageWindow[] = [];
-  for (const [key, id, mins] of [["five_hour", "5h", 300], ["seven_day", "week", 10_080]] as const) {
-    const w = rateLimits?.[key];
-    if (!w || typeof w.used_percentage !== "number") continue;
-    const resets = Number(w.resets_at);
-    out.push({ id, used: w.used_percentage / 100, ...(resets ? { resetsAt: resets < 1e12 ? resets * 1000 : resets } : {}), windowMins: mins, source: "claude status line" });
-  }
-  return out;
-}
+export { codexWindows, claudeWindows } from "../adapters/definitions/native-quota.ts";

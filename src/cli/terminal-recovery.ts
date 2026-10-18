@@ -1,3 +1,6 @@
+import { shellQuote } from "./shell-quote.ts";
+export { shellQuote } from "./shell-quote.ts";
+import { definitionOf } from "../adapters/registry.ts";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -231,9 +234,7 @@ export class OrcaCommandError extends Error {
 }
 
 /** POSIX quoting for the single command-string argument accepted by Orca. */
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
+
 
 function normalizeOptions(options?: CommandRunner | TerminalRecoveryOptions): Required<TerminalRecoveryOptions> {
   const config: TerminalRecoveryOptions = typeof options === "function" ? { runner: options } : options ?? {};
@@ -474,7 +475,7 @@ function identityFrom(terminal: Record<string, unknown>): TerminalPeer | undefin
   const session = object(terminal.session);
   const candidates = [terminal.agentIdentity, terminal.agent, wait.agentIdentity, wait.agent, session.agentIdentity, session.agent];
   for (const candidate of candidates) {
-    if (candidate === "codex" || candidate === "claude" || candidate === "pi") return candidate;
+    if (typeof candidate === "string" && definitionOf(candidate)?.session.launchRecord) return candidate as TerminalPeer;
   }
   return undefined;
 }
@@ -504,13 +505,17 @@ function requireAbsoluteEntrypoint(value: string): string {
 
 function launchFor(peer: TerminalPeer, projectRoot: string, sessionId: string, options: Required<TerminalRecoveryOptions>, source: Record<string, unknown>, recorded?: RecordedTerminalLaunch, ref?: SessionRef): LaunchMetadata {
   const packageEntrypoint = requireAbsoluteEntrypoint(options.packageEntrypoint);
-  const argv = peer === "codex"
-    ? ["bun", packageEntrypoint, "--project", projectRoot, "codex", "resume", sessionId]
-    : peer === "claude"
-      ? ["bun", packageEntrypoint, "--project", projectRoot, "claude", "--resume", sessionId]
-      : ["bun", packageEntrypoint, "--project", projectRoot, "pi", "--mode", "tui", ...(ref?.backend ? ["--backend", ref.backend] : []), ...(ref?.model ? ["--model", ref.model] : []), ...(ref?.sessionFile ? ["--session-file", ref.sessionFile] : ["--session-id", sessionId])];
   const env = { ...allowedEnv(source), ...(recorded?.env ?? {}) };
   const prefix = ALLOWED_ENV.filter((name) => env[name] !== undefined).map((name) => `${name}=${shellQuote(env[name]!)}`);
+  const launch: LaunchMetadata = { packageEntrypoint, argv: ["bun", packageEntrypoint, "--project", projectRoot], env, command: "" };
+  launch.command = [...prefix, ...launch.argv.map(shellQuote)].join(" ");
+  // Identity and environment were independently verified before this pure two-phase launch construction.
+  const binding: TerminalBinding = { peer, projectRoot, sessionId, handle: nestedString(source, ["handle"])!,
+    incarnationId: nestedString(source, ["incarnationId"])!, worktreeId: nestedString(source, ["worktreeId"])!,
+    ...(ref?.sessionFile ? { sessionFile: ref.sessionFile } : {}), ...(ref?.backend ? { backend: ref.backend } : {}), ...(ref?.model ? { model: ref.model } : {}), launch, launchMetadata: launch };
+  const tail = definitionOf(peer)?.session.resumeArgv?.(binding, false);
+  if (!tail) throw new Error(`${peer}: no recorded terminal resume adapter`);
+  const argv = [...launch.argv, ...tail];
   const command = [...prefix, ...argv.map(shellQuote)].join(" ");
   return { packageEntrypoint, command, argv, env };
 }
@@ -669,7 +674,9 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
       continue;
     }
     const recorded = records.find((item) => item.peer === peer && item.handle === handle && item.worktreeId === terminal.worktreeId && item.incarnationId === terminal.incarnationId);
-    const sessionFile = peer === "pi" ? nestedString(terminal, ["sessionFile", "sessionPath"]) ?? nestedString(object(terminal.session), ["file", "path"]) : undefined;
+    // Orca observation supplies file identity; launch arguments are not observed native session-file evidence.
+    const { args: _launchArgs, ...observedTerminal } = terminal;
+    const sessionFile = definitionOf(peer)?.session.crashIdentity?.(observedTerminal).sessionFile;
     const launch = launchFor(peer, projectRoot, sessionId, config, terminal, recorded, { ...ref, ...(sessionFile ? { sessionFile } : {}) });
     const binding: TerminalBinding = { peer, handle, incarnationId, worktreeId, projectRoot, sessionId, ...(sessionFile ? { sessionFile } : {}), ...(ref.backend ? { backend: ref.backend } : {}), ...(ref.model ? { model: ref.model } : {}), launch, launchMetadata: launch };
     bindings.push(binding);

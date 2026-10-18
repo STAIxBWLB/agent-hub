@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { restoreTransition } from "../src/cli/upgrade-restore-state.ts";
-import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
+import { makeRecoveryDriver, observedSession } from "../src/cli/upgrade-runtime.ts";
 import type { PlannedProject, ProjectProgress, RecoveryOperation } from "../src/cli/upgrade.ts";
 import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -50,7 +50,7 @@ function attachment(failOn: number[], attached = true) {
   const binding = { peer: "codex", handle: "chosen-terminal", incarnationId: "chosen-incarnation", worktreeId: "chosen-worktree", sessionId: "recorded-thread" };
   let clock = 1000, inspections = 0;
   const wait = boundary("../src/cli/upgrade-runtime.ts", "awaitAttachment", { console: w.console,
-    now: () => clock, RECONNECT_WAIT_MS: 1000, restoreTransition,
+    now: () => clock, RECONNECT_WAIT_MS: 1000, restoreTransition, observedSession,
     inspectRecovery: async () => { inspections++; return { state: "running", instanceId: "target", version: "1.0.0", recovery: { operationId: op.id }, peers: attached ? [{ id: "codex", state: "idle", threadId: "recorded-thread" }] : [] }; },
     terminalOptions: () => ({}), run: async () => ({ code: 1, stdout: "" }), orcaExecutable: () => "fixture-only",
     launcherOf: async () => ({ state: "live", record: binding }),

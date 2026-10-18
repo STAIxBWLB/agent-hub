@@ -1,3 +1,4 @@
+import { definitionOf } from "../adapters/registry.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
 
 export type RestoreReceipt =
@@ -23,7 +24,7 @@ function malformed(): never { throw new Error("invalid restore receipt"); }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 function terminalBinding(value: unknown): TerminalBinding {
-  if (!object(value) || typeof value.peer !== "string" || !["codex", "claude", "pi"].includes(value.peer)) malformed();
+  if (!object(value) || typeof value.peer !== "string" || !definitionOf(value.peer)?.session.launchRecord) malformed();
   for (const key of ["handle", "incarnationId", "worktreeId", "projectRoot", "sessionId"]) if (!text(value[key])) malformed();
   for (const key of ["sessionFile", "backend", "model"]) if (value[key] !== undefined && typeof value[key] !== "string") malformed();
   const launch = value.launch;

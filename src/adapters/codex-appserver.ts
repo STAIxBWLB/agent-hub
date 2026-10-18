@@ -85,8 +85,13 @@ export class CodexPeer extends BasePeer {
   private tokenTotal: number | undefined;
   private freshThread = false;
   private readonly activeTurns = new Set<string>();
+  private deliveryEpoch = 0;
+  /** Cancellation tombstones last until that exact native completion or session replacement. */
+  private readonly retiredTurns = new Set<string>();
+  private unidentifiedCancellation = false;
+  private unboundAccepted = false;
   private nextId = -1;
-  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void }>();
+  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string) => void }>();
   private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private answering: Envelope[] = []; // everything delivered or steered into the current turn: who its answer is for
@@ -189,16 +194,35 @@ export class CodexPeer extends BasePeer {
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
     const text = this.render(envs);
-    const id = this.nextId--;
+    const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
+      let invalidated = false;
+      const retiredAtCancel = new Set<string>();
+      const invalidate = (reason: string) => {
+        if (invalidated) return;
+        invalidated = true;
+        for (const turn of [...this.activeTurns, ...this.turnDeliveries.keys()]) if (!turn.startsWith("unknown:")) retiredAtCancel.add(turn);
+        envs = []; // only the late native-id callback survives, never the cancelled audience/prompt
+        if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason });
+        reject(new Error(reason));
+      };
       this.pending.set(id, {
-        deliveryId, kind: "deliver",
+        deliveryId, kind: "deliver", invalidate,
         resolve: (result) => {
+          const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
+          if (invalidated || epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
+            invalidate("Codex turn acceptance arrived after its delivery was invalidated");
+            if (nativeTurn && session === this.contextEpoch && link === this.link &&
+              (!retiredAtCancel.has(nativeTurn) || this.retiredTurns.has(nativeTurn))) this.retireTurn(nativeTurn);
+            return;
+          }
           this.primed = true;
           this.injected = replyParent(envs);
           this.answering = [...envs];
-          const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
+          // Native acceptance can precede turn/started, also for legacy journal-less callers.
+          if (nativeTurn && !this.turnDeliveries.has(nativeTurn)) this.turnDeliveries.set(nativeTurn, new Set());
+          if (!nativeTurn && !this.activeTurns.size) this.unboundAccepted = true;
           if (deliveryId) {
             if (nativeTurn) this.addTurnDelivery(nativeTurn, deliveryId);
             else this.unboundDeliveries.add(deliveryId);
@@ -208,6 +232,10 @@ export class CodexPeer extends BasePeer {
         },
         reject: (e) => {
           this.restoringApprovals.delete(id);
+          if (invalidated) return; // uncertainty already settled; a late refusal cannot relabel it failed_safe
+          if (epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
+            invalidate("Codex turn refusal arrived after its delivery was invalidated"); return;
+          }
           if (!this.activeTurns.size) this.setState("idle");
           if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
           reject(e);
@@ -298,19 +326,34 @@ export class CodexPeer extends BasePeer {
 
   /** A silent turn is interrupted before the peer is declared idle, or the next turn/start would land inside it. */
   protected override onWatchdog(): void {
-    for (const turnId of this.activeTurns) {
-      if (turnId.startsWith("unknown:")) continue;
-      this.link?.up.send(JSON.stringify({ method: "turn/interrupt", id: this.nextId--, params: { threadId: this.threadId, turnId } }));
+    this.deliveryEpoch++;
+    const known = new Set([...this.activeTurns, ...this.turnDeliveries.keys()].filter(id => !id.startsWith("unknown:")));
+    const pendingStarts = [...this.pending.values()].filter(pending => pending.kind === "deliver");
+    if ([...this.activeTurns].some(id => id.startsWith("unknown:")) || (this.unboundDeliveries.size || this.unboundAccepted || pendingStarts.length) && !known.size) {
+      // ponytail: after one unidentifiable cancellation, lifecycle attribution requires a session reattach.
+      // Never guess that an unnamed late report or a later named start belongs to a new turn.
+      this.unidentifiedCancellation = true;
+      this.opts.log?.("Codex cancelled turn has no verified native id; reattach the native session before further hub delivery");
     }
+    for (const turnId of known) this.retireTurn(turnId);
+    for (const pending of pendingStarts) pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
     this.activeTurns.clear();
+    this.unboundAccepted = false;
     for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
     for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.injected = undefined;
     this.answering = [];
     this.lastAnswer = "";
+    this.deltas.clear();
     this.abandonSteers("turn went silent");
-    super.onWatchdog();
+    if (this.unidentifiedCancellation) this.setState("offline");
+    else super.onWatchdog();
+  }
+
+  private retireTurn(turnId: string): void {
+    this.retiredTurns.add(turnId);
+    if (this.link?.up.readyState === WebSocket.OPEN) this.link.up.send(JSON.stringify({ method: "turn/interrupt", id: this.nextId--, params: { threadId: this.threadId, turnId } }));
   }
 
   /** A steer nobody answered must not vanish: rejecting it sends the envelope back to the queue. */
@@ -394,10 +437,13 @@ export class CodexPeer extends BasePeer {
     this.restoringApprovals.clear();
     this.threadId = "";
     this.contextEpoch++;
+    this.deliveryEpoch++;
+    this.retiredTurns.clear(); this.unidentifiedCancellation = false;
     this.activeTurns.clear();
+    this.unboundAccepted = false;
     for (const p of this.pending.values()) {
-      if (p.deliveryId && p.kind !== "steer") this.delivery({ id: p.deliveryId, state: "needs_review", reason: "Codex TUI detached" });
-      p.reject(new Error(p.kind === "steer" ? "Codex TUI detached" : "codex TUI detached"));
+      if (p.kind === "deliver") p.invalidate?.("Codex TUI detached");
+      else p.reject(new Error(p.kind === "steer" ? "Codex TUI detached" : "codex TUI detached"));
     }
     this.pending.clear();
     for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
@@ -483,7 +529,8 @@ export class CodexPeer extends BasePeer {
 
   private fromAppServer(link: Link, raw: string): void {
     const msg = parse(raw);
-    if (this.state === "busy") this.touch();
+    const nativeId = msg?.params?.turnId ?? msg?.params?.turn?.id ?? msg?.result?.turn?.id;
+    if (this.state === "busy" && !(typeof nativeId === "string" && this.retiredTurns.has(nativeId))) this.touch();
     if (!msg) return void link.tui.send(raw);
 
     if (msg.id !== undefined && !msg.method) this.settlePermissionRestore(msg.id, !!msg.error);
@@ -511,12 +558,22 @@ export class CodexPeer extends BasePeer {
   private adopt(link: Link, threadId: unknown, fresh = false): void {
     if (typeof threadId !== "string" || !threadId) return;
     this.abandonSteers("thread changed");
+    for (const [id, pending] of this.pending) if (pending.kind === "deliver") {
+      pending.invalidate?.("Codex native thread changed before acceptance was confirmed");
+      this.pending.delete(id); // a replaced session needs no late native-id callback
+    }
+    for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
+    for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
+    this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.tokenTotal = undefined;
     this.freshThread = fresh;
     this.link = link;
     this.threadId = threadId;
     this.contextEpoch++;
+    this.deliveryEpoch++;
+    this.retiredTurns.clear(); this.unidentifiedCancellation = false;
     this.activeTurns.clear();
+    this.unboundAccepted = false;
     this.forgetTurn();
     this.opts.log?.(`[${this.id}] thread ${threadId}`);
     this.opts.onThread?.(threadId, fresh);
@@ -560,6 +617,13 @@ export class CodexPeer extends BasePeer {
       this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
     }
     if (link !== this.link || params.threadId !== this.threadId) return;
+    const nativeId = method === "turn/started" || method === "turn/completed" ? params.turn?.id : params.turnId;
+    if (typeof nativeId === "string" && this.retiredTurns.has(nativeId)) {
+      if (method === "turn/completed") this.retiredTurns.delete(nativeId);
+      return;
+    }
+    if (this.unidentifiedCancellation) return; // native traffic is still forwarded to its TUI; hub attribution is fenced
+    const unknownTurn = () => [...this.activeTurns].some(id => id.startsWith("unknown:"));
     if (method === "thread/tokenUsage/updated") {
       this.opts.onContext?.(codexContext(params.tokenUsage, this.threadId, Date.now()));
       const total = Number(params.tokenUsage?.total?.totalTokens);
@@ -571,22 +635,26 @@ export class CodexPeer extends BasePeer {
     }
     if (method === "turn/started") {
       const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
+      this.unboundAccepted = false;
       this.activeTurns.add(nativeTurn);
       for (const id of [...this.unboundDeliveries]) this.addTurnDelivery(nativeTurn, id);
       this.lastAnswer = "";
       this.setState("busy");
       if (params.turn?.id) this.opts.onTurn?.(params.turn.id);
     } else if (method === "item/agentMessage/delta") {
+      if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn()) return;
       const buf = this.deltas.get(params.itemId) ?? [];
       buf.push(params.delta);
       this.deltas.set(params.itemId, buf);
     } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall", "userMessage"].includes(params.item?.type)) {
+      if (typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn()) return;
       try {
         this.opts.onItem?.(params.item, typeof params.turnId === "string" && this.activeTurns.has(params.turnId) ? params.turnId : undefined);
       } catch (error) {
         this.opts.log?.(`[${this.id}] item handler failed: ${(error as Error).message}`); // the proxy keeps going
       }
     } else if (method === "item/completed" && params.item?.type === "agentMessage") {
+      if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn()) return;
       const item = params.item;
       const text: string =
         item.text ?? item.content?.map((c: any) => c.text ?? "").join("") ?? this.deltas.get(item.id)?.join("") ?? "";
@@ -595,6 +663,8 @@ export class CodexPeer extends BasePeer {
       if (item.phase !== "commentary" && text.trim()) this.lastAnswer = text.trim();
     } else if (method === "turn/completed") {
       const nativeTurn = params.turn?.id;
+      // A watchdog or a newer turn has invalidated this completion. Unknown-id legacy starts retain their fallback.
+      if (!this.activeTurns.size || typeof nativeTurn === "string" && !this.activeTurns.has(nativeTurn) && ![...this.activeTurns].some(id => id.startsWith("unknown:"))) return;
       this.activeTurns.delete(nativeTurn);
       for (const id of this.activeTurns) if (id.startsWith("unknown:")) this.activeTurns.delete(id);
       if (params.turn?.status === "failed") {

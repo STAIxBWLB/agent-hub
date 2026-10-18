@@ -1,3 +1,4 @@
+import { definitionOf } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
@@ -56,7 +57,7 @@ export class ExecutionBudget {
     if (input.kind === "task" && (!Number.isSafeInteger(input.taskId) || input.taskId! < 1)) throw new Error("task budget requires a positive task id");
     const peers = [...new Set(input.peers.filter((p) => typeof p === "string" && p.length > 0))].sort();
     if (!peers.length) throw new Error("execution budget requires at least one peer");
-    const unsupported = peers.filter((peer) => peer !== "pi" && peer !== "local");
+    const unsupported = peers.filter((peer) => !definitionOf(peer)?.budget?.instrumented);
     if (unsupported.length) throw new Error(`execution budgets require instrumented peers (pi, local); unsupported: ${unsupported.join(", ")}`);
     const limits = validLimits(input.limits ?? {});
     if (!Object.keys(limits).length) throw new Error("execution budget requires at least one supported limit");

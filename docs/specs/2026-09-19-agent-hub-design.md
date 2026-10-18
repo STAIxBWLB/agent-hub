@@ -3237,8 +3237,8 @@ The guard inventories AST comparisons, closed-list imports and vendor literals,
 including inline dashboard scripts, under stable file/symbol scopes. Its reviewed
 A1 baseline records the current source, rather than claiming the old A0 grep's
 265 line matches equal AST node counts. A new group, count growth or stale entry
-fails; later phases may only shrink this baseline. Only real, unshadowed registry
-resolver imports exempt kind-aware comparisons. Native adapter implementations and
+fails; later phases may only shrink this baseline. A1 originally exempted kind-aware comparisons from real, unshadowed registry
+resolver imports; the A2 amendment below counts them instead. Native adapter implementations and
 explicit non-peer config semantics remain the narrow exceptions. Existing literal
 catalog exports used by older recovery source probes are retained until their
 replacement compatibility proof is available; a refactor must not silently make a
@@ -3260,3 +3260,245 @@ same scanner reports 428/172 on that main and 415/171 on the combined A1 source.
 Every added or increased baseline entry matches that main-only delta; A1 still
 removes thirteen sites and one group. This explicit reconciliation precedes the
 first shipped baseline and does not permit later phases to grow it.
+
+## Adapter registry A2 amendment (#451)
+
+A2 counts native-name comparisons even when a trusted registry resolver supplies
+its left or right operand. These sites use the `kind-aware-comparison` inventory
+pattern and the same lexical file/symbol group as a raw comparison, including
+switch cases. Replacing a raw comparison with `kindOf` or `definitionOf(...).kind`
+therefore does not shrink a baseline group. Alias and shadowing checks remain in
+force. The pre-existing kind-aware preview site is counted explicitly; the A1
+source has 415 other sites plus that one site. A2 removes the transitional
+baseline by migrating policy, rather than by adding resolver exemptions.
+
+Session metadata distinguishes native resume arguments from daemon startup
+restoration. `session.resumeById` means that recovery passes the verified native
+session id to the start command (Qwen). `session.restoreOnStart` means that the
+daemon restores recorded startup options before automatic startup (Pi). Neither
+flag proves that a conversation can be resumed or permits a fresh replacement.
+Crash recovery tests `resumeById` and uses `crashIdentity`; transport choice or the
+presence of a factory does not establish that capability.
+
+A2 preserves literal `KNOWN_PEERS` and `OPTIONAL_PEERS` exports in
+`peer-catalog.ts` for released coordinators that inspect their source. The guard
+records these exact file/symbol exceptions separately with the reason
+"cross-release source probe", and tests their values against the typed registry
+catalog. The same exception preserves `start-mode.ts`'s literal `START_MODE_PEERS`, which released coordinators inspect before restoring Kimi headlessly. The three probes are counted separately (5 + 2 + 3 sites). The native vendor baseline is otherwise empty. A retained coordinator's
+existing source probe must accept the A2 target; no unsupported-target ceiling is
+introduced. ponytail: retire these compatibility literals only after a separately
+approved minimum supported upgrade source no longer reads them.
+
+Native recovery hooks return read-only facts over the existing narrow DTOs.
+`zeroTurn({ stateDir, binding, phase })` reads Codex's existing event proof only
+for planning, and Claude's existing transcript absence only for attachment or
+verification. `restoreArgs(peer)` and `recoveryRefusal(peer)` are pure over the
+captured peer. `personFresh` and `missingEvidence` are policy data, not authority.
+`resumeArgv(binding, fresh)` returns the CLI tail; the coordinator supplies the
+interpreter, entrypoint and project prefix and retains all receipt, repair,
+waiver and unknown-state decisions. The restore oracle, supplemental matrix and
+transition code remain byte-unchanged.
+
+Quota and context readers are pure normalizers:
+`QuotaReader.read(value: unknown): UsageWindow[]` and
+`ContextReader.read(value: unknown, sessionId: string, measuredAt: number): ContextReading`.
+They preserve the existing malformed-input results. The coordinator still binds
+transport generation, native session and measurement time before reporting.
+Palette data additionally carries optional `tone` and `ansi`, preserving the
+existing terminal palette and rendered CSS bytes.
+
+P4 conformance is transport-specific. Delivery-only native drivers set busy
+synchronously at admission; pull-only WebSocket peers receive no unsolicited
+delivery or busy mutation; Claude push keeps its existing receipt/native-start
+busy contract. Native production behavior does not change to satisfy a generic
+conformance case. The kit also covers the existing generation fences, process
+groups, approvals, quota refusals, mode acknowledgement/timeout and recovery
+contracts for each applicable transport, with explicit unsupported outcomes.
+
+`resumeArgv` accepts the existing `SessionRef` (session id/file, backend and model),
+which withholds terminal and launch identity from a pure argument formatter.
+`recoveryRefusal(peer, phase?: "plan" | "restore")` defaults to planning and keeps
+both existing phase-specific native messages. Fixed private compatibility data
+`legacyTargetSupport` and `legacyHeadlessArgv` name only the existing catalog or
+start-mode literal exports; their old read points and regexes are unchanged.
+
+`start.daemonPort` is a closed, data-only engine tag (`codex-appserver`, `acp`,
+`owned-acp`, `pi-rpc`, `local-worker`), required when `start.create` exists. Unknown
+values are refused at registry load. Channel/pull definitions without a factory
+leave it absent. Typed registry-owned wrappers retain the existing `DaemonPorts`
+union; core selects the engine and retains lifecycle/authentication closures,
+while the definition factory remains the only native constructor.
+
+The trusted CLI host may supply `LaunchContext.pi` using the existing Pi builder
+options, extension path and live bridge port/token. A redacted preview supplies
+only redacted placeholders; bridge tokens never reach previews, logs or events.
+`LaunchPlan.env` preserves Pi's existing child environment. Definitions never
+load daemon config or infer executable commands from environment text.
+`VersionContext` adds `observedVersion`, `nativeCommand` and `projectRoot` once:
+the host still performs each probe, while definitions validate or display it.
+`cli.authority` and `cli.personOnlyFlags` can only restrict existing authority;
+identity.ts stays authoritative and missing/unknown metadata retains today's
+rule. `start.passthrough` is data only. The MCP hook is a pure plan over the
+existing project/state/server-entrypoint/form tuple; every write, ordering fence
+and finally cleanup remains in the CLI host.
+
+### A2 internal native host projections (2026-10-18)
+
+The remaining AST inventory after the first A2 checkpoint has 260 policy sites in
+113 lexical groups. Native CLI entrypoints and previews, configuration validators,
+settings rows, plugin inventory and recovery presentation need explicit definition
+projections in addition to the original frozen transport factory hooks. These are
+moves of existing built-in policy, with the same host-owned effects, argv, ordering,
+errors, privacy, permission and timing fences. They add no instance support,
+capability or native behavior.
+
+Private, statically imported built-in preview helpers implement the frozen
+`start.launch` / `publicLaunch` redaction path. They preserve current validation,
+JSON order and placeholders, and cannot execute a native process, connect to
+control, allocate runtime state or write authoritative state. They are not public
+`AdapterDefinition` / `NativeHooks` extension points; configuration cannot register
+a helper. Person CLI entrypoints are relocated into a fixed private built-in
+dispatcher for C1, without adding a public `cli.run` or `NativeHooks` callback.
+The dispatcher cannot load external modules or accept caller-selected callbacks;
+its typed context contains only the original CLI host operations. Identity,
+command access, live-test delegation, audit and project/lifecycle admission remain
+in the host before dispatch, and each moved body retains its native effects,
+ordering, errors, environment and cleanup. Doctor projections carry existing probe
+metadata; the host retains probe execution and output. Configuration projections receive the current validator vocabulary and
+return the existing schema/settings entries. Recovery projections carry the current
+crash plan, continuity decoder/bookmark and unrecorded-terminal classification.
+Reporting flags, tool classification, recall source and display tones are semantic
+data; a consumer must not replace raw comparisons with kind-name wrappers or
+constant aliases. Plugin inventory takes the existing home/cwd/env context and
+returns the existing typed Addon rows, correcting the unused string-array
+placeholder. Arbitrary daemon callbacks and caller-chosen executables, paths,
+permissions or policy remain forbidden. External module publication/validation is
+still A4 and must freeze its accepted subset separately.
+
+Claude's channel is native-hook-driven: delivery insertion remains idle until an
+authenticated native-start observation. Its conformance case asserts that behavior;
+transport adapters retain the synchronous-busy requirement. Unsupported native
+quota or process ownership is an explicit applicability result, never synthetic
+success. Every applicable P4 behavior is exercised with the real adapter and fake
+transport, without changing existing assertions or claiming live-account evidence.
+
+The P4 late-result probe exposed an existing Codex watchdog defect on the unchanged
+54e631d8 adapter: a completed agent message could refill the answer after watchdog
+invalidation, then its stale turn completion could broadcast it without its former
+audience. A2 repairs this intended generation fence in source. It discards answer
+notifications without an active turn and notifications naming an inactive turn,
+retains the legacy unknown-turn compatibility path, and clears expired deltas.
+The new probe keeps its strict no-message/needs-review assertions. Supported native
+RPC behavior, approvals, quota classification and existing tests stay unchanged.
+
+The watchdog fence also covers acceptance before a queued `turn/started` report
+and unanswered hub `turn/start` RPCs. Cancelled named ids remain retired until their
+exact completion or session teardown; late acknowledgements cannot restore a
+cancelled audience or relabel uncertainty as `failed_safe`. Ordinary legacy
+unknown-id starts keep their fallback. After an invalidation with no provable
+native identity, unnamed lifecycle reports cannot be safely attributed: keep the
+peer offline and require a verified reattachment rather than guess a new turn.
+
+### A2 daemon semantic projections (2026-10-18)
+
+The daemon constructs every native driver through `start.create` and the fixed,
+transport-typed `DAEMON_PORTS` wrappers. Protocol lifecycle dispatch may select the
+actual engine; provider policy does not select an unrelated capability as an alias
+for a kind. Existing host callbacks retain their original effect authority,
+privacy, owner checks, ordering and timing.
+
+The internal definitions additionally carry the existing start-only enable-switch
+membership rule, exclusive-start refusal, tool-refresh requirement, explicit
+headless-mode argument, attached-worker reconfiguration rule, dashboard start
+command and pure ACP argv builder. Attach metadata serializes recovery launch
+identity and carries the existing pull-only admission and status guidance.
+Permission status text is separate from the existing permission refusal text;
+`permission.trackUnattended` keeps native unattended ownership accounting distinct
+from protocol dispatch.
+Budget metadata names the soft-token reset on resume. Session metadata declares
+native conversation revert support; the host still checks the actual driver and
+latest turn and owns the pause while reverting. CLI metadata formats retained
+terminal and roster-return notices and supplies the existing preview argument
+tail. These fields only move native policy, preserving existing output bytes and
+behavior. The version hook consumes the already frozen `observedVersion` and peer
+fields; the daemon retains the bounded native transcript probe.
+
+The doctor command consumes fixed built-in metadata and pure observed-value
+projections exported through the registry. Native tool order, plugin probe argv,
+optional roster checks, section/severity, recovery identity fields and legacy
+capture labels stay in the built-in implementation. The CLI retains every spawn,
+source-verification, connection, gateway and memory effect in its existing order
+and privacy boundary. This private data adds no public definition member,
+executable callback or configurable probe; unknown names retain their existing
+Hub/unknown classification.
+
+A2 reanchors thirteen seeded mutants to the same moved semantic guards: explicit Pi
+roster precedence, supported roster keys, retained-terminal result text, Kimi TUI
+recovery refusal and admission cleanup, Qwen opt-in/session/crash resume, planning
+reservation support, active Kimi TUI settings floor, live headless Kimi watch,
+disabled Codex plugins and bounded
+regular-file tooling reads. Seed ids and test targets remain unchanged; the other
+406 seed objects remain byte-identical. The mutation pairs must still demonstrate
+green production behavior and failure with that guard removed.
+
+The final A2 AST inventory is empty for core policy: zero sites and zero lexical
+groups. The reviewed policy baseline is explicitly `[]`; it is never generated
+from source during tests. Three cross-release literal probes remain separate
+(`KNOWN_PEERS` five, `OPTIONAL_PEERS` two, `START_MODE_PEERS` three). Precise
+screening-provider/lifecycle enum false positives remain scoped by file, symbol
+and AST shape; negative fixtures still catch vendor comparisons in those scopes.
+
+Quota participation and execution-budget instrumentation are independent.
+`budget.quotaExempt` preserves native quota exemption while retaining `account`
+and instrumented execution limits: local sets it, Pi does not. Registered kinds
+without budget metadata remain quota-exempt; external ids retain manual quota
+accounting. The A1 named compatibility metadata export preserves its original
+wrapper plans and observable shape, while the registry consumes separate native
+runtime definitions. Native display constants retain reference identity; private
+stream tone selection does not add fields to that observable display object.
+
+Configurable start-mode fallback reads the registered definition's default form,
+retaining explicit overrides and existing unknown-id behavior. The Kimi default
+mutant changes that native metadata from TUI to headless, so the original default
+assertion observes it directly; it does not remove a settings row or mutate the
+retained cross-release source literal.
+
+A2 preserves the recovery tests' assertion contract while reconnecting their
+execution harnesses to production code. The Pi CLI parser harness imports its
+extracted pure parser rather than extracting a removed main.ts declaration.
+The reattach parser VM receives the real registry resolver, and the attachment
+wait VM receives the real exported session-field resolver. Every existing
+`expect` line in these three files remains byte-identical; no fallback, mock
+policy, weaker condition or changed expected result is introduced.
+
+### A2 round-1 parity and capability-scope constraints
+
+Quota handoff uses the registry's native platform projection, preserving exactly
+Claude, Codex, Kimi, Qwen and Jcode. The per-delivery `recallInjected` flag remains
+independent: adding Kimi/Jcode handoff platforms does not make their own sessions
+part of injected-platform exclusion.
+
+Routing reads on-prem trust for PII admission. Legacy fixed-model/relay policy,
+local-allowed refusal text, context handling, preference tier, relay ordering and
+trace labels are native definition data. Host routing and task flow retain their
+existing policy calculations, messages and candidate ordering (including class
+fallback duplicates). This native routing data is not an external configuration
+surface.
+
+Registry loading calls `assertNativeCapabilityScope` before publication. A
+non-builtin definition cannot declare `start.acpCommand`, `attach.admission`,
+`budget.resetSoftTokensOnResume`, `session.crashIdentity`, a `pi-rpc` daemon port,
+or the native `routing` policy block. Fixed builtin membership is object identity,
+not a caller-supplied kind name. Current consumers combine these fields with fixed-builtin assumptions or
+host-global native state; generic shapes are follow-up work before A3/A4 loading. Other ordinary ACP
+metadata remains valid.
+
+The Qwen conductor refusal uses the original generic CLI text. Pi terminal
+observation reads only observed top-level/nested session-file metadata, never
+launch `args.sessionFile`. Pi TUI recovery bindings preserve the captured
+`CLAUDE_CONFIG_DIR` fallback while retaining Codex's `CODEX_HOME` selection.
+
+The guard resolves immutable peer-id constant aliases and supplied-source
+import/reexport bindings through lexical symbols before classifying comparisons.
+Shadowed and unrelated bindings remain independent; named non-peer enum exceptions
+keep their exact scope. It performs no filesystem or package lookup.

@@ -4,13 +4,13 @@ import { posix } from "node:path";
 // #451 A0's 265 sites were double-quote grep matches at 71253098. This inventory counts AST nodes,
 // includes inline dashboard scripts, and attributes stable lexical symbols on the reviewed A1 base.
 // Reconcile that explicit drift when freezing the baseline; do not regenerate it during a test.
-// ponytail: file/symbol counts cannot distinguish removal plus replacement in the same scope. A2 removes the baseline.
+// A2 has no policy baseline entries; the three cross-release literal probes are classified separately.
 
 export interface InventorySite {
   file: string;
   symbol: string;
   line: number;
-  pattern: "comparison" | "closed-list-import" | "vendor-literal";
+  pattern: "comparison" | "kind-aware-comparison" | "closed-list-import" | "vendor-literal";
   text: string;
 }
 export interface BaselineEntry { file: string; symbol: string; count: number }
@@ -28,6 +28,43 @@ function unwrap(node: ts.Expression): ts.Expression {
 function literal(node: ts.Expression): string | undefined {
   node = unwrap(node);
   return ts.isStringLiteralLike(node) ? node.text : undefined;
+}
+/** Bind only the supplied source strings. No library, filesystem or executable evaluation participates. */
+function sourceBindings(inputs: Readonly<Record<string, string>>) {
+  const canonical = (file: string) => posix.resolve("/", file.replaceAll("\\", "/"));
+  const texts = new Map(Object.entries(inputs).map(([file, source]) => [canonical(file), source]));
+  const parsed = new Map([...texts].map(([file, source]) => [file, ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : file.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS)]));
+  const options: ts.CompilerOptions = { noLib: true, allowJs: true, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler };
+  const host: ts.CompilerHost = {
+    getSourceFile: file => parsed.get(canonical(file)),
+    getDefaultLibFileName: () => "", writeFile: () => {}, getCurrentDirectory: () => "/",
+    getDirectories: () => [], getCanonicalFileName: file => canonical(file), useCaseSensitiveFileNames: () => true, getNewLine: () => "\n",
+    fileExists: file => texts.has(canonical(file)), readFile: file => texts.get(canonical(file)), realpath: file => canonical(file),
+    directoryExists: directory => { const prefix = canonical(directory).replace(/\/$/, "") + "/"; return [...texts.keys()].some(file => file.startsWith(prefix)); },
+  };
+  host.resolveModuleNames = (names, containingFile) => names.map(name => name.startsWith(".") ? ts.resolveModuleName(name, containingFile, options, host).resolvedModule : undefined);
+  const program = ts.createProgram([...parsed.keys()], options, host), checker = program.getTypeChecker();
+  const valueOf = (expression: ts.Expression, seen = new Set<ts.Symbol>()): string | undefined => {
+    const node = unwrap(expression), direct = literal(node);
+    if (direct !== undefined) return direct;
+    if (!ts.isIdentifier(node) || seen.size >= 32) return undefined;
+    let symbol = checker.getSymbolAtLocation(node);
+    if (!symbol || seen.has(symbol)) return undefined;
+    seen.add(symbol);
+    const imported = !!(symbol.flags & ts.SymbolFlags.Alias);
+    if (imported) {
+      symbol = checker.getAliasedSymbol(symbol);
+      if (seen.has(symbol)) return undefined;
+      seen.add(symbol);
+    }
+    // Script files share TypeScript's global symbol table; only an actual import may cross a supplied file boundary.
+    const declaration = imported ? symbol.valueDeclaration : symbol.declarations?.find(declaration => declaration.getSourceFile() === node.getSourceFile());
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name) || !declaration.initializer
+      || !ts.isVariableDeclarationList(declaration.parent) || !(declaration.parent.flags & ts.NodeFlags.Const)) return undefined;
+    return valueOf(declaration.initializer, seen);
+  };
+  return { parsed: (file: string) => parsed.get(canonical(file))!, valueOf };
 }
 function propertyName(node: ts.PropertyName): string | undefined {
   if (ts.isComputedPropertyName(node)) return literal(node.expression);
@@ -103,13 +140,34 @@ function enclosingSymbol(node: ts.Node, prefix: string): string {
   return [...(prefix ? [prefix] : []), ...(names.length ? names : ["(module)"])].join(".");
 }
 /** Named non-peer semantics frozen by #451 A0. No whole core module is exempted. */
-function falsePositive(file: string, symbol: string, node: ts.Node): boolean {
+function falsePositive(file: string, symbol: string, node: ts.Node, valueOf: (node: ts.Expression) => string | undefined): boolean {
   if (ts.isBinaryExpression(node) && (file === "src/hub/routing.ts" || file === "src/hub/tasks.ts")) {
-    const other = literal(node.left) === "local" ? unwrap(node.right) : literal(node.right) === "local" ? unwrap(node.left) : undefined;
+    const other = valueOf(node.left) === "local" ? unwrap(node.right) : valueOf(node.right) === "local" ? unwrap(node.left) : undefined;
     if (other && ts.isPropertyAccessExpression(other) && other.name.text === "pii_screen") return true;
   }
+  // These exact local values name a screening provider or lifecycle gate, never a peer.
+  if (file === "src/hub/config-apply.ts" && symbol === "authorizeConfigLeaf" && ts.isBinaryExpression(node)
+    && node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+    && ts.isIdentifier(node.left) && node.left.text === "after" && valueOf(node.right) === "local") {
+    const hasScreenKey = (part: ts.Node): boolean => ts.isBinaryExpression(part) && part.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      ? hasScreenKey(part.left) || hasScreenKey(part.right)
+      : ts.isBinaryExpression(part) && part.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken && ts.isIdentifier(part.left)
+        && part.left.text === "key" && valueOf(part.right) === "routing.signals.pii_screen";
+    let owner: ts.Node = node;
+    while (owner.parent && !ts.isIfStatement(owner.parent) && !ts.isBlock(owner.parent)) owner = owner.parent;
+    if (ts.isIfStatement(owner.parent) && owner.parent.expression === owner && hasScreenKey(owner)) return true;
+  }
+  if (ts.isStringLiteralLike(node) && ts.isArrayLiteralExpression(node.parent)) {
+    const array = node.parent;
+    const values = array.elements.map(value => valueOf(value));
+    if (file === "src/hub/config-reload.ts" && symbol === "validateRoutingRaw.signals.pii_screen"
+      && values.length === 2 && values[0] === "off" && values[1] === "local"
+      && ts.isCallExpression(array.parent) && ts.isIdentifier(array.parent.expression) && array.parent.expression.text === "choice") return true;
+    if (file === "src/hub/sdlc.ts" && symbol === "STAGE_GATES"
+      && values.length === 6 && values.join(",") === "issue,pr,local,review,checks,phase") return true;
+  }
   if (file === "src/hub/sdlc.ts" && symbol === "stageGates.select.matching" && ts.isBinaryExpression(node)) {
-    return ts.isIdentifier(node.left) && node.left.text === "gate" && literal(node.right) === "local";
+    return ts.isIdentifier(node.left) && node.left.text === "gate" && valueOf(node.right) === "local";
   }
   if (file === "src/hub/routing.ts" && symbol === "parseRouting") {
     if (ts.isPropertyAssignment(node) && propertyName(node.name) === "local") {
@@ -120,22 +178,21 @@ function falsePositive(file: string, symbol: string, node: ts.Node): boolean {
   }
   return false;
 }
-function scanScript(file: string, source: string, prefix: string, lineOffset: number): InventorySite[] {
-  const parsed = ts.createSourceFile(file.endsWith(".html") ? `${file}.js` : file, source, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : file.endsWith(".js") || file.endsWith(".html") ? ts.ScriptKind.JS : ts.ScriptKind.TS);
+function scanScript(file: string, parsed: ts.SourceFile, prefix: string, lineOffset: number, valueOf: (node: ts.Expression) => string | undefined): InventorySite[] {
   const sites: InventorySite[] = [];
   const resolver = trustedResolvers(file, parsed);
   const add = (node: ts.Node, pattern: InventorySite["pattern"]) => {
     const symbol = enclosingSymbol(node, prefix);
-    if (falsePositive(file, symbol, node)) return;
+    if (falsePositive(file, symbol, node, valueOf)) return;
     sites.push({ file, symbol, line: lineOffset + parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1, pattern, text: node.getText(parsed) });
   };
   const visit = (node: ts.Node): void => {
     if (ts.isBinaryExpression(node) && equality.has(node.operatorToken.kind)) {
-      const left = literal(node.left), right = literal(node.right);
-      if (left !== undefined && VENDORS.has(left) && !kindAware(node.right, resolver) || right !== undefined && VENDORS.has(right) && !kindAware(node.left, resolver)) add(node, "comparison");
-    } else if (ts.isCaseClause(node) && VENDORS.has(literal(node.expression) ?? "")) {
+      const left = valueOf(node.left), right = valueOf(node.right);
+      if (left !== undefined && VENDORS.has(left) || right !== undefined && VENDORS.has(right)) add(node, kindAware(left !== undefined && VENDORS.has(left) ? node.right : node.left, resolver) ? "kind-aware-comparison" : "comparison");
+    } else if (ts.isCaseClause(node) && VENDORS.has(valueOf(node.expression) ?? "")) {
       const owner = node.parent.parent;
-      if (!ts.isSwitchStatement(owner) || !kindAware(owner.expression, resolver)) add(node, "comparison");
+      add(node, ts.isSwitchStatement(owner) && kindAware(owner.expression, resolver) ? "kind-aware-comparison" : "comparison");
     } else if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && CLOSED_MODULE.test(node.moduleSpecifier.text)) {
       const bindings = node.importClause?.namedBindings;
       if (bindings && ts.isNamespaceImport(bindings)) add(node, "closed-list-import");
@@ -152,20 +209,27 @@ function scanScript(file: string, source: string, prefix: string, lineOffset: nu
 }
 /** Pure scanner: callers supply bounded fixtures or the explicit src inventory. It never reads or writes a baseline. */
 export function scanRegistrySources(sources: Readonly<Record<string, string>>): InventorySite[] {
-  const sites: InventorySite[] = [];
+  const sites: InventorySite[] = [], inputs: Record<string, string> = {};
+  const scripts: { file: string; input: string; prefix: string; offset: number }[] = [];
   for (const [rawFile, source] of Object.entries(sources).sort(([a], [b]) => a.localeCompare(b))) {
     const file = rawFile.replaceAll("\\", "/");
-    // #451's native-adapter/definition exception is scoped to this exact source directory.
-    if (file.startsWith("src/adapters/") || !/^src\/.*\.(?:ts|tsx|js|html)$/.test(file)) continue;
+    if (!/^src\/.*\.(?:ts|tsx|js|html)$/.test(file)) continue;
     if (file.endsWith(".html")) {
       let index = 0;
       for (const match of source.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script\s*>/gi)) {
         index++;
         if (/\bsrc\s*=/i.test(match[0].slice(0, match[0].indexOf(">")))) continue;
-        const body = match[1]!, offset = match.index! + match[0].indexOf(">") + 1;
-        sites.push(...scanScript(file, body, `script[${index}]`, source.slice(0, offset).split("\n").length - 1));
+        const input = `${file}.script${index}.js`, offset = match.index! + match[0].indexOf(">") + 1;
+        inputs[input] = match[1]!;
+        scripts.push({ file, input, prefix: `script[${index}]`, offset: source.slice(0, offset).split("\n").length - 1 });
       }
-    } else sites.push(...scanScript(file, source, "", 0));
+    } else { inputs[file] = source; scripts.push({ file, input: file, prefix: "", offset: 0 }); }
+  }
+  const bindings = sourceBindings(inputs);
+  for (const script of scripts) {
+    // Native definitions remain exempt from policy inventory, but their exported constants can bind imports.
+    if (script.file.startsWith("src/adapters/")) continue;
+    sites.push(...scanScript(script.file, bindings.parsed(script.input), script.prefix, script.offset, bindings.valueOf));
   }
   return sites;
 }
@@ -193,4 +257,38 @@ export function compareRegistryBaseline(actual: readonly BaselineEntry[], baseli
   }
   for (const [key, entry] of expected) if (!seen.has(key)) issues.push(`stale baseline: ${entry.file} ${entry.symbol}`);
   return issues;
+}
+
+/** Released coordinators read these exact top-level literal exports before any effects. */
+export const REGISTRY_COMPATIBILITY_PROBES = [
+  { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", count: 5, reason: "cross-release source probe" },
+  { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 2, reason: "cross-release source probe" },
+  { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 3, reason: "cross-release source probe" },
+] as const;
+
+/** Keep compatibility evidence visible and separate from the native policy baseline. */
+export function splitRegistryInventory(sources: Readonly<Record<string, string>>) {
+  const sites = scanRegistrySources(sources), accepted = new Set<InventorySite>();
+  const compatibility: { file: string; symbol: string; count: number; reason: string; values: string[] }[] = [];
+  const issues: string[] = [];
+  for (const probe of REGISTRY_COMPATIBILITY_PROBES) {
+    const text = sources[probe.file];
+    const parsed = text === undefined ? undefined : ts.createSourceFile(probe.file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declarations: ts.VariableDeclaration[] = [];
+    for (const statement of parsed?.statements ?? []) {
+      if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const) || !statement.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+      for (const declaration of statement.declarationList.declarations) if (ts.isIdentifier(declaration.name) && declaration.name.text === probe.symbol) declarations.push(declaration);
+    }
+    const initializer = declarations.length === 1 && declarations[0]!.initializer ? unwrap(declarations[0]!.initializer!) : undefined;
+    const values = initializer && ts.isArrayLiteralExpression(initializer) && initializer.elements.every(ts.isStringLiteral)
+      ? initializer.elements.map(element => (element as ts.StringLiteral).text) : undefined;
+    const matches = sites.filter(site => site.file === probe.file && site.symbol === probe.symbol && site.pattern === "vendor-literal");
+    if (!values || values.length !== probe.count || matches.length !== probe.count || values.some(value => !VENDORS.has(value))) {
+      issues.push(`invalid compatibility probe: ${probe.file} ${probe.symbol}`);
+      continue;
+    }
+    for (const site of matches) accepted.add(site);
+    compatibility.push({ ...probe, count: matches.length, values });
+  }
+  return { policy: sites.filter(site => !accepted.has(site)), compatibility, issues };
 }

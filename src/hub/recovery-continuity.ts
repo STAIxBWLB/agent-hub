@@ -1,3 +1,4 @@
+import { ADAPTERS } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
@@ -37,12 +38,12 @@ function canonicalRoot(value: unknown): string {
   return root;
 }
 function checked(value: unknown): RecoveryContinuityBookmark {
-  if (!record(value) || !keys(value, ["schema", "operationId", "projectId", "projectRoot", "at", "pi"]) || value.schema !== 1 || typeof value.operationId !== "string" || !operationIdPattern.test(value.operationId) || !id(value.projectId) || !absolute(value.projectRoot) || !Number.isSafeInteger(value.at) || (value.at as number) < 0) return unavailable();
-  const pi = value.pi;
-  if (!record(pi) || !keys(pi, ["sessionId", "sessionFile", "backend", "model"]) || !id(pi.sessionId) || pi.sessionFile !== undefined && !absolute(pi.sessionFile) || pi.backend !== undefined && !["auto", "dgx", "mlx"].includes(String(pi.backend)) || pi.model !== undefined && !text(pi.model, 4096)) return unavailable();
+  const codecs = ADAPTERS.flatMap(adapter => adapter.session.continuity ? [adapter.session.continuity] : []);
+  if (!record(value) || !keys(value, ["schema", "operationId", "projectId", "projectRoot", "at", ...codecs.map(codec => codec.key)]) || value.schema !== 1 || typeof value.operationId !== "string" || !operationIdPattern.test(value.operationId) || !id(value.projectId) || !absolute(value.projectRoot) || !Number.isSafeInteger(value.at) || (value.at as number) < 0) return unavailable();
+  const native: Record<string, unknown> = {};
+  for (const codec of codecs) { const parsed = codec.parse(value[codec.key]); if (parsed === undefined) return unavailable(); native[codec.key] = parsed; }
   const projectRoot = canonicalRoot(value.projectRoot);
-  return { schema: 1, operationId: value.operationId, projectId: value.projectId, projectRoot, at: value.at as number,
-    pi: { sessionId: pi.sessionId, ...(pi.sessionFile === undefined ? {} : { sessionFile: pi.sessionFile as string }), ...(pi.backend === undefined ? {} : { backend: pi.backend as "auto" | "dgx" | "mlx" }), ...(pi.model === undefined ? {} : { model: pi.model as string }) } };
+  return { schema: 1, operationId: value.operationId, projectId: value.projectId, projectRoot, at: value.at as number, ...native } as RecoveryContinuityBookmark;
 }
 function stateDirectory(stateDir: string): void {
   if (!absolute(stateDir)) return unavailable();

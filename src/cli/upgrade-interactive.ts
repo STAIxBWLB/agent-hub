@@ -1,3 +1,4 @@
+import { definitionOf } from "../adapters/registry.ts";
 import { renderPlan, renderOperation, renderBlocked, renderSummary, renderStep, renderWait, renderMenu, choiceInstruction, type RecoveryPresentationOptions, type MenuPresentationItem } from "./upgrade-presentation.ts";
 import { quoted, wrap } from "./console-state.ts";
 import { operationLines, stepLabel } from "./upgrade-labels.ts";
@@ -83,7 +84,8 @@ const left = (op: { id: string; sourceRoot?: string }, io: ScreenIO): string => 
 export function peerKind(planned: PlannedProject, peer: RecoveryPeer): "tui" | "headless" | "unmanaged" | "offline" {
   if (peer.state === "offline") return "offline";
   if ((planned.terminals as { peer: string }[]).some((t) => t.peer === peer.id)) return "tui";
-  if (peer.id === "claude" || peer.id === "codex" || (peer.id === "pi" && peer.args?.mode === "tui")) return "unmanaged";
+  const unrecorded = definitionOf(peer.id)?.session.unrecordedTerminal;
+  if (unrecorded === "always" || unrecorded === "tui" && peer.args?.mode === "tui") return "unmanaged";
   return "headless";
 }
 
@@ -93,7 +95,7 @@ function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
   if (planned.freshStart?.includes(peer.id)) return "restarts as a new session (no turn to lose)";
   const terminal = (planned.terminals as { peer: string; handle: string }[]).find((t) => t.peer === peer.id);
   if (terminal) return `resumes its session in a new terminal (replaces ${terminal.handle})`;
-  return peer.id === "pi" ? "restarts headless on its recorded session" : "restarts headless as a new session";
+  return definitionOf(peer.id)?.session.restoreOnStart ? "restarts headless on its recorded session" : "restarts headless as a new session";
 }
 
 const KINDS = { tui: "TUI", headless: "headless", unmanaged: "own", offline: "-" } as const;

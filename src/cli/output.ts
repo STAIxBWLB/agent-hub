@@ -1,3 +1,4 @@
+import { definitionOf } from "../adapters/registry.ts";
 import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
 import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
@@ -234,8 +235,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
         : flat(p.paused).replace(/^(budget: .*), resets .+$/, "$1; reset unknown");
       out.push(...detail("paused", pauseText, columns, "attention"));
     }
-    if (p.toolsOnly) out.push(...detail(id === "kimi" && p.pullOnly ? "pull-only" : "tools-only", flat(p.toolsOnly).replace(/^(?:tools-only|pull-only):\s*/, ""), columns, "attention"));
-    if (p.pullOnly && id === "kimi") out.push(...detail("kimi last read", typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never", columns, "muted"));
+    if (p.toolsOnly) out.push(...detail(definitionOf(id)?.attach?.pullOnlyForms?.includes("tui") && p.pullOnly ? "pull-only" : "tools-only", flat(p.toolsOnly).replace(/^(?:tools-only|pull-only):\s*/, ""), columns, "attention"));
+    if (p.pullOnly && definitionOf(id)?.attach?.pullOnlyForms?.includes("tui")) out.push(...detail(`${id} last read`, typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never", columns, "muted"));
     if (p.permissionNote) out.push(...detail("permission", p.permissionNote, columns, "muted"));
     if (p.requestedModel && p.servedBy && p.requestedModel !== p.servedBy) out.push(...detail("requested model", p.requestedModel, columns));
     if (typeof p.oldestQueuedAt === "number") out.push(...detail(`${id} oldest queued`, relative(p.oldestQueuedAt, now), columns, "muted"));

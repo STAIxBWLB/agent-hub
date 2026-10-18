@@ -1,6 +1,6 @@
 import type { HubConfig } from "./daemon.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked } from "./config-trust.ts";
-import { SUPPORTED_PEERS, PLANNER_PEERS } from "./peer-catalog.ts";
+import { ADAPTERS, SUPPORTED_PEERS, PLANNER_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { CLASSES } from "./board.ts";
 import { permissionDefaults } from "./permission-mode.ts";
 import { peerStartConfig, terminalTemplate } from "./start-mode.ts";
@@ -103,7 +103,9 @@ const block = (schema: Record<string, Check>): Check => {
 };
 const peerMap = (check: Check) => map(check, SUPPORTED_PEERS);
 const timerSeconds = number(1, 2_147_483_647 / 1000), timerMinutes = number(1, 2_147_483_647 / 60_000);
+const nativeValidators = { bool, text, strings, argv, number, words, block };
 const schema: Record<string, Check> = {
+  ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
@@ -119,10 +121,8 @@ const schema: Record<string, Check> = {
   context: block({ gate: number(0, 1), stale_min: timerMinutes }),
   inference: block({ enabled: bool, digest_min_items: number(1, 100_000, true), digest_min_chars: number(1, 10_000_000, true), triage: bool }),
   omniroute: block({ urls: strings, api_key_file: text, access_hosts: strings, cf_client_id_file: text, cf_client_secret_file: text }),
-  pi: block({ enabled: bool, auto_start: bool, cmd: argv, backend: words(["auto", "dgx", "mlx"]), dgx_coding: text, dgx_fast: text, max_steps: number(1, 1_000_000, true) }),
   mlx: block({ enabled: bool, provider: words(["legacy", "ollama"]), host: text, runtimeDir: text, modelPath: text, bin: text, port: number(1, 65535, true), model: text, sourceModel: text,
     contextWindow: number(1), maxInputTokens: number(1), maxTokens: number(1), maxConcurrency: number(1, 1024, true) }),
-  local: block({ deny: strings, bash_network: (v, k) => { if (v !== "direct") bool(v, k); }, network_allow: strings, max_steps: number(1, 1_000_000, true), read_allow: strings }),
   approvals: block({ timeout_s: timerSeconds, notify: bool }), tasks: block({ release_after_min: number(0), wip_limits: map(number(0, 32, true)), escalate_after: number(1, 10, true) }),
   task_sweep: (v, k) => { block({ enabled: bool, auto_reassign: bool, interval_s: timerSeconds, unaccepted_min: timerMinutes, idle_min: timerMinutes, review_min: timerMinutes, ready_min: timerMinutes, ladder_min: timerMinutes })(v, k); taskSweepConfig(v); },
   checks: (v, k) => { for (const [key, value] of Object.entries(object(v, k))) {
@@ -132,7 +132,7 @@ const schema: Record<string, Check> = {
     else if (/^[a-z][a-z0-9_]{0,47}$/.test(key)) text(value, `${k}.${key}`); else fail(`${k}.${key}`, "unknown key");
   } },
   snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool }), bench: block({ enabled: bool }),
-  peers: (v, k) => { map(block({ start_mode: words(["tui", "headless"]) }), ["pi", "codex", "kimi"])(v, k); peerStartConfig(v); },
+  peers: (v, k) => { map(block({ start_mode: words(["tui", "headless"]) }), START_MODE_PEERS)(v, k); peerStartConfig(v); },
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
   limits: block({ sender_per_min: number(0), pair_per_min: number(0), important_per_hour: number(0), repeat_window_s: number(0) }),
   review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true) }), recovery: block({ auto_resume_after_crash: bool }),
@@ -145,19 +145,15 @@ export function validateEffectiveConfig(value: unknown): asserts value is HubCon
   validateRawConfig(raw);
   const profile = resolveProfile(raw.profile, raw.profile_overrides);
   for (const key of Object.keys(object(raw.checks, "checks"))) if (!["timeout_s", "runner", ...CLASSES, ...Object.keys(profile.classes)].includes(key)) fail(`checks.${key}`, "unknown task class");
-  if (object(raw.mlx, "mlx").enabled === false && object(raw.pi, "pi").backend === "mlx") fail("pi.backend", "conflicts with disabled mlx");
+  for (const adapter of ADAPTERS) adapter.configuration?.validateEffective?.(raw, fail);
 }
 
 const restart: Record<string, string> = {
-  "pi.dgx_coding": "Published Pi relay model catalogue requires a new daemon relay",
-  "pi.dgx_fast": "Published Pi relay model catalogue requires a new daemon relay",
-  "routing.pi": "Pi relay context and model publication are bound to the running relay",
+  ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.restartReasons ?? {})),
   memory: "Open memory consumers, selected profile, client and sync timer must be quiesced together",
   omniroute: "Credentials and gateway clients are bound to relay ownership", mlx: "Model runtime ownership and device resources belong to this daemon",
   checks: "Bounded runner and completion-check contracts are constructed together",
   pii: "Existing native sessions retain their startup privacy boundary", data: "Existing native sessions retain their startup read-only policy",
-  "local.deny": "Existing native sessions retain their sandbox deny policy", "local.read_allow": "Existing native sessions retain their sandbox read grants",
-  "local.bash_network": "Existing sandbox and egress proxy contracts require a new instance", "local.network_allow": "Existing egress proxy ownership requires a new instance",
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
@@ -182,7 +178,7 @@ export function configApply(key: string): ApplyRule {
       else return fail(key, "unknown configuration key");
     }
   }
-  if (top === "routing" && !key.startsWith("routing.pi") && key !== "routing") {
+  if (top === "routing" && !ADAPTERS.some(adapter => Object.keys(adapter.configuration?.restartReasons ?? {}).some(prefix => prefix.startsWith("routing.") && key.startsWith(prefix))) && key !== "routing") {
     return { applies: ["classes", "stay_switch", "signals", "constraints", "hub_routes", "max_switch_prefill_tokens"].includes(key.split(".")[1]!) ? "live" : "next use" };
   }
   if (nextMemory.has(key)) return { applies: "next use" };

@@ -164,15 +164,15 @@
     {
       "id": "roster-r-pi-override",
       "file": "src/hub/roster.ts",
-      "search": "  return roster[peer] ?? (peer === \"pi\" ? piEnabled : DEFAULT_ON[peer] ?? false);",
-      "replacement": "  return peer === \"pi\" ? piEnabled : roster[peer] ?? DEFAULT_ON[peer] ?? false;",
+      "search": "  return roster[peer] ?? defaultRosterEnabled(peer, piEnabled);",
+      "replacement": "  return peer === \"pi\" ? piEnabled : roster[peer] ?? defaultRosterEnabled(peer, piEnabled);",
       "testFile": "test/roster.test.ts",
       "testName": "roster validates the closed boolean catalog and explicit Pi membership wins its legacy switch (#315)"
     },
     {
       "id": "roster-r-catalog",
       "file": "src/hub/roster.ts",
-      "search": "    if (!isSupportedPeer(peer)) throw new Error(\"roster contains an unsupported peer\");",
+      "search": "    if (!definitionOf(peer)) throw new Error(\"roster contains an unsupported peer\");",
       "replacement": "    // negative control: unknown key accepted",
       "testFile": "test/roster.test.ts",
       "testName": "roster validates the closed boolean catalog and explicit Pi membership wins its legacy switch (#315)"
@@ -204,7 +204,7 @@
     {
       "id": "roster-result-stop-text",
       "file": "src/hub/daemon.ts",
-      "search": "...(!after && terminalNotice ? [terminalNotice] : []), ...(after && peer === \"codex\" ? [`Codex 0.146.0 needs a manual return: resume the previous native session with ${codexResumeCommand()}.`] : []),",
+      "search": "...(!after && terminalNotice ? [terminalNotice] : []), ...(after && definitionOf(peer)?.cli.rosterReturnNotice ? [definitionOf(peer)!.cli.rosterReturnNotice!(codexResumeCommand())] : []),",
       "replacement": "...[], ",
       "testFile": "test/roster.test.ts",
       "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
@@ -395,9 +395,9 @@
     },
     {
       "id": "kimi-tui-default",
-      "file": "src/hub/start-mode.ts",
-      "search": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\"] as const;",
-      "replacement": "export const START_MODE_PEERS = [\"pi\", \"codex\"] as const;",
+      "file": "src/adapters/definitions/builtin-metadata.ts",
+      "search": "start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => \"ahub kimi\", daemonPort: \"acp\", forms: dualForms, defaultForm: \"tui\"",
+      "replacement": "start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => \"ahub kimi\", daemonPort: \"acp\", forms: dualForms, defaultForm: \"headless\"",
       "testFile": "test/kimi-tui.test.ts",
       "testName": "Kimi default and settings floor are TUI, and native hello admits only pull mode (#316)"
     },
@@ -435,17 +435,17 @@
     },
     {
       "id": "kimi-recovery-tui-fence",
-      "file": "src/cli/upgrade-runtime.ts",
-      "search": "if (peer.id === \"kimi\" && peer.args?.mode === \"tui\") {",
-      "replacement": "if (false && peer.id === \"kimi\" && peer.args?.mode === \"tui\") {",
+      "file": "src/adapters/definitions/native-recovery.ts",
+      "search": "recoveryRefusal: (peer, phase = \"plan\") => peer.args?.mode === \"tui\"",
+      "replacement": "recoveryRefusal: (peer, phase = \"plan\") => false && peer.args?.mode === \"tui\"",
       "testFile": "test/upgrade-runtime.test.ts",
       "testName": "controlled recovery planning refuses an attached Kimi TUI before effects (#316)"
     },
     {
       "id": "kimi-launch-override-detach",
       "file": "src/hub/daemon.ts",
-      "search": "if (sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();",
-      "replacement": "if (false && sock.data.peer === \"kimi\" && peer.state === \"offline\" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();",
+      "search": "if (!!sock.data.peer && !!definitionOf(sock.data.peer)?.attach?.admission && peer.state === \"offline\" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();",
+      "replacement": "if (false && !!sock.data.peer && !!definitionOf(sock.data.peer)?.attach?.admission && peer.state === \"offline\" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();",
       "testFile": "test/kimi-tui.test.ts",
       "testName": "a one-launch Kimi TUI override ends at detach and failed launch cleanup (#316)"
     },
@@ -523,25 +523,25 @@
     },
     {
       "id": "qwen-roster-opt-in",
-      "file": "src/hub/roster.ts",
-      "search": "local: true };",
-      "replacement": "local: true, qwen: true };",
+      "file": "src/adapters/definitions/qwen.ts",
+      "search": "  defaultOnRoster: false,",
+      "replacement": "  defaultOnRoster: true,",
       "testFile": "test/qwen-peer.test.ts",
       "testName": "Qwen is optional on the roster, role-guided, previewed without execution and stopped as an owned ACP (#256)"
     },
     {
       "id": "qwen-controlled-session",
-      "file": "src/cli/upgrade-runtime.ts",
-      "search": "if (definitionOf(peer.id)?.session.restoreOnStart && peer.sessionId) args.push(\"--session-id\", peer.sessionId);",
-      "replacement": "if (false && definitionOf(peer.id)?.session.restoreOnStart && peer.sessionId) args.push(\"--session-id\", peer.sessionId);",
+      "file": "src/adapters/definitions/native-recovery.ts",
+      "search": "  restoreArgs: peer => ({ ...startupArgs(peer), ...(peer.sessionId ? { \"session-id\": peer.sessionId } : {}) }),",
+      "replacement": "  restoreArgs: peer => ({ ...startupArgs(peer) }),",
       "testFile": "test/upgrade-runtime.test.ts",
       "testName": "the recovery driver passes the saved Qwen conversation id through its emitted launcher argv (#256)"
     },
     {
       "id": "qwen-crash-resume",
       "file": "src/hub/crash.ts",
-      "search": "if (adapter?.transport === \"acp\" && adapter.start.create) {",
-      "replacement": "if (false && adapter?.transport === \"acp\" && adapter.start.create) {",
+      "search": "if (adapter?.session.resumeById) {",
+      "replacement": "if (false && adapter?.session.resumeById) {",
       "testFile": "test/qwen-peer.test.ts",
       "testName": "a crashed owned Qwen resumes its recorded ACP session instead of claiming self-reconnect (#256)"
     },
@@ -2364,7 +2364,7 @@
     {
       "id": "planning-reservation-supported",
       "file": "src/hub/tasks.ts",
-      "search": "if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved))",
+      "search": "if (patch.reserved && !definitionOf(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved))",
       "replacement": "if (false)",
       "testFile": "test/planning.test.ts",
       "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
@@ -3140,8 +3140,8 @@
     {
       "id": "kimi-watch-live-owner",
       "file": "src/hub/daemon.ts",
-      "search": "if (peer === \"kimi\" && !(kimiOwner instanceof AcpPeer) && (",
-      "replacement": "if (peer === \"kimi\" && (",
+      "search": "if (admission && !(owner instanceof AcpPeer) && (",
+      "replacement": "if (admission && (",
       "testFile": "test/kimi-tui.test.ts",
       "testName": "watch follows a running headless Kimi under the default TUI start mode (#382)"
     },
@@ -3155,7 +3155,7 @@
     },
     {
       "id": "codex-disabled-plugin-trust",
-      "file": "src/hub/tooling.ts",
+      "file": "src/adapters/definitions/native-policy-aux.ts",
       "search": "if (!disabled.has(m[1]! + \"@\" + m[2]!)) found.set(m[1]!, m[2]!);",
       "replacement": "found.set(m[1]!, m[2]!);",
       "testFile": "test/tooling.test.ts",
@@ -3163,7 +3163,7 @@
     },
     {
       "id": "tooling-regular-file-read",
-      "file": "src/hub/tooling.ts",
+      "file": "src/adapters/definitions/native-policy-aux.ts",
       "search": "if (!st.isFile() || st.size > 1024 * 1024) return undefined;",
       "replacement": "if (st.size > 1024 * 1024) return undefined;",
       "testFile": "test/tooling.test.ts",

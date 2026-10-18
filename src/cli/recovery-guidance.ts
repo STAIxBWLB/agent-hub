@@ -1,3 +1,4 @@
+import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { recordedFileState } from "./recovery-session-file.ts";
 import { decodeRestoreReceipt } from "./upgrade-restore-state.ts";
 import { shellQuote } from "./terminal-recovery.ts";
@@ -25,11 +26,13 @@ export interface RecoveryGuidanceOptions {
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const argv = (...words: string[]): string => words.map(shellQuote).join(" ");
-const peers: readonly RecoveryNativePeer[] = ["codex", "pi", "claude"];
+const peers = (): RecoveryNativePeer[] => ADAPTERS.filter(adapter => adapter.session.launchRecord)
+  .sort((a, b) => Number(a.transport === "claude-channel") - Number(b.transport === "claude-channel"))
+  .map(adapter => adapter.kind as RecoveryNativePeer);
 
 function sourceSession(peer: RecoveryNativePeer, source: RecoveryPeer | undefined): { sessionId?: string; sessionFile?: string } {
-  const sessionId = peer === "codex" ? source?.threadId : source?.sessionId;
-  const sessionFile = peer === "pi" ? source?.sessionFile ?? source?.args?.sessionFile : undefined;
+  const sessionId = source?.[definitionOf(peer)?.session.idField ?? "sessionId"];
+  const sessionFile = definitionOf(peer)?.session.crashIdentity ? source?.sessionFile ?? source?.args?.sessionFile : undefined;
   return { ...(text(sessionId) ? { sessionId } : {}), ...(text(sessionFile) ? { sessionFile } : {}) };
 }
 
@@ -70,7 +73,7 @@ export function resolveAcceptedBinding(planned: PlannedProject, progress: Projec
  * current receipts and the original plan. A malformed current receipt otherwise stays unavailable.
  */
 export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectProgress, options: RecoveryGuidanceOptions = {}): RecordedPeerGuidance[] {
-  return peers.map(peer => {
+  return peers().map(peer => {
     let session: { sessionId?: string; sessionFile?: string } | undefined;
     let unavailable = false;
     const override = options.recorded && Object.hasOwn(options.recorded, peer) ? options.recorded[peer] : undefined;
@@ -82,18 +85,19 @@ export function recordedPeerGuidance(planned: PlannedProject, progress: ProjectP
       } catch { unavailable = true; }
     }
     const sessionId = text(session?.sessionId) ? session.sessionId : undefined;
-    const sessionFile = peer === "pi" && text(session?.sessionFile) ? session.sessionFile : undefined;
+    const sessionFile = definitionOf(peer)?.session.crashIdentity && text(session?.sessionFile) ? session.sessionFile : undefined;
     if (unavailable || (!sessionId && !sessionFile)) return { peer, note: `${peer}: recorded session identity unavailable; inspect the retained recovery receipt before choosing a conversation` };
     const prefix = ["ahub", "--project", planned.project.root];
-    const command = peer === "codex"
-      ? sessionId ? argv(...prefix, "codex", "resume", sessionId) : undefined
-      : peer === "pi"
-        ? sessionFile ? argv(...prefix, "pi", "--session-file", sessionFile) : sessionId ? argv(...prefix, "pi", "--session-id", sessionId) : undefined
-        : sessionId ? argv(...prefix, "claude", "--resume", sessionId) : undefined;
-    let note = peer === "claude"
+    const adapter = definitionOf(peer)!;
+    const tail = adapter.session.resumeArgv?.({ sessionId: sessionId ?? "", ...(sessionFile ? { sessionFile } : {}) }, false);
+    const start = adapter.cli.startWords("tui");
+    // Person guidance preserves its legacy implied startup form; terminal creation pins the explicit form.
+    const personTail = tail && start.every((word, index) => tail[index] === word) ? [tail[0]!, ...tail.slice(start.length)] : tail;
+    const command = personTail ? argv(...prefix, ...personTail) : undefined;
+    let note = definitionOf(peer)?.transport === "claude-channel"
       ? "The existing Claude channel may reconnect while its native session remains open. Transcript availability is unknown; the recorded resume command is guidance, not proof that the transcript can be resumed."
-      : peer === "codex" ? "Recorded Codex thread; leave the old native client before resuming this conversation."
-        : "Recorded Pi conversation; preserve this session when starting Pi again.";
+      : definitionOf(peer)?.session.idField === "threadId" ? `Recorded ${definitionOf(peer)!.displayName} thread; leave the old native client before resuming this conversation.`
+        : `Recorded ${definitionOf(peer)!.displayName} conversation; preserve this session when starting ${definitionOf(peer)!.displayName} again.`;
     if (sessionFile && options.stopAndArchiveCommand && recordedFileState(sessionFile) === "missing") {
       note = `Recorded Pi session file is positively missing. Fresh-session is not supported for Pi. ${piArchiveExit(planned, options.stopAndArchiveCommand)}`;
     }

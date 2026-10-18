@@ -1,3 +1,4 @@
+import { ADAPTERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -66,15 +67,19 @@ function validateRoutingRaw(value: unknown): void {
       const entry = table(item, `${key}.${name}`); text(entry[required], `${key}.${name}.${required}`); openValue(entry, `${key}.${name}`);
     }
   };
+  const nativeValidators = { bool, text, strings, argv: strings,
+    number: (min = 1, max = Number.MAX_SAFE_INTEGER, _integer = true) => (v: unknown, k: string) => numeric(v, k, min, max),
+    words: (values: readonly string[]) => (v: unknown, k: string) => choice(v, k, values),
+    block: (fields: Record<string, (v: unknown, k: string) => void>) => (v: unknown, k: string) => closed(v, k, fields),
+  };
   closed(value, "routing", {
-    local: (v, k) => closed(v, k, { route: text, fixed_model: text }),
+    ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.routingSchema?.(nativeValidators) ?? {})),
     targets: (v, k) => switchyard(v, k, "id"), routes: (v, k) => switchyard(v, k, "type"),
     // parseRouting delegates these tables to the existing parseHubRoutes validator.
     hub_routes: (v, k) => { table(v, k); },
     stay_switch: (v, k) => choice(v, k, ["off", "shadow", "enforce"]), max_switch_prefill_tokens: numeric,
     signals: (v, k) => closed(v, k, { pii_patterns: strings, long_context_tokens: numeric, pii_screen: (x, p) => choice(x, p, ["off", "local"]) }),
     constraints: (v, k) => closed(v, k, { pii: (x, p) => choice(x, p, ["local_only", "off"]), long_context: (x, p) => choice(x, p, ["skip_local", "off"]), budget_paused: (x, p) => choice(x, p, ["skip_peer", "off"]) }),
-    pi: (v, k) => closed(v, k, { dgx_max_context_tokens: numeric, mlx_max_context_tokens: numeric, efficient_wait_ms: (x, p) => numeric(x, p, 0, 119999) }),
     classes: (v, k) => { for (const [name, item] of Object.entries(table(v, k))) {
       if (!(CLASSES as readonly string[]).includes(name)) bad(`${k}.${name}`);
       closed(item, `${k}.${name}`, { peers, escalate_to: peers, route: text, fixed_model: text, local_allowed: bool, pi_backend: (x, p) => choice(x, p, ["dgx", "mlx"]) });

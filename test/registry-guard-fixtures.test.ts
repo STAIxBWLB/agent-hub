@@ -48,11 +48,11 @@ test("registry guard fixture refuses stale, reduced and duplicate baseline entri
   expect(compareRegistryBaseline([entry], [entry, entry]).join("\n")).toContain("duplicate");
 });
 
-test("registry guard fixture excludes native adapter implementation and kind-aware comparisons only", () => {
+test("registry guard fixture excludes native adapter implementation while counting kind-aware comparisons", () => {
   const body = `function choose(peer: string) { return peer === "qwen"; }`;
   expect(inventory(body, "src/adapters/acp.ts")).toEqual([]);
   expect(inventory(body, "src/adapters/registry.ts")).toEqual([]);
-  expect(inventory(`import { kindOf, definitionOf } from "../adapters/registry.ts"; function choose(peer: string) { return kindOf(peer) === "qwen" || definitionOf(peer)?.kind === "kimi"; }`)).toEqual([]);
+  expect(inventory(`import { kindOf, definitionOf } from "../adapters/registry.ts"; function choose(peer: string) { return kindOf(peer) === "qwen" || definitionOf(peer)?.kind === "kimi"; }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 2 }]);
   expect(inventory(`function choose(peer: string) { return fakeKindOf(peer) === "qwen" || object.kind === "kimi"; }`)[0]?.count).toBe(2);
 });
 
@@ -81,6 +81,74 @@ test("registry guard fixture trusts only imported registry resolvers without loc
   expect(inventory(`function choose(peer: string) { return kindOf(peer) === "qwen" || definitionOf(peer)?.kind === "kimi"; }`)[0]?.count).toBe(2);
   expect(inventory(`import { kindOf } from "../adapters/registry.ts"; function choose(peer: string, kindOf: (id: string) => string) { return kindOf(peer) === "qwen"; }`)[0]?.count).toBe(1);
   expect(inventory(`import { definitionOf } from "../adapters/registry.ts"; function choose(peer: string) { const definitionOf = (id: string) => ({kind:id}); return definitionOf(peer)?.kind === "kimi"; }`).reduce((count, group) => count + group.count, 0)).toBe(1);
-  expect(inventory(`import { kindOf as resolveKind, definitionOf as resolveDefinition } from "../adapters/registry.ts"; function choose(peer: string) { return resolveKind(peer) === "qwen" || resolveDefinition(peer)?.kind === "kimi"; }`)).toEqual([]);
+  expect(inventory(`import { kindOf as resolveKind, definitionOf as resolveDefinition } from "../adapters/registry.ts"; function choose(peer: string) { return resolveKind(peer) === "qwen" || resolveDefinition(peer)?.kind === "kimi"; }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 2 }]);
   expect(inventory(`import { kindOf } from "./fake-registry.ts"; function choose(peer: string) { return kindOf(peer) === "qwen"; }`)[0]?.count).toBe(1);
+});
+
+test("registry guard fixture distinguishes local provider and lifecycle enums from native identity", () => {
+  const apply = `function authorizeConfigLeaf(key:string,after:unknown){ if(key === "routing.signals.pii_screen" && after === "local") return true; }`;
+  expect(inventory(apply, "src/hub/config-apply.ts")).toEqual([]);
+  expect(inventory(apply.replace('key === "routing.signals.pii_screen" && ', ""), "src/hub/config-apply.ts")[0]?.count).toBe(1);
+  expect(inventory(apply.replace('key ===', 'key !=='), "src/hub/config-apply.ts")[0]?.count).toBe(1);
+  expect(inventory(apply.replace('after ===', 'after !=='), "src/hub/config-apply.ts")[0]?.count).toBe(1);
+  const reload = `function validateRoutingRaw(){return {signals:(v:any,k:string)=>closed(v,k,{pii_screen:(x:any,p:string)=>choice(x,p,["off","local"])})};}`;
+  expect(inventory(reload, "src/hub/config-reload.ts")).toEqual([]);
+  expect(inventory(reload.replace('"off","local"', '"codex","local"'), "src/hub/config-reload.ts")[0]?.count).toBe(2);
+  const gates = `const STAGE_GATES=["issue","pr","local","review","checks","phase"];`;
+  expect(inventory(gates, "src/hub/sdlc.ts")).toEqual([]);
+  expect(inventory(gates + ` function route(peer:string){return peer === "local"}`, "src/hub/sdlc.ts")[0]?.count).toBe(1);
+  expect(inventory(`const STAGE_GATES=["local","codex"];`, "src/hub/sdlc.ts")[0]?.count).toBe(2);
+});
+
+test("registry guard resolves peer-id constants and alias chains at comparison and case sites", () => {
+  const sites = scanRegistrySources(source(`
+    const LOCAL = "local", PI = ("pi" as const);
+    const PICK = LOCAL;
+    function choose(peer: string) {
+      if (peer !== LOCAL || PI === peer || peer === PICK) return 1;
+      switch (peer) { case PICK: return 2; }
+    }
+  `));
+  expect(sites.map(site => site.pattern)).toEqual(["comparison", "comparison", "comparison", "comparison"]);
+  expect(sites.map(site => site.symbol)).toEqual(["choose", "choose", "choose", "choose"]);
+});
+
+test("registry guard resolves imported aliases through the supplied source export bindings", () => {
+  const sites = scanRegistrySources({
+    "src/hub/routing.ts": `export const LOCAL = "local"; const PI = "pi"; export { PI as INSTRUMENTED };`,
+    "src/hub/reexport.ts": `export { LOCAL as ON_PREM } from './routing.ts';`,
+    "src/hub/example.ts": `import { LOCAL as target, INSTRUMENTED as runner } from './routing.ts'; import { ON_PREM as safe } from './reexport.ts'; function choose(peer:string){ return peer === target || runner !== peer || peer === safe; }`,
+  });
+  expect(sites.map(site => site.text)).toEqual(["peer === target", "runner !== peer", "peer === safe"]);
+  expect(sites.map(site => site.pattern)).toEqual(["comparison", "comparison", "comparison"]);
+});
+
+test("registry guard preserves lexical shadowing and ignores non-peer literal bindings", () => {
+  expect(inventory(`const LOCAL="local"; function choose(peer:string, LOCAL:string){return peer===LOCAL;} function other(peer:string){ const LOCAL="shadow"; return peer===LOCAL; }`)).toEqual([]);
+  expect(inventory(`const PI="pi"; function choose(peer:string){ { const PI="off"; if(peer===PI) return 1; } return peer===PI; }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 1 }]);
+  expect(inventory(`const PI="shadow", LOCAL="off"; function choose(mode:string){return mode===PI || mode===LOCAL;}`)).toEqual([]);
+  expect(inventory(`const PI="pi"; function choose(peer:string){ try { throw new Error(); } catch(PI) { return peer===PI; } }`)).toEqual([]);
+  expect(inventory(`const PI="pi"; function choose(peer:string){ for(const PI of ["off"]) { if(peer===PI) return 1; } }`)).toEqual([]);
+});
+
+test("registry guard classifies constant comparisons with trusted kind resolvers", () => {
+  const sites = scanRegistrySources(source(`import { kindOf as resolveKind } from '../adapters/registry.ts'; const LOCAL='local'; function choose(peer:string){ return resolveKind(peer)===LOCAL; }`));
+  expect(sites.map(site => site.pattern)).toEqual(["kind-aware-comparison"]);
+});
+
+test("registry guard preserves named local provider exemptions when the value is a constant", () => {
+  expect(inventory(`const LOCAL="local"; function parseRouting(){return signals.pii_screen!==LOCAL;}`, "src/hub/routing.ts")).toEqual([]);
+  expect(inventory(`const LOCAL="local"; function parseRouting(peer:string){return peer!==LOCAL;}`, "src/hub/routing.ts")[0]?.count).toBe(1);
+});
+
+
+test("registry guard does not borrow a constant from an unrelated supplied script", () => {
+  expect(scanRegistrySources({
+    "src/hub/first.ts": `const LOCAL="local"; function first(peer:string){return peer===LOCAL;}`,
+    "src/hub/second.ts": `function second(value:string){return value===LOCAL;}`,
+  }).map(site => site.symbol)).toEqual(["first"]);
+  expect(scanRegistrySources({
+    "src/hub/first.ts": `const LOCAL="local"; function first(peer:string){return peer===LOCAL;}`,
+    "src/hub/second.ts": `const LOCAL="shadow"; function second(value:string){return value===LOCAL;}`,
+  }).map(site => site.symbol)).toEqual(["first"]);
 });
