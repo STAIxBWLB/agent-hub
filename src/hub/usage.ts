@@ -71,7 +71,11 @@ export function readClaudeTranscriptUsage(sessionId: string, transcriptPath: str
   }
 }
 
-/** The tail read for turn completion: the newest end_turn row is always near the end. */
+/**
+ * The tail read for turn completion: the newest end_turn row is always near the end.
+ * ponytail: a fixed 4 MiB window; a completion written more than 4 MiB before EOF stays invisible (Claude appends the final
+ * row last, so this needs >4 MiB written after the turn ended). Upgrade: scan backwards in chunks until an assistant row.
+ */
 export const COMPLETION_TAIL_BYTES = 4 * 1024 * 1024;
 
 /**
@@ -84,11 +88,13 @@ export function readClaudeTranscriptCompletion(sessionId: string, transcriptPath
   try {
     fd = openSync(transcriptPath, "r");
     const size = fstatSync(fd).size, start = Math.max(0, size - tailBytes);
-    const buffer = Buffer.alloc(size - start);
+    // One byte before the window shows whether the cut falls on a line boundary.
+    const from = start > 0 ? start - 1 : 0, buffer = Buffer.alloc(size - from);
     let read = 0;
-    while (read < buffer.length) { const n = readSync(fd, buffer, read, buffer.length - read, start + read); if (n <= 0) break; read += n; }
+    while (read < buffer.length) { const n = readSync(fd, buffer, read, buffer.length - read, from + read); if (n <= 0) break; read += n; }
     let text = buffer.subarray(0, read).toString("utf8");
-    // A cut tail starts inside a line: drop up to the first newline, or all of it when it holds none.
+    // A cut inside a line drops up to the first newline, or all of it when it holds none; a cut right after a newline
+    // keeps the complete row that starts the window.
     if (start > 0) { const nl = text.indexOf("\n"); text = nl < 0 ? "" : text.slice(nl + 1); }
     return transcriptRecords(sessionId, text).filter(record => record.completedTurn).at(-1);
   } catch {
