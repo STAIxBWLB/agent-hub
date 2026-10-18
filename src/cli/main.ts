@@ -1032,6 +1032,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   backlog: async () => {
     const [sub, id, revision, value, ...reason] = args;
     if (sub === "list" && args.length === 1) return console.log(await taskOp("hub_backlog_list", {}));
+    if (sub === "groom" && args.length === 1) return console.log(await taskOp("hub_planner_groom", {}));
+    if (["return", "return-untouched"].includes(sub ?? "") && /^[1-9]\d*$/.test(id ?? "") && /^\d+$/.test(revision ?? "") && args.length >= 4) {
+      return console.log(await taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: args.slice(3).join(" ") }));
+    }
     if (sub === "add" && args.length >= 3) return console.log(await taskOp("hub_task_propose", { class: id, title: args.slice(2).join(" "), backlog: true }));
     if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");
     if (["pull", "return"].includes(sub ?? "") && args.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
@@ -1113,6 +1117,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       try { const reply = await hub.request({ t: "sdlc", op: sub, repo, liveIssues }, 30_000); if (!reply.ok) fail(reply.error); console.log(JSON.stringify(reply, null, 2)); }
       finally { hub.close(); }
       return;
+    }
+    if (sub === "plan-review") {
+      const revision = Number(args[2]);
+      if (!Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(revision) || revision < 0 || args.length < 4) fail("usage: ahub sdlc plan-review <task> <revision> <reason...>");
+      return console.log(await taskOp("hub_plan_review", { id, revision, reason: args.slice(3).join(" ") }));
     }
     if (sub === "accept") {
       // #481 S1: the person accepts the task's spec issue at its current body; agent shells are refused before this runs.

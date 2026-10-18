@@ -4,6 +4,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Planner grooming reports repository-scoped dependencies, overlaps, WIP and capability/issue blockers without changing the board. Plan-review receipts bind the planner, planning revision and metadata-only issue edit evidence; enforce requires a current receipt before offering or accepting build work, advise reports gaps and off does not gate (#481 S9).
+- WIP admission now applies in every lifecycle mode. Planner/person actions can return accepted but untouched work with history and planning retained; work evidence still refuses return, and ordinary accepted-work cancellation/unassignment remains person-only (#481 S9).
+
 - `ahub jcode` no longer leaves a project MCP entry the daemon rejects as stale when the CLI on PATH and the running hub come from different installs: the hub reports its plugin bundle in `status`, and the Jcode and Kimi TUI launchers write that path (#502).
 - A person accepts a task's spec issue with `ahub sdlc accept <task> --issue <n>`, bound to the issue's body edit time (identity and edit times only, no body). In enforce, build work starts only from a current acceptance: a body edit after acceptance asks for re-acceptance, while comments do not; advise only notifies (#481 S1).
 - Declare a second Claude session as a reviewer or planner (`"claude-review": { "kind": "claude", "roles": ["reviewer"] }` in untracked `.agenthub/config.local.json`) and start it from your terminal with `ahub claude --as claude-review`. It joins as its own channel peer with its own launch, session, context and recovery records; the hub never starts it, and it takes no implementer role or worktree (#450 I3).

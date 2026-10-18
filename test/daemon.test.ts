@@ -81,8 +81,8 @@ test("a PII owner withdrawal notice uses the public title and a private delivery
   expect(notice.body).not.toContain("900101");
 });
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles; boundedTools?: Parameters<typeof startDaemon>[0]["boundedTools"] } = {}) {
-  const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles; wipLimits?: Record<string, number>; boundedTools?: Parameters<typeof startDaemon>[0]["boundedTools"] } = {}) {
+  const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, wipLimits, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     boundedTools: emulatedBoundedTools(),
@@ -107,6 +107,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemo
       ...(coordination ? { coordination: coordination as typeof DEFAULT_CONFIG.coordination } : {}),
       ...(experiments ? { experiments } : {}),
       ...(roles ? { roles } : {}),
+      ...(wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: wipLimits } } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -1846,7 +1847,7 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   cleanup.push(() => rmSync(bin, { force: true }));
   const freePort = () => { const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
   const [appPort, proxyPort] = [freePort(), freePort()];
-  const { stateDir, daemon, console_ } = await hub({ cwd: dir, coordination: "turn-free", codex_bin: bin, codexAppPort: appPort, codexProxyPort: proxyPort });
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, coordination: "turn-free", wipLimits: { claude: 4, codex: 4 }, codex_bin: bin, codexAppPort: appPort, codexProxyPort: proxyPort });
   const events = () => readEvents(join(stateDir, "events.jsonl"));
   expect(await console_.request({ t: "start", peer: "codex" })).toMatchObject({ ok: true });
   const tui = new WebSocket(`ws://127.0.0.1:${proxyPort}`);

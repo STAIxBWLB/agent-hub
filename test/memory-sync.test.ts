@@ -120,7 +120,7 @@ test("through the hub: a peer links its claimed task to a long-term task, workin
   const foreign = seed.goal({ project: "elsewhere", scope: "project", title: "not ours", milestones: [], dependsOn: [], actor: "user" });
   seed.close();
   const daemon = await startDaemon({ cwd: root, stateDir, projectId: "p-goal", instanceId: "i-goal", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: true, sync_interval_min: 0 } } });
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { worker: 2 } }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: true, sync_interval_min: 0 } } });
   cleanup.push(() => daemon.stop());
   const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "worker" }); cleanup.push(() => peer.close());
   const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "worker" }); cleanup.push(() => tools.close());

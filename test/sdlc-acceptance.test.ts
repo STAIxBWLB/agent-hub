@@ -16,7 +16,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const c of cleanups.splice(0).reverse()) c(); });
 const EDITED = "2026-10-18T01:00:00Z", LATER = "2026-10-18T02:00:00Z";
 
-function rig(mode: SdlcMode, taskClass: TaskClass = "implement") {
+function rig(mode: SdlcMode, taskClass: TaskClass = "implement", scenario: { plannerReview?: boolean; capacity?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-spec-")), board = new Board(join(dir, "hub.db")), notices: string[] = [];
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   const issue = { lastEditedAt: EDITED as string | null, updatedAt: EDITED, fail: false };
@@ -26,15 +26,19 @@ function rig(mode: SdlcMode, taskClass: TaskClass = "implement") {
     await pause;
     if (issue.fail) return { code: 1, stdout: "" };
     if (!args.join(" ").includes("issue(number")) return { code: 1, stdout: "" };
-    return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 7, lastEditedAt: issue.lastEditedAt, updatedAt: issue.updatedAt } } } }) };
+    return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 7, ...(scenario.plannerReview ? { state: "OPEN", createdAt: EDITED } : {}), lastEditedAt: issue.lastEditedAt, updatedAt: issue.updatedAt } } } }) };
   };
   const config = sdlcConfig({ mode, required_checks: ["gate"] });
   const bus = new Bus({ batchMs: 0 });
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "spec", routing: () => loadRouting(dir), notify: text => notices.push(text), sdlc: { config: () => config, gh } });
+  const tasks = new Tasks({ board, bus, ...(scenario.plannerReview ? { roles: { claude: ["planner"] } } : {}), ...(scenario.capacity === undefined ? {} : { wipLimit: () => scenario.capacity! }), cwd: dir, project: "spec", routing: () => loadRouting(dir), notify: text => notices.push(text), sdlc: { config: () => config, gh } });
   const task = board.propose(USER, { title: "build it", class: taskClass });
   board.update(task.id, USER, "assigned", { owner: "codex", reviewer: USER });
-  const accept = async () => { await tasks.specGate("codex", task.id); return tasks.accept("codex", task.id); };
-  const acceptSpec = async () => tasks.acceptSpec(USER, task.id, { repo: "owner/repo", issue: 7, edit: (await readSpecEdit("owner/repo", 7, gh))! });
+  const accept = async () => { await tasks.specGate("codex", task.id); return scenario.plannerReview ? tasks.acceptReviewed("codex", task.id) : tasks.accept("codex", task.id); };
+  const acceptSpec = async () => {
+    const accepted = tasks.acceptSpec(USER, task.id, { repo: "owner/repo", issue: 7, edit: (await readSpecEdit("owner/repo", 7, gh))! });
+    if (scenario.plannerReview) await tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "S1 fixture: plan reviewed independently" });
+    return accepted;
+  };
   const hold = () => { let release!: () => void; pause = new Promise<void>(r => { release = r; }); return () => { pause = undefined; release(); }; };
   return { board, bus, tasks, id: task.id, notices, issue, gh, calls: () => calls, accept, acceptSpec, hold };
 }
@@ -53,7 +57,7 @@ test("acceptance is the person's, stores identity and edit times only, and is dr
 });
 
 test("enforce refuses build entry until the spec is accepted, and again after a body edit; comments do not count", async () => {
-  const r = rig("enforce");
+  const r = rig("enforce", "implement", { plannerReview: true });
   await expect(r.accept()).rejects.toThrow("spec issue unknown");
   r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
   await expect(r.accept()).rejects.toThrow("spec acceptance missing");
@@ -95,7 +99,7 @@ test("an owner's build stage change re-reads the body edit time; other stages an
 });
 
 test("a self-claim and a done without accept start build work only from an accepted spec in enforce; advise notifies", async () => {
-  const r = rig("enforce");
+  const r = rig("enforce", "implement", { capacity: 2 });
   r.bus.add({ id: "codex", state: "idle", deliver: async () => {}, start: async () => {}, stop: async () => {} });
   const claimed = await r.tasks.propose("codex", { title: "claim it", class: "implement", owner: "codex" });
   expect(claimed).toMatchObject({ owner: "codex", state: "proposed" });
@@ -104,7 +108,7 @@ test("a self-claim and a done without accept start build work only from an accep
   await expect(r.tasks.done("codex", r.id, "finished")).rejects.toThrow("spec issue unknown");
   expect(r.board.get(r.id)?.state).toBe("proposed");
   expect(r.board.get(r.id)?.history.map(h => h.event)).toEqual(["proposed", "assigned"]);
-  const advise = rig("advise");
+  const advise = rig("advise", "implement", { capacity: 2 });
   advise.bus.add({ id: "codex", state: "idle", deliver: async () => {}, start: async () => {}, stop: async () => {} });
   expect((await advise.tasks.propose("codex", { title: "claim it", class: "implement", owner: "codex" })).state).toBe("in_progress");
   expect(advise.notices.join(" ")).toContain("SDLC build entry advice: spec issue unknown");

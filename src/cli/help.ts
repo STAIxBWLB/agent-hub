@@ -24,6 +24,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub sdlc status [task] | explain <task> | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
     ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...]", "read-only merge and release evidence (person only)"],
     ["ahub sdlc accept <task> --issue <n> [--repo owner/repo]", "accept the task's spec issue at its current body; build entry needs it in enforce (person only)"],
+    ["ahub sdlc plan-review <task> <revision> <reason...>", "record the planner's current plan review with host-read issue edit evidence"],
+    ["ahub backlog groom | return <task> <revision> <reason...>", "read grooming findings or return accepted untouched work to backlog (planner/person)"],
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts"],
     ["ahub status --all [--json] [--color=auto|always|never]", "show every registered project"],
     ["ahub logs [-f]", "the last 100 lines of hub.log; -f shows the last 10 and follows it"],

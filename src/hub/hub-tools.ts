@@ -75,6 +75,12 @@ export const TASK_TOOLS: HubTool[] = [
   tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's memory and claude-mem); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str, approach: str, symptom: str, cause: str, evidence: str, retry_when: str, title: str, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } }),
 ];
 
+export const PLANNER_REVIEW_TOOLS: HubTool[] = [
+  tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
+  tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 } }, ["id", "revision", "reason"]),
+  tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 } }, ["id", "revision", "reason"]),
+];
+TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
 export const TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
 
 /** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */

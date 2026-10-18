@@ -12,9 +12,9 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 
 | Stage id | Playbook stage | Acting role | Artifact or exit gate | Current enforcement |
 | --- | --- | --- | --- | --- |
-| intent | Plan | person/planner | intent or backlog identity | shown; acceptance gate pending S1 |
-| spec | Design | person/planner | issue identity and scope | shown; acceptance/drift gate pending S1 |
-| plan | Build | planner/owner | plan, branch, existing predecessor gates | existing Tasks rules; conformance pending S2 |
+| intent | Plan | person/planner | intent or backlog identity | person spec acceptance required at build entry in enforce |
+| spec | Design | person/planner | issue identity and scope | spec acceptance/body drift checked at build entry |
+| plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; conformance pending S2 |
 | build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled |
 | test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; integrity/evals pending S4/S5 |
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; structured findings pending S3 |
@@ -37,6 +37,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | S6 | Production approval gate | Pending person-only release authorization; release report stays read-only |
 | S7 | Metrics, deterministic control bands and follow-up intent | Pending; no automated metric triage or security baseline claimed |
 | S8 | Compliance acceptance-criteria checklist | Head-bound checklist retained; legacy workflow and phase compatibility deprecated; task import removed |
+| S9 | Planner grooming and plan review | Read-only digest, current plan-review receipt at build admission, all-mode WIP and accepted-untouched return |
 
 S0/S8 establish vocabulary and checklist compatibility only. Later slices must retain the same authority contract: the issue is the spec, Tasks owns mutations, GitHub owns PR/check/tag facts, and the hub stores bounded identities, timestamps, hashes and counts instead of remote bodies. No slice writes GitHub or grants capabilities. Advise shows readiness without blocking; enforce applies only the named implemented gates. A full live advise cycle through S1, merge, release and S6 authorization remains pending and cannot be certified by S0/S8 source tests.
 
@@ -62,7 +63,7 @@ The acceptance-criteria checklist belongs to the Compliance pass over the same b
 
 ## Delivery and verification state
 
-Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports and the S0/S8 vocabulary/checklist migration are implemented in source. S1-S7 and the native advise-through-merge/release cycle remain pending. Installation, native acceptance and release authorization require separate receipts.
+Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission are implemented in source. S2-S7, S10-S11 and the native advise-through-merge/release cycle remain pending. Installation, native acceptance and release authorization require separate receipts.
 
 ## Initial commands
 
@@ -199,3 +200,22 @@ After dashboard authentication, those two delivery operations get a 35-second HT
 The connection idle setting is not a guaranteed 10-second deadline for an active handler. The actual HTTP fixture records that an ordinary action also completes after 11.5 seconds; that legacy behavior is retained. The owner approved correcting only the newly added test's mistaken ordinary-action failure expectation. Manager control request caps are separate from HTTP connection idle behavior. Delivery HTTP results omit the internal control-request rid.
 
 - Runtime doc checker ships explicitly in the npm tarball and package verification asserts its presence. Merge queue criteria readiness derives each holder's current board checklist view; absent or blocked required checklists remain unknown/blocked.
+
+# Planner plan review (#481 S9)
+
+A configured planner reads `hub_planner_groom` (or the person runs `ahub backlog groom`) before choosing build work. The digest reports missing text-only dependencies, repository-scoped duplicate issues and path/symbol overlaps, over-WIP owners, recorded supersession, issue edit/closed-state evidence and capability, queue or offline blockers. It proposes no board mutation. Missing repository or issue evidence stays unknown; the planner still evaluates issue rulings and the person's priorities. Private task text and references are withheld.
+
+The planner records `hub_plan_review` with the task id, current `planningRevision` and a reason. The person's CLI is `ahub sdlc plan-review <task> <revision> <reason...>`. Tasks records the actor, planning revision, observation time and host-read issue identity/edit time. The fixed GraphQL query requests metadata only, never an issue body or comments; comment-only activity does not invalidate the body-edit receipt. Caller-supplied timestamps are refused. A changed revision or issue edit requires another review; unavailable metadata never counts as a current review. The native CLI cannot delegate this person-attributed write through `--live-test`.
+
+For implementation/bulk-edit tasks and an explicit build-base stage, enforce refuses an offer or acceptance without a current receipt. Advise reports the gap and off performs no lifecycle gate. Spec acceptance and planner review are independent readbacks bound to one task snapshot before acceptance. The ordinary synchronous acceptance path cannot bypass the enforce readback. A self-claim can remain assigned and proposed while its prerequisites are missing, with no offer or accepted event. A saved planner review can release previously held proposed work; delivery failure leaves that saved receipt intact.
+
+Two board rules apply in every lifecycle mode:
+
+- Acceptance and self-claim, including a `done` that implicitly accepts proposed work, respect the owner's effective planner WIP limit. The target task is excluded when checking capacity, and updating an already accepted plan or resubmitting changes_requested work does not consume another slot, provided its current owner accepted it after the latest ownership change. Another unaccepted offer cannot block that redo. In enforce, a changes_requested resubmission still revalidates spec acceptance and the plan review; an issue body edit requires the person to accept the revised spec and the planner to review it again before re-acceptance or done. A refusal names the owner, limit and open task ids before a board write. The existing planner capacity accounting includes owned open work and active planner-pull reservations.
+- A planner or the person can return accepted but untouched work with `hub_backlog_return_untouched`, or `ahub backlog return <task> <revision> <reason...>`. A done/check/review/integration entry or recorded branch, commit, PR or local/review head refuses the return. History and planning fields remain; former role requests are withdrawn through the existing delivery path. A successful return permits replanning and pulling again without erasing historical acceptance. General unassignment and cancellation of accepted work remain person-only. Planner changes to pinned or frozen work remain refused.
+
+Enabled lifecycles send an attached planner one grooming pointer for a changed board revision; a queued pointer is not duplicated. Proposal, approval and planning writes flow through the existing revision and task-sweep notice path. External issue changes are read during grooming, offering and accepting, rather than by a separate watcher.
+
+The digest is bounded to 500 task rows (open work plus structured cancelled supersession evidence) and 256 findings, with at most eight issue metadata reads sharing four seconds. Spec acceptance and planner-review staleness are compared independently. Truncation and unavailable evidence are explicit. Qualified foreign repositories are compared within their own key. Without a proven repository key an absolute outside-project path remains unknown; the dedicated repository-overlap resolver is tracked in #476.
+
+S9 ceilings: a private build task with an issue reference cannot satisfy enforce admission: privacy forbids the external issue metadata read, and no person override for a metadata-free plan receipt exists. Grooming pointers are coalesced only while queued, per board revision; there is no minimum time interval after delivery, so a busy board may produce one delivered pointer per revision.

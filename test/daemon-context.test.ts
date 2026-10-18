@@ -13,13 +13,14 @@ import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const until = async (f: () => boolean) => { for (let n = 0; n < 350 && !f(); n++) await Bun.sleep(10); expect(f()).toBe(true); };
-async function fixture(gate = 0.8, reviewOther = false) {
+async function fixture(gate = 0.8, reviewOther = false, wipLimits?: Record<string, number>) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-context-")); cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const mem = startFakeMemWorker(); cleanup.push(mem.stop);
   mkdirSync(join(cwd, ".agenthub"));
+  if (wipLimits) writeFileSync(join(cwd, ".agenthub", "config.json"), JSON.stringify({ tasks: { wip_limits: wipLimits } }));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-MARKER"]');
   writeFileSync(join(cwd, ".agenthub", "routing.toml"), routing);
-  const daemon = await startDaemon({ cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(reviewOther ? { roles: { ...DEFAULT_CONFIG.roles, other: ["reviewer"] } } : {}), context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 } } });
+  const daemon = await startDaemon({ cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: wipLimits } } : {}), ...(reviewOther ? { roles: { ...DEFAULT_CONFIG.roles, other: ["reviewer"] } } : {}), context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(cwd, { role: "console" }); cleanup.push(() => console_.close());
   const pushes: any[] = []; console_.onPush = m => pushes.push(m); console_.send({ t: "tail" });
@@ -141,7 +142,7 @@ test("paused context pressure is delivered once on release without another nativ
 }, 20_000);
 
 test.each(["owner", "reviewer"] as const)("context request and clean completion refuse a PII task in review associated as %s after a routing-policy change", async role => {
-  const f = await fixture(0.8, true);
+  const f = await fixture(0.8, true, role === "owner" ? { claude: 2 } : undefined);
   f.reading(); await until(() => !!request(f.pushes));
   const firstId = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
   const routePath = join(f.cwd, ".agenthub", "routing.toml");

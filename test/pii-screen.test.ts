@@ -44,7 +44,7 @@ const NAME = "Minji Seo";
 const TEMPLATE = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8");
 
 /** A Tasks rig; `screen: "local"` writes a routing.toml with the screen on. */
-async function rig(screen: "off" | "local", screener?: (text: string) => Promise<PiiVerdict>, peerIds = ["claude", "codex", "kimi", "local"]) {
+async function rig(screen: "off" | "local", screener?: (text: string) => Promise<PiiVerdict>, peerIds = ["claude", "codex", "kimi", "local"], wipLimit?: number) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pii-screen-"));
   if (screen === "local") {
     mkdirSync(join(dir, ".agenthub"));
@@ -64,7 +64,7 @@ async function rig(screen: "off" | "local", screener?: (text: string) => Promise
   const screened: string[] = [];
   const triaged: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({
+  const tasks = new Tasks({ ...(wipLimit === undefined ? {} : { wipLimit: () => wipLimit! }),
     board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l),
     triage: { classify: async (title) => (triaged.push(title), "implement"), onCampus: async () => true },
     ...(screener ? { piiScreen: (text: string) => (screened.push(text), screener(text)) } : {}),
@@ -157,7 +157,7 @@ test("AC2: a new task waits for the verdict; pii and unknown take the whole PII 
 });
 
 test("free text the hub screens since #69 goes through the same screen: summary, review note, unmet item, handoff, note", async () => {
-  const r = await rig("local", byName);
+  const r = await rig("local", byName, undefined, 2);
   const t = await r.tasks.propose("claude", { title: "follow-up list", class: "implement", owner: "codex", refs: { paths: ["src/list.ts"] } });
   const other = await r.tasks.propose("kimi", { title: "list paging", class: "implement", owner: "kimi", refs: { paths: ["src/list.ts"] } });
   await r.tasks.done("codex", t.id, `exported the list; called ${NAME}`);

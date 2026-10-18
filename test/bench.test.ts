@@ -147,7 +147,7 @@ test("a run records pass, fail and timeout with measures, resets the tree betwee
   mkdirSync(stateDir, { recursive: true });
   const home = temp("home");
   const daemon = await startDaemon({ cwd: root, stateDir, projectId: "p-bench", instanceId: "i-bench", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+    config: { ...DEFAULT_CONFIG, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { worker: 2 } }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
   cleanup.push(() => daemon.stop());
   for (const peer of ["worker", "claude"]) { const c = await ControlClient.connect(stateDir, { role: "peer", peer }); cleanup.push(() => c.close()); }
   await until(() => daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle", "benchmark worker and reviewer attached");
