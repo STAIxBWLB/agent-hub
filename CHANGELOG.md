@@ -2,11 +2,13 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Plan release trains through the board's release assignments, move missed work with a reason, and freeze approved scope through host resource admission and fresh peer quota checks. Hotfix causes and cut/shipment history are recorded; enabled train upgrades recheck the existing person-selected operation and idle window before commit (#481 S11).
+
 ## 0.12.36
 
 Reviews get their own reviewers and a hub-built brief: a headless Claude reviewer runs a fresh session per review (#450, #223), every review request carries a review brief with a coverage gate (#520), and a second Claude session can join as a reviewer or planner (#450 I3). The planner reviews plans before work starts, WIP admission applies in every lifecycle mode, a person accepts a task's spec issue (#481 S1, S9), and review and CI costs are governed, with identical-tree CI reuse (#481 S10). A Claude session with a transcript over 32 MiB no longer stays busy forever (#517). Restart Claude sessions after upgrading: each keeps the plugin server it started with.
-
-- Plan release trains through the board's release assignments, move missed work with a reason, and freeze approved scope through host resource admission and fresh peer quota checks. Hotfix causes and cut/shipment history are recorded; enabled train upgrades recheck the existing person-selected operation and idle window before commit (#481 S11).
 
 - Planner cost governance records review/CI scope on plans and receipts, gates premature reviews by current CI and bot replies, reuses identical-tree full CI and reports bounded merged-PR review/CI costs without board writes (#481 S10).
 - A Claude session whose transcript grew past 32 MiB no longer stays busy forever: turn completion is read from the transcript's last 4 MiB, and a Stop refused because no completed turn is found in that tail now says so on the console, once per turn, instead of only in hub.log (#517).
