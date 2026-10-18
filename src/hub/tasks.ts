@@ -1117,7 +1117,10 @@ export class Tasks {
     const updated = this.d.board.freezeRelease(input.id, input.revision, freshScope.scope, releaseTrainData(train));
     this.planningRecorded({ by, release: input.id, fields: ["state", "train"], revision: updated.revision });
     return updated;
-    } finally { await window?.close?.(); }
+    } finally {
+      try { await window?.close?.(); }
+      catch { this.releaseNotice(`release #${input.id}: admission cleanup incomplete; inspect the host lease before retrying`); }
+    }
   }
 
   async newRelease(by: PeerId, input: { name: string; goal: string; order: number }): Promise<Release> {

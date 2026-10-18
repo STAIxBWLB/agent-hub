@@ -129,3 +129,23 @@ test("train cut dates reject malformed direct inputs before any board write", as
     expect(board.release(release.id)).toEqual(dated);
   }
 });
+
+
+test("lease cleanup failure preserves the durable cut and the original pre-write refusal", async () => {
+  const notices: string[] = [];
+  let current = false, closes = 0;
+  const { tasks, board } = rig(async () => ({ at: Date.now(), host: true, quota: true, idle: true, reasons: [], current: () => current, close: async () => { closes++; throw new Error("controller group retained"); } }), { notify: line => { notices.push(line); } });
+  const release = await tasks.newRelease(USER, { name: "cleanup", goal: "Train", order: 1 });
+  const task = await tasks.propose(USER, { title: "fix", class: "implement", backlog: true });
+  board.update(task.id, USER, "backlog pulled", { state: "proposed" }); board.update(task.id, USER, "accepted", { state: "in_progress" }); board.update(task.id, USER, "done", { state: "approved" });
+  await tasks.assignRelease("claude", { id: task.id, revision: 0, release: release.id, reason: "scope" });
+  tasks.changeRelease(USER, { id: release.id, revision: 0, state: "active" });
+  await expect(tasks.cutRelease("claude", { id: release.id, revision: 1 })).rejects.toThrow("deferred");
+  expect(board.release(release.id)?.state).toBe("active");
+  current = true;
+  const cut = await tasks.cutRelease("claude", { id: release.id, revision: 1 });
+  expect(cut.state).toBe("frozen");
+  expect(board.release(release.id)).toEqual(cut);
+  expect(closes).toBe(2);
+  expect(notices.filter(line => line.includes("admission cleanup incomplete"))).toHaveLength(2);
+});
