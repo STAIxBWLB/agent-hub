@@ -24,7 +24,7 @@ function fixture(opts: { origin?: boolean } = {}): { dir: string; head: string; 
   mkdirSync(join(dir, "src")); mkdirSync(join(dir, "docs"));
   writeFileSync(join(dir, "REVIEW.md"), "# Review\nROOT_RULES\n");
   writeFileSync(join(dir, "docs/src-review.md"), "SRC_RULES\n");
-  writeFileSync(join(dir, ".gitattributes"), "gen.js linguist-generated\n*.gen.js linguist-generated\nsrc/** ahub-review-rules=docs/src-review.md\nlib/** ahub-review-rules=docs/lib-review.md\n");
+  writeFileSync(join(dir, ".gitattributes"), "gen.js linguist-generated\n*.gen.js linguist-generated\nsrc/** ahub-review-rules=docs/src-review.md\nlib/** ahub-review-rules=docs/lib-review.md\nnew-name.md ahub-review-rules=docs/missing.md\n");
   writeFileSync(join(dir, "docs/lib-review.md"), "LIB_RULES PII_RULE_TEXT\n");
   writeFileSync(join(dir, "old.gen.js"), "generated(1);\n".repeat(8));
   writeFileSync(join(dir, "src/a.ts"), "export const a = 1;\n");
@@ -62,12 +62,14 @@ test("the brief lists reviewable files, exclusions with reasons, rules per file,
   expect(brief.excluded).toEqual(expect.arrayContaining([{ path: "gen.js", status: "A", reason: "generated (linguist-generated)" }, { path: "bun.lock", status: "A", reason: "lockfile" }, { path: "blob.bin", status: "A", reason: "binary" },
     { path: "new.gen.js", status: "R", oldPath: "old.gen.js", reason: "generated (linguist-generated)" }]));
   expect(brief.withheld).toBe(1);
-  expect(brief.ruleGroups).toEqual(expect.arrayContaining([{ sources: ["REVIEW.md", "docs/src-review.md"], paths: ["src/a.ts"] }, { sources: ["REVIEW.md", "docs/lib-review.md"], paths: ["lib/x.ts"] }]));
+  expect(brief.ruleGroups).toEqual(expect.arrayContaining([{ sources: ["REVIEW.md", "docs/src-review.md"], paths: ["src/a.ts"] }, { sources: ["REVIEW.md", "docs/lib-review.md"], paths: ["lib/x.ts"] }, { sources: ["REVIEW.md"], paths: expect.arrayContaining(["new-name.md"]) }]));
   expect(brief.unlisted).toEqual([]);
   const text = renderReviewBrief(brief);
   for (const needle of ["ROOT_RULES", "SRC_RULES", "LIB_RULES", "src/a.ts", "old-name.md -> new-name.md", "old.gen.js -> new.gen.js (R): generated", "1 withheld by the privacy policy", "coverage {reviewed"]) expect(text).toContain(needle);
   expect(text).not.toContain("private.txt");
   expect(text).not.toContain("HEAD_RULES");
+  expect(brief.rulesMissing).toEqual([{ source: "docs/missing.md", reason: "not found at the merge base" }]);
+  expect(text).toContain("Configured rules not loaded (read them in the repository):\n- docs/missing.md: not found at the merge base");
   // A rule file matching a private-data pattern is screened whole, before any cut, and named only.
   const screened = renderReviewBrief(buildReviewBrief(dir, head, { ...policy, nameable: (t: string) => !t.includes("PII_RULE") }) as ReviewBrief);
   expect(screened).not.toContain("PII_RULE_TEXT");

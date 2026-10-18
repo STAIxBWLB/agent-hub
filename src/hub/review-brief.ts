@@ -20,6 +20,8 @@ export interface ReviewBrief {
   withheld: number;
   /** Rule files by name (REVIEW.md, then `ahub-review-rules` attribute values) with their text at the merge base. */
   rules: { source: string; text: string }[];
+  /** Configured rule files the brief could not load, with why: the reviewer reads them in the repository. */
+  rulesMissing: { source: string; reason: string }[];
   /** Reviewable paths grouped by the rule sources that apply to them. */
   ruleGroups: { sources: string[]; paths: string[] }[];
   /** Paths in the plain name list of the range that the brief does not list: read them directly. */
@@ -80,12 +82,15 @@ export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy
     if (reason) { excluded.push({ path, ...sides, reason }); continue; }
     reviewable.push({ path, ...sides, ...(count && !count.binary ? { insertions: count.insertions, deletions: count.deletions } : {}) });
   }
-  const ruleText = new Map<string, string>();
+  const ruleText = new Map<string, string>(), rulesMissing = new Map<string, string>();
   const readRule = (source: string): boolean => {
     if (ruleText.has(source)) return true;
-    if (ruleText.size >= MAX_RULE_FILES || policy.privatePath(source) || !policy.nameable(source)) return false;
+    if (rulesMissing.has(source)) return false;
+    // A private or non-nameable rule path is not named either: it is left out silently.
+    if (policy.privatePath(source) || !policy.nameable(source)) return false;
+    if (ruleText.size >= MAX_RULE_FILES) { rulesMissing.set(source, `over the brief's ${MAX_RULE_FILES} rule files`); return false; }
     const r = git(cwd, ["show", `${mergeBase}:${source}`]);
-    if (r.status !== 0 || typeof r.stdout !== "string") return false;
+    if (r.status !== 0 || typeof r.stdout !== "string") { rulesMissing.set(source, "not found at the merge base"); return false; }
     // Screened whole, before any cut: a rule file that matches a private-data pattern is named but not shown.
     if (!policy.nameable(r.stdout)) { ruleText.set(source, "(withheld: it matches a private-data pattern; read it in the repository)"); return true; }
     const bytes = Buffer.from(r.stdout, "utf8");
@@ -105,7 +110,7 @@ export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy
   if (plain.status !== 0 || typeof plain.stdout !== "string") return { unavailable: `the name list of ${head} could not be read` };
   const listed = new Set(shown.flatMap(g => g.paths)), hidden = new Set(groups.filter(g => !shown.includes(g)).flatMap(g => g.paths));
   const unlisted = plain.stdout.split("\0").filter(path => path && !listed.has(path) && !hidden.has(path));
-  return { head: commit, base: from, mergeBase, reviewable, excluded, withheld, rules: [...ruleText].map(([source, text]) => ({ source, text })), ruleGroups: [...byKey.values()], unlisted };
+  return { head: commit, base: from, mergeBase, reviewable, excluded, withheld, rules: [...ruleText].map(([source, text]) => ({ source, text })), rulesMissing: [...rulesMissing].map(([source, reason]) => ({ source, reason })), ruleGroups: [...byKey.values()], unlisted };
 }
 
 function numstat(cwd: string, head: string, base: string): Map<string, { insertions: number; deletions: number; binary: boolean }> | undefined {
@@ -146,6 +151,7 @@ export function renderReviewBrief(brief: ReviewBrief): string {
     ...(brief.excluded.length ? ["Excluded (still read their diff when it matters):", ...brief.excluded.map(e => `- ${e.oldPath ? `${e.oldPath} -> ` : ""}${e.path} (${e.status}): ${e.reason}`)] : []),
     ...(brief.unlisted.length ? ["Not in the brief's list, read directly:", ...brief.unlisted.map(path => `- ${path}`)] : []),
     ...brief.ruleGroups.filter(g => g.sources.length).map(g => `Rules ${g.sources.join(" + ")} apply to: ${brief.ruleGroups.length === 1 ? "every reviewable file" : g.paths.join(", ")}`),
+    ...(brief.rulesMissing.length ? ["Configured rules not loaded (read them in the repository):", ...brief.rulesMissing.map(m => `- ${m.source}: ${m.reason}`)] : []),
     ...brief.rules.map(r => `--- ${r.source} ---\n${r.text.trimEnd()}`),
     `Coverage: pass hub_review coverage {reviewed: [paths], skipped: [{path, reason}]} naming every reviewable path above.`,
   ].join("\n");
