@@ -1,5 +1,4 @@
-import { definitionOf, SUPPORTED_PEERS } from "../adapters/registry.ts";
-import { isSupportedPeer } from "./peer-catalog.ts";
+import { definitionOf, SUPPORTED_PEERS, START_MODE_PEERS as REGISTRY_START_MODE_PEERS } from "../adapters/registry.ts";
 
 /**
  * #269: how a peer comes up when the hub starts it: its own TUI in a terminal, or headless. A person who types
@@ -16,7 +15,8 @@ export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
 /** Every peer the hub can start itself. */
 export const STARTABLE_PEERS = SUPPORTED_PEERS;
 export type StartablePeer = typeof STARTABLE_PEERS[number];
-export const isStartablePeer = (value: unknown): value is StartablePeer => isSupportedPeer(value);
+export const isStartablePeer = (value: unknown): value is StartablePeer => typeof value === "string" && !!definitionOf(value)?.start.conductorStartable;
+
 
 export type PeerStartConfig = Record<string, { start_mode?: StartMode }>;
 /** The checked per-peer start modes; only peers with both forms may be configured. */
@@ -25,7 +25,7 @@ export function peerStartConfig(value: unknown): PeerStartConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("peers must be an object of per-peer settings");
   const result: PeerStartConfig = {};
   for (const [peer, block] of Object.entries(value)) {
-    if (!(START_MODE_PEERS as readonly string[]).includes(peer)) throw new Error(`peers.${peer}: only ${START_MODE_PEERS.join(" and ")} have a start mode`);
+    if (!(REGISTRY_START_MODE_PEERS as readonly string[]).includes(peer)) throw new Error(`peers.${peer}: only ${REGISTRY_START_MODE_PEERS.join(" and ")} have a start mode`);
     if (!block || typeof block !== "object" || Array.isArray(block)) throw new Error(`peers.${peer} must be an object`);
     const mode = (block as { start_mode?: unknown }).start_mode;
     if (mode !== undefined && !(START_MODES as readonly unknown[]).includes(mode)) throw new Error(`peers.${peer}.start_mode must be tui or headless`);
@@ -36,7 +36,7 @@ export function peerStartConfig(value: unknown): PeerStartConfig {
 
 /** The mode a start of `peer` takes when nothing more specific was asked: `tui` wherever the peer has one. */
 export function startModeOf(peers: PeerStartConfig | undefined, peer: string): StartMode {
-  if ((START_MODE_PEERS as readonly string[]).includes(peer)) return peers?.[peer]?.start_mode ?? "tui";
+  if ((REGISTRY_START_MODE_PEERS as readonly string[]).includes(peer)) return peers?.[peer]?.start_mode ?? "tui";
   return definitionOf(peer)?.start.defaultForm ?? "headless";
 }
 

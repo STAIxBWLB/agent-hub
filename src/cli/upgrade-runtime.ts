@@ -516,7 +516,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const decision = restoreTransition(waiting, { target: "running", launcher: launchState,
         session: session && peer && ["idle", "busy", "paused"].includes(peer.state) ? changed ? "other" : "planned" : "none", allowOther: zeroTurn || expectedSession === null, binding });
       if (decision.action === "settle" && session) {
-        if (zeroTurn) waiveRecoveryPeers(planned.project.stateDir, op.id, { claude: "zero-turn" });
+        if (zeroTurn) waiveRecoveryPeers(planned.project.stateDir, op.id, { [binding.peer]: "zero-turn" });
         return session;
       }
       if (decision.action === "fail" || decision.action === "create") throw new AttachmentLauncherGone(decision);
@@ -935,13 +935,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         try { archived = JSON.parse(readFileSync(archive, "utf8")); } catch { return { continuity: "not-archived" }; }
         if (!archived || typeof archived !== "object" || (archived as { operationId?: unknown }).operationId !== op.id) return { continuity: "not-archived" };
         try {
-          const binding = planned ? resolveAcceptedBinding(planned, progress, "pi") : undefined;
-          const sessionId = binding?.sessionId ?? source.sessionId;
-          if (!sessionId) throw new Error("Pi recorded session unavailable; archive continuity bookmark was not written");
-          const backend = binding?.backend ?? source.args?.backend;
+          const continuity = definitionOf(source.id)?.session.continuityBookmark;
+          if (!continuity) return;
+          const binding = planned ? resolveAcceptedBinding(planned, progress, source.id as TerminalBinding["peer"]) : undefined;
           writeRecoveryContinuity(project.stateDir, { schema: 1, operationId: op.id, projectId: project.id, projectRoot: project.root, at: now(),
-            pi: { sessionId, sessionFile: binding?.sessionFile ?? source.sessionFile ?? source.args?.sessionFile,
-              ...(backend === "auto" || backend === "dgx" || backend === "mlx" ? { backend } : {}), model: binding?.model ?? source.args?.model } });
+            ...continuity(source, binding) });
         } catch { return { continuity: "unavailable" }; } // optional metadata must not wedge stop-and-archive
       }
     },

@@ -5,7 +5,7 @@ import { PEER_PALETTE, peerPaletteCss } from "../ui/peer-palette.ts";
 import { PEER_START_RETRY_MS } from "./start-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { officeModel } from "../ui/office-model.ts";
-import { OFFICE_PEER_ORDER } from "../adapters/registry.ts";
+import { OFFICE_PEER_ORDER, ADAPTER_DISPLAY } from "../adapters/registry.ts";
 import { needs } from "../ui/needs.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -36,6 +36,7 @@ export function startDashboard(options: DashboardOptions) {
   // Inject the same pure public-board model used by the console before computing CSP hashes.
   const html = readFileSync(new URL("../ui/index.html", import.meta.url), "utf8")
     .replace("/* BOARD_MODEL */", () => `const boardColumns = ${boardColumns.toString()}; const peerPalette = ${JSON.stringify(PEER_PALETTE)};`)
+    .replace("/* ADAPTER_DISPLAY */", () => `const adapterDisplay = ${JSON.stringify(ADAPTER_DISPLAY)};`)
     .replace("/* PEER_PALETTE_CSS */", () => peerPaletteCss())
     .replace("/* TASK_PROGRESS_MODEL */", () => `const taskProgress = ${taskProgress.toString()};`)
     .replace("/* PEER_START_RETRY_MS */", () => `const PEER_START_RETRY_MS = ${PEER_START_RETRY_MS};`)

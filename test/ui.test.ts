@@ -1,3 +1,4 @@
+import { ADAPTER_DISPLAY } from "../src/adapters/registry.ts";
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
@@ -362,6 +363,7 @@ test("dashboard renders Pi/local waiting counts and terminal answer directions w
   }
   const count = new Node(), rows = new Node(), actions: unknown[] = [];
   const context = {
+    adapterDisplay: ADAPTER_DISPLAY,
     $: () => count, el: (_tag: string, text?: string) => new Node(text),
     empty: (target: Node, text: string) => target.append(new Node(text)),
     update: (_id: string, _value: unknown, render: (target: Node) => void) => { rows.children = []; render(rows); },
@@ -430,7 +432,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
       valid(value){snapshotValid=value;syncMutationControls()},
       snapshot(value){lastSnapshot={tasks:[],permissions:[],budget:{},events:[],...value};render(lastSnapshot)},
       pending(){return Array.from(pendingStarts.entries())}
-    });`, { fetch: fetch_, get, el, retryMs: PEER_START_RETRY_MS, taskProgress, boardColumns, peerPalette: PEER_PALETTE, location: { origin: "http://127.0.0.1:4000" }, Date: class extends Date { static override now() { return now; } }, setTimeout: setTimer, clearTimeout: clearTimer, document: { querySelectorAll: () => buttons() } });
+    });`, { fetch: fetch_, get, el, retryMs: PEER_START_RETRY_MS, taskProgress, boardColumns, peerPalette: PEER_PALETTE, adapterDisplay: ADAPTER_DISPLAY, location: { origin: "http://127.0.0.1:4000" }, Date: class extends Date { static override now() { return now; } }, setTimeout: setTimer, clearTimeout: clearTimer, document: { querySelectorAll: () => buttons() } });
   const advance = (ms: number) => {
     now += ms;
     while (true) {

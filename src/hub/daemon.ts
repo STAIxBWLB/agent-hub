@@ -21,7 +21,7 @@ import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, sdlcGh } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
-import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
+import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { buildKimiLaunch } from "../cli/launch.ts";
@@ -103,7 +103,7 @@ import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, remov
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote } from "../cli/terminal-recovery.ts";
 
-import { isStartablePeer, peerStartConfig, PEER_START_RETRY_MS, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
+import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
@@ -237,7 +237,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => peer !== "claude"), HUB, DIGEST]);
+const RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.identity.mcp !== "channel-plugin"), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
@@ -633,7 +633,7 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   const compatibleRoles = (peer: string) => [...catalog.roles.values()].filter(role => role.base.some(base => config.roles[peer]?.includes(base))).map(role => role.id).sort();
   const configuredRoles = (peer: string) => selectedRoles(peer, config.roles, roleAssignments, catalog).map(role => role.id);
-  const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && ["local", "pi"].includes(peer)
+  const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && definitionOf(peer)?.trust.hubSandboxed === true
     ? contract + "\nManaged bash/git are filesystem read-only while data.readonly is active. Read data and return stdout; use managed write/edit only for unprotected outputs."
     : contract;
   const preparedSessionRoles = new Map<string, string[]>();
@@ -1188,7 +1188,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // Keep the last confirmed capability during a bounded, single-flight refresh; replace it only on a result.
     if (Date.now() - runnerStateAt >= 60_000) void refreshRunner();
     return Object.fromEntries([...new Set([...SUPPORTED_PEERS, ...bus.peers.keys()])].map(peer => {
-    if (peer !== "pi" && peer !== "local") return [peer, { tests: true, spec: true }];
+    if (!definitionOf(peer)?.trust.hubSandboxed) return [peer, { tests: true, spec: true }];
     return [peer, { tests: runnerState.available && may(peer, "check_run"), spec: specState.available && may(peer, "spec_read"),
       testsReason: !may(peer, "check_run") ? `capabilities.${peer}` : `runner unavailable: ${runnerState.reason ?? "unknown"}`,
       specReason: !may(peer, "spec_read") ? `capabilities.${peer}` : specState.reason ?? "gh unauthenticated" }];
@@ -1463,7 +1463,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * never `stateOf`: a paused peer may still be in its turn.
    */
   const idle = (peer: PeerId): boolean => {
-    if (peer === "claude") return (turnEnded.get(peer) ?? -1) >= (activeAt.get(peer) ?? 0);
+    if (definitionOf(peer)?.turnEnd === "native-hook") return (turnEnded.get(peer) ?? -1) >= (activeAt.get(peer) ?? 0);
     return (bus.peers.get(peer)?.state ?? "offline") !== "busy";
   };
   /** What quiescence was judged on, for the log when an integration waits on it. */
@@ -1497,7 +1497,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const contextSession = (peer: PeerId): string | undefined => {
     const p = bus.peers.get(peer);
     if (p instanceof WsPeer && p.claiming) return undefined;
-    if (peer === "claude") { const c = claudeSession(); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
+    if (definitionOf(peer)?.turnEnd === "native-hook") { const c = claudeSession(); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
     if (p instanceof CodexPeer) return p.thread || undefined;
     if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
@@ -1539,10 +1539,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!["idle", "busy"].includes(bus.stateOf(peer)) || recoveryActive() || stopping) return false;
     event({ type: "context_pressure", peer, source: reading.source, measuredAt: reading.measuredAt, used: reading.used!, window: reading.window });
     notify(`context: ${peer} crossed ${Math.round(config.context.gate * 100)}% (${reading.source}, measured ${new Date(reading.measuredAt).toISOString()}); the operator controls session continuation`);
-    if (peer === "claude" || peer === "codex") void requestCheckpoint(peer, "context").catch(() => {});
+    if (definitionOf(peer)?.budget?.checkpoint === true) void requestCheckpoint(peer, "context").catch(() => {});
     return true;
   });
-  const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi", qwen: "qwen", jcode: "jcode" };
+  const PLATFORM: Record<PeerId, string> = Object.fromEntries(SUPPORTED_PEERS.flatMap(peer => { const platform = definitionOf(peer)?.hooks?.recallPlatform; return platform ? [[peer, platform]] : []; }));
   const budgetFeedSeen = new Map<string, string>();
   const feedBudgetPauses = () => {
     for (const hold of budget.persistedPauseDigestRows()) {
@@ -2952,7 +2952,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const CLI_ENTRY = fileURLToPath(new URL("../cli/main.ts", import.meta.url));
   /** `config.peers` follows a settings write (`settingsSet`), so a changed mode applies at the peer's next start. */
   const startMode = (peer: string): StartMode => startModeOf(config.peers, peer);
-  const startWords = (peer: string, mode: StartMode): string[] => ["pi", "kimi"].includes(peer) ? [peer, "--mode", mode] : [peer];
+  const startWords = (peer: string, mode: StartMode): string[] => definitionOf(peer)?.cli.startWords(mode) ?? [peer];
   const startable = onRoster;
   // ponytail: one terminal per peer per 30 s, by the clock. The hub cannot see whether the terminal it opened still
   // exists, so a peer that never attaches can be opened again after that; track the provider's handle to do better.
@@ -3032,9 +3032,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!rosterRemoval && rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding peer stops; finish the operation before retrying" };
     if (typeof peer !== "string" || !PEER_ID.test(peer)) return { ok: false, error: "unknown peer; run ahub status and choose a hub-owned headless peer" };
-    if (peer === "claude" || peer === "codex") return { ok: false, error: "this peer belongs to a native terminal; end it in its terminal" };
     const owner = bus.peers.get(peer);
-    if (peer === "kimi" && (owner instanceof WsPeer || (!owner && startMode(peer) === "tui"))) return { ok: false, error: "Kimi belongs to its own TUI terminal; end it in that terminal" };
+    const stopNotice = definitionOf(peer)?.cli.stopNotice?.(owner instanceof WsPeer ? "tui" : !owner ? startMode(peer) : "headless", owner);
+    if (stopNotice) return { ok: false, error: stopNotice };
     if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
     if (owner instanceof PiPeer && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
     if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ahub ${peer} before stopping it` };

@@ -3341,3 +3341,42 @@ identity.ts stays authoritative and missing/unknown metadata retains today's
 rule. `start.passthrough` is data only. The MCP hook is a pure plan over the
 existing project/state/server-entrypoint/form tuple; every write, ordering fence
 and finally cleanup remains in the CLI host.
+
+### A2 internal native host projections (2026-10-18)
+
+The remaining AST inventory after the first A2 checkpoint has 260 policy sites in
+113 lexical groups. Native CLI entrypoints and previews, configuration validators,
+settings rows, plugin inventory and recovery presentation need explicit definition
+projections in addition to the original frozen transport factory hooks. These are
+moves of existing built-in policy, with the same host-owned effects, argv, ordering,
+errors, privacy, permission and timing fences. They add no instance support,
+capability or native behavior.
+
+Built-in definitions may carry bounded CLI run/preview callbacks over the current
+CLI's typed config/connect/exec/fail/flag ports, environment deltas and doctor
+metadata. Configuration projections receive the current validator vocabulary and
+return the existing schema/settings entries. Recovery projections carry the current
+crash plan, continuity decoder/bookmark and unrecorded-terminal classification.
+Reporting flags, tool classification, recall source and display tones are semantic
+data; a consumer must not replace raw comparisons with kind-name wrappers or
+constant aliases. Plugin inventory takes the existing home/cwd/env context and
+returns the existing typed Addon rows, correcting the unused string-array
+placeholder. Arbitrary daemon callbacks and caller-chosen executables, paths,
+permissions or policy remain forbidden. External module publication/validation is
+still A4 and must freeze its accepted subset separately.
+
+Claude's channel is native-hook-driven: delivery insertion remains idle until an
+authenticated native-start observation. Its conformance case asserts that behavior;
+transport adapters retain the synchronous-busy requirement. Unsupported native
+quota or process ownership is an explicit applicability result, never synthetic
+success. Every applicable P4 behavior is exercised with the real adapter and fake
+transport, without changing existing assertions or claiming live-account evidence.
+
+The P4 late-result probe exposed an existing Codex watchdog defect on the unchanged
+54e631d8 adapter: a completed agent message could refill the answer after watchdog
+invalidation, then its stale turn completion could broadcast it without its former
+audience. A2 repairs this intended generation fence in source. It discards answer
+notifications without an active turn and notifications naming an inactive turn,
+retains the legacy unknown-turn compatibility path, and clears expired deltas.
+The new probe keeps its strict no-message/needs-review assertions. Supported native
+RPC behavior, approvals, quota classification and existing tests stay unchanged.

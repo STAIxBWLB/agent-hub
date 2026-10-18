@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { definitionOf } from "../adapters/registry.ts";
+import { parsePiFlags } from "../adapters/definitions/native-cli-pi.ts";
 import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
@@ -16,7 +17,6 @@ import { configureJcodeMcp } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
-import { isSupportedPeer } from "../hub/peer-catalog.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
@@ -104,7 +104,7 @@ const [given = "help", ...rest] = argv;
 // `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
 // (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
 const asksHelp = (a: string | undefined) => a === "--help" || a === "-h";
-const cmd = asksHelp(given) || (given !== "claude" && given !== "codex" && rest.length === 1 && asksHelp(rest[0])) ? "help" : given;
+const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true && rest.length === 1 && asksHelp(rest[0])) ? "help" : given;
 const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : rest;
 let selected: { root: string; stateDir: string };
 try {
@@ -233,32 +233,7 @@ function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv): nev
 }
 
 /** `mode` is absent when no flag chose one: the caller takes the configured start mode (#269). `--headless` is `--mode headless`. */
-function piFlags(): { mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; model?: string; sessionId?: string; sessionFile?: string; replaceSession?: boolean } {
-  const usage = "usage: ahub pi [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id> | --session-file <path>] [--replace-session --session-file <path>]";
-  if (args.includes("--headless")) {
-    if (args.includes("--mode")) fail(usage);
-    args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
-  }
-  for (const flag of ["--mode", "--backend", "--model", "--session-id", "--session-file"]) {
-    const index = args.indexOf(flag);
-    if (index >= 0 && (!args[index + 1] || args[index + 1]!.startsWith("--"))) fail(`${flag} needs a value`);
-  }
-  const mode = (args.includes("--mode") ? args[args.indexOf("--mode") + 1] : undefined) as string | undefined;
-  const backend = (args.includes("--backend") ? args[args.indexOf("--backend") + 1] : undefined) as string | undefined;
-  const model = args.includes("--model") ? args[args.indexOf("--model") + 1] : undefined;
-  const sessionId = args.includes("--session-id") ? args[args.indexOf("--session-id") + 1] : undefined;
-  const sessionFile = args.includes("--session-file") ? args[args.indexOf("--session-file") + 1] : undefined;
-  const replaceSession = args.includes("--replace-session");
-  if (replaceSession && (!sessionFile || sessionId)) fail("--replace-session requires --session-file, without --session-id");
-  const valueFlags = new Set(["--mode", "--backend", "--model", "--session-id", "--session-file"]);
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--replace-session") continue;
-    if (!valueFlags.has(args[i]!)) fail(`unknown Pi option: ${args[i]}`);
-    i++;
-  }
-  if ((mode !== undefined && !["headless", "tui"].includes(mode)) || (backend !== undefined && !["auto", "dgx", "mlx"].includes(backend)) || (sessionId && sessionFile)) fail(usage);
-  return { ...(replaceSession ? { replaceSession: true } : {}), ...(mode ? { mode: mode as "headless" | "tui" } : {}), ...(backend ? { backend: backend as "auto" | "dgx" | "mlx" } : {}), ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}) };
-}
+const piFlags = () => parsePiFlags(args, fail);
 
 async function projectRows() {
   const registry = new Registry();
@@ -577,7 +552,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
 
 /** Strict person command: recorded identity only, no session or terminal overrides. */
 function parseRecoveryReattach(argv: readonly string[]): { id: string; peer: TerminalPeer } | undefined {
-  if (argv.length !== 3 || argv[0] !== "reattach" || !operationIdPattern.test(argv[1]!) || !["codex", "claude", "pi"].includes(argv[2]!)) return undefined;
+  if (argv.length !== 3 || argv[0] !== "reattach" || !operationIdPattern.test(argv[1]!) || definitionOf(argv[2]!)?.session.launchRecord !== true) return undefined;
   return { id: argv[1]!, peer: argv[2] as TerminalPeer };
 }
 
@@ -1430,7 +1405,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   roster: async () => {
     const options = outputOptions(), flags = args.filter(arg => arg.startsWith("--")), positional = outputArguments().filter(arg => arg !== "--yes" && arg !== "--now");
     const [sub = "list", peer, ...extra] = positional;
-    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !isSupportedPeer(peer)) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
+    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !definitionOf(peer ?? "")) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
     const hub = await connect();
     try {
       const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused")); return reply; };
@@ -1934,7 +1909,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (["assign", "clear"].includes(args[0] ?? "")) {
       const [op, peer, id] = args;
-      if (!peer || !isSupportedPeer(peer) || !id && op === "assign" || args.length > 3) fail("usage: ahub role assign <peer> <id> | clear <peer> [<id>]");
+      if (!peer || !definitionOf(peer ?? "") || !id && op === "assign" || args.length > 3) fail("usage: ahub role assign <peer> <id> | clear <peer> [<id>]");
       const hub = await connect();
       try {
         const view = await hub.request({ t: "settings_get" }); if (!view.ok) fail(view.error);

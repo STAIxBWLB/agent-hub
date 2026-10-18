@@ -309,6 +309,7 @@ export class CodexPeer extends BasePeer {
     this.injected = undefined;
     this.answering = [];
     this.lastAnswer = "";
+    this.deltas.clear();
     this.abandonSteers("turn went silent");
     super.onWatchdog();
   }
@@ -577,16 +578,19 @@ export class CodexPeer extends BasePeer {
       this.setState("busy");
       if (params.turn?.id) this.opts.onTurn?.(params.turn.id);
     } else if (method === "item/agentMessage/delta") {
+      if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId)) return;
       const buf = this.deltas.get(params.itemId) ?? [];
       buf.push(params.delta);
       this.deltas.set(params.itemId, buf);
     } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall", "userMessage"].includes(params.item?.type)) {
+      if (typeof params.turnId === "string" && !this.activeTurns.has(params.turnId)) return;
       try {
         this.opts.onItem?.(params.item, typeof params.turnId === "string" && this.activeTurns.has(params.turnId) ? params.turnId : undefined);
       } catch (error) {
         this.opts.log?.(`[${this.id}] item handler failed: ${(error as Error).message}`); // the proxy keeps going
       }
     } else if (method === "item/completed" && params.item?.type === "agentMessage") {
+      if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId)) return;
       const item = params.item;
       const text: string =
         item.text ?? item.content?.map((c: any) => c.text ?? "").join("") ?? this.deltas.get(item.id)?.join("") ?? "";
@@ -595,6 +599,8 @@ export class CodexPeer extends BasePeer {
       if (item.phase !== "commentary" && text.trim()) this.lastAnswer = text.trim();
     } else if (method === "turn/completed") {
       const nativeTurn = params.turn?.id;
+      // A watchdog or a newer turn has invalidated this completion. Unknown-id legacy starts retain their fallback.
+      if (!this.activeTurns.size || typeof nativeTurn === "string" && !this.activeTurns.has(nativeTurn) && ![...this.activeTurns].some(id => id.startsWith("unknown:"))) return;
       this.activeTurns.delete(nativeTurn);
       for (const id of this.activeTurns) if (id.startsWith("unknown:")) this.activeTurns.delete(id);
       if (params.turn?.status === "failed") {

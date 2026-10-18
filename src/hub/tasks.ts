@@ -23,7 +23,7 @@ import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecisi
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
-import { SUPPORTED_PEERS } from "./peer-catalog.ts";
+import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
@@ -509,7 +509,7 @@ export class Tasks {
   private health() {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
-    return { ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => peer.id === "kimi" && peer.pullOnly).map(peer => peer.id), offRoster: SUPPORTED_PEERS.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => definitionOf(peer.id)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: ADAPTERS.map(adapter => adapter.kind).filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
@@ -799,7 +799,7 @@ export class Tasks {
       if (by !== USER && Object.hasOwn(patch, "reserved") && this.hasPersonReservation(task)) throw new PreEffectToolRefusal("a person's reservation is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
         if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
-        if (patch.reserved && !(SUPPORTED_PEERS as readonly string[]).includes(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
+        if (patch.reserved && !definitionOf(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
         if (patch.reserved) this.requireCapabilities(task, patch.reserved);
         const rows = new Map(this.d.board.list().map(row => [row.id, row]));

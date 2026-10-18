@@ -75,3 +75,15 @@ export function assertDaemonEngine(definition: Pick<AdapterDefinition, "start">)
   const engine = definition.start.daemonPort;
   if (definition.start.create && engine === undefined || engine !== undefined && !Object.hasOwn(DAEMON_PORTS, engine)) throw new Error("invalid adapter daemon engine");
 }
+
+/** Ordered catalog projections consumed by generic core hosts. */
+export const STARTABLE_PEERS = SUPPORTED_PEERS;
+export type SupportedPeer = typeof SUPPORTED_PEERS[number];
+export function isSupportedPeer(peer: unknown): peer is SupportedPeer { return typeof peer === "string" && definitionOf(peer) !== undefined; }
+export function isStartablePeer(peer: unknown): peer is SupportedPeer { return typeof peer === "string" && definitionOf(peer)?.start.conductorStartable === true; }
+
+/** Body-free browser metadata, derived from the same native participation and managed-tool contracts. */
+export const ADAPTER_DISPLAY = Object.fromEntries(ADAPTERS.map(adapter => [adapter.kind, {
+  pullOnlyRead: adapter.attach?.pullOnlyForms?.includes("tui") === true,
+  terminalApproval: adapter.trust.hubSandboxed,
+}]));

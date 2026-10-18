@@ -1,3 +1,6 @@
+import type { SettingDef } from "../hub/settings.ts";
+import type { Addon } from "../hub/tooling.ts";
+import type { RecoveryContinuityBookmark } from "../hub/recovery-continuity.ts";
 import type { RecoveryPeer } from "../cli/upgrade.ts";
 import type { Launch, StatusLineTee, FactsHook } from "../cli/launch.ts";
 import type { LaunchMetadata, TerminalBinding, SessionRef } from "../cli/terminal-recovery.ts";
@@ -118,8 +121,19 @@ export interface NativeHooks {
   factsHook: (msg: unknown) => unknown;
   conversationRevert(turnId: string): Promise<void>;
   replaceSession(req: StartRequest): Promise<unknown>;
-  pluginInventory(env: Readonly<Record<string, string>>): string[];
+  pluginInventory(ctx: { home: string; cwd?: string; env: Readonly<Record<string, string | undefined>> }): Addon[];
+  recallSource: string;
+  recallInjected: boolean;
+  classifyTool(name: string, command?: string): "edit" | undefined;
   recallPlatform: string;
+}
+
+export type NativeConfigCheck = (value: unknown, key: string) => void;
+export interface NativeConfigValidators {
+  bool: NativeConfigCheck; text: NativeConfigCheck; strings: NativeConfigCheck; argv: NativeConfigCheck;
+  number(min?: number, max?: number, integer?: boolean): NativeConfigCheck;
+  words(values: readonly string[]): NativeConfigCheck;
+  block(fields: Record<string, NativeConfigCheck>): NativeConfigCheck;
 }
 
 /** Adapter API 1, including the merged revision-3 members frozen in issue #451. */
@@ -161,6 +175,10 @@ export interface AdapterDefinition {
     unmanagedNote?: string;
   };
   session: {
+    crashPlan?(meta: Record<string, unknown>): { resume?: Record<string, string>; how: string; fresh?: Record<string, string>; tui?: true };
+    unrecordedTerminal?: "always" | "tui";
+    continuityBookmark?(peer: RecoveryPeer, binding?: TerminalBinding): Pick<RecoveryContinuityBookmark, "pi">;
+    continuity?: { key: string; parse(value: unknown): unknown | undefined };
     idField: "sessionId" | "threadId";
     currentId(peer: PeerAdapter): string | undefined;
     configDirEnv?: "CODEX_HOME" | "CLAUDE_CONFIG_DIR";
@@ -186,7 +204,15 @@ export interface AdapterDefinition {
     crashIdentity?(row: unknown): { sessionId?: string; sessionFile?: string };
   };
   turnEnd: "adapter" | "native-hook";
-  budget?: { account: string; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean };
+  reporting?: { tokensNotReported?: boolean };
+  budget?: { account: string; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean };
+  configuration?: {
+    schema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;
+    routingSchema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;
+    settings?: readonly SettingDef[];
+    restartReasons?: Readonly<Record<string, string>>;
+    validateEffective?(raw: Record<string, unknown>, fail: (key: string, reason: string) => never): void;
+  };
   capabilities?: { manifest?(peer: PeerAdapter): Promise<CapabilityManifest>; watch?: boolean };
   init?: {
     templateFragment?: string;
@@ -202,6 +228,6 @@ export interface AdapterDefinition {
     startWords(form: StartForm): string[];
     stopNotice?(form: StartForm, owner: PeerAdapter | undefined): string;
   };
-  display: { palette: { fg: string; bg: string; tone?: string; ansi?: string } };
+  display: { streamTone?: string; palette: { fg: string; bg: string; tone?: string; ansi?: string } };
   hooks?: Partial<NativeHooks>;
 }
