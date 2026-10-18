@@ -8,16 +8,17 @@ import { hubGitSync } from "./git.ts";
  * read, bounded; nothing here touches the board.
  */
 export interface BriefFile { path: string; status: string; oldPath?: string; insertions?: number; deletions?: number }
+export interface BriefExcluded { path: string; status: string; oldPath?: string; reason: string }
 export interface ReviewBrief {
   head: string;
-  /** The ref the head is compared with: origin/HEAD when the remote names one, else HEAD. */
+  /** The default branch the head is compared with: origin/HEAD, origin/main or origin/master. */
   base: string;
   mergeBase: string;
   reviewable: BriefFile[];
-  excluded: { path: string; reason: string }[];
+  excluded: BriefExcluded[];
   /** Changes left out by the privacy policy, both sides of a move included; counted, never named. */
   withheld: number;
-  /** Rule files by name (REVIEW.md, then `ahub-review-rules` attribute values) with their text at the head. */
+  /** Rule files by name (REVIEW.md, then `ahub-review-rules` attribute values) with their text at the merge base. */
   rules: { source: string; text: string }[];
   /** Reviewable paths grouped by the rule sources that apply to them. */
   ruleGroups: { sources: string[]; paths: string[] }[];
@@ -50,32 +51,43 @@ export function changedPathGroups(cwd: string, head: string, base = "HEAD"): { s
 
 export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy): ReviewBrief | { unavailable: string } {
   if (typeof head !== "string" || !HEX.test(head)) return { unavailable: "the task names no commit" };
-  // The default branch as the remote names it, else the checkout's HEAD (which another session may have moved).
-  const from = git(cwd, ["rev-parse", "--verify", "-q", "origin/HEAD"]).status === 0 ? "origin/HEAD" : "HEAD";
-  const base = git(cwd, ["merge-base", from, head]);
-  if (base.status !== 0 || typeof base.stdout !== "string") return { unavailable: `commit ${head} is not in this checkout` };
-  const groups = changedPathGroups(cwd, head, from);
+  const full = git(cwd, ["rev-parse", "--verify", "-q", `${head}^{commit}`]);
+  if (full.status !== 0 || typeof full.stdout !== "string") return { unavailable: `commit ${head} is not in this checkout` };
+  const commit = full.stdout.trim();
+  // A reliable base only: the remote's default branch. The checkout's HEAD may be the head itself (an empty inventory)
+  // or another session's branch.
+  const from = ["origin/HEAD", "origin/main", "origin/master"].find(ref => git(cwd, ["rev-parse", "--verify", "-q", `${ref}^{commit}`]).status === 0);
+  if (!from) return { unavailable: "no default branch (origin/HEAD, origin/main or origin/master) to compare with" };
+  const base = git(cwd, ["merge-base", from, commit]);
+  if (base.status !== 0 || typeof base.stdout !== "string") return { unavailable: `commit ${head} shares no history with ${from}` };
+  const mergeBase = base.stdout.trim();
+  const groups = changedPathGroups(cwd, commit, from);
   if (!groups) return { unavailable: `the changes of ${head} could not be read` };
+  if (!groups.length) return { unavailable: `commit ${head} has no changes against ${from}` };
   const shown = groups.filter(g => !g.paths.some(path => policy.privatePath(path) || !policy.nameable(path)));
   if (shown.length > MAX_FILES) return { unavailable: `${shown.length} changed files, over the brief's ${MAX_FILES}` };
   const withheld = groups.length - shown.length;
-  const counts = numstat(cwd, head, from);
-  const current = shown.map(g => g.paths.at(-1)!);
-  const attrs = attributes(cwd, head, current);
-  const reviewable: BriefFile[] = [], excluded: { path: string; reason: string }[] = [];
+  const counts = numstat(cwd, commit, from);
+  // Attributes and rules come from the merge base: a change cannot lift its own review obligations (a head that marks
+  // everything generated, or edits REVIEW.md, is still reviewed under the rules it is merging into).
+  const attrs = attributes(cwd, mergeBase, shown.map(g => g.paths.at(-1)!));
+  if (!counts || !attrs) return { unavailable: `the file details of ${head} could not be read` };
+  const reviewable: BriefFile[] = [], excluded: BriefExcluded[] = [];
   for (const g of shown) {
     const path = g.paths.at(-1)!, count = counts.get(path), attr = attrs.get(path);
+    const sides = { status: g.status[0]!, ...(g.paths.length === 2 ? { oldPath: g.paths[0]! } : {}) };
     const reason = attr?.generated ? "generated (linguist-generated)" : LOCKFILES.has(path.split("/").at(-1)!) ? "lockfile" : count?.binary ? "binary" : undefined;
-    if (reason) { excluded.push({ path, reason }); continue; }
-    reviewable.push({ path, status: g.status[0]!, ...(g.paths.length === 2 ? { oldPath: g.paths[0]! } : {}), ...(count && !count.binary ? { insertions: count.insertions, deletions: count.deletions } : {}) });
+    if (reason) { excluded.push({ path, ...sides, reason }); continue; }
+    reviewable.push({ path, ...sides, ...(count && !count.binary ? { insertions: count.insertions, deletions: count.deletions } : {}) });
   }
-  // Rules: REVIEW.md for every file, plus each file's `ahub-review-rules` attribute (a repository path), read at the head.
   const ruleText = new Map<string, string>();
   const readRule = (source: string): boolean => {
     if (ruleText.has(source)) return true;
-    if (ruleText.size >= MAX_RULE_FILES || policy.privatePath(source)) return false;
-    const r = git(cwd, ["show", `${head}:${source}`]);
+    if (ruleText.size >= MAX_RULE_FILES || policy.privatePath(source) || !policy.nameable(source)) return false;
+    const r = git(cwd, ["show", `${mergeBase}:${source}`]);
     if (r.status !== 0 || typeof r.stdout !== "string") return false;
+    // Screened whole, before any cut: a rule file that matches a private-data pattern is named but not shown.
+    if (!policy.nameable(r.stdout)) { ruleText.set(source, "(withheld: it matches a private-data pattern; read it in the repository)"); return true; }
     const bytes = Buffer.from(r.stdout, "utf8");
     ruleText.set(source, bytes.length > RULE_BYTES ? `${bytes.subarray(0, RULE_BYTES).toString("utf8")}\n[cut at ${RULE_BYTES} bytes]` : r.stdout);
     return true;
@@ -89,16 +101,17 @@ export function buildReviewBrief(cwd: string, head: unknown, policy: BriefPolicy
     (byKey.get(key) ?? byKey.set(key, { sources, paths: [] }).get(key)!).paths.push(file.path);
   }
   // Cross-check with the plain name list (no rename detection), as OCR's list is checked against the PR's.
-  const plain = git(cwd, ["diff", "--relative", "--no-renames", "--name-only", "-z", `${from}...${head}`, "--"]);
+  const plain = git(cwd, ["diff", "--relative", "--no-renames", "--name-only", "-z", `${from}...${commit}`, "--"]);
+  if (plain.status !== 0 || typeof plain.stdout !== "string") return { unavailable: `the name list of ${head} could not be read` };
   const listed = new Set(shown.flatMap(g => g.paths)), hidden = new Set(groups.filter(g => !shown.includes(g)).flatMap(g => g.paths));
-  const unlisted = plain.status === 0 && typeof plain.stdout === "string" ? plain.stdout.split("\0").filter(path => path && !listed.has(path) && !hidden.has(path)) : [];
-  return { head, base: from, mergeBase: base.stdout.trim(), reviewable, excluded, withheld, rules: [...ruleText].map(([source, text]) => ({ source, text })), ruleGroups: [...byKey.values()], unlisted };
+  const unlisted = plain.stdout.split("\0").filter(path => path && !listed.has(path) && !hidden.has(path));
+  return { head: commit, base: from, mergeBase, reviewable, excluded, withheld, rules: [...ruleText].map(([source, text]) => ({ source, text })), ruleGroups: [...byKey.values()], unlisted };
 }
 
-function numstat(cwd: string, head: string, base: string): Map<string, { insertions: number; deletions: number; binary: boolean }> {
+function numstat(cwd: string, head: string, base: string): Map<string, { insertions: number; deletions: number; binary: boolean }> | undefined {
   const out = new Map<string, { insertions: number; deletions: number; binary: boolean }>();
   const r = git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--relative", "-M", "-C", "--find-copies-harder", "--numstat", "-z", `${base}...${head}`, "--"]);
-  if (r.status !== 0 || typeof r.stdout !== "string") return out;
+  if (r.status !== 0 || typeof r.stdout !== "string") return undefined;
   // -z: "ins\tdel\tpath\0", or for a move "ins\tdel\t\0old\0new\0"; a binary file has "-" counts.
   const fields = r.stdout.split("\0");
   for (let i = 0; i < fields.length - 1;) {
@@ -109,11 +122,11 @@ function numstat(cwd: string, head: string, base: string): Map<string, { inserti
   return out;
 }
 
-function attributes(cwd: string, head: string, paths: string[]): Map<string, { generated?: boolean; rules?: string }> {
+function attributes(cwd: string, source: string, paths: string[]): Map<string, { generated?: boolean; rules?: string }> | undefined {
   const out = new Map<string, { generated?: boolean; rules?: string }>();
   if (!paths.length) return out;
-  const r = hubGitSync(["-C", cwd, "check-attr", "-z", "--stdin", `--source=${head}`, "linguist-generated", "ahub-review-rules"], { input: paths.join("\0") + "\0", encoding: "utf8", env: childEnv(process.env), maxBuffer: 4 * 1024 * 1024, timeout: 15_000 });
-  if (r.status !== 0 || typeof r.stdout !== "string") return out;
+  const r = hubGitSync(["-C", cwd, "check-attr", "-z", "--stdin", `--source=${source}`, "linguist-generated", "ahub-review-rules"], { input: paths.join("\0") + "\0", encoding: "utf8", env: childEnv(process.env), maxBuffer: 4 * 1024 * 1024, timeout: 15_000 });
+  if (r.status !== 0 || typeof r.stdout !== "string") return undefined;
   const f = r.stdout.split("\0");
   for (let i = 0; i + 2 < f.length; i += 3) {
     const [path, attr, value] = [f[i]!, f[i + 1]!, f[i + 2]!], entry = out.get(path) ?? {};
@@ -130,7 +143,7 @@ export function renderReviewBrief(brief: ReviewBrief): string {
   return [
     `Review brief: head ${brief.head} against ${brief.base} (merge base ${brief.mergeBase.slice(0, 12)}); ${brief.reviewable.length} reviewable, ${brief.excluded.length} excluded${brief.withheld ? `, ${brief.withheld} withheld by the privacy policy` : ""}.`,
     ...(brief.reviewable.length ? ["Reviewable:", ...brief.reviewable.map(file)] : ["Reviewable: none (record why in the note)."]),
-    ...(brief.excluded.length ? ["Excluded (still read their diff when it matters):", ...brief.excluded.map(e => `- ${e.path}: ${e.reason}`)] : []),
+    ...(brief.excluded.length ? ["Excluded (still read their diff when it matters):", ...brief.excluded.map(e => `- ${e.oldPath ? `${e.oldPath} -> ` : ""}${e.path} (${e.status}): ${e.reason}`)] : []),
     ...(brief.unlisted.length ? ["Not in the brief's list, read directly:", ...brief.unlisted.map(path => `- ${path}`)] : []),
     ...brief.ruleGroups.filter(g => g.sources.length).map(g => `Rules ${g.sources.join(" + ")} apply to: ${brief.ruleGroups.length === 1 ? "every reviewable file" : g.paths.join(", ")}`),
     ...brief.rules.map(r => `--- ${r.source} ---\n${r.text.trimEnd()}`),

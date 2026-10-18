@@ -2670,10 +2670,12 @@ export class Tasks {
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown): Promise<Task> {
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
+    let coveredCommit: string | undefined; // #520: the commit the coverage was checked against, pinned through every await
     const valid = (): Task => {
       const refused = authority?.();
       if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
       const t = this.need(id, false, true);
+      if (coveredCommit !== undefined && t.refs.commit !== coveredCommit) throw new PreEffectToolRefusal(`task #${t.id}'s commit changed during the verdict: review the new head`);
       this.mine(t, by, "reviewer", true);
       if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');
       if (t.state !== "in_review") throw new PreEffectToolRefusal(`task #${t.id} is ${t.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
@@ -2686,9 +2688,19 @@ export class Tasks {
     const mode = this.d.sdlc?.config().mode ?? "off";
     if (verdict === "approved" && by !== USER && mode !== "off") {
       const t = valid(), brief = this.isPii(t) || !t.refs.commit ? undefined : this.d.reviewBrief?.(t);
-      const gap = brief && !("unavailable" in brief) ? coverageGap(brief, coverage) : [];
-      if (gap.length && mode === "enforce") throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${gap.slice(0, 20).join(", ")}${gap.length > 20 ? ", ..." : ""}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
-      if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${gap.slice(0, 20).join(", ")}${gap.length > 20 ? ", ..." : ""}`.trim();
+      const enforce = mode === "enforce", list = (paths: string[]) => `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ", ..." : ""}`;
+      if (brief && "unavailable" in brief) {
+        // An unknown inventory is never an empty one.
+        if (enforce) throw new PreEffectToolRefusal(`coverage: the review brief is unavailable (${brief.unavailable}); an approval needs a complete brief of the task's commit`);
+        note = `${note ?? ""}\nCoverage unknown: the review brief is unavailable (${brief.unavailable})`.trim();
+      } else if (brief) {
+        // One head: the brief's, the task's commit, and the head the verdict names (with a PR, the lifecycle gate binds it).
+        if (typeof head === "string" && head !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict names head ${head}, but the review brief is for ${brief.head} (the task's commit)`);
+        coveredCommit = t.refs.commit;
+        const gap = coverageGap(brief, coverage);
+        if (gap.length && enforce) throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${list(gap)}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
+        if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();
+      }
     }
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("review note", note, valid());
