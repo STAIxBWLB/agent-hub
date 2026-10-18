@@ -108,16 +108,24 @@ export function roleContract(peer: string, roles: Record<string, string[]> = DEF
 }
 
 /** Profile schemas are data over the existing tools; dev retains the exact existing definitions. */
-export function profileTaskTools(profile: ProfileSelection = "dev", stages?: readonly string[]): HubTool[] {
+/** `criteria`: an enabled lifecycle, whose receipts take the #481 S8 checklist whatever its stage list. */
+export function profileTaskTools(profile: ProfileSelection = "dev", stages?: readonly string[], criteria = false): HubTool[] {
   const customStages = stages && (stages.length !== SDLC_STAGES.length || stages.some((s, i) => s !== SDLC_STAGES[i]));
   const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
-  if (!customStages && !customProfile) return TASK_TOOLS;
+  if (!customStages && !customProfile && !criteria) return TASK_TOOLS;
   const data = profileData(profile);
   return TASK_TOOLS.map(tool => {
     const properties = { ...tool.inputSchema.properties };
-    if (customStages && tool.name === "hub_sdlc_record") {
+    if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt as { type: string; properties: Record<string, unknown>; additionalProperties: boolean };
-      properties.receipt = { ...receipt, properties: { ...receipt.properties, stage: { type: "string", enum: [...(stages ?? SDLC_STAGES)] } } };
+      let fields: Record<string, unknown> = { ...receipt.properties, ...(customStages ? { stage: { type: "string", enum: [...(stages ?? SDLC_STAGES)] } } : {}) };
+      // #481 S8: only an enabled lifecycle (whose daemon accepts it) advertises the criteria checklist; off and older daemons keep phase.
+      if (criteria) {
+        const { phase, ...current } = fields as { phase: { properties: Record<string, unknown> } } & Record<string, unknown>;
+        const { tasks: _retiredImport, ...checklist } = phase.properties;
+        fields = { ...current, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
+      }
+      properties.receipt = { ...receipt, properties: fields };
     }
     if (customProfile && tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
     if (customProfile && properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };

@@ -1,4 +1,8 @@
-# GSD-shaped collaboration in agent-hub (#252)
+# Retired: GSD-shaped collaboration in agent-hub (#252)
+
+Retired on 2026-10-18 by #481. The AI-Native SDLC Playbook is the lifecycle standard. Only the head-bound acceptance-criteria checklist remains, under the Compliance pass; phase task import is removed. The text below preserves the historical analysis and unrun measurement plan, not current configuration instructions. Current behavior and the migration window are in [SDLC](sdlc.md#acceptance-criteria-checklist).
+
+## Historical analysis
 
 Source review: 2026-10-11, agent-hub 5647038. Recommendation: preserve the default flow; offer a bounded gsd-lite checklist/dependency presentation through #257's opt-in lifecycle. Defer a bidirectional GSD artifact bridge until it has a separately reviewed import contract and measured value.
 

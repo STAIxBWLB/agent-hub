@@ -1,6 +1,6 @@
-import type { PhaseView } from "./workflow.ts";
+import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
-export interface DeliveryTask { id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: PhaseView; }
+export interface DeliveryTask { id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
 export interface MergeQueueRow { pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }

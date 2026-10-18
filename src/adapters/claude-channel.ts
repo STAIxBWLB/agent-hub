@@ -1,6 +1,6 @@
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
-import { activeLifecycleStages } from "../hub/lifecycle-schema.ts";
+import { activeLifecycle } from "../hub/lifecycle-schema.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName, type ProjectProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 // Claude Code channel plugin server (MCP over stdio). Bundled to plugins/agent-hub/server.js.
@@ -291,7 +291,7 @@ async function connectLoop(): Promise<void> {
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const lifecycleStages = await activeLifecycleStages(stateDir, peerId, projectRoot, hub);
+  const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot, hub);
   return {
   tools: [
     {
@@ -329,7 +329,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               ]
             : []),
         ]),
-    ...profileTaskTools(profile, lifecycleStages).filter(tool => (lifecycleStages !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
+    ...profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria).filter(tool => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
     ...CONDUCTOR_TOOLS,
   ],
   };

@@ -93,10 +93,15 @@ test("custom lifecycle export and public status agree on the initial configured 
   expect((tasks.publicView(task).lifecycle as { stage: string }).stage).toBe("question");
 });
 
-test("phase gates require board phase views and cannot silently deadlock a none workflow (#257)", () => {
+test("the phase gate is a deprecated criteria alias for the #481 window, then refuses with a field-level reason", () => {
   const r = raw("enforce"); r.definitions.draft.exit_gates = ["phase"];
-  expect(() => sdlcConfig(r)).toThrow("phase gates require workflow = gsd-lite");
-  expect(sdlcConfig({ ...r, workflow: "gsd-lite" }).definitions?.draft?.exit_gates).toEqual(["phase"]);
-  r.definitions.draft.exit_gates = []; r.definitions.question.entry_gates = ["phase"];
-  expect(() => sdlcConfig(r)).toThrow("phase gates require workflow = gsd-lite");
+  const config = sdlcConfig(r, "0.12.35");
+  expect(config.definitions?.draft?.exit_gates).toEqual(["criteria"]);
+  expect(config.deprecations?.join(" ")).toContain("name it criteria");
+  expect(() => sdlcConfig(r, "0.13.0")).toThrow("sdlc.definitions.exit_gates: the phase gate was retired");
+  // No workflow selector is needed any more, and a missing checklist is a blocker the reviewer can clear, not a deadlock.
+  r.definitions.draft.exit_gates = ["criteria"];
+  const gated = sdlcConfig(r, "0.13.0"); expect(gated.deprecations).toBeUndefined();
+  const receipt = sdlcReceipt({ stage: "draft", repo: "owner/repo", issue: 1, pr: 2 }, undefined, gated);
+  expect(sdlcStatus(gated, receipt, evidence(), { ready: false, blockers: ["criteria checklist missing"] }).exit).toContain("criteria checklist missing");
 });

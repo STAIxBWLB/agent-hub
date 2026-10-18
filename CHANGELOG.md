@@ -2,6 +2,11 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- An enabled lifecycle (`mode` advise or enforce in `.agenthub/sdlc.toml`) now defaults to the AI-Native SDLC Playbook stages: intent, spec, plan, build, test, review, merge, release and maintain. Status, explain and the dashboard name the playbook stage. Receipts stored as `implement` or `verify` read as `build` and `test`, and a write with the old id stores the new one. Off keeps its seven stages, receipts, tool schema and output unchanged (#481 S0).
+- The gsd-lite option is retired. Its head-bound checklist is now the acceptance-criteria checklist (`criteria` in `hub_sdlc_record`), part of the Compliance pass, and once recorded it counts in any enabled lifecycle. Checklist task import is gone: dependencies stay with `ahub task propose --after`, and a stored task list is shown as ignored. Until 0.13.0, `workflow` and the `phase` gate and receipt name still load with a warning in `hub.log`; from 0.13.0 they are refused with a field-level reason (#481 S8).
+
 ## 0.12.34
 
 Built-in native policy now lives behind the adapter registry (#451 A2). Native behaviour is unchanged except the disclosed Codex watchdog fence below; the core keeps no vendor tables, and a guard refuses new ones. The changes_requested threshold that moves a task to another peer is now the setting `tasks.escalate_after`, with a default of three instead of the old fixed two (#488). Antigravity, Gemini CLI and Grok project configuration directories are protected like other agent configuration (#485). Live native clients, the #418 AC8 managed-Pi leg (#142) and #438 AC7 remain unverified by this release preparation. Installation and the person's restart require separate receipts.

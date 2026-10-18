@@ -189,7 +189,8 @@ test("split retains stored task role ids when current catalog guidance disappear
 
 test("split undo retains children referenced by another task phase checklist",async()=>{
  const {tasks,board}=rig(),parent=await tasks.propose(USER,{title:"parent",class:"implement",backlog:true});const split=await tasks.splitBacklog(USER,{id:parent.id,revision:0,parts:[{title:"a"},{title:"b"}],reason:"parts"});const other=await tasks.propose(USER,{title:"phase integration",class:"implement",backlog:true});
- await tasks.moveBacklog(USER,other.id,true);tasks.recordLifecycle(USER,other.id,{phase:{id:"phase-one",tasks:[{id:split.children[0]!.id,after:[]}],criteria:[{id:"criterion-one",required:true,result:"unverified",refs:[]}]}});const before=JSON.stringify(board.list());await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced by other work");expect(JSON.stringify(board.list())).toBe(before);
+ await tasks.moveBacklog(USER,other.id,true);// #481 S8 retired the import, so the reference is a receipt stored before it.
+ board.update(other.id,USER,"lifecycle",{sdlc:{stage:"spec",phase:{id:"phase-one",tasks:[{id:split.children[0]!.id,after:[]}],criteria:[{id:"criterion-one",required:true,result:"unverified",refs:[]}]}}});const before=JSON.stringify(board.list());await expect(tasks.undoPlanning(USER,parent.id,1)).rejects.toThrow("referenced by other work");expect(JSON.stringify(board.list())).toBe(before);
 });
 
 test("split undo preserves child execution budgets until the person disables them",async()=>{
