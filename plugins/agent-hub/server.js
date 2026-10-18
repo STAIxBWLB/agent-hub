@@ -3,6 +3,7 @@ var __create = Object.create;
 var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 function __accessProp(key) {
   return this[key];
@@ -31,7 +32,37 @@ var __toESM = (mod, isNodeMode, target) => {
     cache.set(mod, to);
   return to;
 };
+var __toCommonJS = (from) => {
+  var entry = (__moduleCache ??= new WeakMap).get(from), desc;
+  if (entry)
+    return entry;
+  entry = __defProp({}, "__esModule", { value: true });
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (var key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(entry, key))
+        __defProp(entry, key, {
+          get: __accessProp.bind(from, key),
+          enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable
+        });
+  }
+  __moduleCache.set(from, entry);
+  return entry;
+};
+var __moduleCache;
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
 var __esm = (fn, res, err) => () => {
   if (fn)
     try {
@@ -1058,6 +1089,10 @@ var init_child_process = __esm(() => {
 });
 
 // src/adapters/codex-appserver.ts
+var exports_codex_appserver = {};
+__export(exports_codex_appserver, {
+  CodexPeer: () => CodexPeer
+});
 import { spawn } from "child_process";
 function parse(raw) {
   try {
@@ -1806,6 +1841,10 @@ var init_qwen_native = __esm(() => {
 });
 
 // src/adapters/acp.ts
+var exports_acp = {};
+__export(exports_acp, {
+  AcpPeer: () => AcpPeer
+});
 import { spawn as spawn2 } from "child_process";
 import { createInterface } from "readline";
 function normalizeACPUsage(value, source = "usage_update") {
@@ -2397,6 +2436,10 @@ ${renderDigest(envs, false)}` }] });
 });
 
 // src/adapters/jcode.ts
+var exports_jcode = {};
+__export(exports_jcode, {
+  JcodePeer: () => JcodePeer
+});
 import { spawn as spawn3, spawnSync as spawnSync2 } from "child_process";
 import { existsSync, lstatSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -3465,6 +3508,10 @@ function piToolStepCeiling(value) {
 var PI_CEILING_KIND = "tool-step-ceiling", PI_CEILING_UNIT = "tool-step";
 
 // src/adapters/pi.ts
+var exports_pi = {};
+__export(exports_pi, {
+  PiPeer: () => PiPeer
+});
 import { randomUUID as randomUUID2 } from "crypto";
 import { existsSync as existsSync4, mkdirSync as mkdirSync3 } from "fs";
 import { join as join14, resolve as resolve10 } from "path";
@@ -7050,6 +7097,10 @@ function safeModelLabel(value) {
 }
 
 // src/adapters/local-worker.ts
+var exports_local_worker = {};
+__export(exports_local_worker, {
+  LocalPeer: () => LocalPeer
+});
 import { randomUUID as randomUUID4 } from "crypto";
 function safeParse(json) {
   try {
@@ -7541,6 +7592,10 @@ var init_local_worker = __esm(() => {
 });
 
 // src/adapters/claude-print.ts
+var exports_claude_print = {};
+__export(exports_claude_print, {
+  ClaudePrintPeer: () => ClaudePrintPeer
+});
 import { spawn as spawn6 } from "child_process";
 import { randomUUID as randomUUID5 } from "crypto";
 function claudePrintArgs(sessionId, mcpConfig, systemPrompt, privatePaths = []) {
@@ -7578,7 +7633,7 @@ function readDenyRules(paths) {
     return /[*?]/.test(entry) ? [`Read(${rule})`] : [`Read(${rule})`, `Read(${rule.replace(/\/$/, "")}/**)`];
   });
 }
-var reviewTask = (env) => {
+var GroupCleanupError, reviewTask = (env) => {
   if (env.from !== HUB || env.kind !== "review")
     return;
   const id = Number(env.refs?.task);
@@ -7588,6 +7643,8 @@ var init_claude_print = __esm(() => {
   init_child_process();
   init_git();
   init_envelope();
+  GroupCleanupError = class GroupCleanupError extends Error {
+  };
   ClaudePrintPeer = class ClaudePrintPeer extends BasePeer {
     opts;
     hubNative = true;
@@ -7595,6 +7652,10 @@ var init_claude_print = __esm(() => {
     child;
     activeDeliveryId;
     reviewing;
+    reviewSeq = 0;
+    reviewToken(task) {
+      return this.reviewing === task ? this.reviewSeq : undefined;
+    }
     constructor(id, opts) {
       super(id, opts.watchdogMs);
       this.opts = opts;
@@ -7656,6 +7717,13 @@ var init_claude_print = __esm(() => {
         try {
           code = await this.review(env, task, generation);
         } catch (error) {
+          if (generation !== this.generation)
+            return;
+          if (error instanceof GroupCleanupError) {
+            this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
+            this.settle("needs_review", `review process group still running: ${error.message}`);
+            return;
+          }
           failure = { state: started ? "needs_review" : "failed_safe", reason: `claude reviewer could not start: ${error.message}` };
           break;
         }
@@ -7697,6 +7765,7 @@ var init_claude_print = __esm(() => {
             return;
           }
           this.reviewing = task;
+          this.reviewSeq++;
           let facts;
           try {
             facts = this.opts.facts?.(env);
@@ -7725,11 +7794,13 @@ ${facts}` : ""}`);
           }
         });
         child.once("exit", (code) => {
-          if (this.child === child) {
-            this.child = undefined;
+          if (this.child === child)
             this.reviewing = undefined;
-          }
-          resolve(code);
+          stopOwnedProcess(child, { group: true }).then(() => {
+            if (this.child === child)
+              this.child = undefined;
+            resolve(code);
+          }, (error) => reject(new GroupCleanupError(error.message)));
         });
       });
     }
@@ -7757,7 +7828,7 @@ function createCodex(ctx) {
     throw new Error("Codex requires its Codex transport options");
   if (ctx.permission === "read-only")
     throw new Error("Codex has no verified read-only permission mapping");
-  init_codex_appserver();
+  const { CodexPeer } = (init_codex_appserver(), __toCommonJS(exports_codex_appserver));
   return new CodexPeer(ctx.instance, ctx.daemon.codex);
 }
 function createKimi(ctx) {
@@ -7765,7 +7836,7 @@ function createKimi(ctx) {
     throw new Error("Kimi requires its ACP transport options");
   if (ctx.permission === "read-only")
     throw new Error("Kimi has no verified read-only permission mapping");
-  init_acp();
+  const { AcpPeer } = (init_acp(), __toCommonJS(exports_acp));
   return new AcpPeer(ctx.instance, ctx.daemon.acp);
 }
 function createJcode(ctx) {
@@ -7773,7 +7844,7 @@ function createJcode(ctx) {
     throw new Error("Jcode requires its Jcode transport options");
   if (ctx.permission === "read-only")
     throw new Error("Jcode has no verified read-only permission mapping");
-  init_jcode();
+  const { JcodePeer } = (init_jcode(), __toCommonJS(exports_jcode));
   return new JcodePeer(ctx.daemon.jcode);
 }
 function createPi(ctx) {
@@ -7781,7 +7852,7 @@ function createPi(ctx) {
     throw new Error("Pi requires its Pi transport options");
   if (ctx.permission === "read-only")
     throw new Error("Pi has no verified read-only permission mapping");
-  init_pi();
+  const { PiPeer } = (init_pi(), __toCommonJS(exports_pi));
   return new PiPeer(ctx.instance, ctx.daemon.pi);
 }
 function createLocal(ctx) {
@@ -7789,13 +7860,13 @@ function createLocal(ctx) {
     throw new Error("Local worker requires its local transport options");
   if (ctx.permission === "read-only")
     throw new Error("Local worker has no verified read-only permission mapping");
-  init_local_worker();
+  const { LocalPeer } = (init_local_worker(), __toCommonJS(exports_local_worker));
   return new LocalPeer(ctx.instance, ctx.daemon.local);
 }
 function createClaudeReviewer(ctx) {
   if (!("claudePrint" in ctx.daemon))
     throw new Error("Claude reviewer requires its print transport options");
-  init_claude_print();
+  const { ClaudePrintPeer } = (init_claude_print(), __toCommonJS(exports_claude_print));
   return new ClaudePrintPeer(ctx.instance, ctx.daemon.claudePrint);
 }
 var DAEMON_PORTS;
@@ -22220,7 +22291,7 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object4(shape, params) {
+function object3(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -22565,31 +22636,31 @@ var TaskCreationParamsSchema = looseObject({
   ttl: number2().optional(),
   pollInterval: number2().optional()
 });
-var TaskMetadataSchema = object4({
+var TaskMetadataSchema = object3({
   ttl: number2().optional()
 });
-var RelatedTaskMetadataSchema = object4({
+var RelatedTaskMetadataSchema = object3({
   taskId: string2()
 });
 var RequestMetaSchema = looseObject({
   progressToken: ProgressTokenSchema.optional(),
   [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
 });
-var BaseRequestParamsSchema = object4({
+var BaseRequestParamsSchema = object3({
   _meta: RequestMetaSchema.optional()
 });
 var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
   task: TaskMetadataSchema.optional()
 });
 var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
-var RequestSchema = object4({
+var RequestSchema = object3({
   method: string2(),
   params: BaseRequestParamsSchema.loose().optional()
 });
-var NotificationsParamsSchema = object4({
+var NotificationsParamsSchema = object3({
   _meta: RequestMetaSchema.optional()
 });
-var NotificationSchema = object4({
+var NotificationSchema = object3({
   method: string2(),
   params: NotificationsParamsSchema.loose().optional()
 });
@@ -22597,18 +22668,18 @@ var ResultSchema = looseObject({
   _meta: RequestMetaSchema.optional()
 });
 var RequestIdSchema = union([string2(), number2().int()]);
-var JSONRPCRequestSchema = object4({
+var JSONRPCRequestSchema = object3({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
 var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
-var JSONRPCNotificationSchema = object4({
+var JSONRPCNotificationSchema = object3({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
 var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
-var JSONRPCResultResponseSchema = object4({
+var JSONRPCResultResponseSchema = object3({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
@@ -22625,10 +22696,10 @@ var ErrorCode;
   ErrorCode[ErrorCode["InternalError"] = -32603] = "InternalError";
   ErrorCode[ErrorCode["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
 })(ErrorCode || (ErrorCode = {}));
-var JSONRPCErrorResponseSchema = object4({
+var JSONRPCErrorResponseSchema = object3({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema.optional(),
-  error: object4({
+  error: object3({
     code: number2().int(),
     message: string2(),
     data: unknown().optional()
@@ -22651,16 +22722,16 @@ var CancelledNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/cancelled"),
   params: CancelledNotificationParamsSchema
 });
-var IconSchema = object4({
+var IconSchema = object3({
   src: string2(),
   mimeType: string2().optional(),
   sizes: array(string2()).optional(),
   theme: _enum(["light", "dark"]).optional()
 });
-var IconsSchema = object4({
+var IconsSchema = object3({
   icons: array(IconSchema).optional()
 });
-var BaseMetadataSchema = object4({
+var BaseMetadataSchema = object3({
   name: string2(),
   title: string2().optional()
 });
@@ -22671,7 +22742,7 @@ var ImplementationSchema = BaseMetadataSchema.extend({
   websiteUrl: string2().optional(),
   description: string2().optional()
 });
-var FormElicitationCapabilitySchema = intersection(object4({
+var FormElicitationCapabilitySchema = intersection(object3({
   applyDefaults: boolean2().optional()
 }), record3(string2(), unknown()));
 var ElicitationCapabilitySchema = preprocess((value) => {
@@ -22681,7 +22752,7 @@ var ElicitationCapabilitySchema = preprocess((value) => {
     }
   }
   return value;
-}, intersection(object4({
+}, intersection(object3({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
 }), record3(string2(), unknown()).optional()));
@@ -22706,14 +22777,14 @@ var ServerTasksCapabilitySchema = looseObject({
     }).optional()
   }).optional()
 });
-var ClientCapabilitiesSchema = object4({
+var ClientCapabilitiesSchema = object3({
   experimental: record3(string2(), AssertObjectSchema).optional(),
-  sampling: object4({
+  sampling: object3({
     context: AssertObjectSchema.optional(),
     tools: AssertObjectSchema.optional()
   }).optional(),
   elicitation: ElicitationCapabilitySchema.optional(),
-  roots: object4({
+  roots: object3({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ClientTasksCapabilitySchema.optional(),
@@ -22728,18 +22799,18 @@ var InitializeRequestSchema = RequestSchema.extend({
   method: literal("initialize"),
   params: InitializeRequestParamsSchema
 });
-var ServerCapabilitiesSchema = object4({
+var ServerCapabilitiesSchema = object3({
   experimental: record3(string2(), AssertObjectSchema).optional(),
   logging: AssertObjectSchema.optional(),
   completions: AssertObjectSchema.optional(),
-  prompts: object4({
+  prompts: object3({
     listChanged: boolean2().optional()
   }).optional(),
-  resources: object4({
+  resources: object3({
     subscribe: boolean2().optional(),
     listChanged: boolean2().optional()
   }).optional(),
-  tools: object4({
+  tools: object3({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ServerTasksCapabilitySchema.optional(),
@@ -22759,12 +22830,12 @@ var PingRequestSchema = RequestSchema.extend({
   method: literal("ping"),
   params: BaseRequestParamsSchema.optional()
 });
-var ProgressSchema = object4({
+var ProgressSchema = object3({
   progress: number2(),
   total: optional(number2()),
   message: optional(string2())
 });
-var ProgressNotificationParamsSchema = object4({
+var ProgressNotificationParamsSchema = object3({
   ...NotificationsParamsSchema.shape,
   ...ProgressSchema.shape,
   progressToken: ProgressTokenSchema
@@ -22783,7 +22854,7 @@ var PaginatedResultSchema = ResultSchema.extend({
   nextCursor: CursorSchema.optional()
 });
 var TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-var TaskSchema = object4({
+var TaskSchema = object3({
   taskId: string2(),
   status: TaskStatusSchema,
   ttl: union([number2(), _null3()]),
@@ -22827,7 +22898,7 @@ var CancelTaskRequestSchema = RequestSchema.extend({
   })
 });
 var CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-var ResourceContentsSchema = object4({
+var ResourceContentsSchema = object3({
   uri: string2(),
   mimeType: optional(string2()),
   _meta: record3(string2(), unknown()).optional()
@@ -22847,12 +22918,12 @@ var BlobResourceContentsSchema = ResourceContentsSchema.extend({
   blob: Base64Schema
 });
 var RoleSchema = _enum(["user", "assistant"]);
-var AnnotationsSchema = object4({
+var AnnotationsSchema = object3({
   audience: array(RoleSchema).optional(),
   priority: number2().min(0).max(1).optional(),
   lastModified: datetime2({ offset: true }).optional()
 });
-var ResourceSchema = object4({
+var ResourceSchema = object3({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uri: string2(),
@@ -22862,7 +22933,7 @@ var ResourceSchema = object4({
   annotations: AnnotationsSchema.optional(),
   _meta: optional(looseObject({}))
 });
-var ResourceTemplateSchema = object4({
+var ResourceTemplateSchema = object3({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uriTemplate: string2(),
@@ -22915,12 +22986,12 @@ var ResourceUpdatedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/resources/updated"),
   params: ResourceUpdatedNotificationParamsSchema
 });
-var PromptArgumentSchema = object4({
+var PromptArgumentSchema = object3({
   name: string2(),
   description: optional(string2()),
   required: optional(boolean2())
 });
-var PromptSchema = object4({
+var PromptSchema = object3({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: optional(string2()),
@@ -22941,34 +23012,34 @@ var GetPromptRequestSchema = RequestSchema.extend({
   method: literal("prompts/get"),
   params: GetPromptRequestParamsSchema
 });
-var TextContentSchema = object4({
+var TextContentSchema = object3({
   type: literal("text"),
   text: string2(),
   annotations: AnnotationsSchema.optional(),
   _meta: record3(string2(), unknown()).optional()
 });
-var ImageContentSchema = object4({
+var ImageContentSchema = object3({
   type: literal("image"),
   data: Base64Schema,
   mimeType: string2(),
   annotations: AnnotationsSchema.optional(),
   _meta: record3(string2(), unknown()).optional()
 });
-var AudioContentSchema = object4({
+var AudioContentSchema = object3({
   type: literal("audio"),
   data: Base64Schema,
   mimeType: string2(),
   annotations: AnnotationsSchema.optional(),
   _meta: record3(string2(), unknown()).optional()
 });
-var ToolUseContentSchema = object4({
+var ToolUseContentSchema = object3({
   type: literal("tool_use"),
   name: string2(),
   id: string2(),
   input: record3(string2(), unknown()),
   _meta: record3(string2(), unknown()).optional()
 });
-var EmbeddedResourceSchema = object4({
+var EmbeddedResourceSchema = object3({
   type: literal("resource"),
   resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
   annotations: AnnotationsSchema.optional(),
@@ -22984,7 +23055,7 @@ var ContentBlockSchema = union([
   ResourceLinkSchema,
   EmbeddedResourceSchema
 ]);
-var PromptMessageSchema = object4({
+var PromptMessageSchema = object3({
   role: RoleSchema,
   content: ContentBlockSchema
 });
@@ -22996,26 +23067,26 @@ var PromptListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/prompts/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ToolAnnotationsSchema = object4({
+var ToolAnnotationsSchema = object3({
   title: string2().optional(),
   readOnlyHint: boolean2().optional(),
   destructiveHint: boolean2().optional(),
   idempotentHint: boolean2().optional(),
   openWorldHint: boolean2().optional()
 });
-var ToolExecutionSchema = object4({
+var ToolExecutionSchema = object3({
   taskSupport: _enum(["required", "optional", "forbidden"]).optional()
 });
-var ToolSchema = object4({
+var ToolSchema = object3({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: string2().optional(),
-  inputSchema: object4({
+  inputSchema: object3({
     type: literal("object"),
     properties: record3(string2(), AssertObjectSchema).optional(),
     required: array(string2()).optional()
   }).catchall(unknown()),
-  outputSchema: object4({
+  outputSchema: object3({
     type: literal("object"),
     properties: record3(string2(), AssertObjectSchema).optional(),
     required: array(string2()).optional()
@@ -23050,7 +23121,7 @@ var ToolListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/tools/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ListChangedOptionsBaseSchema = object4({
+var ListChangedOptionsBaseSchema = object3({
   autoRefresh: boolean2().default(true),
   debounceMs: number2().int().nonnegative().default(300)
 });
@@ -23071,23 +23142,23 @@ var LoggingMessageNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/message"),
   params: LoggingMessageNotificationParamsSchema
 });
-var ModelHintSchema = object4({
+var ModelHintSchema = object3({
   name: string2().optional()
 });
-var ModelPreferencesSchema = object4({
+var ModelPreferencesSchema = object3({
   hints: array(ModelHintSchema).optional(),
   costPriority: number2().min(0).max(1).optional(),
   speedPriority: number2().min(0).max(1).optional(),
   intelligencePriority: number2().min(0).max(1).optional()
 });
-var ToolChoiceSchema = object4({
+var ToolChoiceSchema = object3({
   mode: _enum(["auto", "required", "none"]).optional()
 });
-var ToolResultContentSchema = object4({
+var ToolResultContentSchema = object3({
   type: literal("tool_result"),
   toolUseId: string2().describe("The unique identifier for the corresponding tool call."),
   content: array(ContentBlockSchema).default([]),
-  structuredContent: object4({}).loose().optional(),
+  structuredContent: object3({}).loose().optional(),
   isError: boolean2().optional(),
   _meta: record3(string2(), unknown()).optional()
 });
@@ -23099,7 +23170,7 @@ var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
   ToolUseContentSchema,
   ToolResultContentSchema
 ]);
-var SamplingMessageSchema = object4({
+var SamplingMessageSchema = object3({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
   _meta: record3(string2(), unknown()).optional()
@@ -23132,13 +23203,13 @@ var CreateMessageResultWithToolsSchema = ResultSchema.extend({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
 });
-var BooleanSchemaSchema = object4({
+var BooleanSchemaSchema = object3({
   type: literal("boolean"),
   title: string2().optional(),
   description: string2().optional(),
   default: boolean2().optional()
 });
-var StringSchemaSchema = object4({
+var StringSchemaSchema = object3({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
@@ -23147,7 +23218,7 @@ var StringSchemaSchema = object4({
   format: _enum(["email", "uri", "date", "date-time"]).optional(),
   default: string2().optional()
 });
-var NumberSchemaSchema = object4({
+var NumberSchemaSchema = object3({
   type: _enum(["number", "integer"]),
   title: string2().optional(),
   description: string2().optional(),
@@ -23155,24 +23226,24 @@ var NumberSchemaSchema = object4({
   maximum: number2().optional(),
   default: number2().optional()
 });
-var UntitledSingleSelectEnumSchemaSchema = object4({
+var UntitledSingleSelectEnumSchemaSchema = object3({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
   enum: array(string2()),
   default: string2().optional()
 });
-var TitledSingleSelectEnumSchemaSchema = object4({
+var TitledSingleSelectEnumSchemaSchema = object3({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
-  oneOf: array(object4({
+  oneOf: array(object3({
     const: string2(),
     title: string2()
   })),
   default: string2().optional()
 });
-var LegacyTitledEnumSchemaSchema = object4({
+var LegacyTitledEnumSchemaSchema = object3({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
@@ -23181,26 +23252,26 @@ var LegacyTitledEnumSchemaSchema = object4({
   default: string2().optional()
 });
 var SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-var UntitledMultiSelectEnumSchemaSchema = object4({
+var UntitledMultiSelectEnumSchemaSchema = object3({
   type: literal("array"),
   title: string2().optional(),
   description: string2().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object4({
+  items: object3({
     type: literal("string"),
     enum: array(string2())
   }),
   default: array(string2()).optional()
 });
-var TitledMultiSelectEnumSchemaSchema = object4({
+var TitledMultiSelectEnumSchemaSchema = object3({
   type: literal("array"),
   title: string2().optional(),
   description: string2().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object4({
-    anyOf: array(object4({
+  items: object3({
+    anyOf: array(object3({
       const: string2(),
       title: string2()
     }))
@@ -23213,7 +23284,7 @@ var PrimitiveSchemaDefinitionSchema = union([EnumSchemaSchema, BooleanSchemaSche
 var ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   mode: literal("form").optional(),
   message: string2(),
-  requestedSchema: object4({
+  requestedSchema: object3({
     type: literal("object"),
     properties: record3(string2(), PrimitiveSchemaDefinitionSchema),
     required: array(string2()).optional()
@@ -23241,21 +23312,21 @@ var ElicitResultSchema = ResultSchema.extend({
   action: _enum(["accept", "decline", "cancel"]),
   content: preprocess((val) => val === null ? undefined : val, record3(string2(), union([string2(), number2(), boolean2(), array(string2())])).optional())
 });
-var ResourceTemplateReferenceSchema = object4({
+var ResourceTemplateReferenceSchema = object3({
   type: literal("ref/resource"),
   uri: string2()
 });
-var PromptReferenceSchema = object4({
+var PromptReferenceSchema = object3({
   type: literal("ref/prompt"),
   name: string2()
 });
 var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
   ref: union([PromptReferenceSchema, ResourceTemplateReferenceSchema]),
-  argument: object4({
+  argument: object3({
     name: string2(),
     value: string2()
   }),
-  context: object4({
+  context: object3({
     arguments: record3(string2(), string2()).optional()
   }).optional()
 });
@@ -23270,7 +23341,7 @@ var CompleteResultSchema = ResultSchema.extend({
     hasMore: optional(boolean2())
   })
 });
-var RootSchema = object4({
+var RootSchema = object3({
   uri: string2().startsWith("file://"),
   name: string2().optional(),
   _meta: record3(string2(), unknown()).optional()

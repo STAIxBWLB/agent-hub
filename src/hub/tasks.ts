@@ -65,6 +65,8 @@ export interface TasksDeps {
   reviewContext?: (by: PeerId, task: number) => "fresh" | "continuing" | undefined;
   /** #223 R2: a reviewer-only instance gets review facts, not the builder's done summary. */
   reviewOnly?: (peer: PeerId) => boolean;
+  /** #223: captured when a verdict call starts; a non-undefined result refuses the verdict at every later check. */
+  reviewAuthority?: (by: PeerId, task: number) => (() => string | undefined) | undefined;
   memory?: MemoryClient;
   /** Captured native profile fence at our memory operation boundaries; no board mutation. */
   memoryCheck?: () => void;
@@ -2653,7 +2655,10 @@ export class Tasks {
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown): Promise<Task> {
+    const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
     const valid = (): Task => {
+      const refused = authority?.();
+      if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
       const t = this.need(id, false, true);
       this.mine(t, by, "reviewer", true);
       if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');

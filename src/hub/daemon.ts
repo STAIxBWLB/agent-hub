@@ -1299,6 +1299,12 @@ export async function startDaemon(opts: DaemonOptions) {
     })),
     instances: () => declarations,
     reviewOnly: reviewOnlyPeer,
+    // #223: a headless reviewer's verdict holds only while the same child it started with still runs for that task.
+    reviewAuthority: (by, task) => {
+      if (definitionOf(by)?.start.daemonPort !== "claude-print") return undefined;
+      const peer = bus.peers.get(by) as ClaudePrintPeer | undefined, token = peer?.reviewToken(task);
+      return () => token !== undefined && bus.peers.get(by) === peer && peer?.reviewToken(task) === token ? undefined : `no review of task #${task} is running for ${by}`;
+    },
     // #223 R4: fresh only when the verdict comes from a reviewer session the hub started for this task's review.
     reviewContext: (by, task) => definitionOf(by)?.start.daemonPort === "claude-print" && (bus.peers.get(by) as ClaudePrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
@@ -2186,8 +2192,6 @@ export async function startDaemon(opts: DaemonOptions) {
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(tasks.recordLifecycle(by, a.id, a.receipt));
       case "hub_review":
-        // #223: a headless reviewer's authority lasts while its child for this task runs; a killed or stale child is refused.
-        if (definitionOf(by)?.start.daemonPort === "claude-print" && (bus.peers.get(by) as ClaudePrintPeer | undefined)?.reviewing !== Number(a.id)) throw new PreEffectToolRefusal(`no review of task #${a.id} is running for ${by}`);
         return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head));
       case "hub_remember":
         return tasks.remember(by, a);

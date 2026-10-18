@@ -54,23 +54,34 @@ const DIFF_CAP = 100_000;
  */
 export function reviewDiff(cwd: string, commit: unknown, policy: { privatePath(path: string): boolean; nameable(text: string): boolean }): string | undefined {
   if (typeof commit !== "string" || !/^[0-9a-f]{7,40}$/i.test(commit)) return undefined;
-  const git = (args: string[]) => hubGitSync(["-C", cwd, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--relative", ...args], { encoding: "utf8", env: childEnv(process.env), maxBuffer: 16 * 1024 * 1024, timeout: 15_000 });
+  const git = (args: string[]) => hubGitSync(["-C", cwd, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--relative", ...args], { encoding: "utf8", env: childEnv(process.env), maxBuffer: 16 * 1024 * 1024, timeout: 15_000 });
   const unavailable = `Diff of ${commit} unavailable here; read the changed files with Read and Grep.`;
-  // Paths first: a private file (both sides of a rename, since renames are split) never reaches the diff.
-  const names = git(["--name-only", "-z", `HEAD...${commit}`, "--"]);
+  // Paths first, with rename and copy detection: a move or copy is withheld whole when either side is private, so a
+  // private file's content never shows up under a public name.
+  // ponytail: detection is git's similarity (50%); content moved from a private file and mostly rewritten reads as a new
+  // public file, screened only by the private-data pattern below. Track private blobs by hash if that matters.
+  const names = git(["-M", "-C", "--find-copies-harder", "--name-status", "-z", `HEAD...${commit}`, "--"]);
   if (names.status !== 0 || typeof names.stdout !== "string") return unavailable;
-  const changed = names.stdout.split("\0").filter(Boolean);
-  const shown = changed.filter(path => !policy.privatePath(path));
-  const hidden = changed.length - shown.length;
+  const fields = names.stdout.split("\0"), changed: string[][] = [];
+  for (let i = 0; i < fields.length - 1;) {
+    const status = fields[i++]!, sides = /^[RC]/.test(status) ? 2 : 1;
+    changed.push(fields.slice(i, i + sides)); i += sides;
+  }
+  const shownGroups = changed.filter(group => !group.some(path => policy.privatePath(path)));
+  const shown = shownGroups.flat();
+  const hidden = changed.length - shownGroups.length;
   const note = hidden ? `\n[${hidden} changed file(s) withheld by the project's privacy policy]` : "";
   if (!shown.length) return `Diff of ${commit}: no changed file can be shown.${note}`;
-  const r = git(["--stat", "--patch", `HEAD...${commit}`, "--", ...shown.map(path => `:(literal)${path}`)]);
+  const r = git(["-M", "--stat", "--patch", `HEAD...${commit}`, "--", ...shown.map(path => `:(literal)${path}`)]);
   if (r.status !== 0 || typeof r.stdout !== "string") return unavailable;
   if (!policy.nameable(r.stdout)) return `Diff of ${commit} withheld: it matches a private-data pattern. Read the changed files with Read and Grep.${note}`;
   const bytes = Buffer.from(r.stdout, "utf8");
   const body = bytes.length > DIFF_CAP ? `${bytes.subarray(0, DIFF_CAP).toString("utf8")}\n[diff cut at ${DIFF_CAP} of ${bytes.length} bytes; read the rest with Read and Grep]` : r.stdout;
   return `Diff of ${commit} against its merge base with the checkout's HEAD:\n${body}${note}`;
 }
+
+/** The review's leader exited but its process group could not be confirmed gone; the child handle is kept. */
+class GroupCleanupError extends Error {}
 
 const reviewTask = (env: Envelope): number | undefined => {
   if (env.from !== HUB || env.kind !== "review") return undefined;
@@ -90,6 +101,9 @@ export class ClaudePrintPeer extends BasePeer {
   private activeDeliveryId: string | undefined;
   /** The task whose review the running child was started for (R4: the hub records `fresh` for its verdict). */
   reviewing: number | undefined;
+  private reviewSeq = 0;
+  /** Identifies the running child's authority over `task`; a replacement child for the same task gets a new token. */
+  reviewToken(task: number): number | undefined { return this.reviewing === task ? this.reviewSeq : undefined; }
 
   constructor(id: string, private readonly opts: ClaudePrintOptions) { super(id, opts.watchdogMs); }
 
@@ -138,8 +152,17 @@ export class ClaudePrintPeer extends BasePeer {
       const since = Date.now();
       let code: number | null;
       try { code = await this.review(env, task, generation); }
-      // Once an earlier review in this batch ran, the batch had effects: hold it for a person, never requeue it.
-      catch (error) { failure = { state: started ? "needs_review" : "failed_safe", reason: `claude reviewer could not start: ${(error as Error).message}` }; break; }
+      catch (error) {
+        if (generation !== this.generation) return;
+        if (error instanceof GroupCleanupError) {
+          // Unavailable until a stop confirms the group gone: no new review runs beside the survivors.
+          this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
+          this.settle("needs_review", `review process group still running: ${error.message}`);
+          return;
+        }
+        // Once an earlier review in this batch ran, the batch had effects: hold it for a person, never requeue it.
+        failure = { state: started ? "needs_review" : "failed_safe", reason: `claude reviewer could not start: ${(error as Error).message}` }; break;
+      }
       started = true;
       if (generation !== this.generation) return;
       let recorded = false;
@@ -164,7 +187,7 @@ export class ClaudePrintPeer extends BasePeer {
       child.once("spawn", () => {
         trackGroup(child);
         if (generation !== this.generation) { child.stdin!.destroy(); return; } // stopped meanwhile: no prompt
-        this.reviewing = task;
+        this.reviewing = task; this.reviewSeq++;
         let facts: string | undefined;
         try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
         child.stdin!.end(`${frame(env)}${facts ? `\n\n${facts}` : ""}`);
@@ -183,8 +206,10 @@ export class ClaudePrintPeer extends BasePeer {
         }
       });
       child.once("exit", code => {
-        if (this.child === child) { this.child = undefined; this.reviewing = undefined; }
-        resolve(code);
+        if (this.child === child) this.reviewing = undefined; // the verdict authority ends with the leader
+        // The review ends when its whole process group is gone (an MCP server or other descendant may outlive the leader).
+        stopOwnedProcess(child, { group: true }).then(() => { if (this.child === child) this.child = undefined; resolve(code); },
+          (error: Error) => reject(new GroupCleanupError(error.message)));
       });
     });
   }
