@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.32 and control protocol 16. Live verification
+This guide describes ahub 0.12.33 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -1837,6 +1837,9 @@ The runtime reset (the default):
   through the delivery journal, one `resolution_history` entry each. Work
   that was dispatching or accepted when the hub stopped is held as
   `needs_review` first, so it is discarded too;
+- discards hub notices a recovery hold kept back the same way, one entry per
+  recipient, without delivering them; the dry run lists them as
+  `q:<peer>:<id>`;
 - clears manual peer holds (`ahub pause`), budget pauses and conductor holds;
 - drops the agent session resume pointers `sessions.json`,
   `claude-session.json` and `claude-context.json`, so the next launch starts
@@ -1949,21 +1952,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.32), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.33), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.32 ahub upgrade --to 0.12.32 --dry-run
-bunx --package @staix/agent-hub@0.12.32 ahub upgrade --to 0.12.32 --yes
+bunx --package @staix/agent-hub@0.12.33 ahub upgrade --to 0.12.33 --dry-run
+bunx --package @staix/agent-hub@0.12.33 ahub upgrade --to 0.12.33 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.32 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.33 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1995,14 +1998,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.32 --dry-run
+ahub upgrade --to 0.12.33 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.32 --yes
+ahub upgrade --to 0.12.33 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2028,6 +2031,15 @@ finished late` after `done (checking)` (a pass with a peer reviewer writes no
 line of its own to `hub.log`), and until no task command or dashboard action is
 still running. A check the commit's stop kills writes to the board after the
 commit has recorded it, and the operation stays blocked.
+
+From 0.12.33, while an operation holds a source of that release or later, and
+while a restored target waits for release, the notices the hub writes itself
+(other than `[FYI]` ones) are kept apart from the carried queues, durably in
+the delivery journal and the restart snapshot, so the queue comparison still
+matches exactly. Release queues them in order and saves each move before
+anything is delivered. A target that does not advertise `recovery_deferred_hub`
+gets them in its ordinary queues before commit instead. At most 2048 such
+notices wait; a further one is refused, and none already kept is dropped.
 
 0.9.0 turns on for every project with a config file, whether or not it has the
 block: `limits` (12 messages a minute per sender, 6 per recipient, 6
@@ -2196,7 +2208,12 @@ and fresh-session choices carry a warning and name the consequence before the
 person confirms. Raw receipt keys and the original recorded error are available
 with `j` or `--verbose`. The four preservation failures name the actual failed
 queue, manual-pause, board or budget comparison; an older untyped cause remains
-unknown rather than being guessed from its text.
+unknown rather than being guessed from its text. When nothing more specific
+applies (no typed cause, reattachment or `database_busy`), Why shows the first
+line of the recorded error, with control characters removed and cut at 512
+characters, marked `typed cause unknown`. What to do then says to resolve that
+error, then resume or choose an offered action. Nothing is classified from that
+text, and JSON and piped output are unchanged.
 
 Completion and stop-and-archive use a human summary on a TTY. It separates the
 outcome, recorded plugin/global installation effects, remaining work and the
@@ -2256,7 +2273,10 @@ each receipt allows, given what is live, is tabulated in the recovery spec
 (`docs/specs/2026-09-20-upgrade-recovery-design.md`, "Receipts, evidence and
 next actions").
 
-- The source hold lapses after 10 minutes. A later `resume` prepares the same
+- The source hold lapses after 10 minutes. If releasing it fails because the
+  source's delivery storage fails, the hold stays and the expiry is retried
+  every second until storage recovers; restore the storage before `abort`.
+  A later `resume` prepares the same
   source again and checks its peers again, keeping the receipts, so no terminal
   is closed twice. It refuses, naming the next step, when the source daemon was
   replaced, when another operation holds it, or when a peer changed: a peer whose
@@ -2318,7 +2338,11 @@ next actions").
   that session. A target that dies again in the same `resume` stops it with the
   restart count; look at its `hub.log` before resuming again. Without the
   snapshot, or for an operation started by a coordinator older than 0.12.21,
-  the way out is stop-and-archive.
+  the way out is stop-and-archive. A snapshot whose kept hub notices fail
+  validation blocks that restart with `restart snapshot deferred hub notices
+  are invalid; restore is blocked`. The hub still reads as stopped, so
+  stop-and-archive (and abort, where it applies) stays offered; nothing
+  repairs the snapshot or offers to resume from it.
 - A Codex conversation comes back only when a rollout file naming its thread
   exists under `sessions/` of the store the restored terminal uses (the
   recorded `CODEX_HOME`, else `~/.codex`). Codex writes that file with the
@@ -2648,7 +2672,7 @@ ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]
 
 The console also offers cancellation with the selected task's flow revision. Approved tasks cannot be cancelled. The planner's `hub_task_cancel` tool is limited to its own unaccepted backlog/proposed work; previously accepted work requires the person. Cancellation sends the former owner/reviewer a stop notice, releases overlap/reservation participation and keeps dependents blocked with a cancelled-dependency notice. It does not stop a native turn, delete a worktree or write an outcome memory note. Cancelled work is closed history, counted separately from approved work; it does not satisfy an approval dependency. A still-running private turn keeps its privacy fence after cancellation. Use the displayed revision to avoid acting on a task that changed while it was selected.
 
-The daemon advertises `task_cancel`; a current CLI refuses cancellation against older daemons. Recovery retains verified target features beside its immutable root/digest, reuses them on resume and checks only sources not yet past commit; a legacy receipt without that evidence needs a target probe only before commit. Upgrade/restart refuses a target without this feature while cancelled rows exist and names their ids. No cancelled row is rewritten as approved. An old binary launched by hand remains unsupported: it can count cancelled work as open or fail to move it. Use a compatible coordinator instead. Live task cancellation and sweep enablement are separate post-release operations.
+The daemon advertises `task_cancel`; a current CLI refuses cancellation against older daemons. Recovery retains verified target features beside its immutable root/digest, reuses them on resume and on each lease renewal before a terminal is closed, and checks only sources not yet past commit; a legacy receipt without that evidence needs a target probe only before commit. Upgrade/restart refuses a target without this feature while cancelled rows exist and names their ids. No cancelled row is rewritten as approved. An old binary launched by hand remains unsupported: it can count cancelled work as open or fail to move it. Use a compatible coordinator instead. Live task cancellation and sweep enablement are separate post-release operations.
 
 ## Task idle sweep
 
