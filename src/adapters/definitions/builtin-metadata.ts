@@ -65,7 +65,7 @@ const CLAUDE_REVIEWER_VARIANT: AdapterDefinition = {
   identity: { mcp: "env" },
   permission: { modes: {}, unmanaged: "each review runs read-only (Read, Grep, Glob) and may call only hub_review and hub_task_show" },
   session: { idField: "sessionId", currentId: () => undefined, freshOnRestore: true, launchKind: "claude-print", crashPlan: () => ({ resume: {}, how: "claude reviewer: starts again; every review runs in a new session" }) },
-  turnEnd: "adapter", budget: { account: "claude" },
+  turnEnd: "adapter", budget: { account: "claude" }, routing: { reviewOnly: true },
   cli: { command: "claude", startWords: () => ["claude"] }, display: CLAUDE_DISPLAY,
 };
 

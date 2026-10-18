@@ -376,6 +376,7 @@ export function assign(
     if (opts.exclude?.includes(peer)) return deny("excluded", "excluded (declined or replaced)");
     if (role === "owner" && opts.excludeOwners?.includes(peer)) return deny("owner-admission", "owner admission: WIP or delivery hold");
     const adapter = definitionOf(peer, opts.instances);
+    if (role === "owner" && adapter?.routing?.reviewOnly) return deny("owner-admission", "owner admission: a review-only instance owns no task");
     if (role === "owner" && needsTests && adapter && adapter.kind !== peer) {
       if (!peerEntry(opts.roles, peer)?.includes("implementer")) return deny("owner-admission", "owner admission: declared write owner requires the current implementer role");
       if (peerEntry(opts.ownerIsolation, peer) !== true) return deny("owner-admission", "owner admission: declared write owner requires a verified isolated execution root");

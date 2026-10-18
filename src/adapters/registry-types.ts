@@ -225,6 +225,8 @@ export interface AdapterDefinition {
   reporting?: { tokensNotReported?: boolean };
   /** Legacy native routing policy; external definitions cannot claim these host-specific policies. */
   routing?: {
+    /** Takes reviews only: never chosen or nominated as a task owner, for any class. */
+    reviewOnly?: true;
     localAllowedRefusal?: string;
     longContext?: "backend-limit" | "skip-owner";
     preferredTier?: boolean;

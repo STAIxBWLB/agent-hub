@@ -13,8 +13,9 @@ if (action === "approve") {
   const server = (JSON.parse(flag("--mcp-config") ?? "{}") as { mcpServers?: Record<string, { env?: Record<string, string> }> }).mcpServers?.["agent-hub"]?.env ?? {};
   const task = Number(/Review task #(\d+)/.exec(prompt)?.[1]);
   const hub = await ControlClient.connect(server.AGENTHUB_STATE_DIR!, { role: "tools", peer: server.AGENTHUB_PEER_ID! });
+  const show = await hub.request({ t: "task", op: "hub_task_show", args: { id: task } });
   const res = await hub.request({ t: "task", op: "hub_review", args: { id: task, verdict: "approved", note: "fresh review" } });
-  if (log) appendFileSync(log, JSON.stringify({ review: res }) + "\n");
+  if (log) appendFileSync(log, JSON.stringify({ show, review: res }) + "\n");
   hub.close();
 }
 console.log(JSON.stringify({ type: "result", subtype: "success", result: "done", usage: { input_tokens: 10, output_tokens: 5 } }));

@@ -4,7 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { definitionOf } from "../src/adapters/registry.ts";
-import { ClaudePrintPeer, claudePrintArgs } from "../src/adapters/claude-print.ts";
+import { ClaudePrintPeer, claudePrintArgs, readDenyRules, reviewDiff } from "../src/adapters/claude-print.ts";
+import { spawnSync } from "node:child_process";
 import { HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
 import { validateInstances } from "../src/hub/instances.ts";
@@ -136,8 +137,87 @@ test("the daemon runs the headless reviewer: review-only delivery, a fresh verdi
   expect(verdict).toMatchObject({ by: "claude-review", reviewContext: "fresh" });
   const calls = lines(log).filter(line => line.argv);
   expect(calls).toHaveLength(1);
+  await until(() => daemon.bus.stateOf("claude-review") === "idle"); // the child has exited and written its log
+  // R2 on the read tool too: the reviewer's own hub_task_show carries no builder narrative.
+  const shown = lines(log).find(line => line.show)!.show;
+  expect(shown).toMatchObject({ ok: true });
+  expect(JSON.stringify(shown)).not.toContain("BUILDER NARRATIVE");
+  // Its verdict authority ends with its child: a later hub_review from its identity is refused.
+  const late = await connect({ role: "tools", peer: "claude-review" });
+  expect(await late.request({ t: "task", op: "hub_review", args: { id, verdict: "changes_requested", note: "late" } })).toMatchObject({ ok: false, error: expect.stringContaining(`no review of task #${id} is running`) });
   expect(calls[0].prompt).toContain(`Review task #${id}`);
   expect(calls[0].prompt).not.toContain("BUILDER NARRATIVE");
   expect(calls[0].prompt).not.toContain("half done");
   expect(calls[0].prompt).not.toContain("my reasoning");
+});
+
+test("the review diff leaves out private files, both sides of a rename, and a diff matching a private-data pattern", () => {
+  const dir = scratch("ahub-review-diff-");
+  const git = (...args: string[]) => { const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }); expect(r.status).toBe(0); return r.stdout.trim(); };
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(dir, "public.ts"), "export const a = 1;\n"); writeFileSync(join(dir, "old-secret.txt"), "OLD_PRIVATE_SENTINEL\n");
+  git("add", "."); git("commit", "-qm", "base");
+  git("checkout", "-qb", "work");
+  writeFileSync(join(dir, "public.ts"), "export const a = 2;\n"); writeFileSync(join(dir, "private.txt"), "PRIVATE_PATH_SENTINEL\n");
+  git("mv", "old-secret.txt", "renamed.txt");
+  git("add", "."); git("commit", "-qm", "work");
+  const head = git("rev-parse", "HEAD"); git("checkout", "-q", "main");
+  const privatePath = (path: string) => path === "private.txt" || path === "old-secret.txt";
+  const diff = reviewDiff(dir, head, { privatePath, nameable: () => true })!;
+  expect(diff).toContain("export const a = 2");
+  expect(diff).not.toContain("PRIVATE_PATH_SENTINEL");
+  expect(diff).not.toContain("old-secret.txt");
+  expect(diff).toContain("[2 changed file(s) withheld by the project's privacy policy]");
+  expect(reviewDiff(dir, head, { privatePath, nameable: () => false })).toContain("withheld: it matches a private-data pattern");
+  expect(reviewDiff(dir, head, { privatePath: () => true, nameable: () => true })).toContain("no changed file can be shown");
+  expect(reviewDiff(dir, "not-a-commit", { privatePath, nameable: () => true })).toBeUndefined();
+  expect(readDenyRules(["secrets", "/abs/x", "**/*.pem"])).toEqual(["Read(./secrets)", "Read(./secrets/**)", "Read(//abs/x)", "Read(//abs/x/**)", "Read(./**/*.pem)"]);
+  expect(claudePrintArgs("s", "{}", "r", ["secrets"])).toContain("--disallowedTools");
+});
+
+test("a stop before the child starts sends no prompt, and a failed stop keeps the child's handle", async () => {
+  const dir = scratch("ahub-claude-print-race-"), log = join(dir, "calls.jsonl");
+  setEnv({ FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_ACTION: "none" });
+  const peer = new ClaudePrintPeer("claude-review", { cwd: dir, command: [process.execPath, FAKE], mcpConfig: "{}", systemPrompt: "role", watchdogMs: 5000, verdictSince: () => true });
+  const receipts: DeliveryReceipt[] = []; peer.onDelivery = r => receipts.push(r);
+  await peer.start();
+  await peer.deliver([review(5)], "d1");
+  await peer.stop("stopped at once");
+  expect(peer.state).toBe("offline");
+  await Bun.sleep(400);
+  expect(lines(log).filter(line => line.prompt)).toEqual([]);
+  expect(receipts.map(r => r.state)).toEqual(["accepted", "needs_review"]);
+});
+
+test("a later start failure after a review ran holds the batch, and throwing callbacks settle once", async () => {
+  const dir = scratch("ahub-claude-print-batch-"), log = join(dir, "calls.jsonl"), stand = join(dir, "stand-in");
+  writeFileSync(stand, `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`); chmodSync(stand, 0o755);
+  setEnv({ FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_ACTION: "none" });
+  const peer = new ClaudePrintPeer("claude-review", { cwd: dir, command: [stand], mcpConfig: "{}", systemPrompt: "role", watchdogMs: 5000,
+    verdictSince: () => { rmSync(stand); return true; } });
+  const receipts: DeliveryReceipt[] = []; peer.onDelivery = r => receipts.push(r);
+  await peer.start();
+  await peer.deliver([review(6), review(7)], "d1");
+  await until(() => peer.state === "idle");
+  expect(receipts.map(r => r.state)).toEqual(["accepted", "needs_review"]);
+  expect(receipts[1]!.reason).toContain("could not start");
+
+  const thrower = new ClaudePrintPeer("claude-review", { cwd: dir, command: [process.execPath, FAKE], mcpConfig: "{}", systemPrompt: "role", watchdogMs: 5000,
+    facts: () => { throw new Error("git broke"); }, verdictSince: () => { throw new Error("db broke"); } });
+  const got: DeliveryReceipt[] = []; thrower.onDelivery = r => got.push(r);
+  await thrower.start();
+  await thrower.deliver([review(8)], "d2");
+  await until(() => thrower.state === "idle");
+  expect(got.map(r => r.state)).toEqual(["accepted", "needs_review"]);
+  expect(lines(log).some(line => line.prompt?.includes("Review task #8"))).toBe(true);
+});
+
+test("a review-only instance is never a task owner, for any class or by nomination", () => {
+  const routing = parseRouting(`[local]\nfixed_model="fixture"\n[classes.summarize]\npeers=["claude"]\n[classes.review]\npeers=["claude"]\n`);
+  const roles = { claude: ["planner", "reviewer"], "claude-review": ["reviewer"] };
+  for (const cls of ["summarize", "triage", "implement"] as const) {
+    const a = assign({ class: cls, signals: [] }, { claude: "busy", "claude-review": "idle" }, routing, { roles, instances: reviewer, candidates: ["claude", "claude-review"] });
+    expect(a.owner).not.toBe("claude-review");
+  }
+  expect(assign({ class: "summarize", signals: [] }, { claude: "busy", "claude-review": "idle" }, routing, { roles, instances: reviewer, namedOwner: "claude-review" }).owner).not.toBe("claude-review");
 });

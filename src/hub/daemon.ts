@@ -639,6 +639,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...extraIds.filter(id => !channelExtras.includes(id))]);
   // #223 R2: a declared instance whose effective roles are exactly reviewer gets review requests and its own task notices only.
   const reviewOnlyPeer = (peer: string): boolean => Object.hasOwn(declarations, peer) && config.roles[peer]?.length === 1 && config.roles[peer]![0] === "reviewer";
+  /** #223 R2: a review-only instance reads the spec, refs and earlier verdicts of a task, never the builder's narrative. */
+  const reviewerView = (peer: string, view: Record<string, unknown>): Record<string, unknown> => !reviewOnlyPeer(peer) || !Array.isArray(view.history) ? view
+    : { ...view, history: (view.history as { event?: unknown; note?: unknown }[]).map(({ note, ...h }) => h.event === "approved" || h.event === "changes_requested" ? { ...h, note } : h) };
   const reviewOnlyItem = (peer: string, env: Envelope): boolean => env.from === USER || env.from === HUB && (env.kind === "review" || (env.kind === "task" && env.to?.includes(peer) === true));
   const SETTINGS = projectSettings(declarations);
   const settingDef = (key: unknown) => instanceSettingDef(key, declarations);
@@ -1999,7 +2002,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_memory_correct") correctionInput(a);
     if (CONDUCTOR_TOOL_NAMES.has(op)) {
       if (piiTurn && ["hub_task_assign", "hub_task_escalate", "hub_peer_start"].includes(op)) throw new PreEffectToolRefusal("conductor mutations are unavailable during a PII turn");
-      return JSON.stringify(await conductor.execute(by, op, a));
+      const result = await conductor.execute(by, op, a);
+      return JSON.stringify(op === "hub_task_show" && result && typeof result === "object" ? reviewerView(by, result as Record<string, unknown>) : result);
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
@@ -2182,6 +2186,8 @@ export async function startDaemon(opts: DaemonOptions) {
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(tasks.recordLifecycle(by, a.id, a.receipt));
       case "hub_review":
+        // #223: a headless reviewer's authority lasts while its child for this task runs; a killed or stale child is refused.
+        if (definitionOf(by)?.start.daemonPort === "claude-print" && (bus.peers.get(by) as ClaudePrintPeer | undefined)?.reviewing !== Number(a.id)) throw new PreEffectToolRefusal(`no review of task #${a.id} is running for ${by}`);
         return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head));
       case "hub_remember":
         return tasks.remember(by, a);
@@ -2222,7 +2228,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "task_show" && by !== USER) {
       const task = board.get(Number(a.id));
       if (task?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
-      return JSON.stringify(task ? { ...publicConductorTask(task, (t) => tasks.publicView(t, true)), flowRevision: task.history.length } : `no task #${a.id}`);
+      if (!task) return JSON.stringify(`no task #${a.id}`);
+      return JSON.stringify({ ...reviewerView(by, publicConductorTask(task, (t) => tasks.publicView(t, true))), flowRevision: task.history.length });
     }
     if (op === "route_explain" && by !== USER) {
       if (a.id !== undefined && board.get(Number(a.id))?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
@@ -3783,7 +3790,8 @@ export async function startDaemon(opts: DaemonOptions) {
         mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
         systemPrompt: sessionRoleContract(peer),
         watchdogMs: config.watchdog_ms,
-        facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit),
+        privatePaths: [...(config.pii?.paths ?? []), ...config.local.deny],
+        facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(executionCwd, path, config.pii?.paths ?? [], true), nameable: tasks.nameable }),
         verdictSince: (task, since) => board.get(task)?.history.some(h => h.by === peer && h.at >= since && (h.event === "approved" || h.event === "changes_requested")) === true,
         onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
         log,

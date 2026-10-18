@@ -7543,7 +7543,7 @@ var init_local_worker = __esm(() => {
 // src/adapters/claude-print.ts
 import { spawn as spawn6 } from "child_process";
 import { randomUUID as randomUUID5 } from "crypto";
-function claudePrintArgs(sessionId, mcpConfig, systemPrompt) {
+function claudePrintArgs(sessionId, mcpConfig, systemPrompt, privatePaths = []) {
   return [
     "-p",
     "--output-format",
@@ -7565,11 +7565,18 @@ function claudePrintArgs(sessionId, mcpConfig, systemPrompt) {
     "Read",
     "Grep",
     "Glob",
+    ...privatePaths.length ? ["--disallowedTools", ...readDenyRules(privatePaths)] : [],
     "--permission-mode",
     "dontAsk",
     "--append-system-prompt",
     systemPrompt
   ];
+}
+function readDenyRules(paths) {
+  return paths.flatMap((entry) => {
+    const rule = entry.startsWith("/") ? `/${entry}` : `./${entry.replace(/^\.\//, "")}`;
+    return /[*?]/.test(entry) ? [`Read(${rule})`] : [`Read(${rule})`, `Read(${rule.replace(/\/$/, "")}/**)`];
+  });
 }
 var reviewTask = (env) => {
   if (env.from !== HUB || env.kind !== "review")
@@ -7607,8 +7614,10 @@ var init_claude_print = __esm(() => {
     onWatchdog() {
       this.generation++;
       this.settle("needs_review", "review watchdog timeout");
-      this.kill();
-      super.onWatchdog();
+      this.kill().then(() => {
+        if (this.state === "busy")
+          super.onWatchdog();
+      }, (error) => this.opts.log?.(`[${this.id}] watchdog stop failed, staying busy: ${error.message}`));
     }
     async deliver(envs, deliveryId) {
       if (this.state !== "idle") {
@@ -7621,10 +7630,18 @@ var init_claude_print = __esm(() => {
       this.setState("busy");
       if (deliveryId)
         this.delivery({ id: deliveryId, state: "accepted" });
-      this.run(envs, generation);
+      this.run(envs, generation).catch((error) => {
+        if (generation !== this.generation)
+          return;
+        this.settle("needs_review", `claude reviewer failed: ${error.message}`);
+        this.kill().then(() => this.setState("idle"), () => {
+          return;
+        });
+      });
     }
     async run(envs, generation) {
       const missing = [];
+      let started = false;
       let failure;
       for (const env of envs) {
         const task = reviewTask(env);
@@ -7639,12 +7656,19 @@ var init_claude_print = __esm(() => {
         try {
           code = await this.review(env, task, generation);
         } catch (error) {
-          failure = { state: "failed_safe", reason: `claude reviewer could not start: ${error.message}` };
+          failure = { state: started ? "needs_review" : "failed_safe", reason: `claude reviewer could not start: ${error.message}` };
           break;
         }
+        started = true;
         if (generation !== this.generation)
           return;
-        if (!this.opts.verdictSince(task, since))
+        let recorded = false;
+        try {
+          recorded = this.opts.verdictSince(task, since);
+        } catch (error) {
+          this.opts.log?.(`[${this.id}] verdict check for task #${task} failed: ${error.message}`);
+        }
+        if (!recorded)
           missing.push(task);
         if (code !== 0)
           this.opts.log?.(`[${this.id}] review of task #${task} exited ${code}`);
@@ -7656,16 +7680,29 @@ var init_claude_print = __esm(() => {
     }
     review(env, task, generation) {
       const [cmd = "claude", ...prefix] = this.opts.command ?? ["claude"];
-      const args = [...prefix, ...claudePrintArgs(randomUUID5(), this.opts.mcpConfig, this.opts.systemPrompt)];
+      const args = [...prefix, ...claudePrintArgs(randomUUID5(), this.opts.mcpConfig, this.opts.systemPrompt, this.opts.privatePaths)];
       return new Promise((resolve, reject) => {
         const child = spawn6(cmd, args, { cwd: this.opts.cwd, detached: true, env: peerChildEnv(this.id), stdio: ["pipe", "pipe", "ignore"] });
-        child.once("error", reject);
+        this.child = child;
+        child.once("error", (error) => {
+          if (this.child === child)
+            this.child = undefined;
+          reject(error);
+        });
+        child.stdin.on("error", () => {});
         child.once("spawn", () => {
           trackGroup(child);
-          this.child = child;
+          if (generation !== this.generation) {
+            child.stdin.destroy();
+            return;
+          }
           this.reviewing = task;
-          const facts = this.opts.facts?.(env);
-          child.stdin.on("error", () => {});
+          let facts;
+          try {
+            facts = this.opts.facts?.(env);
+          } catch (error) {
+            this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${error.message}`);
+          }
           child.stdin.end(`${frame(env)}${facts ? `
 
 ${facts}` : ""}`);
@@ -7703,11 +7740,13 @@ ${facts}` : ""}`);
         this.delivery({ id, state, ...reason ? { reason } : {} });
     }
     async kill() {
-      const child = this.child;
-      this.child = undefined;
       this.reviewing = undefined;
-      if (child)
-        await stopOwnedProcess(child, { group: true }).catch((error) => this.opts.log?.(`[${this.id}] stop: ${error.message}`));
+      const child = this.child;
+      if (!child)
+        return;
+      await stopOwnedProcess(child, { group: true });
+      if (this.child === child)
+        this.child = undefined;
     }
   };
 });
@@ -8377,6 +8416,7 @@ var init_builtin_metadata = __esm(() => {
     }, freshOnRestore: true, launchKind: "claude-print", crashPlan: () => ({ resume: {}, how: "claude reviewer: starts again; every review runs in a new session" }) },
     turnEnd: "adapter",
     budget: { account: "claude" },
+    routing: { reviewOnly: true },
     cli: { command: "claude", startWords: () => ["claude"] },
     display: CLAUDE_DISPLAY
   };
