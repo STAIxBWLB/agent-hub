@@ -20,7 +20,7 @@ import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
-import { claudeStateFile } from "./claude-state.ts";
+import { claudeStateFile, ownTerminalRow, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
@@ -2356,7 +2356,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // #64: a Claude session that never persisted a transcript cannot be resumed, so the
         // restore gate accepted a fresh session and nothing it stood for is lost. Snapshots
         // written before this flag existed are re-derived from disk.
-        const unpersistedClaude = definitionOf(saved.id)?.session.missingEvidence === "transcript" && (saved.sessionPersisted === false || (saved.sessionPersisted === undefined && !claudeTranscriptPersisted(saved.sessionId)));
+        const unpersistedClaude = definitionOf(saved.id)?.session.missingEvidence === "transcript" && (saved.sessionPersisted === false || (saved.sessionPersisted === undefined && !claudeTranscriptPersisted(saved.id, saved.sessionId)));
         if (!unpersistedClaude && !waived()) return false;
       }
       return true;
@@ -2377,7 +2377,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { /* older/manual launches retain the existing instance fence */ }
       try {
         const records = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
-        const current = Array.isArray(records) ? records.find((row) => typeof row?.peer === "string" && definitionOf(row.peer)?.transport === "claude-channel" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId) : undefined;
+        const current = ownTerminalRow(records, peer, opts.cwd, instanceId);
         if (!currentLauncher && current?.launchId && value.launchId !== current.launchId) return {};
       } catch { /* no managed terminal record: the instance fence is still enforced */ }
       return {
@@ -2435,13 +2435,9 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   /** Claude persists projects/<slug>/<sessionId>.jsonl only with the first turn. Prefer the
    * path Claude itself reported through the status line; fall back to the slug computation. */
-  // ponytail: zero-turn detection and the version probe read the builtin claude peer only; extend per peer if a claude-<name> instance needs restart-time resume (#450 I3).
-  const claudeTranscriptPersisted = (sessionId: string): boolean => {
-    const reported = claudeSession();
-    if (reported.sessionId === sessionId && reported.transcriptPath) return existsSync(reported.transcriptPath);
-    const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
-    return existsSync(join(config, "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`));
-  };
+  // ponytail: the version probe reads the builtin claude peer only; extend per peer if an instance's version matters (#450 I3).
+  const claudeTranscriptPersisted = (peer: string, sessionId: string): boolean => transcriptPersisted(claudeSession(peer), sessionId, Object.hasOwn(declarations, peer),
+    join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`), existsSync);
   // Optional native usage: only the instance-fenced explicit Claude session is read.
   // IDs persist in telemetry, so a restart/resume never counts the same native message twice.
   const claudeNativeUsageSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript").map(e => (e as { id: string }).id));
@@ -2517,12 +2513,18 @@ export async function startDaemon(opts: DaemonOptions) {
     return mode === "ask" ? {} : { permissionMode: mode };
   };
   const lastCodexThreads = new Map<string, string>();
+  // #450 I3: the console and dashboard list each declared instance right after its kind.
+  const byKind = (ids: string[]): string[] => {
+    const kindOf = (id: string) => Object.hasOwn(declarations, id) ? declarations[id]!.kind : undefined;
+    const out = ids.filter(id => kindOf(id) === undefined).flatMap(id => [id, ...ids.filter(extra => kindOf(extra) === id)]);
+    return [...out, ...ids.filter(id => !out.includes(id))];
+  };
   const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
     const reservations = board.statusReservations();
     const ids = new Set([...bus.knownPeers(), ...extraIds, ...reservations]);
-    if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return [...ids];
+    if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return byKind([...ids]);
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
-    return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
+    return byKind([...ids]).filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
   const status = (includeAttentionItems = false, includeAttentionInput = false) => {
     const taskNeeds = board.statusTasks();
@@ -2544,6 +2546,8 @@ export async function startDaemon(opts: DaemonOptions) {
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
     protocol: PROTOCOL,
     features: DAEMON_FEATURES,
+    // #450 I3: the instance ids this daemon bound at startup; a launcher selects only one of these.
+    activeInstances: extraIds,
     stopping,
     pid: process.pid,
     cwd: opts.cwd,
@@ -4679,7 +4683,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...saved,
         queueIds: bus.queueIds(saved.id),
         // Recorded at commit, not prepare: a first turn landing in between flips it (#64).
-        ...(definitionOf(saved.id)?.session.missingEvidence === "transcript" && saved.sessionId ? { sessionPersisted: claudeTranscriptPersisted(saved.sessionId) } : {}),
+        ...(definitionOf(saved.id)?.session.missingEvidence === "transcript" && saved.sessionId ? { sessionPersisted: claudeTranscriptPersisted(saved.id, saved.sessionId) } : {}),
       }));
       const snapshot: RestartSnapshot = {
         schemaVersion: 1,

@@ -3559,7 +3559,8 @@ keep their exact scope. It performs no filesystem or package lookup.
 - A declared instance of a channel-plugin kind (Claude) is admitted when its declaration names `roles`, reviewer and/or planner only. `start_mode` and `worktree` are refused: the instance starts only from the person's terminal with `ahub claude --as <id>`, so the hub never starts, watches or owns writes for it, and it is neither startable nor reserved from external admission.
 - The launcher sets the child's `AGENTHUB_PEER_ID` to the instance id; the channel plugin and the statusline tee already key on it. Launch, session and context state files stay `claude-launch.json`, `claude-session.json` and `claude-context.json` for the builtin and become `<base>.<id>.json` for an instance (`src/hub/claude-state.ts`). Account usage stays shared. The daemon's context and usage readers, the permission-launch check, the facts handler, terminal recovery (project root, no worktree), the upgrade blocker check and `ahub reset` read each instance's own files.
 - Zero-turn detection and the Claude version probe stay on the builtin peer (ponytail: instances are reviewers started by hand).
-- Console and dashboard list instances by id, as they list every peer; no grouping by kind is added.
+- Status, which the console and dashboard read, lists each declared instance right after its kind. `ahub <kind> --as <id>` starts only an instance the running daemon bound at startup (status `activeInstances`); otherwise it asks for a restart or an upgrade before any effect.
+- Each Claude peer reads only its own `terminal-recovery.json` row. Transcript evidence comes from the path that peer's status line reported; an instance without one counts as persisted, because the hub cannot see its `CLAUDE_CONFIG_DIR`. Upgrade runs plugin setup once per distinct Claude profile, under that profile.
 
 ## Headless peer instances I2 amendment (#450)
 

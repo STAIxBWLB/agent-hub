@@ -31,6 +31,13 @@ export function instanceLaunchArguments(command: string, raw: readonly string[],
   return { ...(instance ? { instance } : {}), args };
 }
 
+/** The running daemon bound this instance at startup; a declaration added later, or an older daemon, is not proof. */
+export function requireActiveInstance(status: unknown, instance: string): void {
+  const active = (status as { activeInstances?: unknown } | undefined)?.activeInstances;
+  if (!Array.isArray(active)) throw new Error("running hub does not report its declared instances; upgrade it before starting an extra instance");
+  if (!active.includes(instance)) throw new Error(`running hub has not loaded the declaration of ${instance}; restart the hub (ahub restart) after declaring it`);
+}
+
 /** Only an authenticated daemon hello can authorize extra-instance effects. */
 export function requirePeerInstances(features: unknown): void {
   if (!Array.isArray(features) || !features.includes("peer_instances")) throw new Error("running hub lacks peer_instances; upgrade it before starting an extra instance");

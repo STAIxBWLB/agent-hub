@@ -40,7 +40,7 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { instanceLaunchArguments, requirePeerInstances, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
+import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
 import { configureKimiMcp } from "./kimi-mcp.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
@@ -848,7 +848,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (entry.lifecycleAdmission && !args.includes("--print-command") && !args.includes("--dry-run")) assertLifecycleAvailable();
     const nativeConnect = async () => {
       const hub = await connect();
-      try { if (selectedInstance) requirePeerInstances(hub.features); return hub; }
+      try { if (selectedInstance) { requirePeerInstances(hub.features); requireActiveInstance((await hub.request({ t: "status" })).status, selectedInstance); } return hub; }
       catch (error) { hub.close(); throw error; }
     };
     if (selectedInstance && !args.includes("--print-command") && !args.includes("--dry-run")) {

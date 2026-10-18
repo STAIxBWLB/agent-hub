@@ -341,7 +341,8 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
 export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string, clock?: Pick<RecoveryDriver, "now" | "sleep">): RecoveryDriver {
   const now = clock?.now ?? (() => Date.now());
   const sleep = clock?.sleep ?? ((ms: number) => Bun.sleep(ms));
-  const env = (op: RecoveryOperation, project?: Project): NodeJS.ProcessEnv => {
+  /** `only`: one binding's native profile, for a command run once per profile (#450 I3: Claude instances may differ). */
+  const env = (op: RecoveryOperation, project?: Project, only?: TerminalBinding): NodeJS.ProcessEnv => {
     const value = { ...process.env };
     // Do not carry one project's gateway, auth overrides or unattended mode into another.
     for (const key of Object.keys(value)) if (key.startsWith("AGENTHUB_") || key.startsWith("OMNIROUTE_") || key.startsWith("CF_ACCESS_") ||
@@ -353,7 +354,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       value.AGENTHUB_PROJECT_DIR = project.root; value.AGENTHUB_STATE_DIR = project.stateDir;
       delete value.CODEX_HOME; delete value.CLAUDE_CONFIG_DIR;
       const bindings = op.plan.projects.find((p) => p.project.id === project.id)?.terminals as TerminalBinding[] | undefined;
-      for (const binding of bindings ?? []) {
+      for (const binding of only ? [only] : bindings ?? []) {
         // Preserve the captured legacy profile for terminal bindings without a dedicated native config variable.
         const key = projectDefinition(binding.peer, binding.projectRoot)?.session.configDirEnv ?? "CLAUDE_CONFIG_DIR";
         if (binding.launch.env[key]) value[key] = binding.launch.env[key];
@@ -361,9 +362,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     }
     return value;
   };
-  const command = async (op: RecoveryOperation, args: string[], project?: Project) => {
+  const command = async (op: RecoveryOperation, args: string[], project?: Project, only?: TerminalBinding) => {
     const result = await run([process.execPath, join(op.targetRoot!, "src/cli/main.js"), ...(project ? ["--project", project.root] : []), ...(liveTestPeer ? ["--live-test"] : []), ...args],
-      { env: env(op, project), cwd: project?.root ?? op.plan.projects[0]!.project.root, timeoutMs: 180_000 });
+      { env: env(op, project, only), cwd: project?.root ?? op.plan.projects[0]!.project.root, timeoutMs: 180_000 });
     if (result.code !== 0) throw new Error(`target command ${args[0]} failed; inspect recovery state before retrying`);
     return result;
   };
@@ -928,12 +929,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     installPlugin: async (op) => {
       const configured = new Set<string>();
       for (const planned of op.plan.projects) {
-        const binding = (planned.terminals as TerminalBinding[]).find((t) => projectDefinition(t.peer, t.projectRoot)?.transport === "claude-channel");
-        if (!binding) continue;
-        const profile = binding.launch.env.CLAUDE_CONFIG_DIR ?? "default";
-        if (configured.has(profile)) continue;
-        await command(op, ["setup", "--yes"], planned.project);
-        configured.add(profile);
+        // Every Claude binding (the builtin and each instance), once per distinct profile, each under its own profile.
+        for (const binding of (planned.terminals as TerminalBinding[]).filter((t) => projectDefinition(t.peer, t.projectRoot)?.transport === "claude-channel")) {
+          const profile = binding.launch.env.CLAUDE_CONFIG_DIR ?? "default";
+          if (configured.has(profile)) continue;
+          await command(op, ["setup", "--yes"], planned.project, binding);
+          configured.add(profile);
+        }
       }
       if (!configured.size) await command(op, ["setup", "--yes"]);
     },
