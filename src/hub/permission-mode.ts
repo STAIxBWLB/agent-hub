@@ -38,7 +38,7 @@ export function permissionGrant(peer: string, mode: PermissionMode): string {
 }
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
 /** Native agent policy files are never included in scoped automatic file grants. */
-export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".jcode", ".pi", ".mcp.json", ".agents", ".claude.json"]);
+export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".jcode", ".pi", ".mcp.json", ".agents", ".agent", "_agents", "_agent", ".gemini", ".grok", ".claude.json"]);
 export const INSTRUCTION_FILES: ReadonlySet<string> = new Set(["agents.md", "claude.md", "qwen.md"]);
 export const isInstructionPath = (path: string): boolean => path.split(/[\\/]/).some(segment => INSTRUCTION_FILES.has(foldSegment(segment)));
 export function instructionProtection(value: unknown): boolean {

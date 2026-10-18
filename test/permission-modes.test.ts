@@ -250,6 +250,33 @@ test("a scoped grant folds look-alike names, judges the path inside the project 
   expect(grantablePath(root, join(root, "notes.txt"))).toBe(false);
 });
 
+for (const variants of [
+  [".agent", ".AGENT", "．ａｇｅｎｔ", ".a‍gent"],
+  ["_agents", "_AGENTS", "＿ａｇｅｎｔｓ", "_a‍gents"],
+  ["_agent", "_AGENT", "＿ａｇｅｎｔ", "_a‍gent"],
+  [".gemini", ".GEMINI", "．ｇｅｍｉｎｉ", ".g‍emini"],
+  [".grok", ".GROK", "．ｇｒｏｋ", ".g‍rok"],
+]) test(`#485 agent configuration ${variants[0]} stays outside scoped grants in every folded spelling`, () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-config-segment-"));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  for (const segment of variants) {
+    const relative = `nested/${segment}/hooks.json`;
+    expect(isAgentConfigPath(relative)).toBe(true);
+    expect(isAgentConfigPath(["nested", segment, "plugins", "entry.json"].join("\\"))).toBe(true);
+    expect(grantablePath(root, join(root, relative))).toBe(false);
+    expect(grantablePath(root, join(root, "ordinary.txt"), relative)).toBe(false);
+  }
+});
+
+test("#485 agent-like source and documentation names remain scoped-grantable", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-config-lookalike-"));
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  for (const path of ["src/agent.ts", "docs/agents.md", ".agent-backup/hooks.json", "_agent_notes/config.json", "src/gemini.ts", "docs/grok.md", ".grok-cache/entry.json"]) {
+    expect(isAgentConfigPath(path)).toBe(false);
+    expect(grantablePath(root, join(root, path))).toBe(true);
+  }
+});
+
 for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude every canonical native config segment`, async () => {
   const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "guard-fixture";
   cleanup.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });

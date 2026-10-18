@@ -10416,7 +10416,7 @@ var init_permission_mode = __esm(() => {
   init_kimi_native();
   init_qwen_native();
   PI_EDIT_TOOLS = new Set(["edit", "write"]);
-  AGENT_CONFIG_SEGMENTS = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".jcode", ".pi", ".mcp.json", ".agents", ".claude.json"]);
+  AGENT_CONFIG_SEGMENTS = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".jcode", ".pi", ".mcp.json", ".agents", ".agent", "_agents", "_agent", ".gemini", ".grok", ".claude.json"]);
   INSTRUCTION_FILES = new Set(["agents.md", "claude.md", "qwen.md"]);
   HUB_WRITE_SEGMENTS = new Set([".git", ".agenthub"]);
 });
