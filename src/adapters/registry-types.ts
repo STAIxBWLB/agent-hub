@@ -13,9 +13,10 @@ import type { CodexOptions } from "./codex-appserver.ts";
 import type { JcodeOptions } from "./jcode.ts";
 import type { LocalOptions } from "./local-worker.ts";
 import type { PiOptions } from "./pi.ts";
+import type { ClaudePrintOptions } from "./claude-print.ts";
 
 export type StartForm = "tui" | "headless";
-export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker";
+export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print";
 
 /** Existing buildLaunch inputs plus the startup-bound instance and project identity. */
 export interface LaunchContext {
@@ -53,7 +54,8 @@ export type DaemonPorts =
   | { acp: AcpOptions }
   | { jcode: JcodeOptions }
   | { pi: PiOptions }
-  | { local: LocalOptions };
+  | { local: LocalOptions }
+  | { claudePrint: ClaudePrintOptions };
 
 export interface CreateContext<Ports extends DaemonPorts = DaemonPorts> {
   instance: string;
@@ -258,6 +260,8 @@ export interface AdapterDefinition {
   };
   display: { palette: { fg: string; bg: string; tone?: string; ansi?: string } };
   hooks?: Partial<NativeHooks>;
+  /** #223: what a declared headless reviewer-only instance of this kind runs as. Fixed builtins only. */
+  reviewerVariant?: AdapterDefinition;
 }
 
 /** Explicit project declarations, passed by the bound host. No process-global instance registration. */

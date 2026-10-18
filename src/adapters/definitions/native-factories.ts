@@ -38,6 +38,12 @@ export function createLocal(ctx: CreateContext): PeerAdapter {
   return new LocalPeer(ctx.instance, ctx.daemon.local);
 }
 
+export function createClaudeReviewer(ctx: CreateContext): PeerAdapter {
+  if (!("claudePrint" in ctx.daemon)) throw new Error("Claude reviewer requires its print transport options");
+  const { ClaudePrintPeer } = require("../claude-print.ts") as typeof import("../claude-print.ts");
+  return new ClaudePrintPeer(ctx.instance, ctx.daemon.claudePrint);
+}
+
 /** Preserve existing transport option types and object identity; selection stays host-owned. */
 export const DAEMON_PORTS = {
   "codex-appserver": (options: Extract<DaemonPorts, { codex: unknown }>["codex"]) => ({ codex: options }),
@@ -45,4 +51,5 @@ export const DAEMON_PORTS = {
   "owned-acp": (options: Extract<DaemonPorts, { jcode: unknown }>["jcode"]) => ({ jcode: options }),
   "pi-rpc": (options: Extract<DaemonPorts, { pi: unknown }>["pi"]) => ({ pi: options }),
   "local-worker": (options: Extract<DaemonPorts, { local: unknown }>["local"]) => ({ local: options }),
+  "claude-print": (options: Extract<DaemonPorts, { claudePrint: unknown }>["claudePrint"]) => ({ claudePrint: options }),
 } satisfies Record<DaemonEngine, unknown>;

@@ -51,6 +51,8 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
+  /** #223 R4: on a verdict, whether the reviewer's context was new for it; set by the hub, never by the reviewer. */
+  reviewContext?: "fresh" | "continuing";
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
 }
 export interface Task extends PlanningFields {
@@ -283,7 +285,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}, expectedFlowRevision?: number): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld" | "reviewContext"> = {}, expectedFlowRevision?: number): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -298,7 +300,7 @@ export class Board {
       if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
     }
     if (patch.state === "backlog" && taskHasStarted(task) && !untouchedReturn) throw new Error(`task #${id}: started work cannot return to backlog`);
-    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));

@@ -290,6 +290,8 @@ export interface RoutingRefusal { peer: PeerId; role: "owner" | "reviewer"; code
 export interface Assignment {
   /** A same-family reviewer was chosen only because no other family was eligible. */
   sameFamilyFallback?: true;
+  /** #223 R5: the planner reviews because the declared reviewer-only instance was not eligible. */
+  plannerFallback?: true;
   refusals?: RoutingRefusal[];
   owner?: PeerId;
   reviewer?: PeerId;
@@ -458,6 +460,7 @@ export function assign(
 
   let reviewer: PeerId | undefined;
   let sameFamilyFallback = false;
+  let plannerFallback = false;
   if (task.class !== "review") {
     if (pii) trace.push("reviewer: user (pii: no second on-prem peer; ahub review <id> <verdict>)");
     else {
@@ -475,7 +478,18 @@ export function assign(
         const reason = `same family as ${reviewOwner}; eligible other-family reviewer available`;
         refusals.set(`reviewer:${named}`, { peer: named, role: "reviewer", code: "family", reason });
         trace.push(`  reviewer candidate ${named}: skipped, ${reason}`);
-      } else reviewer = pick(named === undefined ? independent.length ? independent : automatic : [named], "reviewer", reviewOwner, named === undefined);
+      } else {
+        // #223 R1: a declared instance that reviews and does not plan goes first, busy or not.
+        const holds = (peer: PeerId, role: string) => opts.roles?.[peer]?.includes(role) === true;
+        const dedicated = (peer: PeerId) => !!opts.instances && Object.hasOwn(opts.instances, peer) && holds(peer, "reviewer") && !holds(peer, "planner");
+        const pool = independent.length ? independent : automatic;
+        const ready = named === undefined ? pool.filter(peer => dedicated(peer) && peer !== reviewOwner && !blocked(peer, "reviewer")) : [];
+        reviewer = pick(named === undefined ? ready.length ? ready : pool : [named], "reviewer", reviewOwner, named === undefined);
+        if (named === undefined && !ready.length && reviewer && holds(reviewer, "planner") && Object.keys(opts.roles ?? {}).some(dedicated)) {
+          plannerFallback = true;
+          trace.push(`  planner fallback: no declared reviewer-only instance is eligible; ${reviewer} reviews`);
+        }
+      }
       if (reviewer && sameFamily(reviewer)) {
         sameFamilyFallback = true;
         trace.push(`  same-family fallback: ${reviewer} and ${reviewOwner} share ${ownerFamily}; no eligible other family`);
@@ -490,7 +504,7 @@ export function assign(
   const piBackend = policy?.pi_backend;
   if (owner && definitionOf(owner, opts.instances)?.routing?.trace === "route") trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
   if (owner && definitionOf(owner, opts.instances)?.routing?.trace === "backend") trace.push(`${definitionOf(owner, opts.instances)!.routing!.backendLabel} decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
-  return { ...(sameFamilyFallback ? { sameFamilyFallback: true as const } : {}), ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
+  return { ...(sameFamilyFallback ? { sameFamilyFallback: true as const } : {}), ...(plannerFallback ? { plannerFallback: true as const } : {}), ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
 }
 
 /**

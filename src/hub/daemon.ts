@@ -62,6 +62,7 @@ import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
+import { reviewDiff, type ClaudePrintPeer } from "../adapters/claude-print.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
@@ -636,6 +637,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const isSupportedPeer = (peer: unknown): peer is string => typeof peer === "string" && definitionOf(peer) !== undefined;
   const isStartablePeer = (peer: unknown): peer is string => typeof peer === "string" && !channelExtras.includes(peer) && definitionOf(peer)?.start.conductorStartable === true;
   const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...extraIds.filter(id => !channelExtras.includes(id))]);
+  // #223 R2: a declared instance whose effective roles are exactly reviewer gets review requests and its own task notices only.
+  const reviewOnlyPeer = (peer: string): boolean => Object.hasOwn(declarations, peer) && config.roles[peer]?.length === 1 && config.roles[peer]![0] === "reviewer";
+  const reviewOnlyItem = (peer: string, env: Envelope): boolean => env.from === USER || env.from === HUB && (env.kind === "review" || (env.kind === "task" && env.to?.includes(peer) === true));
   const SETTINGS = projectSettings(declarations);
   const settingDef = (key: unknown) => instanceSettingDef(key, declarations);
   const accountOf = (peer: string) => definitionOf(peer)?.budget?.account ?? peer;
@@ -877,6 +881,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * has not stopped since its cohort task closed. Workflow events and anything to the console are never held back.
    */
   const silence = (env: Envelope, to: PeerId): string | undefined => {
+    if (reviewOnlyPeer(to) && env.to?.includes(to) && !reviewOnlyItem(to, env)) return `${to} is a review-only instance: it receives review requests only (send a review through the task board)`;
     if (!turnFree() || env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat" || to === USER) return undefined;
     const cohort = tasks.silenced(env.from, to);
     if (!cohort) return undefined;
@@ -919,7 +924,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const staleOff = () => config.experiments?.stale_notices === "deliver";
   if (staleOff()) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
-  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
+  const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (p instanceof WsPeer) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
@@ -1085,7 +1090,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
   async function ensurePreface(peer: PeerId): Promise<void> {
-    if ((!config.memory.enabled && !memoryStore) || recalled.has(peer)) return;
+    if ((!config.memory.enabled && !memoryStore) || recalled.has(peer) || reviewOnlyPeer(peer)) return; // #223 R2: no shared memory in a fresh review
     // The hub's own long-term decisions, contracts and fails lead; claude-mem's recent work follows, each with half the budget.
     let own: string | undefined;
     try {
@@ -1290,6 +1295,9 @@ export async function startDaemon(opts: DaemonOptions) {
       return [peer, codes];
     })),
     instances: () => declarations,
+    reviewOnly: reviewOnlyPeer,
+    // #223 R4: fresh only when the verdict comes from a reviewer session the hub started for this task's review.
+    reviewContext: (by, task) => definitionOf(by)?.start.daemonPort === "claude-print" && (bus.peers.get(by) as ClaudePrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
     // reload cannot turn a canonical reviewer process into an isolated implementation owner.
     ownerIsolation: () => Object.fromEntries(extraIds.map(id => {
@@ -3765,6 +3773,25 @@ export async function startDaemon(opts: DaemonOptions) {
       bus.add(local);
       await local.start();
       return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
+    }
+    if (adapter?.start.daemonPort === "claude-print") {
+      // #223 R3: one fresh `claude -p` session per review request; idle with no process between reviews.
+      if (existing?.state === "busy") return { ok: false, error: `${peer} is reviewing; retry when it is idle` };
+      if (existing) { mute(existing); await existing.stop(); }
+      const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["claude-print"]({
+        cwd: executionCwd,
+        mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
+        systemPrompt: sessionRoleContract(peer),
+        watchdogMs: config.watchdog_ms,
+        facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit),
+        verdictSince: (task, since) => board.get(task)?.history.some(h => h.by === peer && h.at >= since && (h.event === "approved" || h.event === "changes_requested")) === true,
+        onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
+        log,
+      }) }) as ClaudePrintPeer;
+      executionOwners.set(peer, { owner: reviewer, cwd: executionCwd });
+      bus.add(reviewer);
+      await reviewer.start();
+      return { ok: true };
     }
     return { ok: false, error: `unknown peer "${peer}"` };
   }

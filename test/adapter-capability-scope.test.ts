@@ -13,6 +13,7 @@ for (const [field, set] of [
   ["session.crashIdentity", (definition: AdapterDefinition) => { definition.session.crashIdentity = () => ({ sessionId: "fixture" }); }],
   ["start.daemonPort pi-rpc", (definition: AdapterDefinition) => { definition.start.daemonPort = "pi-rpc"; }],
   ["routing", (definition: AdapterDefinition) => { definition.routing = { preferredTier: true }; }],
+  ["reviewerVariant", (definition: AdapterDefinition) => { definition.reviewerVariant = { ...definition }; }],
 ] as const) test(`#451 R4 non-builtin definitions cannot claim ${field}`, () => {
   const definition = external();
   set(definition);

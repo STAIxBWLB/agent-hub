@@ -40,9 +40,9 @@ export interface BusOptions {
   /**
    * Optional: does a queued envelope still matter to this recipient (issue #106)? Asked per recipient when a delivery is
    * built and again right before it is handed over, after condensation. False drops it unsent: the journal records it
-   * as discarded and taps see a `stale` event.
+   * as discarded and taps see a `stale` event. A string is false with its own reason (#223, a review-only peer).
    */
-  relevant?: (peer: PeerId, env: Envelope) => boolean;
+  relevant?: (peer: PeerId, env: Envelope) => boolean | string;
   /**
    * Optional: why this recipient does not get this envelope (issue #107, a turn-free cohort). Asked per recipient once
    * the audience is final (implicit replies and `digest` resolved), so the other recipients still get it, unchanged;
@@ -1088,7 +1088,13 @@ export class Bus {
   }
 
   private isRelevant(id: PeerId, env: Envelope): boolean {
-    return !this.withdrawn.has(env.id) && (this.opts.relevant?.(id, env) ?? true);
+    return this.irrelevance(id, env) === undefined;
+  }
+
+  /** Why a queued envelope no longer goes to `id`, or undefined when it still does. */
+  private irrelevance(id: PeerId, env: Envelope): string | undefined {
+    const verdict = this.withdrawn.has(env.id) ? false : this.opts.relevant?.(id, env) ?? true;
+    return verdict === true ? undefined : typeof verdict === "string" ? verdict : `stale: task #${env.refs?.task ?? "?"} is no longer open for ${id}`;
   }
 
   /**
@@ -1101,8 +1107,8 @@ export class Bus {
     let dropped = false;
     for (let i = queue.length - 1; i >= 0; i--) {
       const env = queue[i]!;
-      if (this.isRelevant(id, env)) continue;
-      const reason = `stale: task #${env.refs?.task ?? "?"} is no longer open for ${id}`;
+      const reason = this.irrelevance(id, env);
+      if (reason === undefined) continue;
       queue.splice(i, 1);
       dropped = true;
       if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer: id, state: "discarded", createdAt: Date.now(), originals: [env], out: [], reason });
