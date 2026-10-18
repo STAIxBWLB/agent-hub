@@ -164,15 +164,15 @@
     {
       "id": "roster-r-pi-override",
       "file": "src/hub/roster.ts",
-      "search": "  return roster[peer] ?? defaultRosterEnabled(peer, piEnabled);",
-      "replacement": "  return peer === \"pi\" ? piEnabled : roster[peer] ?? defaultRosterEnabled(peer, piEnabled);",
+      "search": "  return roster[peer] ?? (definition.kind === peer ? defaultRosterEnabled(peer, piEnabled) : true);",
+      "replacement": "  return peer === \"pi\" ? piEnabled : roster[peer] ?? (definition.kind === peer ? defaultRosterEnabled(peer, piEnabled) : true);",
       "testFile": "test/roster.test.ts",
       "testName": "roster validates the closed boolean catalog and explicit Pi membership wins its legacy switch (#315)"
     },
     {
       "id": "roster-r-catalog",
       "file": "src/hub/roster.ts",
-      "search": "    if (!definitionOf(peer)) throw new Error(\"roster contains an unsupported peer\");",
+      "search": "    if (!definitionOf(peer, instances)) throw new Error(\"roster contains an unsupported peer\");",
       "replacement": "    // negative control: unknown key accepted",
       "testFile": "test/roster.test.ts",
       "testName": "roster validates the closed boolean catalog and explicit Pi membership wins its legacy switch (#315)"
@@ -204,7 +204,7 @@
     {
       "id": "roster-result-stop-text",
       "file": "src/hub/daemon.ts",
-      "search": "...(!after && terminalNotice ? [terminalNotice] : []), ...(after && definitionOf(peer)?.cli.rosterReturnNotice ? [definitionOf(peer)!.cli.rosterReturnNotice!(codexResumeCommand())] : []),",
+      "search": "...(!after && terminalNotice ? [terminalNotice] : []), ...(after && definitionOf(peer)?.cli.rosterReturnNotice ? [definitionOf(peer)!.cli.rosterReturnNotice!(codexResumeCommand(peer))] : []),",
       "replacement": "...[], ",
       "testFile": "test/roster.test.ts",
       "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
@@ -324,8 +324,8 @@
     {
       "id": "roster-detached-pi-recovery",
       "file": "src/hub/daemon.ts",
-      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;",
-      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
+      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;",
+      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
       "testFile": "test/roster-pi.test.ts",
       "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
     },
@@ -764,8 +764,8 @@
     {
       "id": "data-pi-factory-wire",
       "file": "src/hub/daemon.ts",
-      "search": "cwd: opts.cwd, deny: config.local.deny, readOnly: config.data?.readonly,",
-      "replacement": "cwd: opts.cwd, deny: config.local.deny,",
+      "search": "cwd: executionCwd, deny: config.local.deny, readOnly: config.data?.readonly,",
+      "replacement": "cwd: executionCwd, deny: config.local.deny,",
       "testFile": "test/path-policy.test.ts",
       "testName": "owned Pi bridge keeps read-only data protected even under never-ask (#259)"
     },
@@ -804,8 +804,8 @@
     {
       "id": "projection-local-trust",
       "file": "src/hub/config-trust.ts",
-      "search": ", \"text_projection\"] as const;",
-      "replacement": "] as const;",
+      "search": ", \"text_projection\", \"instances\"] as const;",
+      "replacement": ", \"instances\"] as const;",
       "testFile": "test/text-projection.test.ts",
       "testName": "projection commands are ignored from tracked config and accepted only machine-locally (#259)"
     },
@@ -2364,7 +2364,7 @@
     {
       "id": "planning-reservation-supported",
       "file": "src/hub/tasks.ts",
-      "search": "if (patch.reserved && !definitionOf(patch.reserved) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved))",
+      "search": "if (patch.reserved && !definitionOf(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved))",
       "replacement": "if (false)",
       "testFile": "test/planning.test.ts",
       "testName": "planning normalizes real reservations and rejects unsupported pseudo peers before persistence (#263)"
@@ -2652,8 +2652,8 @@
     {
       "id": "planner-reserved-status-row",
       "file": "src/hub/daemon.ts",
-      "search": "new Set([...bus.knownPeers(), ...reservations])",
-      "replacement": "new Set(bus.knownPeers())",
+      "search": "new Set([...bus.knownPeers(), ...extraIds, ...reservations])",
+      "replacement": "new Set([...bus.knownPeers(), ...extraIds])",
       "testFile": "test/planner-pull-surfaces.test.ts",
       "testName": "restarted ownerless pull reservations retain an unattached peer WIP status row"
     },

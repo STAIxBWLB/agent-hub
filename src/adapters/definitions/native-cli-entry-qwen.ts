@@ -1,6 +1,7 @@
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
 export async function runQwenEntry(ctx: NativeCliEntryContext): Promise<void> {
+  const peer = ctx.instance ?? "qwen";
   const { args, cwd, stateDir, unattendedEnv, connect, fail, takeFlags } = ctx;
   const { launcherPreview } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -13,8 +14,8 @@ export async function runQwenEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (rest.length || (one["--mode"] !== undefined && !(adapter.start.forms as readonly string[]).includes(one["--mode"]))) fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
   const hub = await connect();
   try {
-    const reply = await hub.request({ t: "start", peer: "qwen", args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}), ...(one["--session-id"] ? { sessionId: one["--session-id"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
+    const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}), ...(one["--session-id"] ? { sessionId: one["--session-id"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
     if (!reply.ok) fail(reply.error);
-    console.log(reply.already ? "qwen is already attached" : "qwen attached (headless); use ahub say @qwen and the console for approvals");
+    console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); use ahub say @${peer} and the console for approvals`);
   } finally { hub.close(); }
 }

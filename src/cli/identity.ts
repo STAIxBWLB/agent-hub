@@ -1,5 +1,5 @@
 import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
-import { definitionOf } from "../adapters/registry.ts";
+import { definitionOf, kindOf, type KindMap } from "../adapters/registry.ts";
 
 /** Recovery reads this declaration before delegating to another package's CLI. */
 export const LIVE_TEST_SUPPORTED = true;
@@ -29,7 +29,7 @@ export type CliIdentity =
   | { role: "invalid"; reason: string };
 
 /** Honest defaults for native shells, not authentication against an agent that can edit its environment. */
-export function detectCliIdentity(env: Readonly<Record<string, string | undefined>>): CliIdentity {
+export function detectCliIdentity(env: Readonly<Record<string, string | undefined>>, instances?: KindMap): CliIdentity {
   const hub = env.AGENTHUB_PEER_ID;
   const claude = env.CLAUDECODE;
   const session = env.CLAUDE_CODE_SESSION_ID;
@@ -42,7 +42,7 @@ export function detectCliIdentity(env: Readonly<Record<string, string | undefine
   if (session !== undefined && claude === undefined) return invalid("CLAUDE_CODE_SESSION_ID without CLAUDECODE marker");
   if (claude !== undefined && codex !== undefined) return invalid("conflicting native agent markers");
   const native = claude !== undefined ? "claude" : codex !== undefined ? "codex" : undefined;
-  if (hub !== undefined && native !== undefined && hub !== native) return invalid("AGENTHUB_PEER_ID conflicts with native agent marker");
+  if (hub !== undefined && native !== undefined && (kindOf(hub, instances) ?? hub) !== native) return invalid("AGENTHUB_PEER_ID conflicts with native agent marker");
   const peer = hub ?? native;
   return peer === undefined ? { role: "console" } : { role: "tools", peer };
 }

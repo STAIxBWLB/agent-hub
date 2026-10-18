@@ -4,7 +4,8 @@ import { DAEMON_PORTS } from "./definitions/native-factories.ts";
 export { DAEMON_PORTS };
 import { NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN } from "./definitions/builtin-metadata.ts";
 import { QWEN_DEFINITION } from "./definitions/qwen.ts";
-import type { AdapterDefinition } from "./registry-types.ts";
+import type { AdapterDefinition, KindMap } from "./registry-types.ts";
+import { types } from "node:util";
 
 export type * from "./registry-types.ts";
 export const ADAPTER_API = 1;
@@ -45,15 +46,30 @@ export const QUOTA_HANDOFF_PLATFORMS: Readonly<Record<string, string>> = Object.
   ADAPTERS.flatMap(adapter => adapter.hooks?.recallPlatform ? [[adapter.kind, adapter.hooks.recallPlatform]] : []),
 ));
 
-/** A1 registers kinds only. Undeclared suffixes never acquire a native kind or admission. */
-export function kindOf(id: string): string | undefined {
-  return definitions.has(id) ? id : undefined;
+/** Declaration reads never execute caller accessors or inherit another project's mapping. */
+function declaredKind(id: string, instances: KindMap | undefined): string | undefined {
+  if (!instances || typeof instances !== "object" || types.isProxy(instances) || Array.isArray(instances)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(instances))) return undefined;
+  const field = Object.getOwnPropertyDescriptor(instances, id);
+  if (!field || !Object.hasOwn(field, "value") || !field.enumerable) return undefined;
+  const entry: unknown = field.value;
+  if (!entry || typeof entry !== "object" || types.isProxy(entry) || Array.isArray(entry)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(entry))) return undefined;
+  const kind = Object.getOwnPropertyDescriptor(entry, "kind");
+  if (!kind || !Object.hasOwn(kind, "value") || !kind.enumerable || typeof kind.value !== "string" || !definitions.has(kind.value)) return undefined;
+  const prefix = `${kind.value}-`;
+  return /^[a-z][a-z0-9-]{0,31}$/.test(id) && id.startsWith(prefix) && /^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)) ? kind.value : undefined;
 }
-export function definitionOf(id: string): AdapterDefinition | undefined {
-  return definitions.get(id);
+/** Legacy ids retain their identity. Extra instances resolve only through the explicit project map. */
+export function kindOf(id: string, instances?: KindMap): string | undefined {
+  return definitions.has(id) ? id : typeof id === "string" ? declaredKind(id, instances) : undefined;
 }
-export function familyOf(id: string): string | undefined {
-  return definitionOf(id)?.family;
+export function definitionOf(id: string, instances?: KindMap): AdapterDefinition | undefined {
+  const kind = kindOf(id, instances);
+  return kind === undefined ? undefined : definitions.get(kind);
+}
+export function familyOf(id: string, instances?: KindMap): string | undefined {
+  return definitionOf(id, instances)?.family;
 }
 
 /** Compatibility projection order is observable in default role maps and planner selection. */

@@ -3554,3 +3554,106 @@ keep their exact scope. It performs no filesystem or package lookup.
 - `ahub sdlc export`: a plain off lifecycle (no retired setting) keeps the #257 export bytes (schema 1, `workflow: "none"`, `phase: null`). An enabled or retired-setting lifecycle emits schema 2: sanitized state (id, state, stage, criteria view or a private stub), `stateHash` and `sourceHash`, without the workflow field. In off, a `phase` receipt write also keeps its #257 bytes (`tasks: []`); task import stays retired in every mode, so a non-empty list is refused.
 - Contract amendment, seeds (419 before and after: 414 byte-unchanged, 3 modified, 2 removed, 2 added; the registry baseline is unchanged). Modified, each with the same id, test file, test name and mutation intent: `workflow-reviewer-only` (the criteria/phase check), plus `override-local-schema` and `lifecycle-native-schema`. The person approved the last two on 2026-10-18, because the `lifecycleCriteria` plumbing changed their call sites. Removed with the code they mutated: `workflow-exact-after` and `lifecycle-phase-view-required`. Added for the new guards: `criteria-task-import-retired` and `sdlc-workflow-window-closes`. Tests that pinned the retired gsd-lite behaviour (task import, phase naming, the workflow projection, the implement id stored in an enabled config) are amended in the same PR; every other test is unchanged.
 - S0/S8 implement none of S1-S7 and S9-S11. The issue stays the spec, Tasks owns mutations and GitHub owns PR, check and tag facts.
+## Headless peer instances I2 amendment (#450)
+
+`instances` is a person-authored, machine-local object in an untracked
+`.agenthub/config.local.json`. Each additional `<kind>-<name>` id names its kind
+explicitly and may set `roles`, `start_mode`, `permission_mode` and `worktree`.
+The bound catalog belongs to one project/daemon; there is no process-global
+registration or suffix inference. Declarations are validated before trust
+filtering, cloned and frozen, and limited to 64 additional ids of at most 32
+ASCII characters. Settings cannot create or modify declarations. Identity,
+execution directory and account membership are restart-bound; a live reload
+cannot publish their derived defaults ahead of that restart.
+
+I2 accepts definitions with a native headless factory and environment or ACP
+session MCP identity. Additional Claude/channel peers belong to I3. Jcode's
+project-file MCP identity is not isolated by this phase and is refused for extra
+instances. Additional instances start headlessly; the existing Codex native TUI
+still initializes and attaches to its instance's own app-server proxy. The hub
+never initializes that app-server on the TUI's behalf. `ahub <kind> --as <id>`
+selects the declared identity; selection is removed from native passthrough.
+Missing `peer_instances` evidence on an old daemon/upgrade target is a refusal
+before instance runtime effects, rather than a guess that the instance is a base
+peer.
+
+Each additional implementer requires an explicit registered Git worktree at
+`<project>/.worktrees/<id>` with an attached branch. I2 creates no worktree or
+branch; I4 owns automatic worktree orchestration. A supplied reviewer worktree
+is checked by the same real-path, repository and registration boundary. Without
+a supplied directory, a reviewer may share the project checkout. The native
+process executes in that directory while its MCP environment retains the
+canonical project's hub binding. Launch/restore receipts keep canonical
+`projectRoot`, optional extra-instance `executionCwd` and observed `terminalRoot`
+separate. The terminal grouping root may be only that project root or the
+verified execution directory; exact live launcher, handle, incarnation and
+worktree evidence is still required. Native kind metadata alone never binds an
+extra instance. Revoked declarations or changed directories refuse reuse.
+Effective roles resolve from declaration roles, exact-id policy roles, kind policy
+roles, then definition defaults; launch validation uses the same order.
+
+I2 recovery ceiling: a recovering extra Codex launcher records its launch row only
+after the authenticated start response supplies its execution-root binding. Until
+then, the coordinator retains durable pending terminal-creation and attachment-wait
+evidence; it never records an assumed checkout. Base Codex pre-start recording is
+unchanged. Earlier recording for extras requires independently verified exact-instance
+execution-root evidence. Past-commit resumes do not repeat pre-commit instance
+compatibility checks. Abort and stop-and-archive validate historical receipt structure
+and authenticated runtime ownership independently of mutable declarations; restore,
+fresh and reattach retain current declaration authority.
+
+Routing expands a kind preference to its declared members and considers idle
+state, board WIP and queued load with stable ties. Exact manual candidates,
+reservations and nominations stay exact ids. Assignment and explain use the same
+pure decision and name the chosen instance. Reviewer independence compares
+families (the kind); an eligible other family takes precedence even when busy.
+Only when no other family is eligible may an assignment use its own family,
+recording `sameFamilyFallback=true` in assignment history. This independence rule
+also applies to an explicit same-family reviewer nomination. A declared owner of
+implement, bulk-edit or test work requires the current implementer role and positive
+host evidence tied to the actual adapter generation started in a verified noncanonical
+worktree; a role-only reload cannot promote a canonical reviewer process. External
+ids, including console recipients, retain their existing admission and explicit
+nomination behavior without acquiring native metadata or automatic kind expansion.
+
+Quota readings, pause records and reset windows are shared by the definition's
+account (one account per kind in I2). Member telemetry retains its exact reporter
+id, native context remains per instance, and the shared account's quota pause,
+checkpoint, handoff and reset notice cover all its members. Existing manual
+pauses remain in force. A startup migration conservatively merges old alias
+pause rows, retaining their provenance and moves; no pause is discarded.
+Per-instance ports, native session paths, Pi tool ledgers and model relay
+callbacks do not borrow another instance's process or conversation.
+
+Worktree facts and native turn snapshots use the validated execution checkout,
+while task and turn ids remain in the canonical hub database. An additive
+`turn_workspaces` receipt stores the exact extra-instance root and its snapshot
+fields atomically with turn creation. The legacy `turns` snapshot fields remain
+unknown for those rows, so an older CLI cannot restore their files into the
+canonical checkout. New readers hydrate the same public turn shape from the
+receipt. An absent receipt preserves historical external-peer undo behavior;
+an existing receipt requires the current trusted declaration and the same
+validated root before context changes or file restoration. Pruning a turn also
+prunes its workspace receipt. Review projections resolve converter programs, task
+paths and private-path policy in the execution checkout while their sandbox denies
+other canonical project file data, including when read_allow encloses that project.
+Overlap refusal remains conservative across
+separate worktrees; it may refuse an undo rather than assume independence.
+
+The I2 seed contract amendment re-anchors only `roster-r-pi-override`,
+`roster-r-catalog`, `roster-result-stop-text`, `roster-detached-pi-recovery`,
+`data-pi-factory-wire`, `projection-local-trust`,
+`planning-reservation-supported` and `planner-reserved-status-row` to the
+contextual resolver, aggregate Pi ledger, execution directory and declared-id
+forms. Each keeps its id and named test and removes the same guarantee. The
+projection mutant still removes only `text_projection`; the status mutant still
+removes only reservations. The other 411 seeds and registry baseline are
+unchanged. The PR records every old and new search/replacement and its clean
+and mutant result, per the reviewer's explicit ruling.
+
+## Amendment: roster membership in status, 2026-10-18 (#484)
+
+- The authenticated `status` reply carries `roster: {peer, on}[]` for every supported peer, optional peers included, with the same `on` that `ahub roster list` shows. The field is additive, with no protocol bump; older CLIs ignore it.
+- Launchers that check membership before starting (`ahub jcode`, `ahub kimi --mode tui`) read it through `rosterInStatus` in `src/hub/status-roster.ts` (no imports, so the registry's native CLI entries add no cycle). A reply without the field (an older hub) is unknown: the launcher stops with an upgrade-or-restart remedy and starts nothing. It never reads unknown as off (the jcode bug) or as on (the dead kimi guard; daemon admission still refused off-roster Kimi, so that one was harmless).
+- `settings_get` stays console-only.
+- With declared headless instances, status includes each startup-bound extra id as well as every built-in and optional peer, with its own roster membership. No undeclared suffix acquires a row.

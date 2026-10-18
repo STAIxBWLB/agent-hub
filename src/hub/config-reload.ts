@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { validateRawConfig, type ConfigLayer } from "./config-apply.ts";
 import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 import { CLASSES } from "./board.ts";
+import { validateInstances } from "./instances.ts";
 
 export const CONFIG_SOURCE_FILES = ["config.json", "config.local.json", "routing.toml", "routing.local.toml"] as const;
 export type ConfigSourceName = typeof CONFIG_SOURCE_FILES[number];
@@ -90,6 +91,15 @@ function validateRoutingRaw(value: unknown): void {
 /** Strict reloads never use routing's last-good fallback. Startup can retain its existing fallback explicitly. */
 export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing): ConfigSources {
   const layers: ConfigLayer[] = [], trustLayers: ConfigSources["trustLayers"] = [];
+  let localRaw: Record<string, unknown> = {};
+  try { localRaw = JSON.parse(texts["config.local.json"] ?? "{}"); }
+  catch { if (!fallbackRouting) throw new Error(".agenthub/config.local.json: invalid JSON object"); }
+  let declared;
+  try { declared = validateInstances(localRaw?.instances); }
+  catch (error) {
+    if (!fallbackRouting) throw new Error(`.agenthub/config.local.json: ${(error as Error).message}`);
+    declared = validateInstances(undefined);
+  }
   for (const name of CONFIG_SOURCE_FILES) {
     const text = texts[name];
     if (text === null) continue;
@@ -104,7 +114,7 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
     }
     if (name === "config.json" || name === "config.local.json") {
       if (!fallbackRouting) {
-        try { validateRawConfig(raw); }
+        try { validateRawConfig(raw, declared); }
         catch (error) { throw new Error(`.agenthub/${name}: ${(error as Error).message}`); }
       }
       layers.push({ name, raw });

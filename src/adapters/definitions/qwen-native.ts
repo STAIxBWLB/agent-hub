@@ -7,9 +7,9 @@ export class QwenIdentityError extends Error {
   constructor() { super("Qwen Code 0.25.0 native identity is not verified; check the executable and its advertised ACP version"); }
 }
 
-export function qwenNativeIdentity(instance: string, production: boolean | undefined, init: unknown): boolean {
+export function qwenNativeIdentity(instance: string, production: boolean | undefined, init: unknown, kind?: string): boolean {
   const native = init as { agentInfo?: { name?: unknown; version?: unknown } } | null | undefined;
-  const verified = production === true && instance === "qwen" && native?.agentInfo?.name === "qwen-code" && native?.agentInfo?.version === "0.25.0";
+  const verified = production === true && (kind ?? instance) === "qwen" && native?.agentInfo?.name === "qwen-code" && native?.agentInfo?.version === "0.25.0";
   if (production && !verified) throw new QwenIdentityError();
   return verified;
 }
