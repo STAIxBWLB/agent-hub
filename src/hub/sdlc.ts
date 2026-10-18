@@ -34,6 +34,8 @@ export interface SdlcReceipt {
   criteria?: CriteriaReceipt;
   /** Stored before #481 S8 and read as `criteria`; never written again. */
   phase?: LegacyPhaseReceipt;
+  /** The person's spec acceptance (#481 S1): set only by Tasks.acceptSpec, never by hub_sdlc_record. */
+  acceptance?: SpecAcceptance;
   repo?: string;
   issue?: number;
   pr?: number;
@@ -181,6 +183,8 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
     if (!["passed", "failed", "unknown"].includes(String(raw.localResult))) throw new Error("sdlc receipt.localResult: expected passed, failed or unknown");
     next.localResult = raw.localResult as SdlcReceipt["localResult"];
   }
+  // An acceptance names one spec issue; relinking the receipt to another drops it (#481 S1).
+  if (next.repo !== previous.repo || next.issue !== previous.issue) delete next.acceptance;
   // A new artifact cannot inherit another PR's review or local gate.
   if (next.repo !== previous.repo || next.pr !== previous.pr) {
     delete next.head; delete next.observed;
@@ -210,10 +214,26 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     ...(sha(p.mergeCommit?.oid) ? { mergeCommit: p.mergeCommit.oid } : {}) };
 }
 
-export interface SdlcStatus { playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
+/** Issue identity and edit times only; no body is fetched or stored. `lastEditedAt` moves on a body edit, not on comments. */
+export interface SpecEdit { lastEditedAt: string | null; updatedAt: string }
+export interface SpecAcceptance extends SpecEdit { repo: string; issue: number; acceptedAt: number }
+export type SpecState = "missing" | "current" | "changed" | "unknown";
+/** Whether the receipt's spec issue is accepted at its current body. `edit` undefined means the readback failed. */
+export function specState(receipt: SdlcReceipt | undefined, edit: SpecEdit | undefined): SpecState {
+  const accepted = receipt?.acceptance;
+  if (!accepted || accepted.repo !== receipt?.repo || accepted.issue !== receipt?.issue) return "missing";
+  if (!edit) return "unknown";
+  return edit.lastEditedAt === accepted.lastEditedAt ? "current" : "changed";
+}
+export const SPEC_STATE_TEXT: Record<Exclude<SpecState, "current">, string> = {
+  missing: "spec acceptance missing: the person runs ahub sdlc accept <task> --issue <n>",
+  changed: "spec changed after acceptance: the person re-accepts with ahub sdlc accept <task> --issue <n>",
+  unknown: "spec edit time unknown: the issue could not be read",
+};
+export interface SdlcStatus { spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
 /** The acceptance-criteria checklist (#481 S8, Compliance pass) counts once recorded, and on every task under the retired gsd-lite setting. Off keeps #257's output. */
 export const criteriaRequired = (config: SdlcConfig, receipt: SdlcReceipt | undefined): boolean => config.workflow === "gsd-lite" || (config.mode !== "off" && !!checklistOf(receipt));
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView): SdlcStatus {
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit): SdlcStatus {
   const stage = receipt?.stage ?? config.stages[0] ?? "spec", blockers: string[] = [];
   const definition = stageDefinition(config, stage);
   if (!definition) blockers.push("lifecycle stage definition unknown");
@@ -239,7 +259,9 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const custom = config.definitions && definition ? stageGates(definition, blockers, [...viewBlockers, ...staleHead]) : undefined;
   if (custom) for (const blocker of [...custom.entry, ...custom.exit]) if (!blockers.includes(blocker)) blockers.push(blocker);
   const shown = criteria && (criteriaRequired(config, receipt) || definition && [...definition.entry_gates, ...definition.exit_gates].includes("criteria"));
-  return { ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
+  // Shown, not counted as a readiness blocker: the spec gate is build entry (#481 S1).
+  const spec = config.mode !== "off" && receipt?.issue ? { spec: { issue: receipt.issue, state: specState(receipt, specEdit) } } : {};
+  return { ...spec, ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
     actor: !definition ? "person" : shown && criteria.blockers.length ? "reviewer/person" : config.definitions ? definition.actor : baseActor(definition.base),
     next: blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
 }
@@ -278,6 +300,20 @@ export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 2
   child.once("error", () => { failed = true; clearTimeout(timer); resolve({ code: 1, stdout: "" }); });
   child.once("close", code => { clearTimeout(timer); resolve({ code: failed ? 1 : code ?? 1, stdout: failed ? "" : stdout }); });
 });
+
+/** Read-only, fixed argv: the issue's edit times, never its body. */
+export async function readSpecEdit(repoName: string, issue: number, run: SdlcGh = sdlcGh): Promise<SpecEdit | undefined> {
+  if (!repo(repoName) || !id(issue)) return undefined;
+  const [owner, name] = repoName.split("/");
+  try {
+    const out = await run(["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number lastEditedAt updatedAt}}}", "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${issue}`]);
+    if (out.code !== 0) return undefined;
+    const found = JSON.parse(out.stdout)?.data?.repository?.issue;
+    const stamp = (v: unknown) => typeof v === "string" && v.length <= 40 && !Number.isNaN(Date.parse(v));
+    if (found?.number !== issue || !stamp(found.updatedAt) || (found.lastEditedAt !== null && !stamp(found.lastEditedAt))) return undefined;
+    return { lastEditedAt: found.lastEditedAt, updatedAt: found.updatedAt };
+  } catch { return undefined; }
+}
 
 export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh): Promise<PrEvidence | undefined> {
   if (!repo(receipt.repo) || !id(receipt.pr)) return undefined;
