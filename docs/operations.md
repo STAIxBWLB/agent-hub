@@ -1473,6 +1473,7 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
 | Switches | `coordination` | `config.local.json` | newly created tasks only |
 | Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min` | `config.local.json` | live; reschedules the sweep timer |
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
+| Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
 | Roles | `planner` (the one peer that plans) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,

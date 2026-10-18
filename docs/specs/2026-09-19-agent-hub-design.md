@@ -374,7 +374,7 @@ Assignment is a pure function of `routing.toml`, the task's signals and the peer
 "skip_local"`, `pii = "local_only"`); `ahub route explain <id | --class <c> <title>>` runs the
 same function and prints its trace: signals, every candidate with the reason it was kept
 or skipped, owner, reviewer and route. `local` uses the class's `route` / `fixed_model` for a
-task turn and `[local]` otherwise. Verification failure (tests fail, review `changes_requested` twice) escalates
+task turn and `[local]` otherwise. Verification failure (tests fail, review `changes_requested` `tasks.escalate_after` times in a row, default 3, #488) escalates
 the task to the next peer in `escalate_to`; Switchyard handles per-call escalation
 inside a peer.
 
@@ -573,7 +573,7 @@ AGENTS.md, REVIEW.md
    `end_turn`, never lost.
 3. `[STATUS]` messages from one peer are batched into one digest per recipient.
 4. A task proposed by Claude, accepted by Codex, marked done, is auto-routed to the
-   reviewer; `changes_requested` twice escalates per `routing.toml`.
+   reviewer; `tasks.escalate_after` consecutive `changes_requested` (default 3) escalate per `routing.toml`.
 5. `ahub local` completes a `bulk_edit` task; OmniRoute log shows the request with the
    per-peer token and `x-omniroute-provider: vllm`; `ahub route explain` shows the
    chosen route.

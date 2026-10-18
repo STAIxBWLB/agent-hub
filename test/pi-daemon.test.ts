@@ -705,7 +705,8 @@ test("a long Pi idle restart attempt rearms its 60 s bound after settling (#255)
 
 test("Pi review's internal post-write escalation keeps the generic default and an uncertain pending receipt (#254)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-postreview-daemon-"));
-  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  // The second review escalates here: the fixture pins the threshold at two (#488).
+  const config = { ...DEFAULT_CONFIG, tasks: { ...DEFAULT_CONFIG.tasks, escalate_after: 2 }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
   const { stateDir, daemon, console_ } = await hub(config);
   const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
   const task = board.propose("claude", { title: "second review", class: "implement" });

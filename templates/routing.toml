@@ -46,8 +46,8 @@ target = "dsv4f"
 # confirmations = 2
 
 # L1: task assignment. `peers` is the preference order among attached, unpaused peers (idle before busy).
-# `route` / `fixed_model` apply when the task lands on the local worker. Two changes_requested in a row move the
-# task to the next attached peer in `escalate_to`.
+# `route` / `fixed_model` apply when the task lands on the local worker. `tasks.escalate_after` consecutive
+# changes_requested (default 3, in .agenthub/config.json) move the task to the next attached peer in `escalate_to`.
 
 [signals]
 pii_patterns = ["\\b\\d{6}-\\d{7}\\b"]   # Korean resident registration numbers; add your own, e.g. "@your-org\\.example" for staff mail addresses
