@@ -1098,7 +1098,7 @@ export class Tasks {
     const before = validate(), signature = JSON.stringify(before);
     const expected = new Set(before.scope.flatMap(task => task.sdlc?.repo && task.sdlc.pr ? [`${task.sdlc.repo.toLowerCase()}#${task.sdlc.pr}`] : []));
     let ciRuns: number | undefined;
-    if (expected.size) {
+    if (expected.size && before.scope.every(task => task.sdlc?.repo && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(task.sdlc.repo) && !task.sdlc.repo.startsWith("-") && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr! > 0)) {
       const repositories = [...new Set(before.scope.flatMap(task => task.sdlc?.repo ? [task.sdlc.repo] : []))];
       if (repositories.length === 1) {
         const costs = await this.costReport(by, repositories[0]), rows = costs.rows as import("./cost-governance.ts").CostRow[];

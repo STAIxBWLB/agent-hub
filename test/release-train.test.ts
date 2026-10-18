@@ -149,3 +149,20 @@ test("lease cleanup failure preserves the durable cut and the original pre-write
   expect(closes).toBe(2);
   expect(notices.filter(line => line.includes("admission cleanup incomplete"))).toHaveLength(2);
 });
+
+test("mixed linked and unlinked scope keeps the whole train CI cost unknown", async () => {
+  const { tasks, board } = rig();
+  const release = await tasks.newRelease(USER, { name: "mixed", goal: "Train", order: 1 });
+  for (const linked of [true, false]) {
+    const task = await tasks.propose(USER, { title: linked ? "linked" : "unlinked", class: "implement", backlog: true });
+    board.update(task.id, USER, "backlog pulled", { state: "proposed" }); board.update(task.id, USER, "accepted", { state: "in_progress" });
+    board.update(task.id, USER, "approved", { state: "approved", ...(linked ? { sdlc: { repo: "owner/repo", pr: 1, stage: "review" as const } } : {}) });
+    await tasks.assignRelease("claude", { id: task.id, revision: 0, release: release.id, reason: "scope" });
+  }
+  tasks.costReport = async () => ({ rows: [{ repo: "owner/repo", pr: 1, ciRuns: 2, ciReruns: 1 }], truncated: false });
+  tasks.changeRelease(USER, { id: release.id, revision: 0, state: "active" });
+  const cut = await tasks.cutRelease("claude", { id: release.id, revision: 1 });
+  expect(cut.train?.history.at(-1)?.ciRuns).toBeUndefined();
+  tasks.changeRelease(USER, { id: release.id, revision: cut.revision, state: "shipped" });
+  expect(tasks.releaseReport(USER, release.id).metrics).toMatchObject({ ciRuns: null, unknown: [release.id] });
+});
