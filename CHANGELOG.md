@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- `ahub jcode` no longer leaves a project MCP entry the daemon rejects as stale when the CLI on PATH and the running hub come from different installs: the hub reports its plugin bundle in `status`, and the Jcode and Kimi TUI launchers write that path (#502).
+
 ## 0.12.35
 
 A Claude session started with `ahub claude` gets its hub messages while it is busy (#493), `ahub jcode` starts again (#484), a kind can run several headless instances (#450 I2), and an enabled lifecycle follows the AI-Native SDLC Playbook with gsd-lite retired (#481 S0+S8). Restart Claude sessions after upgrading: each keeps the plugin server it started with.

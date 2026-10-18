@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
-import { rosterInStatus } from "../../hub/status-roster.ts";
+import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
 
 export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const peer = ctx.instance ?? "kimi";
@@ -38,7 +38,8 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
       if (!admission.ok) fail(admission.error);
       let result: ReturnType<typeof spawnSync>;
       try {
-        const written = configureKimiMcp(cwd, stateDir, resolve(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        // The daemon's own bundle, so the MCP server matches the hub it talks to (#502); this CLI's copy only for an older hub.
+        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked) console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
         result = spawnSync(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
       } finally {

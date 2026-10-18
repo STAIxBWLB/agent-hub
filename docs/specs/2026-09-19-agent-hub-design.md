@@ -3657,3 +3657,9 @@ and mutant result, per the reviewer's explicit ruling.
 - Launchers that check membership before starting (`ahub jcode`, `ahub kimi --mode tui`) read it through `rosterInStatus` in `src/hub/status-roster.ts` (no imports, so the registry's native CLI entries add no cycle). A reply without the field (an older hub) is unknown: the launcher stops with an upgrade-or-restart remedy and starts nothing. It never reads unknown as off (the jcode bug) or as on (the dead kimi guard; daemon admission still refused off-roster Kimi, so that one was harmless).
 - `settings_get` stays console-only.
 - With declared headless instances, status includes each startup-bound extra id as well as every built-in and optional peer, with its own roster membership. No undeclared suffix acquires a row.
+
+## Amendment: the daemon's plugin bundle in status, 2026-10-18 (#502)
+
+- The authenticated `status` reply carries `pluginBundle`, the absolute path of the plugin bundle the running daemon serves and checks against. It is additive, with no protocol bump.
+- `ahub jcode` and `ahub kimi --mode tui` write that path into their project MCP entries, read through `bundleInStatus` in `src/hub/status-roster.ts`, which accepts only an absolute path ending in `plugins/agent-hub/server.js`. Before this, they wrote the path of the CLI copy on PATH, which can be a different install than the daemon's (for example a global install against a retained release), so the daemon refused Jcode's entry as stale. A hub that reports no bundle gets the CLI's own copy, as before. Kimi's headless start removes the entry, so no path is involved.
+

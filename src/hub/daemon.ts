@@ -2525,6 +2525,7 @@ export async function startDaemon(opts: DaemonOptions) {
     projectId,
     instanceId,
     version: VERSION,
+    pluginBundle: SERVER_JS,
     pendingRestart,
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
