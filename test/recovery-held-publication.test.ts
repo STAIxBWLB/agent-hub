@@ -136,3 +136,14 @@ test("#478 deferred backlog retention and supervision revocation cover unpublish
   expect(bus.pendingEnvelopes("claude")).toEqual([]);
   bus.setRecoveryHold(false); expect(bus.queueIds("claude")).toEqual([]);
 });
+
+test("#478 an online peer receives a deferred notice only after recovery release", async () => {
+  const bus = new Bus({ batchMs: 0 }), peer = new Reader();
+  cleanup.push(() => bus.closeJournal());
+  bus.add(peer); await peer.start(); bus.setRecoveryHold(true);
+  const notice = newEnvelope(HUB, "after release", { to: ["claude"], kind: "task" });
+  bus.publish(notice); await Bun.sleep(0);
+  expect(peer.delivered).toEqual([]);
+  bus.setRecoveryHold(false); await Bun.sleep(0);
+  expect(peer.delivered).toEqual([notice.id]);
+});
