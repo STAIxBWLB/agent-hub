@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.32
+bun add -g github:STAIxBWLB/agent-hub#v0.12.33
 ahub setup
 ```
 
@@ -30,9 +30,9 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to 0.12.32
+## Upgrading to 0.12.33
 
-The upgrade runs with the target release's own coordinator. If the operation blocks because a restored Codex, Claude or Pi terminal disappeared, the person runs `ahub recovery reattach <operation-id> codex|claude|pi` to relaunch that peer with its recorded session (one relaunch per receipt), then `ahub recovery resume` to finish.
+The upgrade runs with the target release's own coordinator, so an upgrade from 0.12.32 with cancelled tasks and a managed terminal, or with a notice the target sends right after it starts, no longer blocks (#478). If the operation blocks because a restored Codex, Claude or Pi terminal disappeared, the person runs `ahub recovery reattach <operation-id> codex|claude|pi` to relaunch that peer with its recorded session (one relaunch per receipt), then `ahub recovery resume` to finish.
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 

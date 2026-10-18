@@ -119,7 +119,12 @@ The operator uses a plain terminal or `ahub console`. A Claude `!` command that
 inherits the agent markers follows the same rule. The console strips control
 sequences from agent and daemon text before it quotes forged headers, and its
 colors come only from a fixed palette applied afterwards, so message text cannot
-set styles or operate the terminal.
+set styles or operate the terminal. The recovery blocked screen shows a recorded
+error only when no typed cause exists: its first line, passed through the
+console's terminal sanitizer with control characters removed, capped at 512
+code points and marked as an untyped recorded error. A restart snapshot whose
+kept hub notices fail validation is reported with a fixed message, never with
+its content.
 
 This is an honest default against accidental impersonation and injected commands.
 It does not make the token inaccessible to an agent with unrestricted project
