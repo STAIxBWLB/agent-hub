@@ -31,3 +31,6 @@ Scope: delivery, digests and condensation, reply addressing, priority and limits
 - A hub-native peer (Pi, the local worker) does not get to call its own message `important`: `capPriority` caps it unless the delivery it answers held an `important` envelope addressed to it. Check the delivery, not `replyParent`, which ties on hop and takes the later item. Do not bypass it by setting `priority` in the adapter.
 
 - Routing never chooses a pull-only owner or reviewer automatically. Pass live pull-only ids and role-specific explicit naming to the pure assign function; an automatic singleton is not named. Only a honored persisted owner reservation, explicit owner nomination/claim, or authorized reviewer nomination bypasses that eligibility refusal, never roster, PII, pause or capability guards.
+
+- `relevant` may return a string: the envelope is dropped with that string as its journal discard reason. Read relevance only through `irrelevance()`.
+- A review-only instance (a declared extra whose roles are exactly `reviewer`) receives only person messages, hub `review` items and hub `task` items addressed to it. Keep `reviewOnlyItem` in both `silence` (at send) and `relevant` (at delivery) (#223).

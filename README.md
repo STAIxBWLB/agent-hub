@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code and Jcode optional)
 share a message bus and a task board per project and one memory on the machine,
 each attached through its own native interface.
 
-Status: 0.12.35, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.36, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -77,16 +77,18 @@ cd <your project> && ahub init && ahub up
 
 After upgrading from 0.12.30 or earlier, run `ahub jcode --mode headless` once in each
 project that uses Jcode to refresh its owned MCP entry before conductor or dashboard
-starts of Jcode. The entry's format is unchanged in 0.12.35; a daemon start that still
-reports the entry missing or stale is fixed by the same command.
+starts of Jcode. The entry's format is unchanged in 0.12.36; a daemon start that still
+reports the entry missing or stale is fixed by the same command, which since 0.12.36
+writes the running hub's own plugin bundle (#502).
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. For local/Pi implementation, opt in to an
 available `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-18-0.12.35.md) for the live legs
+See [release verification](docs/verification/2026-10-19-0.12.36.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
-a real upgrade with reattach (#463) and a real upgrade with a managed terminal and
-cancelled tasks (#478).
+real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
+(#478), a live headless Claude review (#223), and a Claude session over 32 MiB
+(#517).
 
 Before migrating a memory home with `amem`, upgrade every hub using that home to
 0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory
