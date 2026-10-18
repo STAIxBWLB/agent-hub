@@ -866,7 +866,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let recoveryCommitted = false;
   let recoveryPeerSnapshot: RestartPeerSnapshot[] | undefined;
   let recoveryLeaseTimer: ReturnType<typeof setTimeout> | undefined;
-  const recoveryActive = () => bus.isRecoveryHeld || !!recoveryOperationId && recoveryPhase !== "released";
+  const recoveryActive = () => !!recoveryOperationId && (recoveryPhase !== "released" || bus.isRecoveryHeld);
   if (restored) {
     bus.restore(restored.bus, restored.operationId);
     for (const hold of conductorHolds.list()) bus.pause(hold.peer);
@@ -875,7 +875,7 @@ export async function startDaemon(opts: DaemonOptions) {
     recoveryOperationId = restored.operationId;
     recoveryPhase = "restored";
     recoveryPeerSnapshot = restored.peers;
-    bus.setRecoveryHold(true);
+    bus.setRecoveryHold(true, true);
   } else {
     // A prior release may have committed its queue checkpoint before this daemon was stopped.
     bus.setRecoveryHold(false);

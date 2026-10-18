@@ -145,7 +145,7 @@ export class Bus {
   /** Synchronous native failure observation, before queue callbacks can finish turn metrics. */
   onDeliveryFailed?: (peer: PeerId) => void;
   private recoveryHeld = false;
-  private deferHub = true;
+  private deferHub = false;
   private readonly deferredHub = new Map<string, Envelope>();
   private flushingHub = false;
   private replayingHub = false;
@@ -281,7 +281,7 @@ export class Bus {
   }
 
   /** Stop new deliveries while a coordinator takes a stable snapshot. Existing adapter turns are left alone. */
-  setRecoveryHold(held: boolean, deferHub = true): void {
+  setRecoveryHold(held: boolean, deferHub = false): void {
     if (this.replayingHub) throw new RecoveryDeferredHubError("recovery notice release is already in progress");
     if (held) {
       this.recoveryHeld = true;
@@ -388,7 +388,7 @@ export class Bus {
 
   private loadSnapshot(snapshot: BusSnapshot): void {
     const deferred = validateDeferredHub(snapshot.deferredHub, undefined, new Set([...snapshot.seen.map(e => e.id), ...Object.values(snapshot.queues).flat().map(e => e.id)]));
-    if (deferred.length) this.recoveryHeld = true;
+    if (deferred.length) { this.recoveryHeld = true; this.deferHub = true; }
     this.deferredHub.clear();
     for (const env of deferred) this.deferredHub.set(env.id, structuredClone(env));
     this.queues.clear();

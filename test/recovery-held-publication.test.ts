@@ -33,7 +33,7 @@ test("#478 hub notices leave carried queues exact while held and flush FIFO only
   const carried = newEnvelope("user", "carried", { to: ["claude"] });
   bus.publish(carried);
   const expected = bus.snapshot().queues;
-  bus.setRecoveryHold(true);
+  bus.setRecoveryHold(true, true);
   const first = newEnvelope(HUB, "backlog", { to: ["claude"], kind: "task" });
   const second = newEnvelope(HUB, "later", { to: ["claude"], kind: "review", priority: "important" });
   expect(bus.publish(first)).toEqual(["claude"]);
@@ -47,7 +47,7 @@ test("#478 hub notices leave carried queues exact while held and flush FIFO only
 
 test("#478 held notice survives durable reopen and can be withdrawn before release", () => {
   const { bus, open } = fixture(true);
-  bus.setRecoveryHold(true);
+  bus.setRecoveryHold(true, true);
   const notice = newEnvelope(HUB, "survives", { to: ["claude"], kind: "task" });
   const withdrawn = newEnvelope(HUB, "withdrawn", { to: ["claude"], kind: "task" });
   bus.publish(notice); bus.publish(withdrawn);
@@ -55,7 +55,7 @@ test("#478 held notice survives durable reopen and can be withdrawn before relea
   bus.withdraw(withdrawn.id); bus.closeJournal();
   const reopened = new Bus({ journal: open(), batchMs: 0 });
   cleanup.push(() => reopened.closeJournal());
-  reopened.setRecoveryHold(true); reopened.add(new Reader()); reopened.pause("claude");
+  reopened.setRecoveryHold(true, true); reopened.add(new Reader()); reopened.pause("claude");
   expect(reopened.queueIds("claude")).toEqual([]);
   reopened.setRecoveryHold(false);
   expect(reopened.queueIds("claude")).toEqual([notice.id]);
@@ -63,7 +63,7 @@ test("#478 held notice survives durable reopen and can be withdrawn before relea
 
 test("#478 recovery hold does not hide new peer envelopes from exact queue verification", () => {
   const { bus } = fixture();
-  bus.setRecoveryHold(true);
+  bus.setRecoveryHold(true, true);
   const before = bus.snapshot().queues;
   const message = newEnvelope("user", "new peer work", { to: ["claude"] });
   bus.publish(message);
@@ -73,7 +73,7 @@ test("#478 recovery hold does not hide new peer envelopes from exact queue verif
 
 test("#478 crash after a flush checkpoint preserves the remaining FIFO without replay", () => {
   const { bus, open } = fixture(true);
-  bus.setRecoveryHold(true);
+  bus.setRecoveryHold(true, true);
   const first = newEnvelope(HUB, "first", { to: ["claude"], kind: "task" });
   const second = newEnvelope(HUB, "second", { to: ["claude"], kind: "review", private: true });
   bus.publish(first); bus.publish(second);
@@ -91,7 +91,7 @@ test("#478 crash after a flush checkpoint preserves the remaining FIFO without r
 });
 
 test("#478 an older target receives held notices in the carried queues before commit", () => {
-  const { bus } = fixture(); bus.setRecoveryHold(true);
+  const { bus } = fixture(); bus.setRecoveryHold(true, true);
   const before = newEnvelope(HUB, "before capability decision", { to: ["claude"], kind: "task" });
   bus.publish(before);
   expect(bus.queueIds("claude")).toEqual([]);
@@ -103,7 +103,7 @@ test("#478 an older target receives held notices in the carried queues before co
 });
 
 test("#478 release checkpoint failure retains the hold and its exact deferred originals", () => {
-  const { bus } = fixture(true); bus.setRecoveryHold(true);
+  const { bus } = fixture(true); bus.setRecoveryHold(true, true);
   const notice = newEnvelope(HUB, "pending", { to: ["claude"], kind: "task" }); bus.publish(notice);
   const journal = (bus as unknown as { journal: DeliveryJournal }).journal;
   const persist = journal.persistBus;
@@ -118,7 +118,7 @@ test("#478 release checkpoint failure retains the hold and its exact deferred or
 });
 
 test("#478 overflow refuses admission and keeps accepted originals under the hold", () => {
-  const { bus } = fixture(); bus.setRecoveryHold(true);
+  const { bus } = fixture(); bus.setRecoveryHold(true, true);
   for (let n = 0; n < 2048; n++) bus.publish(newEnvelope(HUB, String(n), { to: ["claude"], kind: "task" }));
   expect(() => bus.publish(newEnvelope(HUB, "overflow", { to: ["claude"], kind: "task" }))).toThrow("limit reached");
   expect(bus.isRecoveryHeld).toBe(true); expect(bus.queueIds("claude")).toEqual([]);
@@ -126,7 +126,7 @@ test("#478 overflow refuses admission and keeps accepted originals under the hol
 });
 
 test("#478 deferred backlog retention and supervision revocation cover unpublished originals", () => {
-  const { bus } = fixture(); bus.setRecoveryHold(true);
+  const { bus } = fixture(); bus.setRecoveryHold(true, true);
   const backlog = newEnvelope(HUB, "backlog", { to: ["claude"], kind: "task", refs: { backlog: [17] } });
   const feed = newEnvelope(HUB, "feed", { to: ["claude"], refs: { supervision: true, supervisionKey: "k" } });
   bus.publish(backlog); bus.publish(feed);
@@ -140,7 +140,7 @@ test("#478 deferred backlog retention and supervision revocation cover unpublish
 test("#478 an online peer receives a deferred notice only after recovery release", async () => {
   const bus = new Bus({ batchMs: 0 }), peer = new Reader();
   cleanup.push(() => bus.closeJournal());
-  bus.add(peer); await peer.start(); bus.setRecoveryHold(true);
+  bus.add(peer); await peer.start(); bus.setRecoveryHold(true, true);
   const notice = newEnvelope(HUB, "after release", { to: ["claude"], kind: "task" });
   bus.publish(notice); await Bun.sleep(0);
   expect(peer.delivered).toEqual([]);
@@ -149,7 +149,7 @@ test("#478 an online peer receives a deferred notice only after recovery release
 });
 
 test("#478 reentrant publication joins the FIFO tail even while materializing for an older target", () => {
-  const { bus } = fixture(); bus.setRecoveryHold(true);
+  const { bus } = fixture(); bus.setRecoveryHold(true, true);
   const first = newEnvelope(HUB, "first", { to: ["claude"] });
   const second = newEnvelope(HUB, "second", { to: ["claude"] });
   const nested = newEnvelope(HUB, "nested", { to: ["claude"] });

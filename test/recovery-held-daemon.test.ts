@@ -40,7 +40,8 @@ test("#478 target startup notices verify without queue mutation exemptions and r
   const inspect = await client.request({ t: "recovery", op: "inspect", expectedInstanceId: "held-target" });
   expect(inspect.recovery.integrity.current).toEqual(inspect.recovery.integrity.expected);
   expect(target.bus.queueIds("claude")).toEqual([carried.id]);
-  expect((await client.request({ t: "queue_resolve", id: "not-a-delivery", action: "completed", reason: "not exempt" })).ok).toBe(false);
+  const refused = await client.request({ t: "queue", op: "resolve", id: "not-a-delivery", revision: 0, action: "completed", reason: "not exempt" });
+  expect(refused.ok).toBe(false); expect(refused.error).toBe("recovery or shutdown is holding queue mutations");
   expect((await client.request({ t: "recovery", op: "release", operationId: "held-op", expectedInstanceId: "held-target" })).released).toBe(true);
   expect(target.bus.queueIds("claude")).toEqual([carried.id, sourceNotice.id, notice.id]);
 });
