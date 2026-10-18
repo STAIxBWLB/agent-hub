@@ -88,7 +88,8 @@
         "src/adapters/definitions/native-quota.ts",
         "src/adapters/definitions/native-context.ts",
         "src/adapters/registry.ts",
-        "src/hub/instance-budget.ts"
+        "src/hub/instance-budget.ts",
+        "src/hub/claude-state.ts"
       ]
     },
     "docs/agent-notes/bus.md": {
@@ -151,7 +152,9 @@
         "src/adapters/definitions/native-cli-*.ts",
         "src/hub/instances.ts",
         "src/hub/instance-config.ts",
-        "src/hub/instance-execution.ts"
+        "src/hub/instance-execution.ts",
+        "src/hub/usage.ts",
+        "src/hub/claude-state.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -192,7 +195,8 @@
         "src/hub/daemon.ts",
         "src/hub/settled-roles.ts",
         "src/adapters/definitions/builtin-metadata.ts",
-        "src/hub/bus.ts"
+        "src/hub/bus.ts",
+        "src/hub/review-brief.ts"
       ]
     },
     "docs/agent-notes/tests.md": {

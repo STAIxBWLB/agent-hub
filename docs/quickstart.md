@@ -32,9 +32,9 @@ terminal: it reviews the plan with you, applies it and follows it.
 
 ## Upgrading to 0.12.36
 
-Restart Claude sessions after upgrading: each keeps the plugin server it started with, and `hub_review` now takes `coverage`. Every review request carries a review brief the hub builds from the task's commit: reviewable files, excluded ones (`linguist-generated` in `.gitattributes`, lockfiles, binaries) and rules from `REVIEW.md` or an `ahub-review-rules` attribute, read at the merge base. `ahub review brief <id>` prints it (#520).
+Restart Claude sessions after upgrading: each keeps the plugin server it started with, and `hub_review` now takes `coverage`. Every review request for a non-private task with a commit carries a review brief the hub builds from that commit: reviewable files, excluded ones (`linguist-generated` in `.gitattributes`, lockfiles, binaries) and rules from `REVIEW.md` or an `ahub-review-rules` attribute, read at the merge base. `ahub review brief <id>` prints it (#520).
 
-WIP admission now applies in every lifecycle mode, `off` included: an owner at its WIP limit (default one open task per peer) cannot accept or claim another task, while a redo of its own sent-back work keeps its slot. Raise it with `ahub settings set tasks.wip_limits.<peer> N` (see [operations](operations.md) for when it applies); a limit of 0 refuses every new acceptance for that peer (#481 S9).
+WIP admission now applies in every lifecycle mode, `off` included: an owner at its WIP limit (default one open task per peer) cannot accept or claim another task, while a redo of its own sent-back work keeps its slot. Raise it with `ahub settings set tasks.wip_limits.<peer> N` (applies at the next admission); a limit of 0 refuses every new acceptance for that peer (#481 S9).
 
 Only in `enforce`: build work needs the person's `ahub sdlc accept <task> --issue <n>` and a current plan review (`hub_plan_review`, or `ahub sdlc plan-review`); an approval must account for every reviewable path of the brief; and a review request waits for the PR head, green required checks and answered bot threads. `advise` reports the same gaps; `off` adds none (#481, #520).
 

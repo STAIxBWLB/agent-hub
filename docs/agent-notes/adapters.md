@@ -54,5 +54,5 @@ Scope: the Codex, ACP and Pi adapters and the Pi extension (turn `generation` an
 
 - Spawn with `peerChildEnv(<instance id>)`, not the kind name. An ACP `kind` comes only from the host declaration, never from the id suffix or agent text.
 
-- TUI launchers (Kimi, Jcode) write the plugin bundle the hub reports in `status` into their MCP entry, and the CLI's own copy only when the hub reports none: the daemon refuses an entry that does not name its own `SERVER_JS` (#502).
-- `ClaudePrintPeer` (#223) clears `reviewing` at the leader's exit and first in `kill()`, and settles a review only after its whole process group is gone; a failed cleanup keeps the child handle and stays `busy`, never `idle` or `offline`. The daemon's `reviewAuthority` compares `reviewToken`: never widen it.
+- TUI launchers (Kimi, Jcode) write the plugin bundle the hub reports in `status` into their MCP entry, and the CLI's own copy only when the hub reports none (#502). Only the Jcode start path checks the entry against the daemon's own `SERVER_JS` (`jcodeMcpReady`); Kimi TUI admission does not compare it.
+- `ClaudePrintPeer` (#223) clears `reviewing` at the leader's exit and first in `kill()`. A stop or watchdog settles `needs_review` at once, before the kill; `completed`, `idle` and `offline` come only after the whole process group is confirmed gone, and a failed cleanup keeps the child handle and stays `busy`. The daemon's `reviewAuthority` compares `reviewToken`: never widen it.

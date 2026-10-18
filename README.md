@@ -87,8 +87,8 @@ spec access. PII work and designated reviewers retain their separate exemptions.
 See [release verification](docs/verification/2026-10-19-0.12.36.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
-(#478), a live headless Claude review (#223), a Claude session over 32 MiB (#517) and
-an identical-tree CI reuse merge (#523).
+(#478), a live headless Claude review (#223), and a Claude session over 32 MiB
+(#517).
 
 Before migrating a memory home with `amem`, upgrade every hub using that home to
 0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory

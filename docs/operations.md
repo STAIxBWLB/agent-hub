@@ -1791,7 +1791,7 @@ A Claude session started with `ahub claude` receives pushes when it is idle. Whi
 - `hub_inbox` reads the daemon queue (and any local failed-push buffer) in a channel session too. A read is one `completed` delivery, like a tools-only read; holds refuse it the same way.
 - An important message is pushed into the running turn (steered) instead of waiting for the turn to end. Mid-turn reading was verified on Claude Code 2.1.302; an older client that drops it leaves the delivery `accepted` until a person resolves it. Ordinary messages still wait for the idle push or `hub_inbox`.
 - Do not use `[FYI]` for PR ready, done, submitted, ruling-needed, blocker or changed-contract messages: they need action. `hub_task_done` and `hub_review` already notify their recipients.
-- Turn completion is read from the transcript's last 4 MiB, whatever its size. When a Stop cannot be confirmed there, the console says once per turn that the peer stays busy and its messages wait in its queue (#517).
+- Turn completion is read from the transcript's last 4 MiB, whatever its size. When no completed turn is found there, the console says once per turn that the peer stays busy and its messages wait in its queue (#517).
 
 ## Graceful shutdown
 
@@ -3274,9 +3274,9 @@ The person uses `ahub backlog pull-ready <id> <revision> <reason>` or Pull withi
 WIP on a card. Explicit manual pull/assignment retain their existing authority.
 
 Capacity defaults to one per peer. `ahub settings set tasks.wip_limits.codex 2`
-uses the existing machine-local registry path; integers 0..32 apply at hub start,
-with 0 disabling planner admission for that peer. Stored pending values and
-effective runtime limits remain distinct. Status and the agent legend count
+uses the existing machine-local registry path; integers 0..32 apply live (the next
+admission reads the current value), with 0 disabling planner admission for that
+peer. Status and the agent legend count
 owned unfinished work plus unowned planner-pull reservations. The same limit gates
 acceptance and self-claim in every lifecycle mode, so 0 refuses new acceptances; a
 current owner's redo of sent-back work keeps its slot (#481 S9).
@@ -3439,7 +3439,7 @@ reference markers remain protected. Split-part plan schemas follow the selected
 project profile. Terminal tables preserve the visible read for stages and use
 a fresh peer status read on the same authenticated connection.
 
-Integer WIP editors retain a saved pending value, including zero and inheritance, before hub restart. GitHub intake accepts dot-prefixed repository names within the existing bounded owner/repository identity. Split undo also refuses children referenced by another task's persisted phase checklist.
+Integer WIP editors save a value, including zero and inheritance; it applies at the next admission. GitHub intake accepts dot-prefixed repository names within the existing bounded owner/repository identity. Split undo also refuses children referenced by another task's persisted phase checklist.
 
 Declining rework returns changes_requested to To Do before rerouting. When a planner-pulled task has no eligible destination capacity, it remains ownerless in To Do and is retried after capacity clears, preserving the declined-owner exclusion.
 
