@@ -598,7 +598,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   const loadedConfig = opts.config ?? loadConfig(opts.cwd);
-  const lifecycleConfig = loadSdlc(opts.cwd);
+  const lifecycleConfig = loadSdlc(opts.cwd, VERSION);
   // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
   const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
   const declarations = validateInstances(loadedConfig.instances);
@@ -685,6 +685,7 @@ export async function startDaemon(opts: DaemonOptions) {
   settlePlanner();
   const catalog = loadRoleCatalog(opts.cwd);
   for (const error of catalog.errors) log(`catalog role ${error.id}: ${error.reason}`);
+  for (const note of lifecycleConfig.deprecations ?? []) log(note);
   const resolvedProfile = resolveProfile(config.profile, config.profile_overrides);
   let roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(config.catalog_roles) };
   const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
@@ -2527,6 +2528,8 @@ export async function startDaemon(opts: DaemonOptions) {
     pendingRestart,
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
+    // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
+    ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
     // Every supported peer's membership, for launchers that run outside the console role (#484).
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
     protocol: PROTOCOL,
@@ -3546,7 +3549,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, peer, unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile, lifecycleConfig.stages), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...[...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off"), ...CONDUCTOR_TOOLS].map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
           if (signal?.aborted) return "error: turn cancelled before tool effects";
@@ -3716,6 +3719,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(capture ? { capture } : {}),
         profile: resolvedProfile,
         sdlcStages: lifecycleConfig.stages,
+        sdlcCriteria: lifecycleConfig.mode !== "off",
         taskTool: (name, a, turn) => taskOp(peer, name, a, true, turn.pii),
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);

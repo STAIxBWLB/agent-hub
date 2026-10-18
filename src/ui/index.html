@@ -586,7 +586,7 @@ function taskDetail(task, card, stage, ids, overdue) {
   if (card.waiting.length) row.append(el('p', 'Waiting: ' + card.waiting.join('; '), 'meta'));
   if (task.reworkRound) row.append(el('p', 'Rework round ' + task.reworkRound, 'meta'));
   if (task.checking) row.append(el('p', 'Check running', 'meta'));
-  if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + (task.lifecycle.workflow ? ' (' + task.lifecycle.workflow + ')' : '') + ' / ' + task.lifecycle.stage + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
+  if (task.lifecycle) row.append(el('p', 'SDLC ' + task.lifecycle.mode + ' / ' + task.lifecycle.stage + (task.lifecycle.playbook ? ' (' + task.lifecycle.playbook + ')' : '') + ': ' + task.lifecycle.next + ' / next: ' + task.lifecycle.actor, 'meta'));
   if (task.lifecycle?.definition) row.append(el('p', 'Stage base: ' + task.lifecycle.definition.base + ' / entry: ' + (task.lifecycle.entry?.length ? task.lifecycle.entry.join('; ') : 'ready') + ' / exit: ' + (task.lifecycle.exit?.length ? task.lifecycle.exit.join('; ') : 'ready'), 'meta'));
   if (task.detail) row.append(el('p', task.detail, 'body'));
   if(task.external?.provider==='github'){const source=el('a','GitHub #'+task.external.issue);source.href=task.external.url;source.rel='noreferrer';source.target='_blank';row.append(source);}

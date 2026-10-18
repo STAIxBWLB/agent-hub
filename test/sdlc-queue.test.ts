@@ -59,10 +59,10 @@ test("dependency merge proof cycles and truncation retain their uncertainty (#25
 test("gsd-lite queue readiness uses current board phase views and keeps absent or failed views unknown (#257)", async () => {
  const c=sdlcConfig({mode:"enforce",workflow:"gsd-lite",required_checks:["gate"]}),t=task(1,1);
  t.receipt!.phase={id:"delivery",head:A,tasks:[],criteria:[{id:"check",required:true,result:"verified",refs:["sha256:"+"f".repeat(64)]}]};
- t.phase={workflow:"gsd-lite",ready:true,blockers:[],id:"delivery"};
+ t.phase={ready:true,blockers:[],id:"delivery"};
  expect((await readMergeQueue("owner/repo",c,[t],fake({ids:[1]}).run)).rows[0]?.ready).toBe(true);
- t.phase=undefined;expect((await readMergeQueue("owner/repo",c,[t],fake({ids:[1]}).run)).rows[0]?.blockers).toContain("phase board evidence unknown");
- t.phase={workflow:"gsd-lite",ready:false,blockers:["phase child tasks not approved"]};expect((await readMergeQueue("owner/repo",c,[t],fake({ids:[1]}).run)).rows[0]?.ready).toBe(false);
+ t.phase=undefined;expect((await readMergeQueue("owner/repo",c,[t],fake({ids:[1]}).run)).rows[0]?.blockers).toContain("criteria board evidence unknown");
+ t.phase={ready:false,blockers:["criterion check: unverified"]};expect((await readMergeQueue("owner/repo",c,[t],fake({ids:[1]}).run)).rows[0]?.ready).toBe(false);
 });
 test("truncated open PR coverage blocks every otherwise ready queue row (#257)", async () => {
  const ids=Array.from({length:17},(_,i)=>i+1), paths=Object.fromEntries(ids.map(id=>[id,[`src/unique-${id}.ts`]]));

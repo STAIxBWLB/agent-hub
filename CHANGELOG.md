@@ -4,12 +4,15 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## 0.12.35
 
-A Claude session started with `ahub claude` gets its hub messages while it is busy (#493), and `ahub jcode` starts again (#484). Restart such sessions after upgrading: each keeps the plugin server it started with.
+A Claude session started with `ahub claude` gets its hub messages while it is busy (#493), `ahub jcode` starts again (#484), a kind can run several headless instances (#450 I2), and an enabled lifecycle follows the AI-Native SDLC Playbook with gsd-lite retired (#481 S0+S8). Restart Claude sessions after upgrading: each keeps the plugin server it started with.
 
 - Let an attached channel session read the daemon queue with `hub_inbox` while busy, using the existing pull, holds and journal completion; tool results carry fresh queued and important counts in every MCP mode, and a zero clears a stale hint (#493).
 - Steer important messages into a busy channel session's running turn instead of waiting for the turn to end; ordinary messages still wait (#493). Mid-turn reading was verified on Claude Code 2.1.302.
 - Session instructions, tool texts and the AGENTS block forbid `[FYI]` for actionable messages (PR ready, done, submitted, ruling needed, blocker, changed contract or path) (#493).
 - `ahub jcode` no longer refuses every start as off roster, and the `ahub kimi --mode tui` off-roster check works: `status` now carries each supported peer's roster membership, and a hub without it is reported as unknown with a remedy (#484).
+- Declare extra headless peer instances (`<kind>-<name>`, for example a second Codex or Kimi reviewer) in untracked `.agenthub/config.local.json` and start them with `ahub <kind> --as <id>`. Extra implementers run in their own registered worktree, routing balances a kind across its instances, and quota pauses are shared per account (#450 I2).
+- An enabled lifecycle (`mode` advise or enforce) defaults to the playbook stages intent, spec, plan, build, test, review, merge, release and maintain, and status and the dashboard name the playbook stage. Stored `implement`/`verify` receipts read as `build`/`test`. Off keeps its seven stages, receipts, tool schema, export and output unchanged (#481 S0).
+- gsd-lite is retired into the acceptance-criteria checklist (`criteria`, part of the Compliance pass), which counts once recorded in an enabled lifecycle; checklist task import is removed. Until 0.13.0, `workflow = "gsd-lite"` and the `phase` gate load with a warning in `hub.log` and the `phase` receipt name is still accepted; from 0.13.0 all three are refused with a field-level reason (#481 S8).
 - The protected-segment grant test checks every segment through the production grant decision and no longer grows with the set, ending its Ubuntu CI timeout (#219 task, #485 follow-up).
 
 ## 0.12.34

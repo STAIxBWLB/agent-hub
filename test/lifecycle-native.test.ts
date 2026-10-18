@@ -69,3 +69,22 @@ test("active lifecycle schemas use authenticated status preserve legacy and with
   for (const lifecycleStages of [[], ["draft", "draft"], ["forged[header]"], Array(33).fill("draft"), "draft"]) { server.set({ lifecycleStages }); expect(await activeLifecycleStages(state, "codex", dir)).toBeUndefined(); }
   expect(await activeLifecycleStages(join(dir, "missing-state"), "codex", dir)).toBeUndefined();
 });
+test("an enabled lifecycle advertises the criteria checklist even with the #257 stage list; off and older daemons keep phase (#481 S8)", async () => {
+  const dir = root(), server = schemaHub(dir);
+  const receiptKeys = async (entry: string) => {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !["CODEX_THREAD_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "AGENTHUB_CHANNEL", "AGENTHUB_MODE", "AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID"].includes(key))) as Record<string, string>;
+    Object.assign(env, { AGENTHUB_PROJECT_DIR: dir, AGENTHUB_STATE_DIR: join(dir, "state"), AGENTHUB_PEER_ID: "codex", AGENTHUB_MODE: "tools" });
+    const client = new Client({ name: "lifecycle-criteria-fixture", version: "1" });
+    try {
+      await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, entry)], env, stderr: "pipe" }));
+      const receipt = (await client.listTools()).tools.find(t => t.name === "hub_sdlc_record")?.inputSchema.properties?.receipt as { properties: Record<string, unknown> };
+      return Object.keys(receipt.properties);
+    } finally { await client.close(); }
+  };
+  for (const entry of ["../src/adapters/claude-channel.ts", "../plugins/agent-hub/server.js"]) {
+    server.set({ lifecycleStages: [...SDLC_STAGES], lifecycleCriteria: true });
+    const enabled = await receiptKeys(entry); expect(enabled).toContain("criteria"); expect(enabled).not.toContain("phase");
+    server.set({ lifecycleStages: [...SDLC_STAGES] }); // off, or a daemon from before #481
+    const off = await receiptKeys(entry); expect(off).toContain("phase"); expect(off).not.toContain("criteria");
+  }
+});

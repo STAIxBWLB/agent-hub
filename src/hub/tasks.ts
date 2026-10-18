@@ -1,5 +1,6 @@
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
+import { VERSION } from "../version.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
@@ -10,7 +11,7 @@ import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
 import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
-import { phaseView, validatePhaseLinks, workflowHash } from "./workflow.ts";
+import { criteriaView, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
@@ -26,7 +27,7 @@ import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
+import { checklistOf, readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -1407,7 +1408,7 @@ export class Tasks {
 
   /** Same code as assignment, without doing it. `routing`: a candidate policy to explain under (the settings preview, #269). */
   explain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }, routing: Routing = this.d.routing()): string[] {
-    const workflow = this.d.sdlc?.config().workflow === "gsd-lite" ? [`workflow: gsd-lite (${this.d.sdlc.config().mode}); checklist guidance, board dependencies authoritative`] : [];
+    const workflow = this.d.sdlc?.config().workflow === "gsd-lite" ? [`criteria checklist required on every task (retired gsd-lite setting, ${this.d.sdlc.config().mode}); board dependencies authoritative`] : [];
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
@@ -1839,17 +1840,18 @@ export class Tasks {
     const task = this.need(id, false, true);
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    const next = sdlcReceipt(input, task.sdlc, config);
+    const next = sdlcReceipt(input, task.sdlc, config, VERSION);
     const definition = stageDefinition(config, next.stage);
     if (config.mode === "enforce" && config.definitions && input && typeof input === "object" && "stage" in input && next.stage !== task.sdlc?.stage && by !== USER) {
       const actor = definition?.actor;
       const acts = actor === "owner" ? by === task.owner : actor === "reviewer" ? by === task.reviewer : actor === "planner" ? this.d.roles?.[by]?.includes("planner") : actor === "owner/planner" && (by === task.owner || this.d.roles?.[by]?.includes("planner"));
       if (!acts) throw new PreEffectToolRefusal(`lifecycle stage requires its ${actor ?? "unknown"} actor or the person`);
     }
-    if (input && typeof input === "object" && "phase" in input) {
+    if (input && typeof input === "object" && ("criteria" in input || "phase" in input)) {
       this.mine(task, by, "reviewer", true);
-      if (next.phase && !this.isPii(task) && !this.nameable(JSON.stringify(next.phase))) throw new PreEffectToolRefusal("phase metadata matches a PII pattern; use private work");
-      if (next.phase) validatePhaseLinks(task, next.phase, id => this.d.board.get(id), t => this.isPii(t));
+      // Screen whichever name stored the checklist: off keeps the #257 phase key (#481 S8).
+      const checklist = checklistOf(next);
+      if (checklist && !this.isPii(task) && !this.nameable(JSON.stringify(checklist))) throw new PreEffectToolRefusal("checklist metadata matches a PII pattern; use private work");
     }
     // Recording a head is the reviewer's; a head dropped because the repo or PR changed is not a recording, and a
     // head supplied with a new PR identity is one even when its value is unchanged (#382).
@@ -1883,12 +1885,17 @@ export class Tasks {
   }
 
   private workflowView(task: Task) {
-    return phaseView(this.d.sdlc?.config() ?? sdlcConfig(undefined), task, id => this.d.board.get(id), t => this.isPii(t));
+    return criteriaView(this.d.sdlc?.config() ?? sdlcConfig(undefined), task, t => this.isPii(t));
   }
   workflowExport(id: unknown): Record<string, unknown> {
-    const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    const state = { id: task.id, state: task.state, stage: task.sdlc?.stage ?? config.stages[0] ?? "spec", ...(this.isPii(task) ? { private: true } : { phase: this.workflowView(task) ?? null }) };
-    return { schema: 1, workflow: config.workflow ?? "none", state, stateHash: workflowHash(state), sourceHash: workflowHash(config) };
+    const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined), stage = task.sdlc?.stage ?? config.stages[0] ?? "spec";
+    // Off keeps the #257 export bytes; schema 2 (criteria, no workflow framing) is for an enabled or retired-setting lifecycle.
+    if (config.mode === "off" && !config.workflow) {
+      const legacy = { id: task.id, state: task.state, stage, ...(this.isPii(task) ? { private: true } : { phase: null }) };
+      return { schema: 1, workflow: "none", state: legacy, stateHash: workflowHash(legacy), sourceHash: workflowHash(config) };
+    }
+    const state = { id: task.id, state: task.state, stage, ...(this.isPii(task) ? { private: true } : { criteria: this.workflowView(task) ?? null }) };
+    return { schema: 2, state, stateHash: workflowHash(state), sourceHash: workflowHash(config) };
   }
   async lifecycleStatus(id: unknown, refresh = true): Promise<SdlcStatus> {
     const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);

@@ -6122,7 +6122,9 @@ var init_runtime = __esm(() => {
 });
 
 // src/hub/workflow.ts
-var init_workflow = () => {};
+var init_workflow = __esm(() => {
+  init_sdlc();
+});
 
 // src/hub/host-executable.ts
 var init_host_executable = __esm(() => {
@@ -6130,12 +6132,16 @@ var init_host_executable = __esm(() => {
 });
 
 // src/hub/sdlc.ts
-var SDLC_STAGES;
+var SDLC_STAGES, PLAYBOOK_STAGES, BASES, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
   init_workflow();
   init_child_process();
   init_host_executable();
   SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"];
+  PLAYBOOK_STAGES = ["intent", "spec", "plan", "build", "test", "review", "merge", "release", "maintain"];
+  BASES = [...new Set([...SDLC_STAGES, ...PLAYBOOK_STAGES])];
+  STAGE_GATES = ["issue", "pr", "local", "review", "checks", "phase"];
+  GATES = STAGE_GATES.map((gate) => gate === "phase" ? "criteria" : gate);
 });
 
 // templates/profiles/dev.json
@@ -6710,7 +6716,7 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES2), body, review, layer, hash: createHash3("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash3("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
   const fd = openSync2(file, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
@@ -6802,12 +6808,12 @@ function catalogSection(roles) {
 
 `);
 }
-var ROLE_SECTIONS, BASES, CLASSES2, ID, PEER;
+var ROLE_SECTIONS, BASES2, CLASSES2, ID, PEER;
 var init_roles = __esm(() => {
   init_envelope();
   init_shipped_roles();
   ROLE_SECTIONS = ["Scope", "Not in scope", "Deliverables", "Hub use", "Review duties", "Evidence"];
-  BASES = ["planner", "implementer", "verifier", "reviewer"];
+  BASES2 = ["planner", "implementer", "verifier", "reviewer"];
   CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   ID = /^[a-z][a-z0-9-]{0,47}$/;
   PEER = /^[a-z][a-z0-9-]{0,31}$/;
@@ -6901,17 +6907,23 @@ function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev"
   return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
 `);
 }
-function profileTaskTools(profile = "dev", stages) {
+function profileTaskTools(profile = "dev", stages, criteria = false) {
   const customStages = stages && (stages.length !== SDLC_STAGES.length || stages.some((s, i) => s !== SDLC_STAGES[i]));
   const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
-  if (!customStages && !customProfile)
+  if (!customStages && !customProfile && !criteria)
     return TASK_TOOLS;
   const data = profileData(profile);
   return TASK_TOOLS.map((tool) => {
     const properties = { ...tool.inputSchema.properties };
-    if (customStages && tool.name === "hub_sdlc_record") {
+    if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
       const receipt = properties.receipt;
-      properties.receipt = { ...receipt, properties: { ...receipt.properties, stage: { type: "string", enum: [...stages ?? SDLC_STAGES] } } };
+      let fields = { ...receipt.properties, ...customStages ? { stage: { type: "string", enum: [...stages ?? SDLC_STAGES] } } : {} };
+      if (criteria) {
+        const { phase, ...current } = fields;
+        const { tasks: _retiredImport, ...checklist } = phase.properties;
+        fields = { ...current, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
+      }
+      properties.receipt = { ...receipt, properties: fields };
     }
     if (customProfile && tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };
@@ -7075,7 +7087,7 @@ var init_local_worker = __esm(() => {
             throw new Error("route belongs to an ended turn");
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
-          const tools = judge ? undefined : [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+          const tools = judge ? undefined : [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
           const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
@@ -7379,7 +7391,7 @@ var init_local_worker = __esm(() => {
       const route = policy?.route ?? this.opts.route;
       const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
       const task = policy?.task === undefined ? undefined : Number(policy.task);
-      const tools = [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+      const tools = [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
       const signal = this.abort.signal;
       const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
       const routed = await this.hubCall(route, messages, policy, signal);
@@ -15767,6 +15779,60 @@ import { join as join22 } from "path";
 init_registry();
 init_hub_tools();
 init_envelope();
+// package.json
+var package_default = {
+  name: "@staix/agent-hub",
+  version: "0.12.35",
+  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
+  license: "MIT",
+  type: "module",
+  bin: {
+    ahub: "src/cli/main.js",
+    "agent-hub": "src/cli/main.js"
+  },
+  scripts: {
+    check: "scripts/check.sh",
+    build: "bun scripts/build.mjs",
+    test: "bun test"
+  },
+  engines: {
+    bun: ">=1.4.2"
+  },
+  dependencies: {
+    "@staix/agent-mem": "0.3.1"
+  },
+  devDependencies: {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/bun": "^1.3.0",
+    typescript: "^5.8.0"
+  },
+  files: [
+    ".claude-plugin",
+    "src",
+    "src/pet/window.jxa.js",
+    "src/pet/window.html",
+    "plugins",
+    "templates",
+    "scripts/check-docs.mjs",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSES"
+  ],
+  repository: {
+    type: "git",
+    url: "git+https://github.com/STAIxBWLB/agent-hub.git"
+  },
+  homepage: "https://github.com/STAIxBWLB/agent-hub",
+  publishConfig: {
+    access: "public"
+  }
+};
+
+// src/version.ts
+var VERSION = package_default.version;
 
 // src/hub/github-import.ts
 init_sdlc();
@@ -16167,7 +16233,7 @@ class ControlClient {
 
 // src/hub/lifecycle-schema.ts
 init_sdlc();
-async function activeLifecycleStages(stateDir, peer, projectRoot, active) {
+async function activeLifecycle(stateDir, peer, projectRoot, active) {
   let client;
   try {
     client = active ?? await ControlClient.connect(stateDir, { role: "tools", peer, projectRoot }, 1000);
@@ -16175,11 +16241,11 @@ async function activeLifecycleStages(stateDir, peer, projectRoot, active) {
     if (reply.t !== "status" || !reply.status || typeof reply.status !== "object" || Array.isArray(reply.status))
       return;
     if (!Object.hasOwn(reply.status, "lifecycleStages"))
-      return [...SDLC_STAGES];
+      return { stages: [...SDLC_STAGES], criteria: false };
     const stages = reply.status.lifecycleStages;
     if (!Array.isArray(stages) || !stages.length || stages.length > 32 || stages.some((s) => typeof s !== "string" || !/^[a-z][a-z0-9_-]{0,47}$/.test(s)) || new Set(stages).size !== stages.length)
       return;
-    return [...stages];
+    return { stages: [...stages], criteria: reply.status.lifecycleCriteria === true };
   } catch {
     return;
   } finally {
@@ -24479,62 +24545,6 @@ class StdioServerTransport {
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync11 } from "fs";
 import { join as join24 } from "path";
-// package.json
-var package_default = {
-  name: "@staix/agent-hub",
-  version: "0.12.35",
-  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
-  license: "MIT",
-  type: "module",
-  bin: {
-    ahub: "src/cli/main.js",
-    "agent-hub": "src/cli/main.js"
-  },
-  scripts: {
-    check: "scripts/check.sh",
-    build: "bun scripts/build.mjs",
-    test: "bun test"
-  },
-  engines: {
-    bun: ">=1.4.2"
-  },
-  dependencies: {
-    "@staix/agent-mem": "0.3.1"
-  },
-  devDependencies: {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "@types/bun": "^1.3.0",
-    typescript: "^5.8.0"
-  },
-  files: [
-    ".claude-plugin",
-    "src",
-    "src/pet/window.jxa.js",
-    "src/pet/window.html",
-    "plugins",
-    "templates",
-    "scripts/check-docs.mjs",
-    "docs",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "THIRD_PARTY_NOTICES.md",
-    "LICENSES"
-  ],
-  repository: {
-    type: "git",
-    url: "git+https://github.com/STAIxBWLB/agent-hub.git"
-  },
-  homepage: "https://github.com/STAIxBWLB/agent-hub",
-  publishConfig: {
-    access: "public"
-  }
-};
-
-// src/version.ts
-var VERSION = package_default.version;
-
-// src/adapters/claude-channel.ts
 init_hub_tools();
 init_envelope();
 
@@ -24842,7 +24852,7 @@ async function connectLoop() {
   }
 }
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const lifecycleStages = await activeLifecycleStages(stateDir, peerId, projectRoot2, hub);
+  const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, hub);
   return {
     tools: [
       {
@@ -24873,7 +24883,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           }
         ] : []
       ],
-      ...profileTaskTools(profile2, lifecycleStages).filter((tool) => (lifecycleStages !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
+      ...profileTaskTools(profile2, lifecycle?.stages, lifecycle?.criteria).filter((tool) => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
       ...CONDUCTOR_TOOLS
     ]
   };
