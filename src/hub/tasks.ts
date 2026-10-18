@@ -26,7 +26,7 @@ import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
+import { checklistOf, readSdlcPr, sdlcConfig, sdlcReceipt, sdlcStatus, stageDefinition, lifecycleStage, type SdlcConfig, sdlcGh, type SdlcGh, type SdlcStatus } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -1826,7 +1826,9 @@ export class Tasks {
     }
     if (input && typeof input === "object" && ("criteria" in input || "phase" in input)) {
       this.mine(task, by, "reviewer", true);
-      if (next.criteria && !this.isPii(task) && !this.nameable(JSON.stringify(next.criteria))) throw new PreEffectToolRefusal("criteria metadata matches a PII pattern; use private work");
+      // Screen whichever name stored the checklist: off keeps the #257 phase key (#481 S8).
+      const checklist = checklistOf(next);
+      if (checklist && !this.isPii(task) && !this.nameable(JSON.stringify(checklist))) throw new PreEffectToolRefusal("checklist metadata matches a PII pattern; use private work");
     }
     // Recording a head is the reviewer's; a head dropped because the repo or PR changed is not a recording, and a
     // head supplied with a new PR identity is one even when its value is unchanged (#382).

@@ -106,3 +106,13 @@ test("a plain off lifecycle keeps the #257 export bytes; enabled and retired-set
   const enabled = rig("advise", false, "none"); expect((enabled.tasks.workflowExport(enabled.parent) as any).schema).toBe(2);
   const retired = rig("off"); expect((retired.tasks.workflowExport(retired.parent) as any).schema).toBe(2);
 });
+
+test("a checklist with a PII-pattern id is refused in every mode, including the off phase path, with nothing stored or exposed (#481 S8)", () => {
+  for (const [mode, workflow, key] of [["off", "none", "phase"], ["off", "none", "criteria"], ["advise", "none", "criteria"], ["advise", "none", "phase"], ["off", "gsd-lite", "phase"]] as const) {
+    const r = rig(mode, false, workflow), before = JSON.stringify(r.board.get(r.parent));
+    const leaked = { ...checklist(), criteria: [{ ...checklist().criteria[0], id: "claim-900101-1234567" }] };
+    expect(() => r.tasks.recordLifecycle(USER, r.parent, { [key]: leaked })).toThrow("PII pattern");
+    expect(JSON.stringify(r.board.get(r.parent))).toBe(before);
+    expect(JSON.stringify(r.tasks.publicView(r.board.get(r.parent)!))).not.toContain("900101");
+  }
+});
