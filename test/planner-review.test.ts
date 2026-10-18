@@ -93,14 +93,16 @@ test("plan-review freshness tracks planning revision and body edits, and treats 
 
 test("enforce acceptance reads a current plan receipt and fences direct and stale admission (#481 S9)", async () => {
   let editedAt = "2026-10-18T01:00:00Z";
-  const r = reviewRig(async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 481, state: "OPEN", createdAt: "2026-10-18T00:00:00Z", lastEditedAt: editedAt } } } }) }), "enforce");
+  const r = reviewRig(async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 481, state: "OPEN", createdAt: "2026-10-18T00:00:00Z", lastEditedAt: editedAt, updatedAt: editedAt } } } }) }), "enforce");
   r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex" });
+  r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: editedAt, updatedAt: editedAt } });
   const before = JSON.stringify(r.board.get(r.task.id));
   await expect(r.tasks.acceptReviewed("codex", r.task.id)).rejects.toThrow("plan not reviewed");
   expect(JSON.stringify(r.board.get(r.task.id))).toBe(before);
   await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed before build" });
   expect(() => r.tasks.accept("codex", r.task.id)).toThrow("readback");
   editedAt = "2026-10-18T02:00:00Z";
+  r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: editedAt, updatedAt: editedAt } });
   await expect(r.tasks.acceptReviewed("codex", r.task.id)).rejects.toThrow("issue edit");
   await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed edited issue" });
   expect((await r.tasks.acceptReviewed("codex", r.task.id)).state).toBe("in_progress");
@@ -118,6 +120,45 @@ test("enforce does not offer build work before a current planner review (#481 S9
   expect(task.owner).toBeNull();
   expect(bus.queued("codex")).toBe(0);
   expect(task.history.some(entry => entry.event === "assigned")).toBe(false);
+});
+
+test("done cannot implicitly accept build work without a planner review (#481 S9)", async () => {
+  const r = reviewRig(async () => {
+    const reading = JSON.parse(metadata().stdout);
+    reading.data.repository.issue.updatedAt = "2026-10-18T01:00:00Z";
+    return { code: 0, stdout: JSON.stringify(reading) };
+  }, "enforce");
+  r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex" });
+  r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: "2026-10-18T01:00:00Z", updatedAt: "2026-10-18T01:00:00Z" } });
+  const before = r.board.get(r.task.id);
+  await expect(r.tasks.done("codex", r.task.id, "finished")).rejects.toThrow("plan not reviewed");
+  expect(r.board.get(r.task.id)).toEqual(before);
+});
+
+test("done cannot bypass the WIP limit through implicit acceptance (#481 S9)", async () => {
+  const r = reviewRig(async () => metadata(), "off");
+  r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex", reviewer: "user" });
+  const running = r.board.propose("user", { title: "already running", class: "summarize" });
+  r.board.update(running.id, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: "user" });
+  const before = r.board.get(r.task.id);
+  await expect(r.tasks.done("codex", r.task.id, "finished")).rejects.toThrow("planner WIP capacity");
+  expect(r.board.get(r.task.id)).toEqual(before);
+});
+
+test("combined acceptance rechecks spec evidence instead of trusting an earlier separate gate (#481 S9)", async () => {
+  let editedAt = "2026-10-18T01:00:00Z";
+  const r = reviewRig(async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: {
+    number: 481, state: "OPEN", createdAt: "2026-10-18T00:00:00Z", lastEditedAt: editedAt, updatedAt: editedAt,
+  } } } }) }), "enforce");
+  r.board.update(r.task.id, "user", "backlog pulled", { state: "proposed", owner: "codex" });
+  r.tasks.acceptSpec("user", r.task.id, { issue: 481, edit: { lastEditedAt: editedAt, updatedAt: editedAt } });
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "initial review" });
+  await r.tasks.specGate("codex", r.task.id);
+  editedAt = "2026-10-18T02:00:00Z";
+  await r.tasks.recordPlanReview("claude", r.task.id, { revision: 0, reason: "reviewed updated plan" });
+  const before = r.board.get(r.task.id);
+  await expect(r.tasks.acceptReviewed("codex", r.task.id)).rejects.toThrow("spec changed after acceptance");
+  expect(r.board.get(r.task.id)).toEqual(before);
 });
 
 test("enabled planner notices point to grooming once per board revision without changing the board (#481 S9)", async () => {

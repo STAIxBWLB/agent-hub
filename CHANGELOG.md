@@ -7,6 +7,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Planner grooming reports repository-scoped dependencies, overlaps, WIP and capability/issue blockers without changing the board. Plan-review receipts bind the planner, planning revision and metadata-only issue edit evidence; enforce requires a current receipt before offering or accepting build work, advise reports gaps and off does not gate (#481 S9).
 - WIP admission now applies in every lifecycle mode. Planner/person actions can return accepted but untouched work with history and planning retained; work evidence still refuses return, and ordinary accepted-work cancellation/unassignment remains person-only (#481 S9).
 
+- `ahub jcode` no longer leaves a project MCP entry the daemon rejects as stale when the CLI on PATH and the running hub come from different installs: the hub reports its plugin bundle in `status`, and the Jcode and Kimi TUI launchers write that path (#502).
+- A person accepts a task's spec issue with `ahub sdlc accept <task> --issue <n>`, bound to the issue's body edit time (identity and edit times only, no body). In enforce, build work starts only from a current acceptance: a body edit after acceptance asks for re-acceptance, while comments do not; advise only notifies (#481 S1).
+
 ## 0.12.35
 
 A Claude session started with `ahub claude` gets its hub messages while it is busy (#493), `ahub jcode` starts again (#484), a kind can run several headless instances (#450 I2), and an enabled lifecycle follows the AI-Native SDLC Playbook with gsd-lite retired (#481 S0+S8). Restart Claude sessions after upgrading: each keeps the plugin server it started with.

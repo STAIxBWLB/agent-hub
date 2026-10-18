@@ -142,6 +142,10 @@ function rosterInStatus(status, peer) {
   const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
   return typeof row?.on === "boolean" ? row.on : undefined;
 }
+function bundleInStatus(status) {
+  const value = status?.pluginBundle;
+  return typeof value === "string" && value.startsWith("/") && /[\\/]plugins[\\/]agent-hub[\\/]server\.js$/.test(value) ? value : undefined;
+}
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
 import { resolve } from "path";
@@ -168,7 +172,7 @@ async function runJcodeEntry(ctx) {
       fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
     if (!rostered)
       fail("jcode is off roster; add it with ahub roster add jcode");
-    const written = configureJcodeMcp(cwd, stateDir, resolve(cliDir, "../../plugins/agent-hub/server.js"));
+    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
     const reply = await hub.request({ t: "start", peer: "jcode", args: { mode: "headless", model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
@@ -261,7 +265,7 @@ async function runKimiEntry(ctx) {
         fail(admission.error);
       let result;
       try {
-        const written = configureKimiMcp(cwd, stateDir, resolve2(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve2(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
         result = spawnSync(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
