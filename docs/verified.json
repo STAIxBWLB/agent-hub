@@ -87,7 +87,8 @@
         "src/hub/daemon.ts",
         "src/adapters/definitions/native-quota.ts",
         "src/adapters/definitions/native-context.ts",
-        "src/adapters/registry.ts"
+        "src/adapters/registry.ts",
+        "src/hub/instance-budget.ts"
       ]
     },
     "docs/agent-notes/bus.md": {
@@ -147,7 +148,10 @@
         "src/adapters/definitions/native-recovery*.ts",
         "src/adapters/definitions/native-policy-aux.ts",
         "src/adapters/definitions/native-config-*.ts",
-        "src/adapters/definitions/native-cli-*.ts"
+        "src/adapters/definitions/native-cli-*.ts",
+        "src/hub/instances.ts",
+        "src/hub/instance-config.ts",
+        "src/hub/instance-execution.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -158,7 +162,8 @@
         "src/memory/capture.ts",
         "src/hub/facts.ts",
         "src/hub/permission-mode.ts",
-        "src/hub/git.ts"
+        "src/hub/git.ts",
+        "src/hub/instance-execution.ts"
       ]
     },
     "docs/agent-notes/models.md": {

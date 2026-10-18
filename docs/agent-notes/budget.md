@@ -1,6 +1,6 @@
 # Budget, pause and handoff
 
-Scope: quota and native context readings, checkpoints, pause, handoff and resume, and the status line tee. Read before editing `src/hub/budget.ts`, `src/hub/context-window.ts`, `src/cli/statusline-tee.ts`, `src/adapters/definitions/native-quota.ts`, `src/adapters/definitions/native-context.ts`, `src/hub/bus.ts`, `src/hub/delivery-journal.ts` or `src/hub/restart.ts` (pause persistence).
+Scope: quota and native context readings, checkpoints, pause, handoff and resume, and the status line tee. Read before editing `src/hub/budget.ts`, `src/hub/context-window.ts`, `src/cli/statusline-tee.ts`, `src/adapters/definitions/native-quota.ts`, `src/adapters/definitions/native-context.ts`, `src/hub/bus.ts`, `src/hub/delivery-journal.ts`, `src/hub/restart.ts` (pause persistence) or the per-account fanout in `src/hub/instance-budget.ts`.
 
 - Budget: checkpoint first, pause second (a paused peer receives nothing). A handoff that fails is left unmarked so the next tick or hub run retries it; never record it as done.
 - A handoff needs somebody to hand over to: `canHandOff` is false right after a restart, when no peer is attached yet, and the handoff waits for a later tick instead of stripping tasks of their owner.
@@ -18,3 +18,5 @@ Scope: quota and native context readings, checkpoints, pause, handoff and resume
 - A quota resume notice replaces the peer's unread resume notices: carry their moves into the new one (`refs.budgetResumeMoves`, or the whole text of a notice that has none), publish it, and only then withdraw the ones it replaces, so a failed publish keeps them (#306).
 - Quota handoff context reads `QUOTA_HANDOFF_PLATFORMS` (`src/adapters/registry.ts`, each definition's `hooks.recallPlatform`: claude, codex, kimi, qwen, jcode). It is independent of `hooks.recallInjected`: a handoff platform never joins the injected-platform exclusion in recall (`test/adapter-handoff-platforms.test.ts`).
 - `Budget.report` skips `user`, `hub` and a registered kind with no `budget` block or with `budget.quotaExempt` (only local); an external id keeps quota accounting. `budget.instrumented` (execution budget) never exempts quota.
+
+- Key quota readings, pause records, overrides, checkpoints and handoffs by the canonical account (`hooks.account`, idempotent); telemetry keeps the reporter id and native context occupancy stays per instance. `instanceBudgetHooks` fans pause, resume, checkpoint and handoff out to every member, and `canHandOff` excludes the paused account's siblings. Startup normalization merges old alias pause rows without dropping a row or marking an unfinished handoff done. A manual pause stays per member.
