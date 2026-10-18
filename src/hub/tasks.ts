@@ -125,9 +125,12 @@ export interface TasksDeps {
   sweep?: TaskSweepConfig;
   /** Shutdown or coordinator work holds task sweeps too. */
   sweepHeld?: () => boolean;
+  /** Consecutive changes_requested verdicts that move a task to another peer (`tasks.escalate_after`, #488). */
+  escalateAfter?: () => number;
 }
 
-const ESCALATE_AFTER = 2;
+/** The `tasks.escalate_after` default (#488): the third consecutive changes_requested escalates. */
+export const ESCALATE_AFTER = 3;
 // Demotion (issue #36): a failure counts half after a day. A peer is demoted for a class once its decayed failures
 // reach 1.5 (two within about half a day, three within two days) and outweigh its decayed successes there.
 // ponytail: fixed constants; make them config when someone needs to tune them.
@@ -2338,7 +2341,7 @@ export class Tasks {
     if (rejected.owner) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
     this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
-    if (rejected.rejections >= ESCALATE_AFTER) {
+    if (rejected.rejections >= (this.d.escalateAfter?.() ?? ESCALATE_AFTER)) {
       let moved: Task;
       try {
         moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");

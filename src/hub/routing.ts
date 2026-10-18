@@ -18,7 +18,7 @@ export interface ClassPolicy {
   /** Switchyard route the local worker asks for on a task of this class */
   route?: string;
   fixed_model?: string;
-  /** on two consecutive changes_requested */
+  /** on `tasks.escalate_after` consecutive changes_requested (default 3) */
   escalate_to?: PeerId[];
   /** false: `local` is never owner or reviewer for this class */
   local_allowed?: boolean;

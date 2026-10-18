@@ -12,7 +12,7 @@ import { HUB, newEnvelope, USER, type Envelope, type PeerState } from "../src/hu
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting, SPLIT_MIN } from "../src/hub/routing.ts";
 import { DEFAULT_TASK_SWEEP } from "../src/hub/task-sweep.ts";
-import { AssignmentSupersededError, AssignmentUndeliveredError, Tasks } from "../src/hub/tasks.ts";
+import { AssignmentSupersededError, AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "../src/hub/tasks.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { Briefs, parseRows } from "../src/memory/brief.ts";
 import { MemoryClient } from "../src/memory/client.ts";
@@ -47,6 +47,10 @@ const until = async (cond: () => boolean) => {
 };
 const PII = "patient 900101-1234567 needs a follow-up";
 
+// These fixtures pin the escalation mechanics at two consecutive changes_requested; the
+// configurable default (three, tasks.escalate_after) has its own tests below (#488).
+const PIN_TWO = () => 2;
+
 async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>, capabilities?: Record<string, import("../src/hub/routing.ts").PeerCapabilities>) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
   const bus = new Bus({ batchMs: 0 });
@@ -62,7 +66,7 @@ async function setup(peerIds = ["claude", "codex", "kimi", "local"], observation
   const shared: string[] = [];
   const told: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ board, bus, ...(capabilities ? { capabilities: () => capabilities, repository: "STAIxBWLB/agent-hub" } : {}), routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
+  const tasks = new Tasks({ escalateAfter: PIN_TWO, board, bus, ...(capabilities ? { capabilities: () => capabilities, repository: "STAIxBWLB/agent-hub" } : {}), routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
   const saves = () => mem.calls.filter((c) => c.path === "/api/memory/save").map((c) => c.body as any);
   return { dir, bus, peers, board, tasks, notices, shared, told, mem, saves };
 }
@@ -1466,7 +1470,7 @@ async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]
   const told: string[] = [];
   // Every peer starts inside a native turn: its done is a tool call of that turn.
   const state = { capable: new Set(["claude", "codex", "kimi"]), working: new Set(peerIds), tree: "t1", offers: 0, acked: [] as string[], current: true };
-  const tasks = new Tasks({
+  const tasks = new Tasks({ escalateAfter: PIN_TWO,
     board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), tell: (peer, line) => told.push(`${peer}|${line}`), turnFree: () => true,
     capable: (p) => state.capable.has(p),
     idle: (p) => !state.working.has(p),
@@ -2515,7 +2519,7 @@ test("an offline relay move whose assignment cannot publish is noticed as saved-
 
 test("a console that throws in assignOwner's pre-write notices no longer fails a review whose verdict is saved (#297)", async () => {
   const base = await setup(["claude", "kimi"]); // no codex: nobody to escalate to
-  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
+  const tasks = new Tasks({ escalateAfter: PIN_TWO, board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
     if (line.includes("no peer can take it")) throw new Error("console unavailable");
     base.notices.push(line);
   } });
@@ -2540,7 +2544,7 @@ test("a move made while the assignment's brief is being read is supersession and
   // and that delivery succeeds. The post-brief guard prevents a stale codex publish;
   // the former owner's independent stop message must remain deliverable.
   const briefs = { forTask: async () => { base.board.update(1, "user", "reassigned", { owner: "local" }, "console assign during the brief"); return undefined; } };
-  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never, memory: new MemoryClient(base.mem.url) });
+  const tasks = new Tasks({ escalateAfter: PIN_TWO, board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never, memory: new MemoryClient(base.mem.url) });
   const publish = base.bus.publish.bind(base.bus), attempted: string[] = [];
   base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1" && (env.to ?? []).includes("codex")) { attempted.push(env.body); throw new Error("delivery journal unavailable"); } return publish(env); };
   try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1 }); }
@@ -2659,7 +2663,7 @@ test("a same-owner reassign, accept, done or approval during the brief is supers
         return undefined;
       },
     };
-    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
+    const tasks = new Tasks({ escalateAfter: PIN_TWO, board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
     const publish = base.bus.publish.bind(base.bus);
     base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
     try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1 }); }
@@ -2695,7 +2699,7 @@ test("the hub's own bookkeeping during the brief is not supersession: the notice
         return undefined;
       },
     };
-    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
+    const tasks = new Tasks({ escalateAfter: PIN_TWO, board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
     const publish = base.bus.publish.bind(base.bus);
     base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
     try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1, owner: "codex" }); }
@@ -3622,4 +3626,44 @@ test("start reconciliation preserves migrated legacy settlements without authori
   } finally {
     store?.close(); bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("by default the third consecutive changes_requested escalates, the second keeps the owner (#488)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-escalate3-"));
+  const bus = new Bus({ batchMs: 0 });
+  for (const id of ["claude", "codex", "local"]) { const p = new FakePeer(id); bus.add(p); await p.start(); }
+  const board = new Board(join(dir, "hub.db"));
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
+  expect(ESCALATE_AFTER).toBe(3);
+  await tasks.propose("claude", { title: "fix the parser", class: "implement" });
+  tasks.accept("local", 1);
+  for (const [n, note] of [[1, "edge case"], [2, "still wrong"]] as const) {
+    await tasks.done("local", 1, `v${n}`);
+    expect(await tasks.review("claude", 1, "changes_requested", note)).toMatchObject({ owner: "local", rejections: n });
+  }
+  await tasks.done("local", 1, "v3");
+  const third = await tasks.review("claude", 1, "changes_requested", "third time");
+  await tick();
+  expect(third).toMatchObject({ owner: "codex", rejections: 0 });
+  expect(board.get(1)!.history.map((h) => h.event)).toContain("escalated");
+  board.close();
+});
+
+test("tasks.escalate_after is read at each verdict, so a live change applies to the next one (#488)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-escalate-live-"));
+  const bus = new Bus({ batchMs: 0 });
+  for (const id of ["claude", "codex", "local"]) { const p = new FakePeer(id); bus.add(p); await p.start(); }
+  const board = new Board(join(dir, "hub.db"));
+  let after = 5;
+  const tasks = new Tasks({ escalateAfter: () => after, board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
+  await tasks.propose("claude", { title: "fix the parser", class: "implement" });
+  tasks.accept("local", 1);
+  await tasks.done("local", 1, "v1");
+  expect(await tasks.review("claude", 1, "changes_requested", "one")).toMatchObject({ owner: "local", rejections: 1 });
+  after = 2; // a live reload lowers the threshold before the next verdict
+  await tasks.done("local", 1, "v2");
+  const moved = await tasks.review("claude", 1, "changes_requested", "two");
+  await tick();
+  expect(moved).toMatchObject({ owner: "codex", rejections: 0 });
+  board.close();
 });

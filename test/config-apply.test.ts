@@ -168,3 +168,10 @@ test("#439 removing a restricted capabilities entry is a widening because absenc
   for (const tracked of [true, false, undefined]) expect(authorize({ ...ordinary, key: "capabilities.codex", before: ["memory_read"], after: undefined, tracked }).allowed).toBe(false);
   expect(authorize({ ...ordinary, key: "capabilities.codex", before: ["memory_read"], after: [], tracked: true }).allowed).toBe(true);
 });
+
+test("tasks.escalate_after is a bounded integer that applies live (#488)", () => {
+  for (const value of [1, 3, 10]) expect(() => validateRawConfig({ tasks: { escalate_after: value } })).not.toThrow();
+  for (const value of [0, 11, 2.5, "3"]) expect(() => validateRawConfig({ tasks: { escalate_after: value } })).toThrow();
+  expect(configApply("tasks.escalate_after").applies).toBe("live");
+  expect(DEFAULT_CONFIG.tasks.escalate_after).toBe(3);
+});

@@ -74,7 +74,7 @@ import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, public
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
-import { AssignmentUndeliveredError, Tasks } from "./tasks.ts";
+import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
@@ -156,7 +156,7 @@ export interface HubConfig {
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
-  tasks: { release_after_min: number; wip_limits?: Record<string, number> };
+  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
@@ -214,7 +214,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   ...nativeDefaults.sandbox,
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
-  tasks: { release_after_min: 30 },
+  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER },
   task_sweep: DEFAULT_TASK_SWEEP,
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
@@ -1193,6 +1193,7 @@ export async function startDaemon(opts: DaemonOptions) {
     capabilities: peerCapabilities, repository: memoryRepo,
     recordPlanning: change => event({ type: "planning", ...change }),
     wipLimit: peer => Object.hasOwn(config.tasks.wip_limits ?? {}, peer) ? config.tasks.wip_limits![peer]! : 1,
+    escalateAfter: () => config.tasks.escalate_after ?? ESCALATE_AFTER,
     profile: profileName(config.profile),
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
