@@ -22,6 +22,7 @@ import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, sdlcGh } from "./sdlc.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer } from "./peer-catalog.ts";
+import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { buildKimiLaunch } from "../cli/launch.ts";
 import { definitionOf } from "../adapters/registry.ts";
@@ -865,7 +866,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let recoveryCommitted = false;
   let recoveryPeerSnapshot: RestartPeerSnapshot[] | undefined;
   let recoveryLeaseTimer: ReturnType<typeof setTimeout> | undefined;
-  const recoveryActive = () => !!recoveryOperationId && recoveryPhase !== "released";
+  const recoveryActive = () => bus.isRecoveryHeld || !!recoveryOperationId && recoveryPhase !== "released";
   if (restored) {
     bus.restore(restored.bus, restored.operationId);
     for (const hold of conductorHolds.list()) bus.pause(hold.peer);
@@ -875,17 +876,20 @@ export async function startDaemon(opts: DaemonOptions) {
     recoveryPhase = "restored";
     recoveryPeerSnapshot = restored.peers;
     bus.setRecoveryHold(true);
+  } else {
+    // A prior release may have committed its queue checkpoint before this daemon was stopped.
+    bus.setRecoveryHold(false);
   }
   const recoveryPeerAllowed = (id: PeerId) => !recoveryActive() || !recoveryPeerSnapshot || recoveryPeerSnapshot.some((peer) => peer.id === id);
   const armRecoveryLease = () => {
     clearTimeout(recoveryLeaseTimer);
     recoveryLeaseTimer = setTimeout(() => {
       if (!recoveryOperationId || recoveryCommitted || (recoveryPhase !== "preparing" && recoveryPhase !== "prepared")) return;
+      try { bus.setRecoveryHold(false); } catch (error) { log("recovery lease release deferred; delivery storage must be restored before abort"); return; }
       log(`recovery lease expired for ${recoveryOperationId}; hold aborted`);
       recoveryOperationId = undefined;
       recoveryPhase = undefined;
       recoveryPeerSnapshot = undefined;
-      bus.setRecoveryHold(false);
       budget.setRecoveryHold(false);
       removeRestartSnapshot(opts.stateDir);
       writeStatus();
@@ -4465,7 +4469,7 @@ export async function startDaemon(opts: DaemonOptions) {
       armRecoveryLease();
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
       budget.setRecoveryHold(true);
-      bus.setRecoveryHold(true);
+      bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       await bus.fenceRecovery();
       { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
       const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
@@ -4483,11 +4487,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (msg.op === "abort") {
       if (recoveryCommitted) return recoveryError("a committed recovery cannot be aborted");
       if (recoveryPhase === "released") return { t: "recovery", ok: true, recovery: recoveryView() };
+      bus.setRecoveryHold(false);
       recoveryOperationId = undefined;
       recoveryPhase = undefined;
       recoveryPeerSnapshot = undefined;
       clearTimeout(recoveryLeaseTimer);
-      bus.setRecoveryHold(false);
       budget.setRecoveryHold(false);
       writeStatus();
       return { t: "recovery", ok: true, aborted: true, recovery: recoveryView() };
@@ -4495,6 +4499,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (msg.op === "commit") {
       if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle, approvals are complete and completion checks have finished");
       recoveryPhase = "prepared";
+      bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
       const currentPeers = recoveryPeers();
       const peers = (recoveryPeerSnapshot ?? Object.values(currentPeers)).map((saved) => ({
@@ -4525,7 +4530,10 @@ export async function startDaemon(opts: DaemonOptions) {
       return { t: "recovery", ok: true, committed: true, recovery: { ...recoveryView(), phase: "prepared" } };
     }
     if (msg.op === "release") {
-      if (recoveryPhase === "released") return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
+      if (recoveryPhase === "released") {
+        bus.setRecoveryHold(false); budget.setRecoveryHold(false);
+        return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
+      }
       if (recoveryPhase !== "restored") return recoveryError("recovery is not restored");
       await bus.fenceRecovery();
       const current = recoveryPeers();
@@ -4797,7 +4805,8 @@ export async function startDaemon(opts: DaemonOptions) {
             try { log(`recovery ${sanitize(String(msg.op))} database contention: ${databaseBusySite(error).join("\n")}`); } catch { /* the reply still settles its rid */ }
             const busy = new RecoveryDatabaseBusy();
             reply({ ...recoveryError(busy.message), code: busy.code, retryable: busy.retryable });
-          } else reply(recoveryError((error as Error)?.message ?? "recovery operation failed"));
+          } else if (error instanceof RecoveryDeferredHubError) reply({ ...recoveryError(error.message), code: error.code });
+          else reply(recoveryError((error as Error)?.message ?? "recovery operation failed"));
         });
         return;
       case "send": {

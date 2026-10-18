@@ -666,8 +666,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           throw new Error(`source preparation expired or changed while waiting for the terminal; no terminal was closed`);
         }
         // Refresh the same prepared lease immediately before the terminal effect. Preserve
-        // the original peer roster, including any terminal already closed in this operation.
-        await control(planned.project, "prepare", op.id, planned.source.instanceId!);
+        // the original peer roster and verified target features, including after a resume.
+        await control(planned.project, "prepare", op.id, planned.source.instanceId!, op.targetFeatures);
         progress.terminals[key] = "pending"; save();
         const result = await closeTerminal(binding, 0, terminalOptions(run));
         if (result.manualRequired) throw new Error(`${binding.peer}: terminal close not verified; manual-required`);
