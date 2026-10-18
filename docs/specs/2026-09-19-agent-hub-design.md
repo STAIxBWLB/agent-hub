@@ -3432,12 +3432,13 @@ and privacy boundary. This private data adds no public definition member,
 executable callback or configurable probe; unknown names retain their existing
 Hub/unknown classification.
 
-A2 reanchors twelve seeded mutants to the same moved semantic guards: explicit Pi
+A2 reanchors thirteen seeded mutants to the same moved semantic guards: explicit Pi
 roster precedence, supported roster keys, retained-terminal result text, Kimi TUI
 recovery refusal and admission cleanup, Qwen opt-in/session/crash resume, planning
-reservation support, live headless Kimi watch, disabled Codex plugins and bounded
+reservation support, active Kimi TUI settings floor, live headless Kimi watch,
+disabled Codex plugins and bounded
 regular-file tooling reads. Seed ids and test targets remain unchanged; the other
-407 seed objects remain byte-identical. The mutation pairs must still demonstrate
+406 seed objects remain byte-identical. The mutation pairs must still demonstrate
 green production behavior and failure with that guard removed.
 
 The final A2 AST inventory is empty for core policy: zero sites and zero lexical
@@ -3446,3 +3447,12 @@ from source during tests. Three cross-release literal probes remain separate
 (`KNOWN_PEERS` five, `OPTIONAL_PEERS` two, `START_MODE_PEERS` three). Precise
 screening-provider/lifecycle enum false positives remain scoped by file, symbol
 and AST shape; negative fixtures still catch vendor comparisons in those scopes.
+
+Quota participation and execution-budget instrumentation are independent.
+`budget.quotaExempt` preserves native quota exemption while retaining `account`
+and instrumented execution limits: local sets it, Pi does not. Registered kinds
+without budget metadata remain quota-exempt; external ids retain manual quota
+accounting. The A1 named compatibility metadata export preserves its original
+wrapper plans and observable shape, while the registry consumes separate native
+runtime definitions. Native display constants retain reference identity; private
+stream tone selection does not add fields to that observable display object.

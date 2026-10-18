@@ -2,7 +2,7 @@ import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attent
 import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
-import { PLANNER_PEERS, definitionOf } from "../adapters/registry.ts";
+import { PLANNER_PEERS, definitionOf, nativeStreamTone } from "../adapters/registry.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
@@ -142,7 +142,7 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
     const gap = text.slice(end, start);
     if (gap) out.push({ text: gap });
     let tone: Tone | undefined;
-    const peerTone = definitionOf(token)?.display.streamTone as Tone | undefined;
+    const peerTone = nativeStreamTone(token);
     // ponytail: legacy notices have no typed reference ranges. Classify task/review prefixes textually;
     // assign/which #N remains an issue reference until notices carry structured reference spans.
     if (token.startsWith("#")) {

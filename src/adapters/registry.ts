@@ -2,7 +2,7 @@ import { builtinCliEntries } from "./definitions/native-cli-entry.ts";
 import { builtinPreview } from "./definitions/native-cli-preview.ts";
 import { DAEMON_PORTS } from "./definitions/native-factories.ts";
 export { DAEMON_PORTS };
-import { BUILTIN_DEFINITIONS_WITHOUT_QWEN } from "./definitions/builtin-metadata.ts";
+import { NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN } from "./definitions/builtin-metadata.ts";
 import { QWEN_DEFINITION } from "./definitions/qwen.ts";
 import type { AdapterDefinition } from "./registry-types.ts";
 
@@ -26,9 +26,9 @@ function immutable<T>(value: T, seen = new WeakSet<object>()): T {
 
 /** Keep the native catalog's order, independently of the legacy default-role object order. */
 export const ADAPTERS: readonly AdapterDefinition[] = immutable([
-  ...BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind !== "jcode"),
+  ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind !== "jcode"),
   QWEN_DEFINITION,
-  ...BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind === "jcode"),
+  ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind === "jcode"),
 ]);
 const definitions = new Map<string, AdapterDefinition>();
 for (const definition of ADAPTERS) {
@@ -107,3 +107,6 @@ export const BUILTIN_CLI_ENTRIES = Object.freeze(builtinCliEntries.map(entry => 
   if (!definition) throw new Error("builtin CLI entry has no adapter definition");
   return Object.freeze({ ...entry, definition });
 }));
+
+/** Private fixed-builtin stream presentation; does not widen the public palette object. */
+export { nativeStreamTone } from "./definitions/native-display.ts";

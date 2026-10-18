@@ -221,7 +221,7 @@ export interface AdapterDefinition {
   };
   turnEnd: "adapter" | "native-hook";
   reporting?: { tokensNotReported?: boolean };
-  budget?: { account: string; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean; resetSoftTokensOnResume?: boolean };
+  budget?: { account: string; quotaExempt?: boolean; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean; resetSoftTokensOnResume?: boolean };
   configuration?: {
     schema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;
     routingSchema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;
@@ -247,6 +247,6 @@ export interface AdapterDefinition {
     retainedTerminalNotice?(instance: string, form: StartForm | undefined, resumeCommand: string): string | undefined;
     rosterReturnNotice?(resumeCommand: string): string;
   };
-  display: { streamTone?: string; palette: { fg: string; bg: string; tone?: string; ansi?: string } };
+  display: { palette: { fg: string; bg: string; tone?: string; ansi?: string } };
   hooks?: Partial<NativeHooks>;
 }

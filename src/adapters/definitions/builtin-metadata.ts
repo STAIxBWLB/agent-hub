@@ -56,7 +56,7 @@ const hubGrants = {
 
 // Sources: peer-catalog.ts roles, roster.ts defaults, start-mode.ts forms, permission-mode.ts grants,
 // daemon.ts runtime mappings/stop policy, budget.ts exemptions, and ui/peer-palette.ts CSS foregrounds.
-export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Object.freeze([
+export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Object.freeze([
   {
     api: 1, kind: "claude", displayName: "Claude Code", family: "claude", transport: "claude-channel",
     roles: Object.freeze(["planner", "reviewer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
@@ -69,7 +69,7 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
       "never-ask": "every tool runs without asking" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), configDirEnv: "CLAUDE_CONFIG_DIR", zeroTurnFresh: true, launchKind: "claude-channel", launchRecord: true, ...CLAUDE_RECOVERY_SESSION, crashPlan: claudeCrashPlan, unrecordedTerminal: "always" },
     turnEnd: "native-hook", budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
-    cli: { command: "claude", retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] }, display: { ...CLAUDE_DISPLAY, streamTone: "peerClaude" }, hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory },
+    cli: { command: "claude", retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] }, display: CLAUDE_DISPLAY, hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory },
   },
   {
     api: 1, kind: "codex", displayName: "Codex", family: "codex", transport: "codex-appserver",
@@ -82,7 +82,7 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
       grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" } },
     session: { nativeRevert: true, idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true, ...CODEX_RECOVERY_SESSION, crashPlan: codexCrashPlan, unrecordedTerminal: "always" },
     turnEnd: "adapter", budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
-    cli: { command: "codex", retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] }, display: { ...CODEX_DISPLAY, streamTone: "peerCodex" }, hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic },
+    cli: { command: "codex", retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] }, display: CODEX_DISPLAY, hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic },
   },
   {
     api: 1, kind: "kimi", displayName: "Kimi Code", family: "kimi", transport: "acp",
@@ -118,7 +118,7 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
     // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
     permission: { modes: {}, grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local", ...LOCAL_RECOVERY_SESSION, crashPlan: localCrashPlan },
-    turnEnd: "adapter", budget: { account: "local", instrumented: true }, configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
+    turnEnd: "adapter", budget: { account: "local", quotaExempt: true, instrumented: true }, configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
     cli: { command: "local", startWords: () => ["local"] }, display: LOCAL_DISPLAY,
   },
   {
@@ -131,5 +131,86 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
     session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", budget: { account: "jcode" },
     // Jcode has no dedicated CSS swatch today: retain peer-palette.ts's existing 'other' fallback.
     cli: { command: "jcode", authority: "person", startWords: () => ["jcode"] }, display: JCODE_DISPLAY,
+  },
+] satisfies AdapterDefinition[]);
+
+/**
+ * ponytail: retain the released A1 metadata export for source/library compatibility until A4 retires it.
+ * Core runtime consumers use NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN through the registry exclusively.
+ */
+const palette = (fg: string) => ({ palette: { fg, bg: "transparent" } });
+export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Object.freeze([
+  {
+    api: 1, kind: "claude", displayName: "Claude Code", family: "claude", transport: "claude-channel",
+    roles: Object.freeze(["planner", "reviewer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
+    start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("claude", ctx), conductorStartable: true,
+      unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"]) },
+    identity: { mcp: "channel-plugin" },
+    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
+    permission: { modes: {}, grants: { ask: "Claude's own permission rules decide",
+      "ask-when-needed": "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules",
+      "never-ask": "every tool runs without asking" } },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), configDirEnv: "CLAUDE_CONFIG_DIR", zeroTurnFresh: true, launchKind: "claude-channel", launchRecord: true },
+    turnEnd: "native-hook", budget: { account: "claude", checkpoint: true },
+    cli: { command: "claude", startWords: () => ["claude"] }, display: palette("#6495ed"), hooks: { recallPlatform: "claude" },
+  },
+  {
+    api: 1, kind: "codex", displayName: "Codex", family: "codex", transport: "codex-appserver",
+    roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
+    start: { forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("codex", ctx), conductorStartable: true,
+      unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--remote", "--yolo", "--dangerously-bypass-approvals-and-sandbox"]) },
+    identity: { mcp: "env" },
+    permission: { modes: { ask: { kind: "native-only", note: "restore the session's captured native approval policy" },
+      "ask-when-needed": { kind: "codex-approval", policy: "on-request" }, "never-ask": { kind: "codex-approval", policy: "never" } },
+      grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" } },
+    session: { idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true },
+    turnEnd: "adapter", budget: { account: "codex", checkpoint: true },
+    cli: { command: "codex", startWords: () => ["codex"] }, display: palette("#22b8cf"), hooks: { recallPlatform: "codex" },
+  },
+  {
+    api: 1, kind: "kimi", displayName: "Kimi Code", family: "kimi", transport: "acp",
+    roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
+    start: { forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("kimi", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    // ACP sessions carry headless identity; the existing CLI alone owns the TUI's project MCP entry.
+    identity: { mcp: "acp-session" }, attach: { pullOnlyForms: Object.freeze(["tui"] as const) },
+    permission: { modes: { ask: { kind: "acp-mode", modeId: "default" }, "ask-when-needed": { kind: "acp-mode", modeId: "yolo" }, "never-ask": { kind: "acp-mode", modeId: "auto" } },
+      grants: { ask: "Kimi asks as it does on its own", "ask-when-needed": "Kimi's yolo mode: it asks only where it judges it must", "never-ask": "Kimi's auto mode: nothing asks" },
+      unmanagedForms: Object.freeze(["tui"] as const), unmanagedNote: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode" },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "acp" },
+    turnEnd: "adapter", budget: { account: "kimi" }, capabilities: { watch: true }, init: { mcpFile: ".kimi-code/mcp.json" },
+    cli: { command: "kimi", startWords: form => ["kimi", "--mode", form] }, display: palette("#bc73ca"),
+  },
+  {
+    api: 1, kind: "pi", displayName: "Pi", family: "pi", transport: "hub-native",
+    roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
+    start: { forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("pi", ctx), conductorStartable: true, autoStart: "pi.auto_start", hubSwitches: [], ownedFlags: [] },
+    identity: { mcp: "env" },
+    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
+    permission: { modes: {}, grants: { ...hubGrants } },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "pi", launchRecord: true },
+    turnEnd: "adapter", budget: { account: "pi" },
+    cli: { command: "pi", startWords: form => ["pi", "--mode", form] }, display: palette("#c79936"),
+  },
+  {
+    api: 1, kind: "local", displayName: "Local worker", family: "local", transport: "hub-native",
+    roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
+    start: { forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: ctx => compatibilityLaunch("local", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    identity: { mcp: "env" },
+    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
+    permission: { modes: {}, grants: { ...hubGrants } },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local" },
+    turnEnd: "adapter",
+    cli: { command: "local", startWords: () => ["local"] }, display: palette("#4caa77"),
+  },
+  {
+    api: 1, kind: "jcode", displayName: "Jcode", family: "jcode", transport: "acp",
+    roles: implementerRoles, optional: true, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: false },
+    start: { forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: ctx => compatibilityLaunch("jcode", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    identity: { mcp: "project-file" },
+    permission: { modes: {}, unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
+      ask: "no verified hub mode mapping; native policy only", "ask-when-needed": "no verified hub mode mapping; native policy only", "never-ask": "no verified hub mode mapping; native policy only" } },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode" }, turnEnd: "adapter", budget: { account: "jcode" },
+    // Jcode has no dedicated CSS swatch today: retain peer-palette.ts's existing 'other' fallback.
+    cli: { command: "jcode", startWords: () => ["jcode"] }, display: palette("#8a8f99"),
   },
 ] satisfies AdapterDefinition[]);

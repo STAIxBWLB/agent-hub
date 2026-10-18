@@ -155,9 +155,10 @@ export class Budget {
   /** `hard`: the peer cannot run another turn (its provider refused one), so there is nobody to ask for a checkpoint. */
   /** `at`: when the numbers were measured, for sources that arrive through a file (a leftover file is not a fresh reading). */
   report(peer: PeerId, windows: UsageWindow[], hard = false, at = this.now()): void {
-    // Missing budget metadata exempts registered kinds only; external ids keep their existing accounting.
+    // Execution-budget instrumentation is independent of native quota accounting.
+    // Explicit quota exemption or absent budget metadata exempts registered kinds; external ids keep accounting.
     const adapter = definitionOf(peer);
-    if (peer === "user" || peer === "hub" || adapter && !adapter.budget || this.closed) return;
+    if (peer === "user" || peer === "hub" || adapter && (!adapter.budget || adapter.budget.quotaExempt === true) || this.closed) return;
     // An override ignores soft readings, not a provider that has actually refused another turn.
     if (hard && this.ignoreUntil.delete(peer)) {
       try { this.hooks.notify(`budget: ${peer} provider refused again; budget override ended`); } catch { /* a notice cannot prevent the hard pause */ }
