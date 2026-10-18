@@ -170,8 +170,7 @@ export function renderBlocked(op: RecoveryOperation, choices: readonly NextChoic
       const points = Array.from(first);
       const recorded = points.length > 512 ? `${points.slice(0, 509).join("")}...` : first;
       why = `recorded error: ${recorded} (typed cause unknown).`;
-      action = "Resolve the recorded error before retrying; read [j] or use --verbose for details, then choose an action offered by the coordinator.";
-      if (/\btarget lacks task_cancel\b/.test(first)) action = "Choose a target release that supports task_cancel; keep cancelled task records and use only the coordinator actions offered below.";
+      action = "Resolve the recorded error, then resume or choose an offered action. If the target lacks a feature the source needs, choose a compatible target; keep the source records. Read [j] or use --verbose for details.";
     }
   }
   const output = [...lines(`What happened: ${happened}`, "failure", options), ...lines(`Why: ${why}`, "muted", options), ...lines(`What to do: ${action}`, "attention", options)];

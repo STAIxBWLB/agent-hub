@@ -18,7 +18,8 @@ test("#478 blocked human view shows the first recorded error line without changi
   const text = renderBlocked(op, [], options).join("\n");
   expect(text).toContain("target lacks task_cancel");
   expect(text).not.toContain("second line");
-  expect(text).toContain("Choose a target release that supports task_cancel");
+  expect(text).toContain("Resolve the recorded error, then resume or choose an offered action.");
+  expect(text.replace(/\s+/g, " ")).toContain("If the target lacks a feature the source needs, choose a compatible target; keep the source records.");
   expect(text).toContain("recorded error");
   expect(JSON.stringify(op)).toBe(before);
 });
@@ -49,4 +50,10 @@ test("#478 an empty recorded first line keeps the unknown-cause fallback", () =>
     expect(text).toContain("cause is unknown");
     expect(text).not.toContain("second line");
   }
+});
+
+
+test("#478 untyped capability phrases never select a different diagnostic action", () => {
+  const action = (error: string) => renderBlocked(receipt(error), [], { ...options, columns: 2000 }).filter(line => line.startsWith("What to do:"));
+  expect(action("embedded text: target lacks task_cancel, not a typed proof")).toEqual(action("ordinary untyped error"));
 });
