@@ -3575,6 +3575,18 @@ Owner decision 2026-10-18 (#450 comment 6248184754), R1-R5. R3's mechanism, chos
 - **Settlement.** A start failure before any review in a delivery ran is `failed_safe`; after one ran, the delivery is held as `needs_review`. A failing facts or verdict-check callback is logged, and the review counts as without a recorded verdict.
 - **Never an owner.** The reviewer variant carries `routing.reviewOnly`; assignment refuses it as an owner for every task class and when named.
 
+## Review brief amendment (#520, hub task #228)
+
+ahub builds the review brief that the workspace gate used to take from `ocr delegate preview` and `rule`, and gives the same brief to every reviewer.
+
+- **Range.** The task's commit (`refs.commit`) against its merge base with `origin/HEAD`, or the checkout's `HEAD` when the remote names no default branch. git only, bounded (500 files, 8 rule files of at most 32 KB each); the brief never touches the board.
+- **Files.** Each change comes with its status and line counts; a rename or copy lists both sides. A change touching a `local.deny` or `pii.paths` path, or a path that fails the private-data screen, is withheld whole (both sides of a move) and only counted. Excluded, with the reason shown: files marked `linguist-generated` in `.gitattributes` at the head, lockfiles (a fixed list) and binary files. They are listed so a reviewer can still read them. Unlike `ocr delegate preview`, markdown and test files stay reviewable: the workspace gate required reading them anyway, and coverage now records it. Compared on PR #506 (head e305a17e against 3f258a41), OCR excluded 3 markdown and 3 test files and kept the generated bundle; ahub keeps those 6 and excludes the bundle once this PR's `.gitattributes` marks it generated.
+- **Rules.** `REVIEW.md` at the head applies to every reviewable file. A path whose `.gitattributes` entry sets `ahub-review-rules=<repository path>` also gets that file. Files are grouped by the rule files that apply. Deviation from the issue: per-path settings are git attributes, versioned with the change, instead of new `review.exclude` and `review.rules` config keys.
+- **Cross-check.** The plain `--name-only --no-renames` list of the same range is compared with the brief. A path it shows that the brief does not list is named for a direct read.
+- **Contract.** The review request already carries the spec issue reference, the task plan and the detail. The brief does not fetch the issue body: the hub reads issue metadata only (S1), so the acceptance checklist stays in the issue.
+- **Delivery.** `sendReview` appends the rendered brief to the review request (after #215's admission, body only). `hub_task_show` adds a `brief` field while the task is `in_review`. `ahub review brief <id>` prints it for a person. A task without a commit, or a private task, has no brief.
+- **Coverage gate.** `hub_review` takes `coverage: { reviewed: [paths], skipped: [{ path, reason }] }`. An approval must account for every reviewable path. The gate follows the lifecycle mode (deviation from the issue, which refuses always): `enforce` refuses before any write, naming the paths; `advise` records `Coverage gap (N): ...` in the verdict note; `off` and a person's own verdict skip it. The brief is computed for the task's current commit, so a moved head brings a new brief.
+
 ## Claude peer instances I3 amendment (#450)
 
 - A declared instance of a channel-plugin kind (Claude) is admitted when its declaration names `roles`, reviewer and/or planner only. `start_mode` and `worktree` are refused: the instance starts only from the person's terminal with `ahub claude --as <id>`, so the hub never starts, watches or owns writes for it, and it is neither startable nor reserved from external admission.

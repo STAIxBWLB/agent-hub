@@ -147,6 +147,9 @@ test("the daemon runs the headless reviewer: review-only delivery, a fresh verdi
   const shown = lines(log).find(line => line.show)!.show;
   expect(shown).toMatchObject({ ok: true });
   expect(JSON.stringify(shown)).not.toContain("BUILDER NARRATIVE");
+  // #520: the daemon gives every review its brief; this fixture's commit is not in any checkout, so it says why not.
+  expect(calls[0].prompt).toContain("Review brief unavailable: commit abc1234 is not in this checkout");
+  expect(shown.text ?? JSON.stringify(shown)).toContain("Review brief unavailable");
   // Its verdict authority ends with its child: a later hub_review from its identity is refused.
   const late = await connect({ role: "tools", peer: "claude-review" });
   expect(await late.request({ t: "task", op: "hub_review", args: { id, verdict: "changes_requested", note: "late" } })).toMatchObject({ ok: false, error: expect.stringContaining(`no review of task #${id} is running`) });

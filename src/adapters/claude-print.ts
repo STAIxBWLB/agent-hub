@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { childEnv, peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { hubGitSync } from "../hub/git.ts";
+import { changedPathGroups } from "../hub/review-brief.ts";
 import { HUB, frame, type Envelope } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 
@@ -56,17 +57,10 @@ export function reviewDiff(cwd: string, commit: unknown, policy: { privatePath(p
   if (typeof commit !== "string" || !/^[0-9a-f]{7,40}$/i.test(commit)) return undefined;
   const git = (args: string[]) => hubGitSync(["-C", cwd, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--relative", ...args], { encoding: "utf8", env: childEnv(process.env), maxBuffer: 16 * 1024 * 1024, timeout: 15_000 });
   const unavailable = `Diff of ${commit} unavailable here; read the changed files with Read and Grep.`;
-  // Paths first, with rename and copy detection: a move or copy is withheld whole when either side is private, so a
-  // private file's content never shows up under a public name.
-  // ponytail: detection is git's similarity (50%); content moved from a private file and mostly rewritten reads as a new
-  // public file, screened only by the private-data pattern below. Track private blobs by hash if that matters.
-  const names = git(["-M", "-C", "--find-copies-harder", "--name-status", "-z", `HEAD...${commit}`, "--"]);
-  if (names.status !== 0 || typeof names.stdout !== "string") return unavailable;
-  const fields = names.stdout.split("\0"), changed: string[][] = [];
-  for (let i = 0; i < fields.length - 1;) {
-    const status = fields[i++]!, sides = /^[RC]/.test(status) ? 2 : 1;
-    changed.push(fields.slice(i, i + sides)); i += sides;
-  }
+  // Paths first, as groups (both sides of a move or copy): a group is withheld whole when any side is private.
+  const groups = changedPathGroups(cwd, commit);
+  if (!groups) return unavailable;
+  const changed = groups.map(g => g.paths);
   const shownGroups = changed.filter(group => !group.some(path => policy.privatePath(path)));
   const shown = shownGroups.flat();
   const hidden = changed.length - shownGroups.length;

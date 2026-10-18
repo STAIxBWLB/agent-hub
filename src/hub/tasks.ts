@@ -26,6 +26,7 @@ import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecisi
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
+import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
@@ -53,6 +54,8 @@ export interface TasksDeps {
   sessionRoles?: (peer: PeerId) => string[];
   /** Optional bounded snapshot presentation; never stored in task history or memory. */
   projectedReview?: (task: Task) => string | undefined;
+  /** #520: the review brief for a task's commit (git only, bounded); undefined when the task names no commit. */
+  reviewBrief?: (task: Task) => ReviewBrief | { unavailable: string } | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   /** Screened live fail notes directly intersecting the task plan or refs; read-only advice. */
@@ -2650,11 +2653,22 @@ export class Tasks {
     let projection = "";
     try { const text = this.d.projectedReview?.(task); if (text) projection = this.screen(task, sanitize(text), "document projection", reviewer); }
     catch { projection = "(document projection unavailable)"; }
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    const brief = this.briefText(task);
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
-  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown): Promise<Task> {
+  /** #520: the rendered review brief of a non-PII task's commit, or why there is none; empty without a commit. */
+  briefText(task: Task): string {
+    if (this.isPii(task) || !task.refs.commit) return "";
+    try {
+      const brief = this.d.reviewBrief?.(task);
+      if (!brief) return "";
+      return "unavailable" in brief ? `Review brief unavailable: ${brief.unavailable}.` : sanitize(renderReviewBrief(brief));
+    } catch { return "Review brief unavailable: it could not be built."; }
+  }
+
+  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown): Promise<Task> {
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
     const valid = (): Task => {
       const refused = authority?.();
@@ -2667,6 +2681,15 @@ export class Tasks {
     };
     const items = textList(unmet);
     if (items.length) note = `${note ?? ""}\nUnmet: ${items.join("; ")}`.trim();
+    // #520: an approval accounts for every reviewable path of the brief. enforce refuses before any effect, advise records
+    // the gap in the verdict note, off and a person's own verdict skip it.
+    const mode = this.d.sdlc?.config().mode ?? "off";
+    if (verdict === "approved" && by !== USER && mode !== "off") {
+      const t = valid(), brief = this.isPii(t) || !t.refs.commit ? undefined : this.d.reviewBrief?.(t);
+      const gap = brief && !("unavailable" in brief) ? coverageGap(brief, coverage) : [];
+      if (gap.length && mode === "enforce") throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${gap.slice(0, 20).join(", ")}${gap.length > 20 ? ", ..." : ""}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
+      if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${gap.slice(0, 20).join(", ")}${gap.length > 20 ? ", ..." : ""}`.trim();
+    }
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("review note", note, valid());
     let task = valid();

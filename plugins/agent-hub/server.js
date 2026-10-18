@@ -7006,7 +7006,7 @@ var init_hub_tools = __esm(() => {
     tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs }, ["id", "summary"]),
     tool("hub_sdlc_record", "Record artifact ids or claimed local checks on your task. This grants no authority or external-check evidence. Only its owner/reviewer or the person may record; only its reviewer/person may name a reviewed head or phase checklist. Phase evidence refs are content hashes, not external verification.", { id, receipt: { type: "object", properties: { stage: { type: "string", enum: ["spec", "plan", "implement", "review", "verify", "merge", "release"] }, repo: str2, issue: id, pr: id, localHead: str2, localResult: { type: "string", enum: ["passed", "failed", "unknown"] }, reviewedHead: str2, phase: { type: "object", properties: { id: str2, head: str2, tasks: { type: "array", maxItems: 64, items: { type: "object", properties: { id, after: { type: "array", maxItems: 16, items: id } }, required: ["id", "after"], additionalProperties: false } }, criteria: { type: "array", maxItems: 32, items: { type: "object", properties: { id: str2, required: { type: "boolean" }, result: { type: "string", enum: ["verified", "failed", "unverified"] }, refs: { type: "array", maxItems: 8, items: str2 } }, required: ["id", "required", "result", "refs"], additionalProperties: false } } }, required: ["id", "tasks", "criteria"], additionalProperties: false } }, additionalProperties: false } }, ["id", "receipt"]),
     tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested", "cancelled"] }, ready: { type: "boolean", description: "only proposed tasks with nothing left to wait for" } }),
-    tool("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result (hub_task_show has it, with the done summary), and list what is unmet. The verdict notifies the task owner; no duplicate hub_send chat is needed. Consecutive changes_requested verdicts (three by default, `tasks.escalate_after`) move the task to another peer.", { id, head: { type: "string", description: "full SHA actually reviewed; enforce binds approval to the current PR head" }, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str2, unmet: { type: "array", items: str2, description: "each requirement of the plan or detail that the change does not meet" } }, ["id", "verdict"]),
+    tool("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result (hub_task_show has it, with the done summary), and list what is unmet. The verdict notifies the task owner; no duplicate hub_send chat is needed. Consecutive changes_requested verdicts (three by default, `tasks.escalate_after`) move the task to another peer.", { id, head: { type: "string", description: "full SHA actually reviewed; enforce binds approval to the current PR head" }, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str2, unmet: { type: "array", items: str2, description: "each requirement of the plan or detail that the change does not meet" }, coverage: { type: "object", description: "the review brief's reviewable paths you read (reviewed) and any you did not (skipped, each with a reason); in enforce an approval must account for every one", properties: { reviewed: { type: "array", items: str2 }, skipped: { type: "array", items: { type: "object", properties: { path: str2, reason: str2 }, required: ["path", "reason"] } } } } }, ["id", "verdict"]),
     tool("hub_checkpoint", "Answer a checkpoint request from the hub (quota or context window pressure): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str2, request_id: { type: "string", description: "The request id supplied by a context checkpoint request; required for context checkpoints" } }, ["summary"]),
     tool("hub_memory_search", "Search daemon-scoped visible memory, fails first. Query <=200 UTF-8 bytes; default 8, max 20 lines; whole output <=4 KB. Incomplete excerpts are marked. No project argument.", { query: { type: "string", maxLength: 200, description: "At most 200 UTF-8 bytes, enforced by the daemon" }, limit: { type: "integer", minimum: 1, maximum: 20 } }, ["query"]),
     tool("hub_memory_show", "Read up to 8 visible memory ids or unique prefixes (6..64 UTF-8 bytes each). Original ids redirect; unavailable ids share one refusal. Whole output <=8 KB.", { ids: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 6, maxLength: 64, description: "6 to 64 UTF-8 bytes" } } }, ["ids"]),
@@ -7540,6 +7540,14 @@ var init_local_worker = __esm(() => {
   };
 });
 
+// src/hub/review-brief.ts
+var LOCKFILES;
+var init_review_brief = __esm(() => {
+  init_child_process();
+  init_git();
+  LOCKFILES = new Set(["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum", "composer.lock", "Gemfile.lock"]);
+});
+
 // src/adapters/claude-print.ts
 import { spawn as spawn6 } from "child_process";
 import { randomUUID as randomUUID5 } from "crypto";
@@ -7587,6 +7595,7 @@ var GroupCleanupError, reviewTask = (env) => {
 var init_claude_print = __esm(() => {
   init_child_process();
   init_git();
+  init_review_brief();
   init_envelope();
   GroupCleanupError = class GroupCleanupError extends Error {
   };
@@ -16226,6 +16235,7 @@ init_workflow();
 init_board();
 init_envelope();
 init_project();
+init_review_brief();
 init_registry();
 
 // src/hub/task-sweep.ts
