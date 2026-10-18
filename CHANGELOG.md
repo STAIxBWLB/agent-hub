@@ -2,6 +2,14 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.35
+
+A Claude session started with `ahub claude` gets its hub messages while it is busy (#493). Restart such sessions after upgrading: each keeps the plugin server it started with.
+
+- Let an attached channel session read the daemon queue with `hub_inbox` while busy, using the existing pull, holds and journal completion; tool results carry fresh queued and important counts in every MCP mode, and a zero clears a stale hint (#493).
+- Steer important messages into a busy channel session's running turn instead of waiting for the turn to end; ordinary messages still wait (#493). Mid-turn reading was verified on Claude Code 2.1.302.
+- Session instructions, tool texts and the AGENTS block forbid `[FYI]` for actionable messages (PR ready, done, submitted, ruling needed, blocker, changed contract or path) (#493).
+
 ## 0.12.34
 
 Built-in native policy now lives behind the adapter registry (#451 A2). Native behaviour is unchanged except the disclosed Codex watchdog fence below; the core keeps no vendor tables, and a guard refuses new ones. The changes_requested threshold that moves a task to another peer is now the setting `tasks.escalate_after`, with a default of three instead of the old fixed two (#488). Antigravity, Gemini CLI and Grok project configuration directories are protected like other agent configuration (#485). Live native clients, the #418 AC8 managed-Pi leg (#142) and #438 AC7 remain unverified by this release preparation. Installation and the person's restart require separate receipts.
