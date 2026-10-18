@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
 export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
+  const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
   const { launcherPreview, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -10,13 +11,14 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
   }
   const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
-  const mode = one["--mode"] ?? startModeOf(projectConfig().peers, "kimi"), model = one["--model"];
+  const mode = one["--mode"] ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
+  if (ctx.instance && mode !== "headless") fail("extra Kimi instances require headless mode");
   if (rest.length || !["tui", "headless"].includes(mode)) fail("usage: ahub kimi [--mode tui|headless] [--model <alias>]");
   if (mode === "tui" && one["--mode"] === undefined && !(process.stdin.isTTY && process.stdout.isTTY)) {
     if (model) fail("Kimi's TUI needs a terminal for these options; run in a terminal or add --mode headless");
     const hub = await connect();
     try {
-      const reply = await hub.request({ t: "peer_start", peer: "kimi" }, 35_000);
+      const reply = await hub.request({ t: "peer_start", peer }, 35_000);
       if (!reply.ok) fail(reply.error);
       return console.log(reply.already ? "kimi is already attached" : `kimi: opened a terminal running ${reply.command}; it attaches pull-only when its TUI is ready`);
     } finally { hub.close(); }
@@ -27,9 +29,9 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
       const launch = buildKimiTuiLaunch(projectConfig().kimi_cmd, model);
       const snapshot = (await hub.request({ t: "status" })).status;
       if (snapshot?.roster?.find((row: any) => row.peer === "kimi")?.on === false) fail("kimi is off roster; add it with ahub roster add kimi");
-      const peer = snapshot?.peers?.kimi;
-      if (peer && !["offline"].includes(peer.state) && !peer.pullOnly) fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
-      const admission = await hub.request({ t: "start", peer: "kimi", args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+      const owner = snapshot?.peers?.[peer];
+      if (owner && !["offline"].includes(owner.state) && !owner.pullOnly) fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
+      const admission = await hub.request({ t: "start", peer, args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (!admission.ok) fail(admission.error);
       let result: ReturnType<typeof spawnSync>;
       try {
@@ -42,11 +44,11 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
       if (result.error) fail(`cannot run ${launch.cmd}: ${result.error.message}`);
       process.exit(result.status ?? 1);
     }
-    const peer = (await hub.request({ t: "status" })).status?.peers?.kimi;
-    if (peer?.pullOnly && peer.state !== "offline") fail("Kimi runs in a terminal; end it there before starting a headless one");
-    configureKimiMcp(cwd, stateDir, resolve(cliDir, "../../plugins/agent-hub/server.js"), "headless");
-    const res = await hub.request({ t: "start", peer: "kimi", args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+    const owner = (await hub.request({ t: "status" })).status?.peers?.[peer];
+    if (owner?.pullOnly && owner.state !== "offline") fail("Kimi runs in a terminal; end it there before starting a headless one");
+    if (!ctx.instance) configureKimiMcp(cwd, stateDir, resolve(cliDir, "../../plugins/agent-hub/server.js"), "headless");
+    const res = await hub.request({ t: "start", peer, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     if (!res.ok) fail(res.error);
-    console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: ahub say @kimi "..."');
+    console.log(res.already ? `${peer} is already attached` : `${peer} attached (headless). Talk to it with: ahub say @${peer} "..."`);
   } finally { hub.close(); }
 }

@@ -1,4 +1,5 @@
 import { definitionOf } from "../adapters/registry.ts";
+import { readInstanceConfig } from "../hub/instance-config.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
 
 export type RestoreReceipt =
@@ -24,9 +25,13 @@ function malformed(): never { throw new Error("invalid restore receipt"); }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 function terminalBinding(value: unknown): TerminalBinding {
-  if (!object(value) || typeof value.peer !== "string" || !definitionOf(value.peer)?.session.launchRecord) malformed();
+  if (!object(value) || typeof value.peer !== "string") malformed();
   for (const key of ["handle", "incarnationId", "worktreeId", "projectRoot", "sessionId"]) if (!text(value[key])) malformed();
-  for (const key of ["sessionFile", "backend", "model"]) if (value[key] !== undefined && typeof value[key] !== "string") malformed();
+  try {
+    const adapter = definitionOf(value.peer) ?? definitionOf(value.peer, readInstanceConfig(value.projectRoot as string).instances);
+    if (!adapter?.session.launchRecord) malformed();
+  } catch { malformed(); }
+  for (const key of ["sessionFile", "backend", "model", "executionCwd", "terminalRoot"]) if (value[key] !== undefined && typeof value[key] !== "string") malformed();
   const launch = value.launch;
   const validLaunch = (v: unknown) => object(v) && text(v.packageEntrypoint) && text(v.command)
     && Array.isArray(v.argv) && v.argv.every(arg => typeof arg === "string")

@@ -259,3 +259,6 @@ export interface AdapterDefinition {
   display: { palette: { fg: string; bg: string; tone?: string; ansi?: string } };
   hooks?: Partial<NativeHooks>;
 }
+
+/** Explicit project declarations, passed by the bound host. No process-global instance registration. */
+export type KindMap = Readonly<Record<string, { readonly kind: string }>>;

@@ -3542,3 +3542,79 @@ The guard resolves immutable peer-id constant aliases and supplied-source
 import/reexport bindings through lexical symbols before classifying comparisons.
 Shadowed and unrelated bindings remain independent; named non-peer enum exceptions
 keep their exact scope. It performs no filesystem or package lookup.
+
+## Headless peer instances I2 amendment (#450)
+
+`instances` is a person-authored, machine-local object in an untracked
+`.agenthub/config.local.json`. Each additional `<kind>-<name>` id names its kind
+explicitly and may set `roles`, `start_mode`, `permission_mode` and `worktree`.
+The bound catalog belongs to one project/daemon; there is no process-global
+registration or suffix inference. Declarations are validated before trust
+filtering, cloned and frozen, and limited to 64 additional ids of at most 32
+ASCII characters. Settings cannot create or modify declarations. Identity,
+execution directory and account membership are restart-bound; a live reload
+cannot publish their derived defaults ahead of that restart.
+
+I2 accepts definitions with a native headless factory and environment or ACP
+session MCP identity. Additional Claude/channel peers belong to I3. Jcode's
+project-file MCP identity is not isolated by this phase and is refused for extra
+instances. Additional instances start headlessly; the existing Codex native TUI
+still initializes and attaches to its instance's own app-server proxy. The hub
+never initializes that app-server on the TUI's behalf. `ahub <kind> --as <id>`
+selects the declared identity; selection is removed from native passthrough.
+Missing `peer_instances` evidence on an old daemon/upgrade target is a refusal
+before instance runtime effects, rather than a guess that the instance is a base
+peer.
+
+Each additional implementer requires an explicit registered Git worktree at
+`<project>/.worktrees/<id>` with an attached branch. I2 creates no worktree or
+branch; I4 owns automatic worktree orchestration. A supplied reviewer worktree
+is checked by the same real-path, repository and registration boundary. Without
+a supplied directory, a reviewer may share the project checkout. The native
+process executes in that directory while its MCP environment retains the
+canonical project's hub binding. Launch/restore receipts keep canonical
+`projectRoot`, optional extra-instance `executionCwd` and observed `terminalRoot`
+separate. The terminal grouping root may be only that project root or the
+verified execution directory; exact live launcher, handle, incarnation and
+worktree evidence is still required. Native kind metadata alone never binds an
+extra instance. Revoked declarations or changed directories refuse reuse.
+
+Routing expands a kind preference to its declared members and considers idle
+state, board WIP and queued load with stable ties. Exact manual candidates,
+reservations and nominations stay exact ids. Assignment and explain use the same
+pure decision and name the chosen instance. Reviewer independence compares
+families (the kind); an eligible other family takes precedence even when busy.
+Only when no other family is eligible may an assignment use its own family,
+recording `sameFamilyFallback=true` in assignment history.
+
+Quota readings, pause records and reset windows are shared by the definition's
+account (one account per kind in I2). Member telemetry retains its exact reporter
+id, native context remains per instance, and the shared account's quota pause,
+checkpoint, handoff and reset notice cover all its members. Existing manual
+pauses remain in force. A startup migration conservatively merges old alias
+pause rows, retaining their provenance and moves; no pause is discarded.
+Per-instance ports, native session paths, Pi tool ledgers and model relay
+callbacks do not borrow another instance's process or conversation.
+
+Worktree facts and native turn snapshots use the validated execution checkout,
+while task and turn ids remain in the canonical hub database. An additive
+`turn_workspaces` receipt stores the exact extra-instance root and its snapshot
+fields atomically with turn creation. The legacy `turns` snapshot fields remain
+unknown for those rows, so an older CLI cannot restore their files into the
+canonical checkout. New readers hydrate the same public turn shape from the
+receipt. An absent receipt preserves historical external-peer undo behavior;
+an existing receipt requires the current trusted declaration and the same
+validated root before context changes or file restoration. Pruning a turn also
+prunes its workspace receipt. Overlap refusal remains conservative across
+separate worktrees; it may refuse an undo rather than assume independence.
+
+The I2 seed contract amendment re-anchors only `roster-r-pi-override`,
+`roster-r-catalog`, `roster-result-stop-text`, `roster-detached-pi-recovery`,
+`data-pi-factory-wire`, `projection-local-trust`,
+`planning-reservation-supported` and `planner-reserved-status-row` to the
+contextual resolver, aggregate Pi ledger, execution directory and declared-id
+forms. Each keeps its id and named test and removes the same guarantee. The
+projection mutant still removes only `text_projection`; the status mutant still
+removes only reservations. The other 411 seeds and registry baseline are
+unchanged. The PR records every old and new search/replacement and its clean
+and mutant result, per the reviewer's explicit ruling.

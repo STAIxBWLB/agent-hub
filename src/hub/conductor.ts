@@ -1,4 +1,4 @@
-import { definitionOf, SUPPORTED_PEERS } from "../adapters/registry.ts";
+import { definitionOf, type KindMap } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
@@ -104,19 +104,21 @@ export class ConductorHolds {
   close(): void { this.db.close(); }
 }
 
-type StartablePeer = typeof SUPPORTED_PEERS[number];
-
-export type ConductorStart = { peer: StartablePeer; mode: "headless" } | { peer: "claude" | "codex" | "pi"; mode: "tui"; command: string };
+export type ConductorStart = { peer: string; mode: "headless" } | { peer: "claude" | "codex" | "pi"; mode: "tui"; command: string };
 /**
  * What a conductor's start of `peer` is (#269): the peer's own start mode, which a person sets. A `mode` argument may
  * only repeat it. Preview commands come from the same launch planner the CLI uses, never caller-supplied shell text.
  */
-export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: StartablePeer) => StartMode): ConductorStart {
+export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: string) => StartMode, instances?: KindMap): ConductorStart {
   const refuse = (text: string) => new (preEffect ? PreEffectToolRefusal : Error)(text);
   if (mode !== undefined && mode !== "headless" && mode !== "tui") throw refuse("mode must be headless or tui");
-  if (!(typeof peer === "string" && definitionOf(peer)?.start.conductorStartable)) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen/jcode, may be started by the conductor");
-  const selected = peer as StartablePeer;
+  const adapter = typeof peer === "string" ? definitionOf(peer, instances) : undefined;
+  if (typeof peer !== "string" || !adapter?.start.conductorStartable) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen/jcode, may be started by the conductor");
+  const selected = peer;
+  const extra = adapter.kind !== selected;
+  if (extra && (!adapter.start.create || !adapter.start.forms.includes("headless") || !["env", "acp-session"].includes(adapter.identity.mcp))) throw refuse(`${peer}: this native transport does not support extra headless instances`);
   const own = startMode(selected);
+  if (extra && own !== "headless") throw refuse(`${peer}: extra instances require headless mode in I2`);
   if (mode !== undefined && mode !== own) throw refuse(`${peer} starts ${own} here; a person sets a start mode (ahub settings), the conductor cannot choose one`);
   return own === "tui" ? { peer: peer as "claude" | "codex" | "pi", mode: "tui", command: preview(peer as "claude" | "codex" | "pi") } : { peer: selected, mode: "headless" };
 }
@@ -164,9 +166,11 @@ export interface ConductorHooks {
   escalate(actor: string, id: number): Promise<unknown>;
   preview(peer: "claude" | "codex" | "pi"): string;
   /** The mode a start of this peer takes: a person's setting. */
-  startMode(peer: StartablePeer): StartMode;
+  startMode(peer: string): StartMode;
   /** Starts the peer in that mode: headless at once, or its fixed command in a terminal; throws with the command to run by hand when no terminal can be opened. */
-  start(peer: StartablePeer): Promise<unknown>;
+  start(peer: string): Promise<unknown>;
+  /** Explicit project declarations only; an undeclared suffix never acquires a native kind. */
+  instances?(): KindMap;
   known(peer: string): boolean;
   pause(peer: string): void;
   validateRelease?(peer: string): Promise<void>;
@@ -231,7 +235,9 @@ export class Conductor {
       return updated ? publicConductorTask(updated, this.hooks.publicView) : { id: task.id };
     }
     if (tool === "hub_peer_start") {
-      const start = conductorStart(args.peer, args.mode, this.hooks.preview, true, this.hooks.startMode);
+      const instances = this.hooks.instances?.();
+      const start = conductorStart(args.peer, args.mode, this.hooks.preview, true, this.hooks.startMode, instances);
+      if (definitionOf(start.peer, instances)?.kind !== start.peer && !this.hooks.known(start.peer)) throw new PreEffectToolRefusal(`unknown peer: ${start.peer}`);
       const result = await this.hooks.start(start.peer);
       const opened = result && typeof result === "object" && typeof (result as { opened?: unknown }).opened === "string" ? { opened: (result as { opened: string }).opened } : {};
       emit({ peer: start.peer }); return { ...start, ...opened };

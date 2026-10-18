@@ -1,6 +1,8 @@
 import { shellQuote } from "./shell-quote.ts";
 export { shellQuote } from "./shell-quote.ts";
-import { definitionOf } from "../adapters/registry.ts";
+import { definitionOf, type KindMap } from "../adapters/registry.ts";
+import { readInstanceConfig } from "../hub/instance-config.ts";
+import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -28,7 +30,7 @@ export type CommandRunner = (argv: readonly string[]) => Promise<CommandResult>;
 /** Stable process identity hook. It returns a digest, never raw process metadata. */
 export type ProcessIdentity = (pid: number) => string | undefined | Promise<string | undefined>;
 
-export type TerminalPeer = "codex" | "claude" | "pi";
+export type TerminalPeer = string;
 export interface SessionRef { sessionId: string; sessionFile?: string; backend?: string; model?: string; }
 
 export interface LaunchMetadata {
@@ -48,6 +50,10 @@ export interface TerminalBinding {
   incarnationId: string;
   worktreeId: string;
   projectRoot: string;
+  /** Authenticated declared-extra execution root; canonical projectRoot remains the authority. */
+  executionCwd?: string;
+  /** Verified Orca grouping root, only canonical project or the authorized execution worktree. */
+  terminalRoot?: string;
   sessionId: string;
   sessionFile?: string;
   backend?: string;
@@ -129,6 +135,8 @@ export interface TerminalCreateResult {
 
 export interface TerminalRecoveryOptions {
   runner?: CommandRunner;
+  /** Exact execution root returned by authenticated extra startup; checked against the current declaration. */
+  executionCwd?: string;
   /** Defaults to `orca`; callers in a managed session may pin another executable. */
   orcaExecutable?: string;
   /** Absolute path to this package's JS entrypoint. */
@@ -150,6 +158,8 @@ export interface TerminalRecoveryOptions {
 export interface RecordedTerminalLaunch {
   peer: TerminalPeer;
   projectRoot: string;
+  executionCwd?: string;
+  terminalRoot?: string;
   stateDir: string;
   instanceId: string;
   launcherPid: number;
@@ -243,6 +253,7 @@ function normalizeOptions(options?: CommandRunner | TerminalRecoveryOptions): Re
     runner: config.runner ?? defaultRunner(orcaExecutable),
     orcaExecutable,
     packageEntrypoint: config.packageEntrypoint ?? defaultEntrypoint,
+    executionCwd: config.executionCwd ?? "",
     stateDir: config.stateDir ?? "",
     instanceId: config.instanceId ?? "",
     processIdentity: config.processIdentity ?? defaultProcessIdentity,
@@ -312,9 +323,30 @@ export function recordPath(stateDir: string): string {
   return join(stateDir, RECORD_FILE);
 }
 
+/** Extra terminal ownership is supported only for the native proxy transport; other I2 extras stay headless. */
+function executionRoot(peer: string, projectRoot: string, captured?: string): string {
+  const builtin = definitionOf(peer);
+  if (builtin?.session.launchRecord) return projectRoot;
+  const declarations = readInstanceConfig(projectRoot).instances;
+  const definition = definitionOf(peer, declarations);
+  if (!definition?.session.launchRecord) throw new Error(`${peer}: no managed terminal recovery adapter`);
+  if (definition.transport !== "codex-appserver" || !declarations?.[peer]) throw new Error(`${peer}: I2 extra instance has no managed terminal support`);
+  const expected = resolveInstanceExecutionCwd(projectRoot, peer, declarations, declarations[peer]?.roles ?? definition.roles);
+  if (captured !== undefined && captured !== expected) throw new Error(`${peer}: declared execution worktree changed; manual recovery required`);
+  return expected;
+}
+
+function savedTerminalRoot(binding: Pick<TerminalBinding, "peer" | "projectRoot" | "executionCwd" | "terminalRoot">): string {
+  const expected = executionRoot(binding.peer, binding.projectRoot, binding.executionCwd ?? binding.projectRoot);
+  if (definitionOf(binding.peer)) return binding.projectRoot;
+  const root = binding.terminalRoot ?? binding.projectRoot;
+  if (root !== binding.projectRoot && root !== expected) throw new Error(`${binding.peer}: recorded Orca grouping root is not authorized`);
+  return root;
+}
+
 function validRecord(item: unknown): item is RecordedTerminalLaunch {
   const row = object(item);
-  return typeof row.peer === "string" && typeof row.projectRoot === "string" && typeof row.instanceId === "string" && typeof row.handle === "string" && typeof row.incarnationId === "string" && typeof row.worktreeId === "string" && typeof row.launcherPid === "number" && typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && typeof row.launchId === "string" && row.launchId.length > 0;
+  return typeof row.peer === "string" && typeof row.projectRoot === "string" && (row.executionCwd === undefined || typeof row.executionCwd === "string") && (row.terminalRoot === undefined || typeof row.terminalRoot === "string") && typeof row.instanceId === "string" && typeof row.handle === "string" && typeof row.incarnationId === "string" && typeof row.worktreeId === "string" && typeof row.launcherPid === "number" && typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && typeof row.launchId === "string" && row.launchId.length > 0;
 }
 
 /**
@@ -410,13 +442,15 @@ export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: stri
   const handle = process.env.ORCA_TERMINAL_HANDLE;
   const worktreeIdFromEnv = process.env.ORCA_WORKTREE_ID;
   if (!handle || !worktreeIdFromEnv) return undefined;
+  if (!definitionOf(peer) && !config.executionCwd) throw new Error(`${peer}: recording an extra terminal requires its authenticated startup execution root`);
+  const expectedRoot = executionRoot(peer, projectRoot, config.executionCwd || undefined);
   const value = await run(config.runner, ["terminal", "show", "--terminal", handle, "--json"]);
   const terminal = terminalObject(value);
   const actualRoot = nestedString(terminal, ["worktreePath", "projectRoot"]);
   const actualHandle = nestedString(terminal, ["handle"]);
   const actualWorktree = nestedString(terminal, ["worktreeId"]);
   const incarnationId = nestedString(terminal, ["incarnationId"]);
-  if (actualHandle !== handle || !actualRoot || !rootMatches(actualRoot, projectRoot) || actualWorktree !== worktreeIdFromEnv || !incarnationId) {
+  if (actualHandle !== handle || !actualRoot || !(rootMatches(actualRoot, projectRoot) || !definitionOf(peer) && rootMatches(actualRoot, expectedRoot)) || actualWorktree !== worktreeIdFromEnv || !incarnationId) {
     throw new OrcaCommandError(blocker("project-root-mismatch", "Orca launch terminal failed canonical root/worktree readback", peer, handle));
   }
   const launcherSignature = await config.processIdentity(process.pid);
@@ -424,7 +458,7 @@ export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: stri
   const launchId = randomUUID();
   process.env.AGENTHUB_LAUNCH_ID = launchId;
   process.env.AGENTHUB_INSTANCE_ID = instanceId;
-  const row: RecordedTerminalLaunch = { peer, projectRoot, stateDir, instanceId, launcherPid: process.pid, launcherSignature, launchId, handle, incarnationId, worktreeId: actualWorktree, env: allowedEnv({ env: process.env }) };
+  const row: RecordedTerminalLaunch = { peer, projectRoot, ...(!definitionOf(peer) ? { executionCwd: expectedRoot, terminalRoot: actualRoot } : {}), stateDir, instanceId, launcherPid: process.pid, launcherSignature, launchId, handle, incarnationId, worktreeId: actualWorktree, env: allowedEnv({ env: process.env }) };
   const existing = launchRecords(stateDir);
   // #215: rewriting an unreadable file would replace every other launcher's record with this one, and recovery would
   // then read those launchers as gone.
@@ -470,12 +504,12 @@ function sessionFrom(terminal: Record<string, unknown>): string | undefined {
   return nestedString(terminal, ["sessionId", "agentSessionId", "resumeSessionId"]) ?? nestedString(wait, ["sessionId", "agentSessionId", "resumeSessionId", "session", "agentSession"]) ?? nestedString(session, ["id", "sessionId"]);
 }
 
-function identityFrom(terminal: Record<string, unknown>): TerminalPeer | undefined {
+function identityFrom(terminal: Record<string, unknown>, instances?: KindMap): TerminalPeer | undefined {
   const wait = object(terminal.agentWait);
   const session = object(terminal.session);
   const candidates = [terminal.agentIdentity, terminal.agent, wait.agentIdentity, wait.agent, session.agentIdentity, session.agent];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && definitionOf(candidate)?.session.launchRecord) return candidate as TerminalPeer;
+    if (typeof candidate === "string" && definitionOf(candidate, instances)?.session.launchRecord) return candidate as TerminalPeer;
   }
   return undefined;
 }
@@ -513,7 +547,9 @@ function launchFor(peer: TerminalPeer, projectRoot: string, sessionId: string, o
   const binding: TerminalBinding = { peer, projectRoot, sessionId, handle: nestedString(source, ["handle"])!,
     incarnationId: nestedString(source, ["incarnationId"])!, worktreeId: nestedString(source, ["worktreeId"])!,
     ...(ref?.sessionFile ? { sessionFile: ref.sessionFile } : {}), ...(ref?.backend ? { backend: ref.backend } : {}), ...(ref?.model ? { model: ref.model } : {}), launch, launchMetadata: launch };
-  const tail = definitionOf(peer)?.session.resumeArgv?.(binding, false);
+  const adapter = definitionOf(peer) ?? definitionOf(peer, readInstanceConfig(projectRoot).instances);
+  const nativeTail = adapter?.session.resumeArgv?.(binding, false);
+  const tail = nativeTail && adapter ? [nativeTail[0]!, ...(peer !== adapter.kind ? ["--as", peer] : []), ...nativeTail.slice(1)] : undefined;
   if (!tail) throw new Error(`${peer}: no recorded terminal resume adapter`);
   const argv = [...launch.argv, ...tail];
   const command = [...prefix, ...argv.map(shellQuote)].join(" ");
@@ -538,7 +574,10 @@ function verifyBindingData(actual: Record<string, unknown>, binding: TerminalBin
   const root = nestedString(actual, ["worktreePath", "projectRoot"]);
   const worktree = nestedString(actual, ["worktreeId"]);
   if (handle !== binding.handle || incarnation !== binding.incarnationId || worktree !== binding.worktreeId) return blocker("stale-terminal", "captured terminal identity changed; refusing to mutate it", binding.peer, binding.handle);
-  if (!rootMatches(root, binding.projectRoot)) return blocker("project-root-mismatch", "terminal belongs to a different project root; refusing to mutate it", binding.peer, binding.handle);
+  let expectedRoot: string;
+  try { expectedRoot = savedTerminalRoot(binding); }
+  catch { return blocker("project-root-mismatch", "declared terminal execution root changed or is unavailable; refusing to mutate it", binding.peer, binding.handle); }
+  if (!rootMatches(root, expectedRoot)) return blocker("project-root-mismatch", "terminal belongs to a different project root; refusing to mutate it", binding.peer, binding.handle);
   return undefined;
 }
 
@@ -560,6 +599,7 @@ export async function inspectSavedTerminal(binding: TerminalBinding, options?: C
   const completeIdentity = (value: Record<string, unknown>) =>
     [nestedString(value, ["handle"]), nestedString(value, ["incarnationId"]), nestedString(value, ["worktreeId"]), nestedString(value, ["worktreePath", "projectRoot"])].every(Boolean);
   try {
+    savedTerminalRoot(binding);
     const shown = terminalObject(await run(config.runner, ["terminal", "show", "--terminal", binding.handle, "--json"]));
     if (!completeIdentity(shown)) return unknown();
     const issue = verifyBindingData(shown, binding);
@@ -603,6 +643,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
   const byPeer: Partial<Record<TerminalPeer, TerminalBinding>> = {};
   const requested = (Object.entries(sessions) as [TerminalPeer, string | SessionRef | undefined][]).map(([peer, value]) => [peer, typeof value === "string" ? { sessionId: value } : value] as const).filter((entry): entry is [TerminalPeer, SessionRef] => !!entry[1]?.sessionId);
   if (!requested.length) return { bindings, byPeer, blockers, manualRequired: false };
+  const instances = requested.some(([peer]) => definitionOf(peer) === undefined) ? readInstanceConfig(projectRoot).instances : undefined;
   // #215: without the records a terminal could be bound from Orca metadata alone, losing the launch's captured
   // CODEX_HOME or CLAUDE_CONFIG_DIR: an unreadable file blocks the binding, never reads as "no records".
   const rows = launchRecords(config.stateDir);
@@ -619,6 +660,15 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
 
   for (const [peer, ref] of requested) {
     const sessionId = ref.sessionId;
+    const adapter = definitionOf(peer, instances), extra = definitionOf(peer) === undefined;
+    if (!adapter?.session.launchRecord || extra && adapter.transport !== "codex-appserver") { blockers.push(blocker("ownership-unknown", `${peer}: no declared managed-terminal recovery adapter`, peer)); continue; }
+    const ownRecord = records.find(item => item.peer === peer);
+    let expectedRoot: string, expectedTerminalRoot: string;
+    try {
+      expectedRoot = executionRoot(peer, projectRoot, ownRecord?.executionCwd ?? projectRoot);
+      expectedTerminalRoot = savedTerminalRoot({ peer, projectRoot, executionCwd: ownRecord?.executionCwd, terminalRoot: ownRecord?.terminalRoot });
+    }
+    catch { blockers.push(blocker("ownership-unknown", `${peer}: declared execution worktree changed or is unverified`, peer)); continue; }
     // #215: a launcher whose identity cannot be read may be this peer's: binding from Orca metadata would lose its launch.
     const unread = unknown.find((item) => item.peer === peer);
     if (unread) {
@@ -629,7 +679,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
       blockers.push(blocker("ownership-unknown", `${recordPath(config.stateDir)} holds a launch record that cannot be evaluated and may be this ${peer} launcher's, so no terminal can be bound to its launch; next action: inspect that row and fix it, or end that launcher and remove its row, then plan or resume again`, peer));
       continue;
     }
-    const candidates = listed.filter((terminal) => rootMatches(terminal.worktreePath ?? terminal.projectRoot, projectRoot));
+    const candidates = listed.filter((terminal) => rootMatches(terminal.worktreePath ?? terminal.projectRoot, expectedTerminalRoot));
     const peerCandidates: Record<string, unknown>[] = [];
     for (const listedTerminal of candidates) {
       const handle = nestedString(listedTerminal, ["handle"]);
@@ -642,16 +692,16 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
         continue;
       }
       // A show readback is required; list can be stale between recovery steps.
-      if (!rootMatches(terminal.worktreePath ?? terminal.projectRoot, projectRoot)) continue;
-      const identity = identityFrom(terminal);
+      if (!rootMatches(terminal.worktreePath ?? terminal.projectRoot, expectedTerminalRoot)) continue;
+      const identity = identityFrom(terminal, instances);
       const terminalSession = sessionFrom(terminal);
       const recorded = records.find((item) => item.peer === peer && item.handle === handle && item.worktreeId === terminal.worktreeId && item.incarnationId === terminal.incarnationId);
       // A recorded launcher proves ownership; the daemon's supplied session id is the
       // authoritative session id when Orca omits it from terminal metadata.
-      if ((identity === peer && terminalSession === sessionId) || (recorded !== undefined && (identity === undefined || identity === peer) && (terminalSession === undefined || terminalSession === sessionId))) peerCandidates.push(terminal);
+      if ((!extra && identity === peer && terminalSession === sessionId) || (recorded !== undefined && (identity === undefined || identity === peer || extra && identity === adapter.kind) && (terminalSession === undefined || terminalSession === sessionId))) peerCandidates.push(terminal);
     }
     if (!peerCandidates.length) {
-      const ownershipUnknown = candidates.some((terminal) => identityFrom(terminal) === undefined && !records.some((item) => item.handle === terminal.handle));
+      const ownershipUnknown = candidates.some((terminal) => identityFrom(terminal, instances) === undefined && !records.some((item) => item.handle === terminal.handle));
       blockers.push(ownershipUnknown
         ? blocker("ownership-unknown", `cannot prove ${peer} terminal ownership from Orca metadata`, peer)
         : blocker("missing-terminal", `no ${peer} terminal with session ${sessionId} in ${projectRoot}`, peer));
@@ -676,9 +726,9 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
     const recorded = records.find((item) => item.peer === peer && item.handle === handle && item.worktreeId === terminal.worktreeId && item.incarnationId === terminal.incarnationId);
     // Orca observation supplies file identity; launch arguments are not observed native session-file evidence.
     const { args: _launchArgs, ...observedTerminal } = terminal;
-    const sessionFile = definitionOf(peer)?.session.crashIdentity?.(observedTerminal).sessionFile;
+    const sessionFile = definitionOf(peer, instances)?.session.crashIdentity?.(observedTerminal).sessionFile;
     const launch = launchFor(peer, projectRoot, sessionId, config, terminal, recorded, { ...ref, ...(sessionFile ? { sessionFile } : {}) });
-    const binding: TerminalBinding = { peer, handle, incarnationId, worktreeId, projectRoot, sessionId, ...(sessionFile ? { sessionFile } : {}), ...(ref.backend ? { backend: ref.backend } : {}), ...(ref.model ? { model: ref.model } : {}), launch, launchMetadata: launch };
+    const binding: TerminalBinding = { peer, handle, incarnationId, worktreeId, projectRoot, ...(extra ? { executionCwd: expectedRoot, terminalRoot: expectedTerminalRoot } : {}), sessionId, ...(sessionFile ? { sessionFile } : {}), ...(ref.backend ? { backend: ref.backend } : {}), ...(ref.model ? { model: ref.model } : {}), launch, launchMetadata: launch };
     bindings.push(binding);
     byPeer[peer] = binding;
   }
@@ -750,6 +800,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
   const config = normalizeOptions(options);
   let made: string | undefined; // a later failure must still report the terminal it created
   try {
+    savedTerminalRoot(binding);
     const worktreeSelector = binding.worktreeId.startsWith("id:") ? binding.worktreeId : `id:${binding.worktreeId}`;
     // The coordinator journals a pending creation before this call and reconciles
     // it on resume. Other agents in the worktree do not imply a prior create.

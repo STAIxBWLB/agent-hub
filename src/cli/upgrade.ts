@@ -1,4 +1,5 @@
 import { definitionOf } from "../adapters/registry.ts";
+import { readInstanceConfig } from "../hub/instance-config.ts";
 import { LIVE_TEST_PERSON_REFUSAL } from "./identity.ts";
 import { checkedSessionPath } from "./recovery-session-file.ts";
 import { canChooseFresh, decodeRestoreReceipt, restoreReceiptStatus } from "./upgrade-restore-state.ts";
@@ -13,6 +14,9 @@ import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, re
 import { resolveAcceptedBinding, piArchiveExit, recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
 import { RecoveryPresentationError, type RecoveryPresentationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
+
+const projectDefinition = (peer: string, root?: string) => definitionOf(peer) ?? (root ? definitionOf(peer, readInstanceConfig(root).instances) : undefined);
+
 
 export interface RecoveryPeer {
   id: string;
@@ -338,7 +342,7 @@ function missingRepair(op: RecoveryOperation, progress: ProjectProgress, peer: s
 function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
   return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && canChooseFresh(value)).map(([key]) => key.slice("restored:".length))
-    .filter((peer) => definitionOf(peer)?.session.personFresh === true && ((!Object.hasOwn(progress.reattachments ?? {}, peer) && !Object.hasOwn(progress.repairedSessions ?? {}, peer)) || missingRepair(op, progress, peer)) && !progress.fresh?.[peer] && (!planned?.freshStart?.includes(peer) || missingRepair(op, progress, peer)) && !plannedAttached(op, progress, peer, live));
+    .filter((peer) => projectDefinition(peer, planned?.project.root)?.session.personFresh === true && ((!Object.hasOwn(progress.reattachments ?? {}, peer) && !Object.hasOwn(progress.repairedSessions ?? {}, peer)) || missingRepair(op, progress, peer)) && !progress.fresh?.[peer] && (!planned?.freshStart?.includes(peer) || missingRepair(op, progress, peer)) && !plannedAttached(op, progress, peer, live));
 }
 
 /** Read-only scope classification; it confers no delegation authority. */
@@ -364,7 +368,7 @@ function plannedAttached(op: RecoveryOperation, progress: ProjectProgress, peer:
     ? resolveAcceptedBinding(planned, progress, peer as RecoveryNativePeer)
     : (planned?.terminals as { peer: string; sessionId: string }[] | undefined)?.find((t) => t.peer === peer);
   const current = state?.state === "running" ? state.peers.find((p) => p.id === peer && p.state !== "offline") : undefined;
-  return !!binding && current?.[definitionOf(peer)?.session.idField ?? "sessionId"] === binding.sessionId;
+  return !!binding && current?.[projectDefinition(peer, planned?.project.root)?.session.idField ?? "sessionId"] === binding.sessionId;
 }
 
 /** Registry reads for planning must not create a registry or run migrations. */
@@ -445,7 +449,7 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
     if (progress.reattachments === undefined) continue;
     if (!object(progress.reattachments)) throw new Error("invalid reattachment markers");
     for (const [peer, marker] of Object.entries(progress.reattachments)) {
-      if (definitionOf(peer)?.session.launchRecord !== true || !object(marker) || Object.keys(marker).some(key => !["state", "at", "cause", "binding"].includes(key)) ||
+      if (projectDefinition(peer, op.plan.projects[index]?.project.root)?.session.launchRecord !== true || !object(marker) || Object.keys(marker).some(key => !["state", "at", "cause", "binding"].includes(key)) ||
           !["ready", "attempted"].includes(String(marker.state)) || marker.cause !== "detached after restore" || typeof marker.at !== "number" || !Number.isFinite(marker.at) || marker.at < 0) throw new Error("invalid reattachment marker");
       const receipt = decodeRestoreReceipt({ state: "done", binding: marker.binding });
       if (receipt?.state !== "done" || receipt.binding.peer !== peer || receipt.binding.projectRoot !== op.plan.projects[index]?.project.root) throw new Error("reattachment binding does not match its peer and project");
@@ -467,7 +471,7 @@ function validateReceipt(id: string, op: RecoveryOperation): void {
   }
   if (op.blockedReattachment !== undefined) {
     const selected = op.blockedReattachment;
-    if (!object(selected) || Object.keys(selected).some(key => !["projectId", "peer"].includes(key)) || typeof selected.projectId !== "string" || definitionOf(String(selected.peer))?.session.launchRecord !== true ||
+    if (!object(selected) || Object.keys(selected).some(key => !["projectId", "peer"].includes(key)) || typeof selected.projectId !== "string" || projectDefinition(String(selected.peer), op.plan.projects.find(project => project.project.id === selected.projectId)?.project.root)?.session.launchRecord !== true ||
         !op.projects.some(project => project.id === selected.projectId && Object.hasOwn(project.reattachments ?? {}, selected.peer))) throw new Error("invalid blocked reattachment selector");
   }
 }
@@ -795,7 +799,7 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op);
   const selection = () => {
-    if (definitionOf(peer)?.session.launchRecord !== true || op.phase !== "blocked" || op.disposition || op.final || op.blockedReattachment?.peer !== peer) throw new Error("reattach is available only for the peer named by a blocked reattachment receipt");
+    if (projectDefinition(peer, op.plan.projects.find(project => project.project.id === op.blockedReattachment?.projectId)?.project.root)?.session.launchRecord !== true || op.phase !== "blocked" || op.disposition || op.final || op.blockedReattachment?.peer !== peer) throw new Error("reattach is available only for the peer named by a blocked reattachment receipt");
     const progress = op.projects.find(project => project.id === op.blockedReattachment!.projectId);
     const planned = op.plan.projects.find(project => project.project.id === progress?.id);
     const native = peer as RecoveryNativePeer;
@@ -820,7 +824,7 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
     };
     await target();
     attempted = true;
-    await driver.restore(planned, progress, op, definitionOf(native)?.transport === "claude-channel" ? "claude" : "native", save, native);
+    await driver.restore(planned, progress, op, projectDefinition(native, planned.project.root)?.transport === "claude-channel" ? "claude" : "native", save, native);
     // A done receipt is written by the runtime only after authenticated attachment and exact settlement.
     // Inspection peers may be unavailable; do not invent an attachment from a test or a stale status projection.
     const restored = decodeRestoreReceipt(progress.terminals[`restored:${native}`]);
@@ -916,7 +920,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     const next = nextActionsText(op, live);
     if ("fresh" in choice) {
       // `ahub pi` sends no fresh flag, and a restored hub refills a Pi start from its recorded resume (daemon startPeer).
-      if (definitionOf(choice.fresh)?.session.personFresh === false) throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; ${op.plan.projects.map(planned => piArchiveExit(planned, recoveryCommand(op, "dispose", STOP))).join("; ")}; ${next}`);
+      if (op.plan.projects.some(planned => projectDefinition(choice.fresh, planned.project.root)?.session.personFresh === false)) throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; ${op.plan.projects.filter(planned => projectDefinition(choice.fresh, planned.project.root)?.session.personFresh === false).map(planned => piArchiveExit(planned, recoveryCommand(op, "dispose", STOP), choice.fresh)).join("; ")}; ${next}`);
       if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; ${next}`);
       if (!targetReadsWaivers(op)) throw new Error(`--fresh-session is not available: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session; ${next}`);
       // The new session is launched by resume, so it helps only where resume can get past what is live.

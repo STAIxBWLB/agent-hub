@@ -8,6 +8,8 @@ import { catalogAssignments } from "./roles.ts";
 import { resolveProfile } from "./profiles.ts";
 import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
+import { validateInstances, type InstancesConfig } from "./instances.ts";
+import { peerRosterConfig } from "./roster.ts";
 
 export type ApplyClass = "live" | "next use" | "restart";
 export interface ApplyRule { applies: ApplyClass; reason?: string }
@@ -108,6 +110,7 @@ const schema: Record<string, Check> = {
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
+  instances: v => { validateInstances(v); },
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
   memory: block({ enabled: bool, worker_url: text, inject_tokens: number(0, 1_000_000, true), brief_items: number(0, 10_000, true), native: bool,
     short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool }),
@@ -138,7 +141,14 @@ const schema: Record<string, Check> = {
   review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true) }), recovery: block({ auto_resume_after_crash: bool }),
   capabilities: map(strings), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
 };
-export function validateRawConfig(raw: unknown): asserts raw is Record<string, unknown> { block(schema)(raw, "config"); }
+export function validateRawConfig(raw: unknown, declarations?: InstancesConfig): asserts raw is Record<string, unknown> {
+  const value = object(raw, "config");
+  const instances = validateInstances(value.instances ?? declarations);
+  if (!Object.keys(instances).length) return block(schema)(raw, "config");
+  block({ ...schema, permission_modes: v => { permissionDefaults(v, instances); },
+    roster: v => { peerRosterConfig(v, instances); }, peers: v => { peerStartConfig(v, instances); },
+  })(raw, "config");
+}
 export function validateEffectiveConfig(value: unknown): asserts value is HubConfig {
   const raw = { ...object(value, "config") };
   delete raw.ignored; delete raw.retired; delete raw.permission_default_sources;
@@ -149,6 +159,7 @@ export function validateEffectiveConfig(value: unknown): asserts value is HubCon
 }
 
 const restart: Record<string, string> = {
+  instances: "Native instance identity, worktree, ports and account bindings are fixed at daemon startup",
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.restartReasons ?? {})),
   memory: "Open memory consumers, selected profile, client and sync timer must be quiesced together",
   omniroute: "Credentials and gateway clients are bound to relay ownership", mlx: "Model runtime ownership and device resources belong to this daemon",
@@ -174,7 +185,7 @@ export function configApply(key: string): ApplyRule {
       if (shape?.fields) { if (!Object.hasOwn(shape.fields, part)) return fail(key, "unknown configuration key"); check = shape.fields[part]; }
       else if (shape?.item) { if (shape.keys && !shape.keys.includes(part)) return fail(key, "unknown configuration key"); check = shape.item; }
       else if (index === 0 && (special[top]?.includes(part) || top === "checks" && /^[a-z][a-z0-9_]{0,47}$/.test(part))) break;
-      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers"].includes(top)) break;
+      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers", "instances"].includes(top)) break;
       else return fail(key, "unknown configuration key");
     }
   }
