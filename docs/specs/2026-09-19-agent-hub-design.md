@@ -3456,3 +3456,9 @@ accounting. The A1 named compatibility metadata export preserves its original
 wrapper plans and observable shape, while the registry consumes separate native
 runtime definitions. Native display constants retain reference identity; private
 stream tone selection does not add fields to that observable display object.
+
+Configurable start-mode fallback reads the registered definition's default form,
+retaining explicit overrides and existing unknown-id behavior. The Kimi default
+mutant changes that native metadata from TUI to headless, so the original default
+assertion observes it directly; it does not remove a settings row or mutate the
+retained cross-release source literal.

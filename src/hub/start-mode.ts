@@ -36,7 +36,7 @@ export function peerStartConfig(value: unknown): PeerStartConfig {
 
 /** The mode a start of `peer` takes when nothing more specific was asked: `tui` wherever the peer has one. */
 export function startModeOf(peers: PeerStartConfig | undefined, peer: string): StartMode {
-  if ((REGISTRY_START_MODE_PEERS as readonly string[]).includes(peer)) return peers?.[peer]?.start_mode ?? "tui";
+  if ((REGISTRY_START_MODE_PEERS as readonly string[]).includes(peer)) return peers?.[peer]?.start_mode ?? definitionOf(peer)?.start.defaultForm ?? "tui";
   return definitionOf(peer)?.start.defaultForm ?? "headless";
 }
 

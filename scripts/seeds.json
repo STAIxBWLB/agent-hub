@@ -395,9 +395,9 @@
     },
     {
       "id": "kimi-tui-default",
-      "file": "src/adapters/registry.ts",
-      "search": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\"] as const;",
-      "replacement": "export const START_MODE_PEERS = [\"pi\", \"codex\"] as const;",
+      "file": "src/adapters/definitions/builtin-metadata.ts",
+      "search": "start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => \"ahub kimi\", daemonPort: \"acp\", forms: dualForms, defaultForm: \"tui\"",
+      "replacement": "start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => \"ahub kimi\", daemonPort: \"acp\", forms: dualForms, defaultForm: \"headless\"",
       "testFile": "test/kimi-tui.test.ts",
       "testName": "Kimi default and settings floor are TUI, and native hello admits only pull mode (#316)"
     },
