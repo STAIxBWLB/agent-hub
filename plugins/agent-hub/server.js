@@ -15782,7 +15782,7 @@ init_envelope();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.34",
+  version: "0.12.35",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",

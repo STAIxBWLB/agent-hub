@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.34 and control protocol 16. Live verification
+This guide describes ahub 0.12.35 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -1777,6 +1777,15 @@ but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
   started while an `ahub claude` session holds the peer stands by and attaches
   only after that session leaves.
 
+### Claude channel sessions while busy (#493)
+
+A Claude session started with `ahub claude` receives pushes when it is idle. While it is busy:
+
+- Every hub tool result carries fresh counts, `(N queued hub message(s), M important hub message(s) waiting: call hub_inbox before starting long local work)`, when important work waits. A zero count clears an earlier hint.
+- `hub_inbox` reads the daemon queue (and any local failed-push buffer) in a channel session too. A read is one `completed` delivery, like a tools-only read; holds refuse it the same way.
+- An important message is pushed into the running turn (steered) instead of waiting for the turn to end. Mid-turn reading was verified on Claude Code 2.1.302; an older client that drops it leaves the delivery `accepted` until a person resolves it. Ordinary messages still wait for the idle push or `hub_inbox`.
+- Do not use `[FYI]` for PR ready, done, submitted, ruling-needed, blocker or changed-contract messages: they need action. `hub_task_done` and `hub_review` already notify their recipients.
+
 ## Graceful shutdown
 
 Before stopping, let active turns and approvals settle when possible:
@@ -1962,21 +1971,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.34), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.35), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.34 ahub upgrade --to 0.12.34 --dry-run
-bunx --package @staix/agent-hub@0.12.34 ahub upgrade --to 0.12.34 --yes
+bunx --package @staix/agent-hub@0.12.35 ahub upgrade --to 0.12.35 --dry-run
+bunx --package @staix/agent-hub@0.12.35 ahub upgrade --to 0.12.35 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.34 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.35 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -2008,14 +2017,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.34 --dry-run
+ahub upgrade --to 0.12.35 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.34 --yes
+ahub upgrade --to 0.12.35 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -3075,7 +3084,7 @@ Qwen controlled recovery and automatic crash resume load the recorded conversati
 
 ## Optional Jcode peer
 
-Use ahub roster add jcode, then ahub jcode --mode headless [--model <alias>] [--provider-profile <name>]. The person launcher configures only agent-hub-jcode in .jcode/mcp.json; run ahub init afterwards to ignore the untracked machine-path file. Conductor/dashboard starts read that entry without editing it. Preview starts nothing, and ahub stop jcode stops only the owned private daemon/ACP groups. jcode_cmd, jcode_home and jcode_provider_profile are machine-local and never editable from settings.
+Use ahub roster add jcode, then ahub jcode --mode headless [--model <alias>] [--provider-profile <name>]. The launcher reads roster membership from the hub's status reply; a hub older than 0.12.35 does not send it, so the launcher stops with an upgrade-or-restart remedy and starts nothing (#484). The person launcher configures only agent-hub-jcode in .jcode/mcp.json; run ahub init afterwards to ignore the untracked machine-path file. Conductor/dashboard starts read that entry without editing it. Preview starts nothing, and ahub stop jcode stops only the owned private daemon/ACP groups. jcode_cmd, jcode_home and jcode_provider_profile are machine-local and never editable from settings.
 
 After upgrading to the recipient-retry release, a Jcode project MCP entry written before `AGENTHUB_DELIVERY_ONLY` was added is intentionally stale. Once per project, the person runs `ahub jcode --mode headless` before using conductor/dashboard starts. The launcher rewrites only the owned entry with the delivery-only marker, preserving foreign entries and refusing collisions; recovery relaunches already use this CLI path. Readiness checks never rewrite the file, and an explicit false marker or any other drift remains refused. Until that rewrite, daemon starts keep their actionable stale-entry refusal rather than advertising a retry tool Jcode cannot use.
 

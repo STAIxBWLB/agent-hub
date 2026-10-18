@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.34
+bun add -g github:STAIxBWLB/agent-hub#v0.12.35
 ahub setup
 ```
 
@@ -30,7 +30,13 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to 0.12.34
+## Upgrading to 0.12.35
+
+A Claude session started with `ahub claude` now gets its hub messages while it is busy (#493). Its tool results report how many queued and important messages wait, `hub_inbox` reads the daemon queue even in a channel session, and an important message reaches the running turn instead of waiting for the turn to end. Nothing needs configuring. A Claude session keeps the plugin server it started with, so restart it after the upgrade to get this. `ahub jcode` no longer refuses every start as off roster (#484).
+
+If `.agenthub/sdlc.toml` sets `workflow` or names a `phase` gate, `hub.log` now warns: remove `workflow`, rename the gate to `criteria`, and record `criteria` receipts, because 0.13.0 refuses all three. An enabled lifecycle now shows playbook stages, and stored `implement`/`verify` receipts read as `build`/`test` (#481).
+
+To run extra peer instances, declare them in `.agenthub/config.local.json` after upgrading and restart the hub; an extra implementer needs an existing registered worktree at `.worktrees/<id>` with a branch (#450 I2). See [operations](operations.md).
 
 The upgrade runs with the target release's own coordinator, so an upgrade from 0.12.32 with cancelled tasks and a managed terminal, or with a notice the target sends right after it starts, no longer blocks (#478). If the operation blocks because a restored Codex, Claude or Pi terminal disappeared, the person runs `ahub recovery reattach <operation-id> codex|claude|pi` to relaunch that peer with its recorded session (one relaunch per receipt), then `ahub recovery resume` to finish.
 
