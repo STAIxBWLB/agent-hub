@@ -7,15 +7,40 @@ import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
 import { peerChildEnv, processTable } from "../hub/child-process.ts";
 import { definitionOf } from "../adapters/registry.ts";
+import type { InstancesConfig } from "../hub/instances.ts";
 import { kimiAcpCommand } from "../adapters/definitions/native-daemon-kimi.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
+/** Consume only ahub's selector, never native arguments after the passthrough delimiter. */
+export function instanceLaunchArguments(command: string, raw: readonly string[], instances?: InstancesConfig): { instance?: string; args: string[] } {
+  if (!definitionOf(command)) return { args: [...raw] };
+  const args: string[] = [];
+  let instance: string | undefined;
+  for (let index = 0; index < raw.length; index++) {
+    const arg = raw[index]!;
+    if (arg === "--") { args.push(...raw.slice(index)); break; }
+    if (arg !== "--as" && !arg.startsWith("--as=")) { args.push(arg); continue; }
+    if (instance !== undefined) throw new Error("--as may appear only once");
+    const id = arg === "--as" ? raw[++index] : arg.slice("--as=".length);
+    if (!id || id.startsWith("--")) throw new Error("--as needs a declared instance id");
+    const declaration = instances && Object.hasOwn(instances, id) ? instances[id] : undefined;
+    if (!declaration || declaration.kind !== command || !definitionOf(id, instances)) throw new Error("--as must name a declared instance of this command's native kind");
+    instance = id;
+  }
+  return { ...(instance ? { instance } : {}), args };
+}
+
+/** Only an authenticated daemon hello can authorize extra-instance effects. */
+export function requirePeerInstances(features: unknown): void {
+  if (!Array.isArray(features) || !features.includes("peer_instances")) throw new Error("running hub lacks peer_instances; upgrade it before starting an extra instance");
+}
+
 /** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
-export function nativeLaunchEnv(tool: "claude" | "codex" | "pi" | "kimi", source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function nativeLaunchEnv(tool: string, source: NodeJS.ProcessEnv, instances?: InstancesConfig): NodeJS.ProcessEnv {
   const env = peerChildEnv(tool, source);
   delete env.AGENTHUB_UNATTENDED;
   // Channel evidence for the plugin (issue #205): set beside the development-channel flag `buildLaunch` always passes.
-  const definition = definitionOf(tool);
+  const definition = definitionOf(tool, instances);
   if (definition?.identity.mcp === "channel-plugin") env.AGENTHUB_CHANNEL = "1";
   if (definition?.attach?.pullOnlyForms?.includes("tui")) delete env.AGENTHUB_MODE; // its MCP child must attach pull-only, never as a tools socket
   return env;
@@ -289,12 +314,12 @@ export function sessionSettings(tee?: StatusLineTee, facts?: FactsHook): string 
 export function buildLaunch(
   tool: "claude" | "codex",
   userArgs: string[],
-  ctx: { unattended: boolean; proxyUrl?: string; codexBin?: string; statusLine?: StatusLineTee; facts?: FactsHook; preview?: boolean },
+  ctx: { instance?: string; unattended: boolean; proxyUrl?: string; codexBin?: string; statusLine?: StatusLineTee; facts?: FactsHook; preview?: boolean },
 ): Launch {
   const adapter = definitionOf(tool);
   if (!adapter) throw new Error("native launch definition unavailable");
   const { metadata: _metadata, ...launch } = adapter.start.launch({
-    instance: tool, form: "tui", projectRoot: process.cwd(), stateDir: ctx.facts?.stateDir ?? ctx.statusLine?.stateDir ?? "",
+    instance: ctx.instance ?? tool, form: "tui", projectRoot: process.cwd(), stateDir: ctx.facts?.stateDir ?? ctx.statusLine?.stateDir ?? "",
     entrypoint: resolve(import.meta.dir, "main.js"), userArgs, env: {}, ...ctx,
   });
   return launch;

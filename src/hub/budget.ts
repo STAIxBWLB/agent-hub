@@ -46,6 +46,8 @@ export interface BudgetConfig {
 export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 0 };
 
 export interface BudgetHooks {
+  /** Stable/idempotent for this Budget lifetime. All lifecycle hooks receive this canonical account id. */
+  account?(peer: PeerId): PeerId;
   pause(peer: PeerId): void;
   /** Must leave a manual `ahub pause` in place. */
   resume(peer: PeerId): void;
@@ -101,6 +103,43 @@ export class Budget {
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run(`CREATE TABLE IF NOT EXISTS budget_pauses (peer TEXT PRIMARY KEY, since INTEGER NOT NULL, resets_at INTEGER NOT NULL,
       reason TEXT NOT NULL, summary TEXT, handed_off INTEGER NOT NULL DEFAULT 0, moved TEXT NOT NULL DEFAULT '[]')`);
+    try { this.normalizeStoredPauses(); } catch (error) { this.db.close(); throw error; }
+  }
+
+  private account(peer: PeerId): PeerId {
+    if (!this.hooks.account) return peer;
+    const account = this.hooks.account(peer);
+    if (typeof account !== "string" || !account.trim() || this.hooks.account(account) !== account) throw new Error("budget account resolver must return a canonical idempotent id");
+    return account;
+  }
+
+  /** A newly declared alias must not erase an older custom peer's persisted pause. */
+  private normalizeStoredPauses(): void {
+    if (!this.hooks.account) return; // identity/default startup leaves existing storage byte-for-byte alone
+    this.db.transaction(() => {
+      const rows = (this.db.query("SELECT peer FROM budget_pauses ORDER BY peer").all() as { peer: string }[]).map(row => this.readRecord(row.peer)!);
+      const groups = new Map<PeerId, PauseRecord[]>();
+      for (const row of rows) {
+        const account = this.account(row.peer), group = groups.get(account) ?? [];
+        group.push(row); groups.set(account, group);
+      }
+      for (const [peer, group] of groups) {
+        if (group.length === 1 && group[0]!.peer === peer) continue;
+        // Conservative collision reduction: retain the longest pause, earliest start and every distinct move.
+        // Any unfinished handoff stays unfinished so the daemon's account fanout retries remaining open work.
+        const summaries = group.filter(row => row.summary !== null).map(row => `[${row.peer}]\n${row.summary}`);
+        const moved = [...new Map(group.flatMap(row => row.moved).map(move => [JSON.stringify(move), move])).values()];
+        const first = group[0]!;
+        const record = group.length === 1 ? { ...first, peer } : {
+          peer, since: Math.min(...group.map(row => row.since)), resetsAt: Math.max(...group.map(row => row.resetsAt)),
+          reason: [...new Set(group.map(row => row.reason))].join(" | "), summary: summaries.length ? summaries.join("\n\n") : null,
+          handedOff: group.every(row => row.handedOff), moved,
+        };
+        for (const row of group) this.db.query("DELETE FROM budget_pauses WHERE peer = ?").run(row.peer);
+        this.db.query("INSERT INTO budget_pauses (peer, since, resets_at, reason, summary, handed_off, moved) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(record.peer, record.since, record.resetsAt, record.reason, record.summary, record.handedOff ? 1 : 0, JSON.stringify(record.moved));
+      }
+    }).immediate();
   }
 
   /** Freeze pause/resume and handoff transitions while a controlled restart is fenced. Readings continue to update. */
@@ -121,6 +160,10 @@ export class Budget {
   }
 
   record(peer: PeerId): PauseRecord | undefined {
+    return this.readRecord(this.account(peer));
+  }
+
+  private readRecord(peer: PeerId): PauseRecord | undefined {
     const r = this.db.query("SELECT * FROM budget_pauses WHERE peer = ?").get(peer) as Record<string, any> | null;
     return r ? { peer: r.peer, since: r.since, resetsAt: r.resets_at, reason: r.reason, summary: r.summary, handedOff: !!r.handed_off, moved: JSON.parse(r.moved) } : undefined;
   }
@@ -157,13 +200,15 @@ export class Budget {
   report(peer: PeerId, windows: UsageWindow[], hard = false, at = this.now()): void {
     // Execution-budget instrumentation is independent of native quota accounting.
     // Explicit quota exemption or absent budget metadata exempts registered kinds; external ids keep accounting.
-    const adapter = definitionOf(peer);
-    if (peer === "user" || peer === "hub" || adapter && (!adapter.budget || adapter.budget.quotaExempt === true) || this.closed) return;
+    const reporter = peer;
+    peer = this.account(peer);
+    const adapter = definitionOf(reporter) ?? definitionOf(peer);
+    if (reporter === "user" || reporter === "hub" || peer === "user" || peer === "hub" || adapter && (!adapter.budget || adapter.budget.quotaExempt === true) || this.closed) return;
     // An override ignores soft readings, not a provider that has actually refused another turn.
     if (hard && this.ignoreUntil.delete(peer)) {
       try { this.hooks.notify(`budget: ${peer} provider refused again; budget override ended`); } catch { /* a notice cannot prevent the hard pause */ }
     }
-    try { this.hooks.reading?.(peer, windows, hard, at); } catch { /* telemetry never costs a reading */ }
+    try { this.hooks.reading?.(reporter, windows, hard, at); } catch { /* telemetry never costs a reading */ }
     const mine = this.readings.get(peer) ?? new Map<string, Reading>();
     this.readings.set(peer, mine);
     for (const w of windows) mine.set(w.id, { ...w, used: Math.max(0, Math.min(1, w.used)), at });
@@ -173,12 +218,14 @@ export class Budget {
 
   /** Readings that still say something: not stale, and not about a window that has reset since they were taken. */
   private fresh(peer: PeerId): Reading[] {
+    peer = this.account(peer);
     const staleMs = this.cfg.stale_min * 60_000;
     return [...(this.readings.get(peer)?.values() ?? [])].filter((r) => this.now() - r.at <= staleMs && !(r.resetsAt && r.resetsAt <= this.now()));
   }
 
   /** The owner's override: lift the pause now and leave the peer alone until the window that caused it has reset. */
   override(peer: PeerId): boolean {
+    peer = this.account(peer);
     const open = this.record(peer);
     if (!open) return false;
     this.ignoreUntil.set(peer, open.resetsAt);
@@ -190,6 +237,7 @@ export class Budget {
   }
 
   private async evaluate(peer: PeerId, hard: boolean): Promise<void> {
+    peer = this.account(peer);
     if (this.recoveryHeld) { this.deferred = true; if (hard) this.deferredHard.add(peer); return; }
     const fresh = this.fresh(peer);
     const over = fresh.filter((r) => r.used >= this.cfg.gate);
@@ -252,6 +300,7 @@ export class Budget {
   }
 
   private async finishHandoff(peer: PeerId, summary: string | undefined): Promise<void> {
+    peer = this.account(peer);
     if (this.closed || this.recoveryHeld) { this.deferred = true; return; }
     if (this.handingOff.has(peer) || !this.hooks.canHandOff(peer)) return; // retried by the next tick
     this.handingOff.add(peer);
@@ -264,6 +313,7 @@ export class Budget {
   }
 
   private async handOff(peer: PeerId, summary: string | undefined): Promise<void> {
+    peer = this.account(peer);
     const context = summary ?? (await this.hooks.platformContext(peer).catch(() => undefined));
     // Wait or hand off (issue #36): a handoff costs the next peer the whole context, so a short wait can be cheaper.
     const resetsAt = this.record(peer)?.resetsAt;
@@ -298,6 +348,7 @@ export class Budget {
 
   /** `hub_checkpoint` arrived from a peer. Resolved by the daemon's requestCheckpoint wait; kept on the record for a restart. */
   checkpointed(peer: PeerId, summary: string): void {
+    peer = this.account(peer);
     if (this.closed) return; // a hub_checkpoint that lands during shutdown
     this.db.query("UPDATE budget_pauses SET summary = ? WHERE peer = ?").run(summary, peer);
   }
@@ -314,6 +365,7 @@ export class Budget {
   }
 
   private resume(peer: PeerId, why: string): void {
+    peer = this.account(peer);
     const record = this.record(peer);
     if (!record) return;
     this.db.query("DELETE FROM budget_pauses WHERE peer = ?").run(peer);

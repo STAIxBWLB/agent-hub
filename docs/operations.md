@@ -3500,3 +3500,47 @@ Native transparency/floating and the bridge were verified in the macOS spike.
 Real keystrokes, dragging and persistence, Spaces, message delivery and body
 click need the manual PR checklist before merge; automated fixtures do not
 establish those native results.
+
+## Additional headless peer instances
+
+Declare extra instances only in an untracked `.agenthub/config.local.json`, then
+restart the hub. For example, a reviewer can use:
+
+```json
+{
+  "instances": {
+    "codex-review": { "kind": "codex", "roles": ["reviewer"] },
+    "kimi-review": { "kind": "kimi", "roles": ["reviewer"] }
+  }
+}
+```
+
+Start them with `ahub codex --as codex-review` and
+`ahub kimi --as kimi-review`. Codex keeps its native TUI and its own hub-owned
+app-server proxy; extra Kimi, Qwen, Pi and local instances use headless starts.
+Extra Claude/channel and Jcode instances are unavailable in I2. A missing
+`peer_instances` feature on an old daemon or upgrade target requires a supporting
+version before launching or restoring extras.
+
+An additional implementer must have an existing registered Git worktree and
+attached branch at `.worktrees/<instance-id>`, named explicitly by `worktree` in
+its declaration. The hub validates it and does not create it in this phase.
+Reviewer instances may share the checkout, or name their own validated worktree.
+The execution directory is separate from the canonical hub project. An Orca
+terminal may belong to either that canonical project or the instance's execution
+worktree; recovery preserves its exact recorded grouping and live launcher.
+Changing or removing the declaration invalidates its saved extra-instance
+binding. Do not infer ownership from a native-kind label alone.
+
+A routing preference for a kind chooses among its instances using current load
+and WIP. A manual instance id remains exact. Reviewers from the same kind share
+a family; the board records a same-family fallback when no other eligible family
+exists. Native context is per conversation, while quota windows and quota pauses
+are shared by kind/account. A quota reset does not lift a manual pause.
+
+Facts and turn snapshots follow the instance's execution checkout. Use a CLI
+that supports instances to undo those turns: older readers see their snapshot
+fields as unknown and cannot restore them into the main checkout. The supporting
+CLI checks the saved workspace against the current declaration again before any
+context change or file restoration. Removing the declaration intentionally
+blocks that undo until the identity and workspace can be reviewed.

@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+import { effectiveInstanceRoles } from "../hub/instances.ts";
+import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
+import { readInstanceConfig } from "../hub/instance-config.ts";
+import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
 import { BUILTIN_CLI_ENTRIES, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
 import { parsePiFlags } from "../adapters/definitions/native-cli-pi.ts";
 import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
@@ -27,7 +31,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
-import { hubHome, projectContext, realPath } from "../hub/project.ts";
+import { hubHome, projectContext, projectRoot, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
@@ -36,7 +40,7 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
+import { instanceLaunchArguments, requirePeerInstances, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
 import { configureKimiMcp } from "./kimi-mcp.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
@@ -101,11 +105,6 @@ while (argv[0] === "--project" || argv[0] === "--live-test") {
   }
 }
 const [given = "help", ...rest] = argv;
-// `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
-// (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
-const asksHelp = (a: string | undefined) => a === "--help" || a === "-h";
-const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true && rest.length === 1 && asksHelp(rest[0])) ? "help" : given;
-const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : rest;
 let selected: { root: string; stateDir: string };
 try {
   if (selector) {
@@ -116,9 +115,42 @@ try {
       const registered = known ?? projects.find((p) => p.root === context.root);
       selected = registered ?? context;
     }
-  } else selected = projectContext(process.cwd());
-} catch (error) { fail((error as Error).message); }
+  } else {
+    const markedPeer = process.env.AGENTHUB_PEER_ID, markedRoot = process.env.AGENTHUB_PROJECT_DIR;
+    const declarations = markedPeer && markedRoot && !definitionOf(markedPeer) ? readInstanceConfig(realPath(markedRoot)).instances : undefined;
+    if (markedPeer && markedRoot && declarations && Object.hasOwn(declarations, markedPeer)) {
+      const canonicalRoot = realPath(markedRoot), config = loadConfig(canonicalRoot);
+      const executionCwd = resolveInstanceExecutionCwd(canonicalRoot, markedPeer, declarations, effectiveInstanceRoles(markedPeer, declarations, config.roles));
+      if (realPath(projectRoot(process.cwd())) !== realPath(executionCwd)) fail("native instance workspace does not match its declared checkout");
+      selected = projectContext(canonicalRoot);
+    } else selected = projectContext(process.cwd());
+  }
+} catch (error) { fail(startupDiagnostic(error)); }
 const cwd = selected.root;
+const unboundCaller = detectCliIdentity(process.env);
+const markerNeedsDeclaration = unboundCaller.role === "invalid" && unboundCaller.reason === "AGENTHUB_PEER_ID conflicts with native agent marker"
+  && process.env.AGENTHUB_PEER_ID !== undefined && !definitionOf(process.env.AGENTHUB_PEER_ID);
+const needsInstances = definitionOf(given) && rest.some(arg => arg === "--as" || arg.startsWith("--as=")) || markerNeedsDeclaration;
+let declaredInstances: ReturnType<typeof readInstanceConfig>["instances"];
+let nativeSelection: ReturnType<typeof instanceLaunchArguments>;
+try {
+  declaredInstances = needsInstances ? readInstanceConfig(cwd).instances : undefined;
+  nativeSelection = instanceLaunchArguments(given, rest, declaredInstances);
+} catch (error) { fail(startupDiagnostic(error)); }
+const selectedInstance = nativeSelection.instance;
+// `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
+// (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
+const asksHelp = (a: string | undefined) => a === "--help" || a === "-h";
+const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true && nativeSelection.args.length === 1 && asksHelp(nativeSelection.args[0])) ? "help" : given;
+const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : nativeSelection.args;
+
+/** Resolve a named peer only against this project's current trusted declarations. */
+const peerDefinition = (peer: unknown) => typeof peer === "string"
+  ? definitionOf(peer) ?? definitionOf(peer, readInstanceConfig(cwd).instances) : undefined;
+const requireNamedPeerFeature = (hub: ControlClient, peer: string | undefined) => {
+  if (peer !== undefined && !definitionOf(peer)) requirePeerInstances(hub.features);
+};
+
 /** The project config, saying on stderr which machine-local fields it had to ignore (issue #17). */
 const projectConfig = () => {
   const config = loadConfig(cwd);
@@ -126,7 +158,7 @@ const projectConfig = () => {
   return config;
 };
 const stateDir = selected.stateDir;
-const caller = detectCliIdentity(process.env);
+const caller = declaredInstances ? detectCliIdentity(process.env, declaredInstances) : unboundCaller;
 const commandLabel = cliCommandLabel(cmd, args);
 const commandAccess = classifyPeerCommand(cmd, args);
 // Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
@@ -216,18 +248,18 @@ async function healthy(): Promise<boolean> {
   finally { hub?.close(); }
 }
 
-function exec(bin: string, argv: string[], tool?: "claude" | "codex" | "kimi"): never {
-  const env = tool ? nativeLaunchEnv(tool, childEnv()) : childEnv();
-  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+function exec(bin: string, argv: string[], tool?: "claude" | "codex" | "kimi", executionCwd = cwd): never {
+  const env = tool ? nativeLaunchEnv(selectedInstance ?? tool, childEnv(), declaredInstances) : childEnv();
+  const res = spawnSync(bin, argv, { cwd: executionCwd, stdio: "inherit", env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
   if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
   process.exit(res.status ?? 1);
 }
 
-function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv): never {
-  const env: NodeJS.ProcessEnv = { ...nativeLaunchEnv("pi", extra), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv, executionCwd = cwd): never {
+  const env: NodeJS.ProcessEnv = { ...nativeLaunchEnv(selectedInstance ?? "pi", extra, declaredInstances), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_UNATTENDED;
-  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env });
+  const res = spawnSync(bin, argv, { cwd: executionCwd, stdio: "inherit", env });
   if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
   process.exit(res.status ?? 1);
 }
@@ -322,6 +354,12 @@ async function orphanDoctor(kill: boolean, options: ReturnType<typeof outputOpti
     : printOutput(wrap(text, options.columns ?? Infinity).map(text => [{ text }]), options.color);
   if (kill) for (const { project, pids } of orphans) for (const pid of pids) if (!(await killOrphan(pid, project.root, diagnostic))) failed++;
   if (failed) fail(`${failed} orphaned hub process(es) could not be stopped`);
+}
+
+/** Startup refusals remain single-line and bounded even for malformed local declarations. */
+function startupDiagnostic(error: unknown): string {
+  const message = error instanceof Error ? error.message : "invalid startup configuration";
+  return message.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 512) || "invalid startup configuration";
 }
 
 function fail(message: string): never {
@@ -552,7 +590,10 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
 
 /** Strict person command: recorded identity only, no session or terminal overrides. */
 function parseRecoveryReattach(argv: readonly string[]): { id: string; peer: TerminalPeer } | undefined {
-  if (argv.length !== 3 || argv[0] !== "reattach" || !operationIdPattern.test(argv[1]!) || definitionOf(argv[2]!)?.session.launchRecord !== true) return undefined;
+  if (argv.length !== 3 || argv[0] !== "reattach" || !operationIdPattern.test(argv[1]!) || !/^[a-z][a-z0-9-]{0,31}$/.test(argv[2]!)) return undefined;
+  const builtin = definitionOf(argv[2]!);
+  if (builtin && builtin.session.launchRecord !== true) return undefined;
+  // Extra peers are resolved against the operation's canonical project by the recovery core, never by suffix.
   return { id: argv[1]!, peer: argv[2] as TerminalPeer };
 }
 
@@ -805,13 +846,25 @@ const commands: Record<string, () => Promise<void> | void> = {
   ...Object.fromEntries(BUILTIN_CLI_ENTRIES.map(entry => [entry.command, async () => {
     // Preserve the original guard before native effects; previews remain read-only and precede this guard.
     if (entry.lifecycleAdmission && !args.includes("--print-command") && !args.includes("--dry-run")) assertLifecycleAvailable();
-    return entry.execute({ args, cwd, stateDir, cliDir: import.meta.dir, unattendedEnv, definition: entry.definition,
-      projectConfig, connect, fail, exec, execWithEnv, takeFlags,
-      helpers: { launcherPreview, readControl, recordTerminalLaunch, recoveryLock, processSignature,
+    const nativeConnect = async () => {
+      const hub = await connect();
+      try { if (selectedInstance) requirePeerInstances(hub.features); return hub; }
+      catch (error) { hub.close(); throw error; }
+    };
+    if (selectedInstance && !args.includes("--print-command") && !args.includes("--dry-run")) {
+      const hub = await nativeConnect(); hub.close();
+    }
+    const context: NativeCliEntryContext = { args, cwd, stateDir, cliDir: import.meta.dir, unattendedEnv, definition: entry.definition,
+      ...(selectedInstance ? { instance: selectedInstance } : {}),
+      projectConfig, connect: nativeConnect, fail,
+      exec: (bin, argv, tool) => exec(bin, argv, tool, context.executionCwd),
+      execWithEnv: (bin, argv, env) => execWithEnv(bin, argv, env, context.executionCwd), takeFlags,
+      helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, recoveryLock, processSignature,
         buildLaunch, claudeObservationHooks, recordClaudeLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings,
         nativeLaunchEnv, runClaudeLaunch, childEnv, qwenSessionId, configureJcodeMcp, configureKimiMcp,
         buildKimiTuiLaunch, startModeOf },
-    });
+    };
+    return entry.execute(context);
   }])),
 
   models: async () => {
@@ -897,7 +950,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   watch: async () => {
     const peer = args[0];
-    if (typeof peer !== "string" || !definitionOf(peer)?.capabilities?.watch) fail("usage: ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]");
+    if (typeof peer !== "string" || !peerDefinition(peer)?.capabilities?.watch) fail("usage: ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]");
     if (args.slice(1).some(arg => arg !== "--no-thoughts" && !/^--color=(auto|always|never)$/.test(arg))) fail("unsupported watch option");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice(8), { isTTY: !!process.stdout.isTTY, ...process.env });
     if (color instanceof Error) fail(color.message);
@@ -1202,9 +1255,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   roster: async () => {
     const options = outputOptions(), flags = args.filter(arg => arg.startsWith("--")), positional = outputArguments().filter(arg => arg !== "--yes" && arg !== "--now");
     const [sub = "list", peer, ...extra] = positional;
-    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !definitionOf(peer ?? "")) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
+    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !peerDefinition(peer)) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
     const hub = await connect();
     try {
+      requireNamedPeerFeature(hub, peer);
       const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused")); return reply; };
       if (sub === "list") {
         const view = await request({ t: "settings_get" });
@@ -1565,7 +1619,22 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!turn.ended) fail(`turn ${id} is still running`);
     const { start_tree: startTree, end_tree: endTree } = turn;
     if (!startTree || !endTree) fail(`turn ${id} has no ${startTree ? "end" : "start"} snapshot: the hub stopped during it, or a snapshot failed (see hub.log)`);
-    const repo = repoOf(cwd) ?? fail(`${cwd} is not in a git work tree`);
+    const recordedWorkspace = turnRecords(t => t.workspace(id), undefined);
+    const undoWorkspace = (): string => {
+      // Old turns, including external peers and ids declared only later, belong to the canonical checkout.
+      if (recordedWorkspace === undefined) return cwd;
+      const declarations = readInstanceConfig(cwd).instances;
+      if (!declarations || !Object.hasOwn(declarations, turn.peer)) fail(`turn ${id}'s recorded instance is no longer declared; nothing was restored`);
+      const config = projectConfig();
+      const current = resolveInstanceExecutionCwd(cwd, turn.peer, declarations, effectiveInstanceRoles(turn.peer, declarations, config.roles));
+      if (realPath(current) !== realPath(recordedWorkspace)) fail(`turn ${id}'s recorded execution workspace changed; nothing was restored`);
+      return current;
+    };
+    const undoCwd = undoWorkspace();
+    const requireUndoWorkspace = () => {
+      if (realPath(undoWorkspace()) !== realPath(undoCwd)) fail(`turn ${id}'s execution workspace changed; nothing was restored`);
+    };
+    const repo = repoOf(undoCwd) ?? fail(`${undoCwd} is not in a git work tree`);
     if (!hasTree(repo, startTree) || !hasTree(repo, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
     // Another peer's turn that overlapped this one in time has its changes in this turn's diff as well.
     const undoConfig = projectConfig();
@@ -1587,11 +1656,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (first.undone) return console.log(`turn ${id} is already undone: its files are as they were before it started`);
     console.log(first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : `turn ${id} changed no files`);
     console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
-    const projections = new TextProjections({ cwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => console.error(line) });
-    const preview = projectedDiff({ repo, from: endTree, to: startTree, paths: first.restore, projections, deny: undoConfig.local.deny, privatePath: path => matchesPolicy(cwd, join(repo.top, path), undoConfig.pii?.paths ?? []) });
+    const projections = new TextProjections({ cwd: undoCwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => console.error(line) });
+    const preview = projectedDiff({ repo, from: endTree, to: startTree, paths: first.restore, projections, deny: undoConfig.local.deny, privatePath: path => matchesPolicy(undoCwd, join(repo.top, path), undoConfig.pii?.paths ?? []) });
     if (preview) console.log(terminalText("Undo preview (end snapshot to start snapshot):\n" + preview));
 
     if (!args.includes("--yes")) return console.log("nothing was changed; add --yes to restore these files");
+    requireUndoWorkspace();
     if (args.includes("--context")) {
       console.log(await taskOp("turn_revert", { turn: id }));
       reverted = true;
@@ -1599,6 +1669,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // A peer may have written meanwhile (the revert alone can take seconds): plan again right before restoring.
     const second = plan();
     if (second.restore.join("\0") !== first.restore.join("\0")) fail(`the project changed while undoing; nothing was restored, run ahub undo again${reverted ? " without --context (Codex's conversation was already reverted)" : ""}`);
+    requireUndoWorkspace();
     restore(repo, startTree, second.restore);
     if (second.restore.length) console.log(`restored to their state before ${id}`);
   },
@@ -1706,9 +1777,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (["assign", "clear"].includes(args[0] ?? "")) {
       const [op, peer, id] = args;
-      if (!peer || !definitionOf(peer ?? "") || !id && op === "assign" || args.length > 3) fail("usage: ahub role assign <peer> <id> | clear <peer> [<id>]");
+      if (!peer || !peerDefinition(peer) || !id && op === "assign" || args.length > 3) fail("usage: ahub role assign <peer> <id> | clear <peer> [<id>]");
       const hub = await connect();
       try {
+        requireNamedPeerFeature(hub, peer);
         const view = await hub.request({ t: "settings_get" }); if (!view.ok) fail(view.error);
         const row = (view.rows as SettingRow[]).find(row => row.key === `catalog_roles.${peer}`); if (!row) fail("this hub does not support catalog role settings");
         const current = Array.isArray(row!.pending) ? row!.pending : Array.isArray(row!.value) ? row!.value : [];
@@ -1825,8 +1897,9 @@ async function runConductorCommand(): Promise<void> {
     if (parsed instanceof Error) fail(parsed.message);
     op = "hub_peer_start";
     // #269: a mode may only repeat the peer's start mode, which a person sets; without one the hub takes that mode.
-    input = { peer: cmd, ...parsed };
+    input = { peer: selectedInstance ?? cmd, ...parsed };
   }
+  if (selectedInstance) { const hub = await connect(); try { requirePeerInstances(hub.features); } finally { hub.close(); } }
   console.log(await taskOp(op, input));
 }
 const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? (() => fail(`unknown command "${cmd}"; run ahub help`));

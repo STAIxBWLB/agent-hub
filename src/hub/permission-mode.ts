@@ -1,4 +1,4 @@
-import { definitionOf } from "../adapters/registry.ts";
+import { definitionOf, type KindMap } from "../adapters/registry.ts";
 import { lstatSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -8,12 +8,12 @@ export type PermissionMode = typeof PERMISSION_MODES[number];
 export { KIMI_MODE_IDS } from "../adapters/definitions/kimi-native.ts";
 export { QWEN_MODE_IDS } from "../adapters/definitions/qwen-native.ts";
 export const isPermissionMode = (value: unknown): value is PermissionMode => typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value);
-export function permissionDefaults(value: unknown): Record<string, PermissionMode> {
+export function permissionDefaults(value: unknown, instances?: KindMap): Record<string, PermissionMode> {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("permission_modes must be an object with ask, ask-when-needed or never-ask values");
   const result: Record<string, PermissionMode> = {};
   for (const [peer, mode] of Object.entries(value)) {
-    const definition = typeof peer === "string" ? definitionOf(peer) : undefined;
+    const definition = typeof peer === "string" ? definitionOf(peer, instances) : undefined;
     if (!definition) throw new Error(`permission_modes.${peer}: unsupported peer`);
     if (definition.permission.unmanaged) throw new Error(`${definition.displayName} native policy is unmanaged; no hub permission_modes.${peer} mapping exists`);
     if (!isPermissionMode(mode)) throw new Error(`permission_modes.${peer} must be ask, ask-when-needed or never-ask`);
@@ -22,16 +22,16 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
   return result;
 }
 /** Approval frequency does not create a common sandbox across native peers. */
-export function permissionBoundary(peer: string): string {
-  const definition = definitionOf(peer);
+export function permissionBoundary(peer: string, instances?: KindMap): string {
+  const definition = definitionOf(peer, instances);
   if (definition?.permission.unmanaged) return `${peer}: native policy unmanaged; NO hub sandbox; approvals belong to its native tools`;
   if (definition?.trust.hubSandboxed) return `${peer}: inside hub sandbox, path guard and denylist`;
   if (definition?.transport === "claude-channel" || definition?.transport === "codex-appserver") return `${peer}: native vendor bounds; no hub sandbox`;
   return `${peer}: runs its own tools; NO hub sandbox`;
 }
 /** What a mode lets a peer do without asking, in one line a person reads before choosing it (#269). */
-export function permissionGrant(peer: string, mode: PermissionMode): string {
-  const grant = definitionOf(peer)?.permission.grants?.[mode];
+export function permissionGrant(peer: string, mode: PermissionMode, instances?: KindMap): string {
+  const grant = definitionOf(peer, instances)?.permission.grants?.[mode];
   if (grant !== undefined) return grant;
   if (mode === "ask") return "every write, edit and shell command asks";
   return mode === "never-ask" ? "every tool runs without asking, inside the hub sandbox and path guard" : "write and edit inside the project run without asking; shell and git writes still ask";

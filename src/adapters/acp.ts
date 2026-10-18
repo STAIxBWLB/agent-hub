@@ -58,6 +58,8 @@ export function normalizeACPUsage(value: unknown, source: ACPUsageDiagnostic["so
 }
 
 export interface AcpOptions {
+  /** Trusted host declaration, never inferred from an instance suffix or advertised agent text. */
+  kind?: string;
   /** e.g. ["kimi", "acp"]. `opencode acp` fits the same adapter. */
   cmd: string[];
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
@@ -241,7 +243,7 @@ export class AcpPeer extends BasePeer {
       // Installed Kimi Code CLI's ACP initialize advertises this exact name.
       this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
       if (this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version)) throw new Error("native ACP identity is not verified for this production adapter");
-      this.qwenAgent = qwenNativeIdentity(this.id, this.opts.qwen025, init);
+      this.qwenAgent = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
       const resume = this.opts.resumeSessionId;
       if (!resume) return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
       // The agent replays the session as updates while it loads; they arrive before the peer is idle, so none of
