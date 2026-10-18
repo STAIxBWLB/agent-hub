@@ -1076,8 +1076,8 @@
     {
       "id": "override-local-schema",
       "file": "src/adapters/local-worker.ts",
-      "search": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages).filter(tool => tool.name !== \"hub_delivery_retry\"),",
-      "replacement": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(undefined, this.opts.sdlcStages).filter(tool => tool.name !== \"hub_delivery_retry\"),",
+      "search": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== \"hub_delivery_retry\"),",
+      "replacement": "const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(undefined, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== \"hub_delivery_retry\"),",
       "testFile": "test/local-worker.test.ts",
       "testName": "local worker publishes resolved custom profile classes and selected plan fields to its actual provider (#259)"
     },
@@ -1172,7 +1172,7 @@
     {
       "id": "lifecycle-native-schema",
       "file": "src/adapters/claude-channel.ts",
-      "search": "profileTaskTools(profile, lifecycleStages)",
+      "search": "profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria)",
       "replacement": "profileTaskTools(profile)",
       "testFile": "test/lifecycle-native.test.ts",
       "testName": "every managed MCP surface advertises the project lifecycle ids in its real tools response (#257)"
