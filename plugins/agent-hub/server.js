@@ -14991,7 +14991,7 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } },
       capabilities: { watch: true },
       init: { mcpFile: ".kimi-code/mcp.json" },
-      hooks: { recallSource: "kimi" },
+      hooks: { recallPlatform: "kimi", recallSource: "kimi" },
       cli: { command: "kimi", stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
     },
@@ -15013,6 +15013,7 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "pi", instrumented: true },
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
+      routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
       cli: { command: "pi", previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
       display: PI_DISPLAY
     },
@@ -15032,6 +15033,7 @@ var init_builtin_metadata = __esm(() => {
       turnEnd: "adapter",
       budget: { account: "local", quotaExempt: true, instrumented: true },
       configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
+      routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
       cli: { command: "local", startWords: () => ["local"] },
       display: LOCAL_DISPLAY
     },
@@ -15056,7 +15058,8 @@ var init_builtin_metadata = __esm(() => {
       turnEnd: "adapter",
       budget: { account: "jcode" },
       cli: { command: "jcode", authority: "person", startWords: () => ["jcode"] },
-      display: JCODE_DISPLAY
+      display: JCODE_DISPLAY,
+      hooks: { recallPlatform: "jcode" }
     }
   ]);
   BUILTIN_DEFINITIONS_WITHOUT_QWEN = Object.freeze([
@@ -15254,7 +15257,7 @@ var init_qwen = __esm(() => {
           throw new Error("Qwen has no verified read-only permission mapping");
         return new AcpPeer(context.instance, { ...context.daemon.acp, qwen025: true, permissionMode: context.permission, mcpServers: context.mcpServers });
       },
-      conductorStartArgs: (args) => args.length ? new Error("Qwen start takes no conductor overrides") : {}
+      conductorStartArgs: (args) => args.length ? new Error("conductor starts accept no launch overrides; use ahub qwen") : {}
     },
     identity: { mcp: "acp-session" },
     permission: {
@@ -15332,7 +15335,23 @@ function assertDaemonEngine(definition) {
   if (definition.start.create && engine === undefined || engine !== undefined && !Object.hasOwn(DAEMON_PORTS, engine))
     throw new Error("invalid adapter daemon engine");
 }
-var ADAPTER_API = 1, KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, ADAPTERS, definitions, ROLE_ORDER, CONDUCTOR_START_PRIORITY, CONDUCTOR_START_PEERS, ADAPTER_DISPLAY, BUILTIN_CLI_ENTRIES;
+function assertNativeCapabilityScope(definition) {
+  if (fixedBuiltinDefinitions.has(definition))
+    return;
+  const declared = (block, key) => block !== undefined && (key in block);
+  const restricted = [
+    ["start.acpCommand", declared(definition.start, "acpCommand")],
+    ["attach.admission", declared(definition.attach, "admission")],
+    ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],
+    ["session.crashIdentity", declared(definition.session, "crashIdentity")],
+    ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
+    ["routing", definition.routing !== undefined]
+  ];
+  const field = restricted.find(([, present]) => present)?.[0];
+  if (field)
+    throw new Error(`${field} is restricted to fixed builtin adapter definitions`);
+}
+var ADAPTER_API = 1, KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, fixedBuiltinDefinitions, ADAPTERS, definitions, QUOTA_HANDOFF_PLATFORMS, ROLE_ORDER, CONDUCTOR_START_PRIORITY, CONDUCTOR_START_PEERS, ADAPTER_DISPLAY, BUILTIN_CLI_ENTRIES;
 var init_registry = __esm(() => {
   init_native_cli_entry();
   init_native_cli_preview();
@@ -15345,6 +15364,7 @@ var init_registry = __esm(() => {
   KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"];
   OPTIONAL_PEERS = ["qwen", "jcode"];
   SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS];
+  fixedBuiltinDefinitions = new Set([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION]);
   ADAPTERS = immutable([
     ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter((definition) => definition.kind !== "jcode"),
     QWEN_DEFINITION,
@@ -15353,10 +15373,12 @@ var init_registry = __esm(() => {
   definitions = new Map;
   for (const definition of ADAPTERS) {
     assertDaemonEngine(definition);
+    assertNativeCapabilityScope(definition);
     if (definition.api !== ADAPTER_API || definitions.has(definition.kind))
       throw new Error("invalid builtin adapter registry");
     definitions.set(definition.kind, definition);
   }
+  QUOTA_HANDOFF_PLATFORMS = Object.freeze(Object.fromEntries(ADAPTERS.flatMap((adapter) => adapter.hooks?.recallPlatform ? [[adapter.kind, adapter.hooks.recallPlatform]] : [])));
   ROLE_ORDER = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode"];
   CONDUCTOR_START_PRIORITY = ["local", "kimi", "pi"];
   CONDUCTOR_START_PEERS = [

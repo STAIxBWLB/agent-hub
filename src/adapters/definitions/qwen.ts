@@ -37,7 +37,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
       if (context.permission === "read-only") throw new Error("Qwen has no verified read-only permission mapping");
       return new AcpPeer(context.instance, { ...context.daemon.acp, qwen025: true, permissionMode: context.permission, mcpServers: context.mcpServers });
     },
-    conductorStartArgs: args => args.length ? new Error("Qwen start takes no conductor overrides") : {},
+    conductorStartArgs: args => args.length ? new Error("conductor starts accept no launch overrides; use ahub qwen") : {},
   },
   identity: { mcp: "acp-session" },
   permission: {

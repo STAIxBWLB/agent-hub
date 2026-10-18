@@ -3470,3 +3470,35 @@ The reattach parser VM receives the real registry resolver, and the attachment
 wait VM receives the real exported session-field resolver. Every existing
 `expect` line in these three files remains byte-identical; no fallback, mock
 policy, weaker condition or changed expected result is introduced.
+
+### A2 round-1 parity and capability-scope constraints
+
+Quota handoff uses the registry's native platform projection, preserving exactly
+Claude, Codex, Kimi, Qwen and Jcode. The per-delivery `recallInjected` flag remains
+independent: adding Kimi/Jcode handoff platforms does not make their own sessions
+part of injected-platform exclusion.
+
+Routing reads on-prem trust for PII admission. Legacy fixed-model/relay policy,
+local-allowed refusal text, context handling, preference tier, relay ordering and
+trace labels are native definition data. Host routing and task flow retain their
+existing policy calculations, messages and candidate ordering (including class
+fallback duplicates). This native routing data is not an external configuration
+surface.
+
+Registry loading calls `assertNativeCapabilityScope` before publication. A
+non-builtin definition cannot declare `start.acpCommand`, `attach.admission`,
+`budget.resetSoftTokensOnResume`, `session.crashIdentity`, a `pi-rpc` daemon port,
+or the native `routing` policy block. Fixed builtin membership is object identity,
+not a caller-supplied kind name. Current consumers combine these fields with fixed-builtin assumptions or
+host-global native state; generic shapes are follow-up work before A3/A4 loading. Other ordinary ACP
+metadata remains valid.
+
+The Qwen conductor refusal uses the original generic CLI text. Pi terminal
+observation reads only observed top-level/nested session-file metadata, never
+launch `args.sessionFile`. Pi TUI recovery bindings preserve the captured
+`CLAUDE_CONFIG_DIR` fallback while retaining Codex's `CODEX_HOME` selection.
+
+The guard resolves immutable peer-id constant aliases and supplied-source
+import/reexport bindings through lexical symbols before classifying comparisons.
+Shadowed and unrelated bindings remain independent; named non-peer enum exceptions
+keep their exact scope. It performs no filesystem or package lookup.

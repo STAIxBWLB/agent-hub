@@ -24,6 +24,8 @@ function immutable<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
+const fixedBuiltinDefinitions = new Set<AdapterDefinition>([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION]);
+
 /** Keep the native catalog's order, independently of the legacy default-role object order. */
 export const ADAPTERS: readonly AdapterDefinition[] = immutable([
   ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind !== "jcode"),
@@ -33,9 +35,15 @@ export const ADAPTERS: readonly AdapterDefinition[] = immutable([
 const definitions = new Map<string, AdapterDefinition>();
 for (const definition of ADAPTERS) {
   assertDaemonEngine(definition);
+  assertNativeCapabilityScope(definition);
   if (definition.api !== ADAPTER_API || definitions.has(definition.kind)) throw new Error("invalid builtin adapter registry");
   definitions.set(definition.kind, definition);
 }
+
+/** Native quota handoff platform names, distinct from per-delivery recall injection policy. */
+export const QUOTA_HANDOFF_PLATFORMS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
+  ADAPTERS.flatMap(adapter => adapter.hooks?.recallPlatform ? [[adapter.kind, adapter.hooks.recallPlatform]] : []),
+));
 
 /** A1 registers kinds only. Undeclared suffixes never acquire a native kind or admission. */
 export function kindOf(id: string): string | undefined {
@@ -76,6 +84,22 @@ export function defaultRosterEnabled(peer: string, piEnabled: boolean): boolean 
 export function assertDaemonEngine(definition: Pick<AdapterDefinition, "start">): void {
   const engine = definition.start.daemonPort;
   if (definition.start.create && engine === undefined || engine !== undefined && !Object.hasOwn(DAEMON_PORTS, engine)) throw new Error("invalid adapter daemon engine");
+}
+
+/** Host-global native quirks are not capabilities a config-only or external definition may opt into. */
+export function assertNativeCapabilityScope(definition: AdapterDefinition): void {
+  if (fixedBuiltinDefinitions.has(definition)) return;
+  const declared = (block: object | undefined, key: string): boolean => block !== undefined && key in block;
+  const restricted: [string, boolean][] = [
+    ["start.acpCommand", declared(definition.start, "acpCommand")],
+    ["attach.admission", declared(definition.attach, "admission")],
+    ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],
+    ["session.crashIdentity", declared(definition.session, "crashIdentity")],
+    ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
+    ["routing", definition.routing !== undefined],
+  ];
+  const field = restricted.find(([, present]) => present)?.[0];
+  if (field) throw new Error(`${field} is restricted to fixed builtin adapter definitions`);
 }
 
 /** Ordered catalog projections consumed by generic core hosts. */

@@ -24,7 +24,7 @@ import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
-import { ADAPTERS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
+import { ADAPTERS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -1537,7 +1537,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (definitionOf(peer)?.budget?.checkpoint === true) void requestCheckpoint(peer, "context").catch(() => {});
     return true;
   });
-  const PLATFORM: Record<PeerId, string> = Object.fromEntries(SUPPORTED_PEERS.flatMap(peer => { const platform = definitionOf(peer)?.hooks?.recallPlatform; return platform ? [[peer, platform]] : []; }));
+  const PLATFORM = QUOTA_HANDOFF_PLATFORMS;
   const budgetFeedSeen = new Map<string, string>();
   const feedBudgetPauses = () => {
     for (const hold of budget.persistedPauseDigestRows()) {

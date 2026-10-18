@@ -1,3 +1,4 @@
+import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CLASSES, type Task, type TaskClass } from "./board.ts";
@@ -107,6 +108,16 @@ export function overlayToml(overlay: RoutingOverlay): string {
 const TEMPLATE = join(import.meta.dir, "..", "..", "templates", "routing.toml");
 export const LOCAL: PeerId = "local";
 export const PI: PeerId = "pi";
+
+/** The quota/roster relay keeps its native preference order, then the class's original tail. */
+export function relayCandidates(classPeers: readonly PeerId[], pii: boolean): PeerId[] {
+  const preferred = ADAPTERS.filter(adapter => adapter.routing?.handoffPriority !== undefined)
+    .sort((a, b) => a.routing!.handoffPriority! - b.routing!.handoffPriority!);
+  return [
+    ...preferred.filter(adapter => !pii || adapter.trust.onPrem).map(adapter => adapter.kind),
+    ...classPeers.filter(peer => definitionOf(peer)?.routing?.handoffPriority === undefined),
+  ].filter((peer): peer is PeerId => !!peer);
+}
 
 /**
  * `.agenthub/routing.toml`, or the shipped default when the project has none, with `.agenthub/routing.local.toml`
@@ -323,15 +334,15 @@ export function assign(
     if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return deny("paused", "paused");
     const failing = peerEntry(opts.failing, peer);
     if (failing) return deny("failing", `failing: ${failing}`);
-    if (pii && peer !== LOCAL) return deny("pii", "pii: on-prem peers only");
-    if (peer === LOCAL && policy?.local_allowed === false) return deny("policy", "local_allowed = false for this class");
-    if (peer === PI && policy?.local_allowed === false) return deny("policy", "local_allowed = false also excludes pi for this class");
-    if (peer === PI && task.signals.includes("long_context")) {
+    if (pii && definitionOf(peer)?.trust.onPrem !== true) return deny("pii", "pii: on-prem peers only");
+    const nativeRouting = definitionOf(peer)?.routing;
+    if (nativeRouting?.localAllowedRefusal && policy?.local_allowed === false) return deny("policy", nativeRouting.localAllowedRefusal);
+    if (nativeRouting?.longContext === "backend-limit" && task.signals.includes("long_context")) {
       const backend = policy?.pi_backend ?? "dgx";
       const limit = backend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens;
-      if (routing.signals.long_context_tokens > limit) return deny("policy", `pi ${backend} capability limit ${limit} tokens`);
+      if (routing.signals.long_context_tokens > limit) return deny("policy", `${nativeRouting.backendLabel} ${backend} capability limit ${limit} tokens`);
     }
-    if (peer === LOCAL && role === "owner" && task.signals.includes("long_context") && routing.constraints.long_context === "skip_local") return deny("policy", "long_context: skip local");
+    if (nativeRouting?.longContext === "skip-owner" && role === "owner" && task.signals.includes("long_context") && routing.constraints.long_context === "skip_local") return deny("policy", "long_context: skip local");
     return undefined;
   };
   /** Quota that resets soonest gets used first: headroom per hour left in the window, at least 15 min (a task assigned that close to a reset mostly runs after it). */
@@ -381,7 +392,7 @@ export function assign(
     }
     const ranked = rank(ok, role, not);
     // Demotion applies to local and Pi too: a demoted one loses its place ahead of the cloud peers.
-    const localTier = ranked.filter((p) => (p === LOCAL || p === PI) && !(role === "owner" && peerEntry(opts.demoted, p)));
+    const localTier = ranked.filter((p) => definitionOf(p)?.routing?.preferredTier === true && !(role === "owner" && peerEntry(opts.demoted, p)));
     if (localTier.length) return localTier.find((p) => states[p] === "idle") ?? localTier[0]; // local/Pi stays ahead of an idle cloud peer
     return ranked.find((p) => states[p] === "idle") ?? ranked[0];
   };
@@ -413,8 +424,8 @@ export function assign(
   const route = policy?.route ?? routing.local.route;
   const fixedModel = policy?.fixed_model ?? routing.local.fixed_model;
   const piBackend = policy?.pi_backend;
-  if (owner === LOCAL) trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
-  if (owner === PI) trace.push(`pi decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
+  if (owner && definitionOf(owner)?.routing?.trace === "route") trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
+  if (owner && definitionOf(owner)?.routing?.trace === "backend") trace.push(`${definitionOf(owner)!.routing!.backendLabel} decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
   return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
 }
 

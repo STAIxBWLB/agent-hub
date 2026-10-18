@@ -332,8 +332,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       delete value.CODEX_HOME; delete value.CLAUDE_CONFIG_DIR;
       const bindings = op.plan.projects.find((p) => p.project.id === project.id)?.terminals as TerminalBinding[] | undefined;
       for (const binding of bindings ?? []) {
-        const key = definitionOf(binding.peer)?.session.configDirEnv;
-        if (key && binding.launch.env[key]) value[key] = binding.launch.env[key];
+        // Preserve the captured legacy profile for terminal bindings without a dedicated native config variable.
+        const key = definitionOf(binding.peer)?.session.configDirEnv ?? "CLAUDE_CONFIG_DIR";
+        if (binding.launch.env[key]) value[key] = binding.launch.env[key];
       }
     }
     return value;

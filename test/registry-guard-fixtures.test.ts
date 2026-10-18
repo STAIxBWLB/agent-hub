@@ -99,3 +99,56 @@ test("registry guard fixture distinguishes local provider and lifecycle enums fr
   expect(inventory(gates + ` function route(peer:string){return peer === "local"}`, "src/hub/sdlc.ts")[0]?.count).toBe(1);
   expect(inventory(`const STAGE_GATES=["local","codex"];`, "src/hub/sdlc.ts")[0]?.count).toBe(2);
 });
+
+test("registry guard resolves peer-id constants and alias chains at comparison and case sites", () => {
+  const sites = scanRegistrySources(source(`
+    const LOCAL = "local", PI = ("pi" as const);
+    const PICK = LOCAL;
+    function choose(peer: string) {
+      if (peer !== LOCAL || PI === peer || peer === PICK) return 1;
+      switch (peer) { case PICK: return 2; }
+    }
+  `));
+  expect(sites.map(site => site.pattern)).toEqual(["comparison", "comparison", "comparison", "comparison"]);
+  expect(sites.map(site => site.symbol)).toEqual(["choose", "choose", "choose", "choose"]);
+});
+
+test("registry guard resolves imported aliases through the supplied source export bindings", () => {
+  const sites = scanRegistrySources({
+    "src/hub/routing.ts": `export const LOCAL = "local"; const PI = "pi"; export { PI as INSTRUMENTED };`,
+    "src/hub/reexport.ts": `export { LOCAL as ON_PREM } from './routing.ts';`,
+    "src/hub/example.ts": `import { LOCAL as target, INSTRUMENTED as runner } from './routing.ts'; import { ON_PREM as safe } from './reexport.ts'; function choose(peer:string){ return peer === target || runner !== peer || peer === safe; }`,
+  });
+  expect(sites.map(site => site.text)).toEqual(["peer === target", "runner !== peer", "peer === safe"]);
+  expect(sites.map(site => site.pattern)).toEqual(["comparison", "comparison", "comparison"]);
+});
+
+test("registry guard preserves lexical shadowing and ignores non-peer literal bindings", () => {
+  expect(inventory(`const LOCAL="local"; function choose(peer:string, LOCAL:string){return peer===LOCAL;} function other(peer:string){ const LOCAL="shadow"; return peer===LOCAL; }`)).toEqual([]);
+  expect(inventory(`const PI="pi"; function choose(peer:string){ { const PI="off"; if(peer===PI) return 1; } return peer===PI; }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 1 }]);
+  expect(inventory(`const PI="shadow", LOCAL="off"; function choose(mode:string){return mode===PI || mode===LOCAL;}`)).toEqual([]);
+  expect(inventory(`const PI="pi"; function choose(peer:string){ try { throw new Error(); } catch(PI) { return peer===PI; } }`)).toEqual([]);
+  expect(inventory(`const PI="pi"; function choose(peer:string){ for(const PI of ["off"]) { if(peer===PI) return 1; } }`)).toEqual([]);
+});
+
+test("registry guard classifies constant comparisons with trusted kind resolvers", () => {
+  const sites = scanRegistrySources(source(`import { kindOf as resolveKind } from '../adapters/registry.ts'; const LOCAL='local'; function choose(peer:string){ return resolveKind(peer)===LOCAL; }`));
+  expect(sites.map(site => site.pattern)).toEqual(["kind-aware-comparison"]);
+});
+
+test("registry guard preserves named local provider exemptions when the value is a constant", () => {
+  expect(inventory(`const LOCAL="local"; function parseRouting(){return signals.pii_screen!==LOCAL;}`, "src/hub/routing.ts")).toEqual([]);
+  expect(inventory(`const LOCAL="local"; function parseRouting(peer:string){return peer!==LOCAL;}`, "src/hub/routing.ts")[0]?.count).toBe(1);
+});
+
+
+test("registry guard does not borrow a constant from an unrelated supplied script", () => {
+  expect(scanRegistrySources({
+    "src/hub/first.ts": `const LOCAL="local"; function first(peer:string){return peer===LOCAL;}`,
+    "src/hub/second.ts": `function second(value:string){return value===LOCAL;}`,
+  }).map(site => site.symbol)).toEqual(["first"]);
+  expect(scanRegistrySources({
+    "src/hub/first.ts": `const LOCAL="local"; function first(peer:string){return peer===LOCAL;}`,
+    "src/hub/second.ts": `const LOCAL="shadow"; function second(value:string){return value===LOCAL;}`,
+  }).map(site => site.symbol)).toEqual(["first"]);
+});

@@ -674,7 +674,9 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
       continue;
     }
     const recorded = records.find((item) => item.peer === peer && item.handle === handle && item.worktreeId === terminal.worktreeId && item.incarnationId === terminal.incarnationId);
-    const sessionFile = definitionOf(peer)?.session.crashIdentity?.(terminal).sessionFile;
+    // Orca observation supplies file identity; launch arguments are not observed native session-file evidence.
+    const { args: _launchArgs, ...observedTerminal } = terminal;
+    const sessionFile = definitionOf(peer)?.session.crashIdentity?.(observedTerminal).sessionFile;
     const launch = launchFor(peer, projectRoot, sessionId, config, terminal, recorded, { ...ref, ...(sessionFile ? { sessionFile } : {}) });
     const binding: TerminalBinding = { peer, handle, incarnationId, worktreeId, projectRoot, sessionId, ...(sessionFile ? { sessionFile } : {}), ...(ref.backend ? { backend: ref.backend } : {}), ...(ref.model ? { model: ref.model } : {}), launch, launchMetadata: launch };
     bindings.push(binding);

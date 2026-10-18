@@ -221,6 +221,15 @@ export interface AdapterDefinition {
   };
   turnEnd: "adapter" | "native-hook";
   reporting?: { tokensNotReported?: boolean };
+  /** Legacy native routing policy; external definitions cannot claim these host-specific policies. */
+  routing?: {
+    localAllowedRefusal?: string;
+    longContext?: "backend-limit" | "skip-owner";
+    preferredTier?: boolean;
+    handoffPriority?: number;
+    trace?: "route" | "backend";
+    backendLabel?: string;
+  };
   budget?: { account: string; quotaExempt?: boolean; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean; resetSoftTokensOnResume?: boolean };
   configuration?: {
     schema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;

@@ -18,8 +18,8 @@ import { shellQuote } from "../../cli/shell-quote.ts";
 type CompatibilityKind = "claude" | "codex" | "kimi" | "pi" | "local" | "jcode";
 
 /**
- * ponytail: A1 compatibility definitions delegate to the existing CLI; the existing daemon remains their runtime
- * authority until A2 migrates each native path. These launch methods are not a second native launcher or factory.
+ * Preserve CLI-wrapper argv plans for definitions that still declare them and the frozen A1 compatibility export.
+ * Native startup and daemon factories are supplied separately by the runtime definitions.
  */
 function compatibilityLaunch(kind: CompatibilityKind, ctx: LaunchContext): LaunchPlan {
   const mode = kind === "kimi" || kind === "pi" ? ["--mode", ctx.form] : [];
@@ -63,7 +63,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", ownsTerminal: terminal, launch: claudeNativeLaunch, version: claudeObservedVersion, ...CLAUDE_LAUNCH_POLICY, conductorStartable: true,
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"]) },
     identity: { mcp: "channel-plugin" }, attach: { recoveryLaunch: claudeRecoveryLaunch },
-    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
+    // Existing daemon permission hooks enforce these grants; an empty native mode map is neither unmanaged nor a refusal.
     permission: { modes: {}, grants: { ask: "Claude's own permission rules decide",
       "ask-when-needed": "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules",
       "never-ask": "every tool runs without asking" } },
@@ -96,7 +96,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
       grants: { ask: "Kimi asks as it does on its own", "ask-when-needed": "Kimi's yolo mode: it asks only where it judges it must", "never-ask": "Kimi's auto mode: nothing asks" },
       unmanagedForms: Object.freeze(["tui"] as const), unmanagedStatusNote: "Kimi approves tools in its own TUI; no hub permission mode", unmanagedNote: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode" },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "acp", ...KIMI_RECOVERY_SESSION, crashPlan: kimiCrashPlan },
-    turnEnd: "adapter", budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } }, capabilities: { watch: true }, init: { mcpFile: ".kimi-code/mcp.json" }, hooks: { recallSource: "kimi" },
+    turnEnd: "adapter", budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } }, capabilities: { watch: true }, init: { mcpFile: ".kimi-code/mcp.json" }, hooks: { recallPlatform: "kimi", recallSource: "kimi" },
     cli: { command: "kimi", stopNotice: form => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: form => ["kimi", "--mode", form] }, display: KIMI_DISPLAY,
   },
   {
@@ -104,10 +104,11 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
     start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("pi", ctx), conductorStartable: true, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" },
-    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
+    // Existing daemon permission hooks enforce these grants; an empty native mode map is neither unmanaged nor a refusal.
     permission: { modes: {}, grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
     turnEnd: "adapter", budget: { account: "pi", instrumented: true }, reporting: { tokensNotReported: true }, configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
+    routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
     cli: { command: "pi", previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: form => ["pi", "--mode", form] }, display: PI_DISPLAY,
   },
   {
@@ -115,10 +116,11 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
     start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: ctx => compatibilityLaunch("local", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" },
-    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
+    // Existing daemon permission hooks enforce these grants; an empty native mode map is neither unmanaged nor a refusal.
     permission: { modes: {}, grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local", ...LOCAL_RECOVERY_SESSION, crashPlan: localCrashPlan },
     turnEnd: "adapter", budget: { account: "local", quotaExempt: true, instrumented: true }, configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
+    routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
     cli: { command: "local", startWords: () => ["local"] }, display: LOCAL_DISPLAY,
   },
   {
@@ -130,7 +132,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
       ask: "no verified hub mode mapping; native policy only", "ask-when-needed": "no verified hub mode mapping; native policy only", "never-ask": "no verified hub mode mapping; native policy only" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", budget: { account: "jcode" },
     // Jcode has no dedicated CSS swatch today: retain peer-palette.ts's existing 'other' fallback.
-    cli: { command: "jcode", authority: "person", startWords: () => ["jcode"] }, display: JCODE_DISPLAY,
+    cli: { command: "jcode", authority: "person", startWords: () => ["jcode"] }, display: JCODE_DISPLAY, hooks: { recallPlatform: "jcode" },
   },
 ] satisfies AdapterDefinition[]);
 
@@ -146,7 +148,6 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
     start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("claude", ctx), conductorStartable: true,
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"]) },
     identity: { mcp: "channel-plugin" },
-    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
     permission: { modes: {}, grants: { ask: "Claude's own permission rules decide",
       "ask-when-needed": "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules",
       "never-ask": "every tool runs without asking" } },
@@ -185,7 +186,6 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
     roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
     start: { forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("pi", ctx), conductorStartable: true, autoStart: "pi.auto_start", hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" },
-    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
     permission: { modes: {}, grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "pi", launchRecord: true },
     turnEnd: "adapter", budget: { account: "pi" },
@@ -196,7 +196,6 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Ob
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
     start: { forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: ctx => compatibilityLaunch("local", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" },
-    // ponytail: A1 compatibility, existing daemon permission hooks remain authority until A2; absence is not unmanaged or a refusal.
     permission: { modes: {}, grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local" },
     turnEnd: "adapter",
