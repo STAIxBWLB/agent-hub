@@ -6,6 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { claudePeer, claudeStateFile } from "../hub/claude-state.ts";
 
 const input = await Bun.stdin.text();
 let own = "";
@@ -15,6 +16,8 @@ try {
   const pct = (w: any) => (typeof w?.used_percentage === "number" ? `${Math.round(w.used_percentage)}%` : "-");
   if (limits) own = `agent-hub  5h ${pct(limits.five_hour)}  wk ${pct(limits.seven_day)}`;
   const dir = process.env.AGENTHUB_STATE_DIR;
+  // Usage is per account and shared; context and session belong to this peer (#450 I3: a claude-<name> instance).
+  const peer = claudePeer(process.env.AGENTHUB_PEER_ID);
   if (limits && dir) {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, "claude-usage.json");
@@ -25,7 +28,7 @@ try {
   if (sessionId && dir) {
     // Bind context to the launcher, daemon and native session. Persist no prompts or transcript text.
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, "claude-context.json");
+    const file = join(dir, claudeStateFile("claude-context", peer));
     const c = parsed.context_window;
     const current = c?.current_usage;
     const numeric = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
@@ -38,7 +41,7 @@ try {
   }
   if (sessionId && dir) {
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, "claude-session.json");
+    const file = join(dir, claudeStateFile("claude-session", peer));
     // The transcript path lets the hub tell a zero-turn session (file not yet created, so
     // `claude --resume` can never work) from one whose conversation must be preserved (#64).
     const transcriptPath = typeof parsed.transcript_path === "string" && parsed.transcript_path ? parsed.transcript_path : undefined;

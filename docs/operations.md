@@ -3519,7 +3519,11 @@ restart the hub. For example, a reviewer can use:
 Start them with `ahub codex --as codex-review` and
 `ahub kimi --as kimi-review`. Codex keeps its native TUI and its own hub-owned
 app-server proxy; extra Kimi, Qwen, Pi and local instances use headless starts.
-Extra Claude/channel and Jcode instances are unavailable in I2. A missing
+Extra Jcode instances are unavailable. An extra Claude instance is a reviewer or
+planner you start yourself: declare it with `roles` only (for example
+`"claude-review": { "kind": "claude", "roles": ["reviewer"] }`, no `start_mode` or
+`worktree`) and run `ahub claude --as claude-review` in a terminal. It keeps its own
+`claude-*.claude-review.json` state files. A missing
 `peer_instances` feature on an old daemon or upgrade target requires a supporting
 version before launching or restoring extras.
 
