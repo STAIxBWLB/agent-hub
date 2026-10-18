@@ -23,7 +23,15 @@ export function ownTerminalRow(records: unknown, peer: string, projectRoot: stri
  * the builtin's default location. An instance may run under its own CLAUDE_CONFIG_DIR, which the hub cannot see:
  * without its reported path the answer is unknown, and unknown counts as persisted (it never waives session identity).
  */
-export function transcriptPersisted(reported: { sessionId?: string; transcriptPath?: string }, sessionId: string, instance: boolean, fallbackPath: string, exists: (path: string) => boolean): boolean {
-  if (reported.sessionId === sessionId && reported.transcriptPath) return exists(reported.transcriptPath);
-  return instance || exists(fallbackPath);
+export function transcriptPersisted(reported: { sessionId?: string; transcriptPath?: string }, sessionId: string, instance: boolean, fallbackPath: string, exists: (path: string) => boolean | "unknown"): boolean {
+  // Only a positive "missing" (ENOENT) is not persisted; an unreadable path is unknown and keeps the identity strict.
+  const found = (path: string) => exists(path) !== false;
+  if (reported.sessionId === sessionId && reported.transcriptPath) return found(reported.transcriptPath);
+  return instance || found(fallbackPath);
+}
+
+/** lstat evidence: true when present, false only on ENOENT/ENOTDIR, "unknown" for any other failure (EACCES included). */
+export function pathEvidence(path: string, lstat: (path: string) => unknown): boolean | "unknown" {
+  try { lstat(path); return true; }
+  catch (error) { const code = (error as { code?: string }).code; return code === "ENOENT" || code === "ENOTDIR" ? false : "unknown"; }
 }

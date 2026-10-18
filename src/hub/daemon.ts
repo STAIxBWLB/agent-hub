@@ -20,7 +20,7 @@ import { ActivityRing } from "./activity.ts";
 import { JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
-import { claudeStateFile, ownTerminalRow, transcriptPersisted } from "./claude-state.ts";
+import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
@@ -70,7 +70,7 @@ import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
-import { closeSync, constants as fsConstants, openSync, readSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
@@ -2437,7 +2437,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * path Claude itself reported through the status line; fall back to the slug computation. */
   // ponytail: the version probe reads the builtin claude peer only; extend per peer if an instance's version matters (#450 I3).
   const claudeTranscriptPersisted = (peer: string, sessionId: string): boolean => transcriptPersisted(claudeSession(peer), sessionId, Object.hasOwn(declarations, peer),
-    join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`), existsSync);
+    join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`), path => pathEvidence(path, lstatSync));
   // Optional native usage: only the instance-fenced explicit Claude session is read.
   // IDs persist in telemetry, so a restart/resume never counts the same native message twice.
   const claudeNativeUsageSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript").map(e => (e as { id: string }).id));

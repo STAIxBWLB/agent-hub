@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { validateInstances } from "../src/hub/instances.ts";
-import { claudePeer, claudeStateFile, ownTerminalRow, transcriptPersisted } from "../src/hub/claude-state.ts";
+import { claudePeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "../src/hub/claude-state.ts";
 import { requireActiveInstance } from "../src/cli/launch.ts";
 import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
 import { planReset } from "../src/cli/reset.ts";
@@ -78,6 +78,13 @@ test("each Claude peer reads only its own terminal row and its own transcript ev
   expect(transcriptPersisted({}, "s1", true, "/default/s1.jsonl", exists)).toBe(true);
   expect(transcriptPersisted({}, "s1", false, "/default/s1.jsonl", exists)).toBe(false);
   expect(transcriptPersisted({ sessionId: "s1", transcriptPath: "/gone.jsonl" }, "s1", true, "/default/s1.jsonl", exists)).toBe(false);
+  // An unreadable transcript (EACCES) is unknown, never "not persisted" (review round 2).
+  const locked = mkdtempSync(join(tmpdir(), "ahub-locked-")); cleanup.push(() => { chmodSync(locked, 0o700); rmSync(locked, { recursive: true, force: true }); });
+  mkdirSync(join(locked, "dir")); writeFileSync(join(locked, "dir/s1.jsonl"), "{}\n"); chmodSync(join(locked, "dir"), 0o000);
+  expect(pathEvidence(join(locked, "dir/s1.jsonl"), lstatSync)).toBe("unknown");
+  expect(pathEvidence(join(locked, "none.jsonl"), lstatSync)).toBe(false);
+  expect(transcriptPersisted({}, "s1", false, join(locked, "dir/s1.jsonl"), path => pathEvidence(path, lstatSync))).toBe(true);
+  chmodSync(join(locked, "dir"), 0o700);
 });
 
 test("an instance launch needs the running hub to have bound that declaration (review of #505)", () => {
