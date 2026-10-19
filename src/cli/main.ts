@@ -1118,6 +1118,25 @@ const commands: Record<string, () => Promise<void> | void> = {
       finally { hub.close(); }
       return;
     }
+    if (sub === "train") {
+      const operation = args[1], releaseId = Number(args[2]), revision = Number(args[3]);
+      if (!Number.isSafeInteger(releaseId) || releaseId <= 0) fail("usage: ahub sdlc train report|configure|cut <release-id> [revision] [configuration-json]");
+      if (operation === "report" && args.length === 3) return console.log(await taskOp("hub_release_report", { id: releaseId }));
+      if (!Number.isSafeInteger(revision) || revision < 0) fail("train mutation requires its current revision");
+      if (operation === "cut" && args.length === 4) return console.log(await taskOp("hub_release_cut", { id: releaseId, revision }));
+      if (operation === "configure" && args.length === 5) {
+        let fields;
+        try { fields = JSON.parse(args[4]!); } catch { return fail("release train configuration must be JSON"); }
+        if (!fields || typeof fields !== "object" || Array.isArray(fields) || Object.keys(fields).some(key => !["state", "cut", "hotfix"].includes(key))) fail("invalid release train configuration fields");
+        return console.log(await taskOp("hub_release_configure", { ...fields, id: releaseId, revision }));
+      }
+      fail("usage: ahub sdlc train report|configure|cut <release-id> [revision] [configuration-json]");
+    }
+    if (sub === "release-assign") {
+      const revision = Number(args[2]), release = args[3] === "none" ? null : Number(args[3]);
+      if (!Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(revision) || revision < 0 || release !== null && (!Number.isSafeInteger(release) || release <= 0) || args.length < 5) fail("usage: ahub sdlc release-assign <task> <planning-revision> <release-id|none> <reason...>");
+      return console.log(await taskOp("hub_release_assign", { id, revision, release, reason: args.slice(4).join(" ") }));
+    }
     if (sub === "costs") {
       if (args.length > 2) fail("usage: ahub sdlc costs [owner/repository]");
       return console.log(await taskOp("hub_sdlc_costs", { ...(args[1] ? { repo: args[1] } : {}) }));

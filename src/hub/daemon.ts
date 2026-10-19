@@ -1,3 +1,4 @@
+import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied } from "../local/deny.ts";
@@ -438,6 +439,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
+  /** Host-only admission transport; never selected by project config or tools. */
+  releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   projectId?: string;
   instanceId?: string;
   cwd: string;
@@ -1292,7 +1295,38 @@ export async function startDaemon(opts: DaemonOptions) {
       specReason: !may(peer, "spec_read") ? `capabilities.${peer}` : specState.reason ?? "gh unauthenticated" }];
     }));
   };
+  const releaseQuotaSnapshot = () => {
+    const headroom = budget.headroom(), rows = [...bus.peers].filter(([, peer]) => peer.state !== "offline");
+    const reasons: string[] = [], notes: string[] = [];
+    for (const [id] of rows) {
+      const definition = definitionOf(id), account = definition?.budget?.account ?? id;
+      if (manualPaused.has(id)) reasons.push(`${id}: manual pause; ahub resume ${id}`);
+      if (budget.record(account)) reasons.push(`${id}: paused quota window; inspect ahub budget or ahub budget resume ${id}`);
+      if (definition && (!definition.budget || definition.budget.quotaExempt)) continue;
+      // Source availability belongs to the shared account, including its offline base and reviewer variants.
+      // The soft token window uses the same definition capability that resets it on resume.
+      const hasSource = accountMembers(account).some(member => {
+        const policy = definitionOf(member)?.budget;
+        return !!policy?.reader || !!policy?.resetSoftTokensOnResume && config.budget.kimi_tokens_5h > 0;
+      });
+      if (definition && !hasSource) {
+        notes.push(`${id}: no quota source`);
+        continue;
+      }
+      const reading = headroom[account];
+      if (!reading || !Number.isFinite(reading.headroom)) reasons.push(`${id}: quota window unknown or stale; inspect ahub budget or ahub budget set ${id} <0..1>`);
+      else if (reading.headroom <= 1 - config.budget.gate) reasons.push(`${id}: quota window below release headroom; wait for reset or inspect ahub budget set ${id} <0..1>`);
+    }
+    const idle = rows.every(([, peer]) => peer.state === "idle");
+    return { quota: reasons.length === 0, idle, reasons, notes, signature: JSON.stringify({ gate: config.budget.gate, softTokens: config.budget.kimi_tokens_5h, rows: rows.map(([id, peer]) => [id, peer.state]), headroom, paused: rows.map(([id]) => manualPaused.has(id)), records: Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused?.since, row.paused?.resetsAt]) }) };
+  };
+  const releaseWindow = async () => {
+    const host = await (opts.releaseHostAdmission ?? readReleaseHostAdmission)(opts.cwd), quota = releaseQuotaSnapshot();
+    if (stopping || recoveryActive()) quota.reasons.push("recovery or shutdown is holding release planning");
+    return { at: Date.now(), host: host.admitted && !stopping && !recoveryActive(), quota: quota.quota, idle: quota.idle, reasons: [...(host.reason ? [host.reason] : []), ...quota.reasons, ...quota.notes], close: host.close, current: () => host.current?.() !== false && !stopping && !recoveryActive() && releaseQuotaSnapshot().signature === quota.signature };
+  };
   const tasks: Tasks = new Tasks({
+    releaseWindow,
     capabilities: peerCapabilities, repository: memoryRepo,
     plannerBlocks: () => Object.fromEntries(bus.knownPeers().map(peer => {
       const codes: ("approvals" | "quota")[] = [];
@@ -2022,7 +2056,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
@@ -2136,6 +2170,16 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_backlog_list":
         return JSON.stringify(tasks.backlogList(by));
+      case "hub_release_new":
+        return JSON.stringify(tasks.publicRelease(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order })));
+      case "hub_release_report":
+        return JSON.stringify(tasks.releaseReport(by, a.id));
+      case "hub_release_configure":
+        return JSON.stringify(tasks.publicRelease(await tasks.configureRelease(by, { id: a.id, revision: a.revision, hotfix: a.hotfix, state: a.state, cut: a.cut })));
+      case "hub_release_assign":
+        return JSON.stringify(tasks.publicView(await tasks.assignRelease(by, { id: a.id, revision: a.revision, release: a.release, reason: a.reason })));
+      case "hub_release_cut":
+        return JSON.stringify(tasks.publicRelease(await tasks.cutRelease(by, { id: a.id, revision: a.revision })));
       case "hub_release_list":
         return JSON.stringify(tasks.releaseList(by));
       case "hub_planner_groom":
@@ -4686,16 +4730,22 @@ export async function startDaemon(opts: DaemonOptions) {
       return ids.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_cancel"))
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
+    const incompatibleRecoveryTarget = () => {
+      const cancelled = incompatibleCancellationTarget();
+      if (cancelled) return cancelled;
+      if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
+      if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
+      return undefined;
+    };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;
     if (checkTarget) {
-      const error = incompatibleCancellationTarget(); if (error) return recoveryError(error);
-      if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return recoveryError("target lacks peer_instances; declared instance identities cannot be restored by that daemon");
+      const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error);
     }
 
     if (msg.op === "inspect" || msg.op === "prepare" || msg.op === "commit") {
       for (const pi of bus.peers.values()) if (pi instanceof PiPeer && pi.state === "idle") {
         try { await pi.captureResume(); } catch (error) { return recoveryError((error as Error).message); }
-        if (checkTarget) { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+        if (checkTarget) { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       }
     }
     if (msg.op === "inspect" && msg.operationId === undefined) return { t: "recovery", ok: true, recovery: recoveryView() };
@@ -4711,7 +4761,7 @@ export async function startDaemon(opts: DaemonOptions) {
         recoveryPeerSnapshot = undefined;
       }
       if (recoveryOperationId && recoveryOperationId !== op) return recoveryError("another recovery operation is active");
-      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+      { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       recoveryOperationId = op;
       if (!recoveryPhase) recoveryPhase = "preparing";
       armRecoveryLease();
@@ -4719,7 +4769,7 @@ export async function startDaemon(opts: DaemonOptions) {
       budget.setRecoveryHold(true);
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       await bus.fenceRecovery();
-      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+      { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
       if (!blocked.length && permissions.size === 0 && recoveryReady()) {
         recoveryPeerSnapshot ??= Object.values(recoveryPeers());
@@ -4746,6 +4796,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (msg.op === "commit") {
       if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle, approvals are complete and completion checks have finished");
+      // Person ruling 2026-10-19: upgrade is excluded from release resource gates; original readiness still binds.
       recoveryPhase = "prepared";
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
@@ -4768,7 +4819,7 @@ export async function startDaemon(opts: DaemonOptions) {
         peers,
         integrity: integrity(),
       };
-      { const error = incompatibleCancellationTarget(); if (error) return recoveryError(error); }
+      { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       try { writeRestartSnapshot(opts.stateDir, snapshot); } catch { return recoveryError("could not persist restart state"); }
       recoveryCommitted = true;
       clearTimeout(recoveryLeaseTimer);

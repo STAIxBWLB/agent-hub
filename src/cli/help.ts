@@ -25,6 +25,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...]", "read-only merge and release evidence (person only)"],
     ["ahub sdlc accept <task> --issue <n> [--repo owner/repo]", "accept the task's spec issue at its current body; build entry needs it in enforce (person only)"],
     ["ahub sdlc plan-review <task> <revision> <reason...> [--review full|delta|none --reviewers N --ci full|focused|reuse]", "record planner review, scope and host-read issue metadata"],
+    ["ahub sdlc train report|configure|cut <release-id> [revision] [json]", "plan a release and freeze its approved scope after resource/quota admission"],
+    ["ahub sdlc release-assign <task> <revision> <release-id|none> <reason>", "assign approved/in-flight work without changing execution"],
     ["ahub sdlc costs [owner/repo]", "read bounded planner cost metrics for linked merged PRs"],
     ["ahub backlog groom | return <task> <revision> <reason...>", "read grooming findings or return accepted untouched work to backlog (planner/person)"],
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts"],

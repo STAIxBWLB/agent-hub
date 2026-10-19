@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Plan release trains through the board's release assignments, move missed work with a reason, and freeze approved scope through host resource admission and fresh peer quota checks. Hotfix causes and cut/shipment history are recorded; person upgrades retain original recovery readiness and train target compatibility (#481 S11).
 - `ahub jcode` starts again: the adapter accepts any jcode release from 0.98.0 up to, not including, 1.0.0 (the assumed breaking version), so a jcode minor update no longer refuses the peer; releases before 0.98.0 are refused. The owned daemon's private socket is now named `j.sock`: jcode derives its debug socket by replacing `.sock` in the name, so the old name `s` made both binds one path and `serve` exited on EADDRINUSE with every jcode version. Every owned jcode process (the doctor version probe, `serve` and `acp`) now runs with `JCODE_NO_TELEMETRY=1`: jcode 0.98.1's telemetry policy can report the provider account's email. Verified live on 0.94.0 and 0.98.1 (#529).
 
 ## 0.12.36

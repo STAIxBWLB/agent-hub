@@ -1,3 +1,4 @@
+import type { ReleaseTrainData } from "./sdlc-release.ts";
 import type { Task } from "./board.ts";
 
 export const BACKLOG_SPLIT_SCREEN_TIMEOUT_MS = 8000;
@@ -28,6 +29,7 @@ export function planningWipLimits(input: unknown): Record<string, number> {
 export const RELEASE_STATES = ["planning", "active", "frozen", "shipped", "dropped"] as const;
 export type ReleaseState = (typeof RELEASE_STATES)[number];
 export interface Release {
+  train?: ReleaseTrainData;
   id: number; name: string; goal: string; order: number; state: ReleaseState;
   plannedStart: number | null; cut: number | null; ship: number | null;
   activatedAt: number | null; frozenAt: number | null; shippedAt: number | null;

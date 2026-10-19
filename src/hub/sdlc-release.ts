@@ -1,3 +1,5 @@
+import type { Task } from "./board.ts";
+import type { Release } from "./planning.ts";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
@@ -122,4 +124,115 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
   // Closed issue metadata is not a native receipt or permission to publish.
   report.blockers.push("native acceptance and person release decision unverified");
   return report;
+}
+
+export type HotfixCause = "loss" | "security_privacy" | "upgrade_start_blocked" | "core_flow_no_workaround";
+export interface ReleaseTrainData {
+  hotfix?: { cause: HotfixCause; reason: string };
+  scope?: number[];
+  history: { at: number; by: string; event: "configured" | "cut" | "shipped"; scope?: number[]; ciRuns?: number; reviews?: number }[];
+}
+export const RELEASE_TRAIN_HISTORY_LIMIT = 256;
+const HOTFIX_CAUSES: readonly string[] = ["loss", "security_privacy", "upgrade_start_blocked", "core_flow_no_workaround"];
+const trainObject = (value: unknown): Record<string, unknown> => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("release train: expected an object");
+  return value as Record<string, unknown>;
+};
+const trainKeys = (value: Record<string, unknown>, keys: readonly string[]) => {
+  if (Object.keys(value).some(key => !keys.includes(key))) throw new Error("release train: unknown field");
+};
+const trainScope = (value: unknown): number[] => {
+  // ponytail: 1000 tasks per release; raise together with bounded report readers if larger trains are needed.
+  if (!Array.isArray(value) || value.length > 1000 || value.some(id => !Number.isSafeInteger(id) || id < 1) || new Set(value).size !== value.length) throw new Error("release train: invalid scope");
+  return [...value].sort((a, b) => a - b);
+};
+
+/** Structural validation only: the Tasks boundary screens reason text and establishes caller authority. */
+export function releaseTrainData(input: unknown): ReleaseTrainData {
+  const raw = trainObject(input); trainKeys(raw, ["hotfix", "scope", "history"]);
+  const result: ReleaseTrainData = { history: [] };
+  if (raw.hotfix !== undefined) {
+    const hotfix = trainObject(raw.hotfix); trainKeys(hotfix, ["cause", "reason"]);
+    if (typeof hotfix.cause !== "string" || !HOTFIX_CAUSES.includes(hotfix.cause) || typeof hotfix.reason !== "string" || !hotfix.reason.trim() || Buffer.byteLength(hotfix.reason) > 1000) throw new Error("release train: invalid hotfix cause or reason");
+    result.hotfix = { cause: hotfix.cause as HotfixCause, reason: hotfix.reason.trim() };
+  }
+  if (raw.scope !== undefined) result.scope = trainScope(raw.scope);
+  // ponytail: 256 recorded train events; archive settled release evidence before increasing this ceiling.
+  if (!Array.isArray(raw.history) || raw.history.length > RELEASE_TRAIN_HISTORY_LIMIT) throw new Error("release train: invalid history");
+  result.history = raw.history.map(value => {
+    const row = trainObject(value); trainKeys(row, ["at", "by", "event", "scope", "ciRuns", "reviews"]);
+    if (!Number.isSafeInteger(row.at) || (row.at as number) < 1 || (row.at as number) > 8_640_000_000_000_000 || typeof row.by !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(row.by) || !["configured", "cut", "shipped"].includes(String(row.event))) throw new Error("release train: invalid history event");
+    const event: ReleaseTrainData["history"][number] = { at: row.at as number, by: row.by, event: row.event as "configured" | "cut" | "shipped" };
+    if (row.scope !== undefined) event.scope = trainScope(row.scope);
+    for (const key of ["ciRuns", "reviews"] as const) if (row[key] !== undefined) {
+      if (!Number.isSafeInteger(row[key]) || (row[key] as number) < 0 || (row[key] as number) > 1_000_000) throw new Error("release train: invalid resource count");
+      event[key] = row[key] as number;
+    }
+    return event;
+  });
+  if (result.history.some((row, index) => index > 0 && row.at < result.history[index - 1]!.at)) throw new Error("release train: history dates are out of order");
+  return result;
+}
+
+const storedTrain = (release: Release): ReleaseTrainData | undefined => {
+  const raw = (release as Release & { train?: ReleaseTrainData }).train;
+  if (raw === undefined) return undefined;
+  try { return releaseTrainData(raw); } catch { return undefined; }
+};
+
+/** Board metadata only; a trigger is a request to cut, never release authorization or native readiness. */
+export function releaseTrainReadiness(release: Release, tasks: Task[], now = Date.now()) {
+  const train = storedTrain(release), assigned = tasks.filter(task => task.release === release.id), frozen = ["frozen", "shipped"].includes(release.state);
+  const scope = frozen ? train?.scope : assigned.map(task => task.id);
+  const blockers: string[] = [];
+  if ((release as Release & { train?: ReleaseTrainData }).train !== undefined && !train) blockers.push("release train evidence unknown");
+  if (!scope) blockers.push("release scope unknown");
+  else if (!scope.length) blockers.push("release scope empty");
+  if (frozen && scope && JSON.stringify([...scope].sort((a, b) => a - b)) !== JSON.stringify(assigned.map(task => task.id).sort((a, b) => a - b))) blockers.push("frozen release scope changed");
+  const rows = new Map(tasks.map(task => [task.id, task]));
+  const states = (scope ?? []).map(id => {
+    const task = rows.get(id), state = task?.state ?? "unknown", ready = state === "approved";
+    if (!task) blockers.push(`task #${id}: scope evidence unknown`);
+    else if (task.release !== release.id) blockers.push(`task #${id}: release assignment changed`);
+    if (!ready) blockers.push(`task #${id}: not approved`);
+    return { id, state, ready };
+  });
+  const trigger: "tasks_approved" | "planned_date" | "waiting" = states.length && states.every(task => task.ready) && !blockers.length ? "tasks_approved"
+    : release.cut !== null && Number.isFinite(now) && release.cut <= now ? "planned_date" : "waiting";
+  return { trigger, tasks: states, blockers };
+}
+
+/** Counts are explicit recorded event deltas, not inferred from successful gates or absent history. */
+export function releaseMetrics(releases: Release[], tasks: Task[]) {
+  const unknown = new Set<number>(), shipped: { id: number; at: number }[] = [];
+  const approvalToReleaseMs: { release: number; task: number; ms: number | null }[] = [];
+  let hotfixCount = 0, knownKinds = 0, ciRuns = 0, reviews = 0, ciKnown = true, reviewsKnown = true;
+  const byTask = new Map(tasks.map(task => [task.id, task]));
+  const settled = releases.filter(release => release.state === "shipped");
+  for (const release of settled) {
+    const train = storedTrain(release);
+    if (!train?.history.length) { unknown.add(release.id); ciKnown = false; reviewsKnown = false; continue; }
+    knownKinds++;
+    if (train.hotfix) hotfixCount++;
+    for (const key of ["ciRuns", "reviews"] as const) {
+      const recorded = train.history.flatMap(event => event[key] === undefined ? [] : [event[key]!]);
+      if (!recorded.length) { unknown.add(release.id); if (key === "ciRuns") ciKnown = false; else reviewsKnown = false; }
+      else if (key === "ciRuns") ciRuns += recorded.reduce((sum, value) => sum + value, 0);
+      else reviews += recorded.reduce((sum, value) => sum + value, 0);
+    }
+    const event = [...train.history].reverse().find(row => row.event === "shipped");
+    if (!event || release.shippedAt !== event.at) { unknown.add(release.id); continue; }
+    shipped.push({ id: release.id, at: event.at });
+    const scope = train.scope ?? [...train.history].reverse().find(row => row.event === "cut")?.scope;
+    if (!scope) { unknown.add(release.id); continue; }
+    for (const id of scope) {
+      const task = byTask.get(id), approved = task?.history.findLast(row => row.at <= event.at && (row.event === "approved" || row.event === "done" && task.state === "approved" && task.reviewer === null))?.at ?? null;
+      const ms = approved !== null && approved <= event.at ? event.at - approved : null;
+      if (ms === null) unknown.add(release.id);
+      approvalToReleaseMs.push({ release: release.id, task: id, ms });
+    }
+  }
+  shipped.sort((a, b) => a.at - b.at || a.id - b.id);
+  const intervals = shipped.length !== releases.filter(release => release.state === "shipped").length ? [] : shipped.slice(1).map((row, index) => ({ from: shipped[index]!.id, to: row.id, ms: row.at - shipped[index]!.at }));
+  return { intervals, approvalToReleaseMs, hotfixCount: knownKinds === settled.length && knownKinds > 0 ? hotfixCount : null, hotfixRate: knownKinds === settled.length && knownKinds > 0 ? hotfixCount / knownKinds : null, ciRuns: ciKnown && settled.length ? ciRuns : null, reviews: reviewsKnown && settled.length ? reviews : null, unknown: [...unknown].sort((a, b) => a - b) };
 }

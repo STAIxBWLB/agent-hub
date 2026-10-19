@@ -209,6 +209,7 @@ export class Board {
       release_order INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'planning', planned_start INTEGER, cut INTEGER, ship INTEGER,
       activated_at INTEGER, frozen_at INTEGER, shipped_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL,
       revision INTEGER NOT NULL DEFAULT 0)`);
+    if (!(this.db.query("PRAGMA table_info(releases)").all() as { name: string }[]).some(row => row.name === "train")) this.db.run("ALTER TABLE releases ADD COLUMN train TEXT");
 
   }
 
@@ -402,18 +403,31 @@ export class Board {
   releases(): Release[] {
     return (this.db.query("SELECT * FROM releases ORDER BY release_order,id").all() as Record<string, unknown>[]).map(parseRelease);
   }
-  updateRelease(id: number, patch: Partial<Pick<Release, "state" | "plannedStart" | "cut" | "ship">>, revision: number): Release {
+  updateRelease(id: number, patch: Partial<Pick<Release, "state" | "plannedStart" | "cut" | "ship" | "train">>, revision: number): Release {
     const release = this.release(id);
     if (!release || release.revision !== revision) throw new Error("release revision changed");
     const next = { ...release, ...patch }, now = Date.now();
     const moves: Record<ReleaseState, ReleaseState[]> = { planning: ["active", "dropped"], active: ["frozen", "dropped"], frozen: ["shipped", "dropped"], shipped: [], dropped: [] };
     if (next.state !== release.state && !moves[release.state].includes(next.state)) throw new Error("invalid release transition");
+    if (patch.train && next.state !== release.state && ["frozen", "shipped"].includes(next.state)) {
+      const event = next.train?.history.at(-1);
+      if (event?.event === (next.state === "frozen" ? "cut" : "shipped")) event.at = now;
+    }
     const dates = [next.plannedStart, next.cut, next.ship].filter((date): date is number => date !== null);
     if (dates.some(date => !Number.isSafeInteger(date) || date <= 0 || date > 8_640_000_000_000_000) || dates.some((date, i) => i > 0 && dates[i-1]! > date)) throw new Error("invalid release planned dates");
-    const result = this.db.query("UPDATE releases SET state=?,planned_start=?,cut=?,ship=?,activated_at=?,frozen_at=?,shipped_at=?,updated=?,revision=revision+1 WHERE id=? AND revision=?")
-      .run(next.state, next.plannedStart, next.cut, next.ship, release.activatedAt ?? (next.state === "active" ? now : null), release.frozenAt ?? (next.state === "frozen" ? now : null), release.shippedAt ?? (next.state === "shipped" ? now : null), now, id, revision);
+    const result = this.db.query("UPDATE releases SET state=?,planned_start=?,cut=?,ship=?,activated_at=?,frozen_at=?,shipped_at=?,updated=?,train=?,revision=revision+1 WHERE id=? AND revision=?")
+      .run(next.state, next.plannedStart, next.cut, next.ship, release.activatedAt ?? (next.state === "active" ? now : null), release.frozenAt ?? (next.state === "frozen" ? now : null), release.shippedAt ?? (next.state === "shipped" ? now : null), now, next.train === undefined ? null : JSON.stringify(next.train), id, revision);
     if (result.changes !== 1) throw new Error("release revision changed");
     return this.release(id)!;
+  }
+
+  /** Cross-connection scope changes cannot race the final freeze write. */
+  freezeRelease(id: number, revision: number, scope: Task[], train: NonNullable<Release["train"]>): Release {
+    return this.db.transaction(() => {
+      const release = this.release(id);
+      if (!release || release.revision !== revision || release.state !== "active" || this.releases().some(row => row.id !== id && ["active", "frozen"].includes(row.state)) || JSON.stringify(this.list().filter(task => task.release === id)) !== JSON.stringify(scope)) throw new Error("release scope changed before freeze");
+      return this.updateRelease(id, { state: "frozen", train }, revision);
+    })();
   }
 
   recordOutcome(peer: PeerId, cls: TaskClass, ok: boolean, at = Date.now()): void {
@@ -474,7 +488,7 @@ function parse(row: Record<string, unknown>): Task {
 }
 
 function parseRelease(row: Record<string, unknown>): Release {
-  return { id: Number(row.id), name: String(row.name), goal: String(row.goal), order: Number(row.release_order), state: row.state as ReleaseState,
+  return { ...(row.train == null ? {} : { train: JSON.parse(String(row.train)) }), id: Number(row.id), name: String(row.name), goal: String(row.goal), order: Number(row.release_order), state: row.state as ReleaseState,
     plannedStart: row.planned_start as number | null, cut: row.cut as number | null, ship: row.ship as number | null,
     activatedAt: row.activated_at as number | null, frozenAt: row.frozen_at as number | null, shippedAt: row.shipped_at as number | null,
     created: Number(row.created), updated: Number(row.updated), revision: Number(row.revision) };
