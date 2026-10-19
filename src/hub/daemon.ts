@@ -1297,22 +1297,33 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const releaseQuotaSnapshot = () => {
     const headroom = budget.headroom(), rows = [...bus.peers].filter(([, peer]) => peer.state !== "offline");
-    const reasons: string[] = [];
+    const reasons: string[] = [], notes: string[] = [];
     for (const [id] of rows) {
       const definition = definitionOf(id), account = definition?.budget?.account ?? id;
-      if (manualPaused.has(id) || budget.record(account)) reasons.push(`${id}: paused quota window`);
+      if (manualPaused.has(id)) reasons.push(`${id}: manual pause; ahub resume ${id}`);
+      if (budget.record(account)) reasons.push(`${id}: paused quota window; inspect ahub budget or ahub budget resume ${id}`);
       if (definition && (!definition.budget || definition.budget.quotaExempt)) continue;
+      // Source availability belongs to the shared account, including its offline base and reviewer variants.
+      // The soft token window uses the same definition capability that resets it on resume.
+      const hasSource = accountMembers(account).some(member => {
+        const policy = definitionOf(member)?.budget;
+        return !!policy?.reader || !!policy?.resetSoftTokensOnResume && config.budget.kimi_tokens_5h > 0;
+      });
+      if (definition && !hasSource) {
+        notes.push(`${id}: no quota source`);
+        continue;
+      }
       const reading = headroom[account];
-      if (!reading || !Number.isFinite(reading.headroom)) reasons.push(`${id}: quota window unknown or stale`);
-      else if (reading.headroom <= 1 - config.budget.gate) reasons.push(`${id}: quota window below release headroom`);
+      if (!reading || !Number.isFinite(reading.headroom)) reasons.push(`${id}: quota window unknown or stale; inspect ahub budget or ahub budget set ${id} <0..1>`);
+      else if (reading.headroom <= 1 - config.budget.gate) reasons.push(`${id}: quota window below release headroom; wait for reset or inspect ahub budget set ${id} <0..1>`);
     }
     const idle = rows.every(([, peer]) => peer.state === "idle");
-    return { quota: reasons.length === 0, idle, reasons, signature: JSON.stringify({ gate: config.budget.gate, rows: rows.map(([id, peer]) => [id, peer.state]), headroom, paused: rows.map(([id]) => manualPaused.has(id)), records: Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused?.since, row.paused?.resetsAt]) }) };
+    return { quota: reasons.length === 0, idle, reasons, notes, signature: JSON.stringify({ gate: config.budget.gate, softTokens: config.budget.kimi_tokens_5h, rows: rows.map(([id, peer]) => [id, peer.state]), headroom, paused: rows.map(([id]) => manualPaused.has(id)), records: Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused?.since, row.paused?.resetsAt]) }) };
   };
   const releaseWindow = async () => {
     const host = await (opts.releaseHostAdmission ?? readReleaseHostAdmission)(opts.cwd), quota = releaseQuotaSnapshot();
     if (stopping || recoveryActive()) quota.reasons.push("recovery or shutdown is holding release planning");
-    return { at: Date.now(), host: host.admitted && !stopping && !recoveryActive(), quota: quota.quota, idle: quota.idle, reasons: [...(host.reason ? [host.reason] : []), ...quota.reasons], close: host.close, current: () => host.current?.() !== false && !stopping && !recoveryActive() && releaseQuotaSnapshot().signature === quota.signature };
+    return { at: Date.now(), host: host.admitted && !stopping && !recoveryActive(), quota: quota.quota, idle: quota.idle, reasons: [...(host.reason ? [host.reason] : []), ...quota.reasons, ...quota.notes], close: host.close, current: () => host.current?.() !== false && !stopping && !recoveryActive() && releaseQuotaSnapshot().signature === quota.signature };
   };
   const tasks: Tasks = new Tasks({
     releaseWindow,
@@ -4793,7 +4804,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (targetError || recoveryOperationId !== op || recoveryCommitted || stopping || (recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady() || !quota.idle || !quota.quota || !releaseAdmission.admitted || releaseAdmission.current?.() === false) {
           try { await releaseAdmission.close?.(); }
           catch { log("release upgrade admission cleanup incomplete"); }
-          return recoveryError(`release upgrade deferred: ${targetError ?? releaseAdmission.reason ?? (quota.reasons.join("; ") || "operation or idle window changed")}`);
+          return recoveryError(`release upgrade deferred: ${targetError ?? releaseAdmission.reason ?? (quota.reasons.join("; ") || "operation or idle window changed")}; person exits: ahub recovery abort ${op}, then stop a headless paused peer with ahub stop <peer> (end TUI peers in their terminal), ahub resume <peer>, ahub budget resume <peer> or ahub budget set <peer> <0..1> as appropriate; ahub release drop <name> <revision> or explicitly set mode="off" in .agenthub/sdlc.toml and restart to leave train governance; verify the installed dotfiles dot and run recovery outside an existing same-repository dot admit lease`);
         }
       }
       try {

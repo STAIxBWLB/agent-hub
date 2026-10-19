@@ -1,3 +1,5 @@
+import type { Task } from "./board.ts";
+import type { Release } from "./planning.ts";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
@@ -124,15 +126,13 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
   return report;
 }
 
-import type { Task } from "./board.ts";
-import type { Release } from "./planning.ts";
-
 export type HotfixCause = "loss" | "security_privacy" | "upgrade_start_blocked" | "core_flow_no_workaround";
 export interface ReleaseTrainData {
   hotfix?: { cause: HotfixCause; reason: string };
   scope?: number[];
   history: { at: number; by: string; event: "configured" | "cut" | "shipped"; scope?: number[]; ciRuns?: number; reviews?: number }[];
 }
+export const RELEASE_TRAIN_HISTORY_LIMIT = 256;
 const HOTFIX_CAUSES: readonly string[] = ["loss", "security_privacy", "upgrade_start_blocked", "core_flow_no_workaround"];
 const trainObject = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("release train: expected an object");
@@ -158,7 +158,7 @@ export function releaseTrainData(input: unknown): ReleaseTrainData {
   }
   if (raw.scope !== undefined) result.scope = trainScope(raw.scope);
   // ponytail: 256 recorded train events; archive settled release evidence before increasing this ceiling.
-  if (!Array.isArray(raw.history) || raw.history.length > 256) throw new Error("release train: invalid history");
+  if (!Array.isArray(raw.history) || raw.history.length > RELEASE_TRAIN_HISTORY_LIMIT) throw new Error("release train: invalid history");
   result.history = raw.history.map(value => {
     const row = trainObject(value); trainKeys(row, ["at", "by", "event", "scope", "ciRuns", "reviews"]);
     if (!Number.isSafeInteger(row.at) || (row.at as number) < 1 || (row.at as number) > 8_640_000_000_000_000 || typeof row.by !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(row.by) || !["configured", "cut", "shipped"].includes(String(row.event))) throw new Error("release train: invalid history event");
@@ -221,7 +221,6 @@ export function releaseMetrics(releases: Release[], tasks: Task[]) {
       else reviews += recorded.reduce((sum, value) => sum + value, 0);
     }
     const event = [...train.history].reverse().find(row => row.event === "shipped");
-    if (release.state !== "shipped") continue;
     if (!event || release.shippedAt !== event.at) { unknown.add(release.id); continue; }
     shipped.push({ id: release.id, at: event.at });
     const scope = train.scope ?? [...train.history].reverse().find(row => row.event === "cut")?.scope;

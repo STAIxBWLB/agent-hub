@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import { hubGitSync } from "./git.ts";
 import { hostExecutable } from "./host-executable.ts";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
+import { detectTooling } from "./tooling.ts";
 
 export interface ReleaseHostAdmission { admitted: boolean; reason?: string; current?: () => boolean; close?: () => Promise<void> }
 const READY = "AHUB_RELEASE_SLOT_READY\n";
@@ -48,9 +49,16 @@ export function readReleaseHostAdmission(cwd: string): Promise<ReleaseHostAdmiss
     });
     child.stderr.on("data", (chunk: Buffer) => { bytes += chunk.length; if (bytes > 16 * 1024) stop(); });
     child.once("error", () => { invalid = true; clearTimeout(timer); resolve({ admitted: false, reason: "host resource controller unavailable" }); });
-    child.once("close", code => {
+    child.once("close", async code => {
       clearTimeout(timer); invalid = true;
-      if (!admitted) resolve({ admitted: false, reason: code === 75 ? "host resource admission deferred (busy repository or pressure)" : "host resource admission unknown" });
+      if (admitted) return;
+      if (code === 75) { resolve({ admitted: false, reason: "host resource admission deferred (busy repository or pressure)" }); return; }
+      // Diagnose a failed invocation with the same bounded identity probe used by the tooling inventory (#351).
+      // This readback never grants admission or substitutes for the controller's held-lease handshake.
+      const tooling = await detectTooling("hub", { cwd, path: dirname(executable) }).catch(() => undefined);
+      resolve({ admitted: false, reason: tooling && !tooling.some(addon => addon.name === "dot-admit")
+        ? "host resource controller unavailable (dot is not the resource controller; install dot-admit or fix PATH)"
+        : "host resource admission unknown" });
     });
   });
 }

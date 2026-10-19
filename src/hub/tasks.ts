@@ -1,4 +1,4 @@
-import { releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
+import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { specRefs } from "./spec-read.ts";
 import type { InstancesConfig } from "./instances.ts";
@@ -1064,7 +1064,10 @@ export class Tasks {
     try { train = releaseTrainData({ ...(release.train ?? { history: [] }), ...(input.hotfix === undefined ? {} : { hotfix: input.hotfix }) }); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     if (train.hotfix && (!this.nameable(train.hotfix.reason) || this.screenOn() && (await this.screenCall(train.hotfix.reason)).label !== "clear")) throw new PreEffectToolRefusal("hotfix reason was not cleared");
-    validate();
+    const current = validate();
+    if (JSON.stringify(current) !== JSON.stringify(release)) throw new PreEffectToolRefusal("release changed during screening");
+    if (release.train && JSON.stringify(train) === JSON.stringify(release.train) && (input.state ?? release.state) === release.state && (input.cut ?? release.cut) === release.cut) return current;
+    if (train.history.length >= RELEASE_TRAIN_HISTORY_LIMIT - 2) throw new PreEffectToolRefusal("release train history full; keep the remaining slots for cut and ship");
     train.history.push({ at: Date.now(), by, event: "configured" });
     const updated = this.d.board.updateRelease(input.id, { train: releaseTrainData(train), ...(input.state ? { state: input.state } : {}), ...(input.cut === undefined ? {} : { cut: input.cut }) }, input.revision);
     this.planningRecorded({ by, release: input.id, fields: ["train"], revision: updated.revision });
@@ -1093,6 +1096,7 @@ export class Tasks {
       const release = this.d.board.release(input.id);
       if (!release || release.revision !== input.revision || release.state !== "active") throw new PreEffectToolRefusal("release revision changed or train is not active");
       if (this.d.board.releases().some(row => row.id !== input.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
+      if ((release.train?.history.length ?? 0) > RELEASE_TRAIN_HISTORY_LIMIT - 2) throw new PreEffectToolRefusal("release train history full; cut needs slots for cut and ship, drop this train and create a replacement");
       const report = this.releaseReport(by, input.id);
       if (report.readiness.blockers.length) throw new PreEffectToolRefusal(`release cut blocked: ${report.readiness.blockers.join("; ")}`);
       return { release, scope: this.d.board.list().filter(task => task.release === input.id) };
@@ -1102,10 +1106,12 @@ export class Tasks {
     let ciRuns: number | undefined;
     if (expected.size && before.scope.every(task => task.sdlc?.repo && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(task.sdlc.repo) && !task.sdlc.repo.startsWith("-") && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr! > 0)) {
       const repositories = [...new Set(before.scope.flatMap(task => task.sdlc?.repo ? [task.sdlc.repo] : []))];
-      if (repositories.length === 1) {
-        const costs = await this.costReport(by, repositories[0]), rows = costs.rows as import("./cost-governance.ts").CostRow[];
-        const selected = rows.filter(row => expected.has(`${row.repo.toLowerCase()}#${row.pr}`));
-        if (!costs.truncated && selected.length === expected.size && selected.every(row => row.ciRuns !== null && row.ciReruns !== null)) ciRuns = selected.reduce((sum, row) => sum + row.ciRuns! + row.ciReruns!, 0);
+      if (repositories.length === 1 && expected.size <= 16) {
+        try {
+          const costs = await this.costReport(by, repositories[0], before.scope.map(task => task.sdlc!.pr!)), rows = costs.rows as import("./cost-governance.ts").CostRow[];
+          const selected = rows.filter(row => expected.has(`${row.repo.toLowerCase()}#${row.pr}`));
+          if (!costs.truncated && selected.length === expected.size && selected.every(row => row.ciRuns !== null && row.ciReruns !== null)) ciRuns = selected.reduce((sum, row) => sum + row.ciRuns! + row.ciReruns!, 0);
+        } catch { /* Optional cost evidence stays unknown; validation below still rechecks scope and authority. */ }
       }
     }
     if (JSON.stringify(validate()) !== signature) throw new PreEffectToolRefusal("release scope changed during cost readback");
@@ -1113,7 +1119,7 @@ export class Tasks {
     try {
     if (JSON.stringify({ release: this.d.board.release(input.id), scope: this.d.board.list().filter(task => task.release === input.id) }) !== signature) throw new PreEffectToolRefusal("release scope changed during admission");
     const freshScope = validate();
-    if (!window || !Number.isFinite(window.at) || Date.now() - window.at > 5000 || window.at > Date.now() || window.host !== true || window.quota !== true || window.current?.() === false) throw new PreEffectToolRefusal(`release cut deferred: ${window?.reasons?.join("; ") || "host or peer quota evidence unavailable"}`);
+    if (!window || !Number.isFinite(window.at) || Date.now() - window.at > 5000 || window.at > Date.now() || window.host !== true || window.quota !== true || window.current?.() === false) throw new PreEffectToolRefusal(`release cut deferred: ${window?.reasons?.join("; ") || "host or peer quota evidence unavailable"}; inspect ahub budget and ahub budget set <peer> <0..1>; stop or resume the paused peer; the person can use ahub release drop or explicitly disable lifecycle mode before retrying`);
     const scope = freshScope.scope.map(task => task.id).sort((a, b) => a - b), train = releaseTrainData(freshScope.release.train ?? { history: [] });
     train.scope = scope; train.history.push({ at: Date.now(), by, event: "cut", scope, reviews: freshScope.scope.reduce((sum, task) => sum + task.history.filter(row => ["approved", "changes_requested"].includes(row.event)).length, 0), ...(ciRuns === undefined ? {} : { ciRuns }) });
     const updated = this.d.board.freezeRelease(input.id, input.revision, freshScope.scope, releaseTrainData(train));
@@ -1147,6 +1153,7 @@ export class Tasks {
     if (input.state === "active" && (release.train || this.d.sdlc?.config().mode !== undefined && this.d.sdlc.config().mode !== "off" || this.d.board.releases().some(row => row.train && ["active", "frozen"].includes(row.state))) && this.d.board.releases().some(row => row.id !== release.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
     if (input.state === "frozen" && (release.train || this.d.sdlc?.config().mode !== undefined && this.d.sdlc.config().mode !== "off")) throw new PreEffectToolRefusal("use the resource-admitted release cut operation");
     if (input.state === "shipped" && release.train) {
+      if (release.train.history.length >= RELEASE_TRAIN_HISTORY_LIMIT) throw new PreEffectToolRefusal("release train history full; ship needs one history slot, drop this train and create a replacement");
       const readiness = releaseTrainReadiness(release, this.d.board.list());
       if (readiness.blockers.length) throw new PreEffectToolRefusal(`release ship blocked: ${readiness.blockers.join("; ")}`);
     }
@@ -2108,7 +2115,7 @@ export class Tasks {
   }
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */
-  async costReport(by: PeerId, repository?: unknown): Promise<Record<string, unknown>> {
+  async costReport(by: PeerId, repository?: unknown, scopePrs?: readonly number[]): Promise<Record<string, unknown>> {
     const authority = () => {
       this.planningAuthority(by);
       if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("cost report unavailable during private work");
@@ -2120,7 +2127,8 @@ export class Tasks {
     const bounded = (args: string[], timeout?: number, cwd?: string, cap?: number) => performance.now() < deadline
       ? (this.d.sdlc?.gh ?? sdlcGh)(args, Math.max(1, Math.min(timeout ?? 10_000, deadline - performance.now())), cwd, cap)
       : Promise.resolve({ code: 1, stdout: "" });
-    const linked = () => this.d.board.list().filter(task => task.sdlc?.repo?.toLowerCase() === repo.toLowerCase() && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr! > 0);
+    const requested = scopePrs === undefined ? undefined : new Set(scopePrs);
+    const linked = () => this.d.board.list().filter(task => task.sdlc?.repo?.toLowerCase() === repo.toLowerCase() && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr! > 0 && (!requested || requested.has(task.sdlc.pr!)));
     const ids = [...new Set(linked().filter(task => !this.isPii(task)).map(task => task.sdlc!.pr!))].sort((a, b) => a - b);
     const observations: import("./cost-governance.ts").CostPr[] = [];
     let incomplete = ids.length > 16;
@@ -2148,7 +2156,12 @@ export class Tasks {
   async planReviewGap(task: Task): Promise<string | undefined> {
     const receipt = task.sdlc?.planReview;
     if (!receipt) return "plan not reviewed since proposal";
-    if (!receipt.planner || !Number.isFinite(receipt.recordedAt) || receipt.planningRevision !== (task.planningRevision ?? 0)) return "plan not reviewed since planning revision change";
+    if (!receipt.planner || !Number.isFinite(receipt.recordedAt)) return "plan not reviewed since planning revision change";
+    const revision = task.planningRevision ?? 0;
+    if (receipt.planningRevision !== revision) {
+      const changes = task.history.filter(entry => entry.planning && entry.planning.revision > receipt.planningRevision);
+      if (receipt.planningRevision > revision || changes.length !== revision - receipt.planningRevision || changes.some((entry, index) => entry.event !== "planned" || entry.planning!.revision !== receipt.planningRevision + index + 1 || entry.planning!.fields.length !== 1 || entry.planning!.fields[0] !== "release")) return "plan not reviewed since planning revision change";
+    }
     if (receipt.scope && JSON.stringify(receipt.scope) !== JSON.stringify(cleanCostPlan(task.plan ?? {}))) return "plan not reviewed since cost scope change";
     const identity = this.planIssueIdentity(task);
     if (identity?.issue && this.isPii(task)) return "private issue plan review evidence unavailable";
