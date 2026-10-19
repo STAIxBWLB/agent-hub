@@ -83,7 +83,7 @@ test("Jcode accepts any native release from the verified minimum up to the break
   const dir = root(), home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
   const peer = new JcodePeer({ command: [...fake, "--version-id", "0.98.1"], cwd: dir, home }); cleanups.push(() => peer.stop());
   await peer.start(); expect(peer.state).toBe("idle");
-  for (const [semver, ok] of [["0.98.1", true], ["0.94.0", false], ["1.0.0", false]] as const) expect(verifiedJcodeCommand([...fake, "--semver", semver], dir)).toBe(ok);
+  for (const [semver, ok] of [["0.98.0", true], ["0.98.1", true], ["0.97.9", false], ["0.94.0", false], ["1.0.0", false]] as const) expect(verifiedJcodeCommand([...fake, "--semver", semver], dir)).toBe(ok);
 });
 
 test("the owned Jcode socket name keeps the native debug socket apart from the main one (#529)", () => {

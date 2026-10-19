@@ -7932,7 +7932,7 @@ function codexCrashPlan(meta) {
   return { how: `codex: its app-server died with the hub; run ahub codex again${str3(meta.threadId) ? ` (its conversation was thread ${meta.threadId})` : ""}` };
 }
 function jcodeCrashPlan(_meta) {
-  return { how: "jcode: native load (0.94.0 through 0.98.1) does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
+  return { how: "jcode: native ACP load (verified on 0.94.0 and 0.98.1) does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
 }
 function kimiCrashPlan(meta) {
   const launch = meta.launch && typeof meta.launch === "object" ? meta.launch : {};
