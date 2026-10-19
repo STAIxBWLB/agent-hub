@@ -1,3 +1,4 @@
+import { AGY_DEFINITION } from "./definitions/reviewer-variants.ts";
 import { builtinCliEntries } from "./definitions/native-cli-entry.ts";
 import { builtinPreview } from "./definitions/native-cli-preview.ts";
 import { DAEMON_PORTS } from "./definitions/native-factories.ts";
@@ -25,7 +26,7 @@ function immutable<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
-const fixedBuiltinDefinitions = new Set<AdapterDefinition>([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION]);
+const fixedBuiltinDefinitions = new Set<AdapterDefinition>([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION, AGY_DEFINITION]);
 for (const definition of [...fixedBuiltinDefinitions]) if (definition.reviewerVariant) fixedBuiltinDefinitions.add(definition.reviewerVariant);
 
 /** Keep the native catalog's order, independently of the legacy default-role object order. */
@@ -34,14 +35,20 @@ export const ADAPTERS: readonly AdapterDefinition[] = immutable([
   QWEN_DEFINITION,
   ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind === "jcode"),
 ]);
+// Unavailable declarations are metadata, not supported native peers or launchers.
+const declarationOnlyDefinitions: readonly AdapterDefinition[] = immutable([AGY_DEFINITION]);
 const definitions = new Map<string, AdapterDefinition>();
-for (const definition of ADAPTERS) {
+for (const definition of [...ADAPTERS, ...declarationOnlyDefinitions]) {
   assertDaemonEngine(definition);
   assertNativeCapabilityScope(definition);
   if (definition.reviewerVariant) { assertDaemonEngine(definition.reviewerVariant); assertNativeCapabilityScope(definition.reviewerVariant); }
   if (definition.api !== ADAPTER_API || definitions.has(definition.kind)) throw new Error("invalid builtin adapter registry");
   definitions.set(definition.kind, definition);
 }
+
+/** Default kind slots derive from fixed reviewer policy, not a second vendor list in the host. */
+export const REVIEW_POOL_KINDS: readonly string[] = Object.freeze([...definitions.values()].filter(definition => !!(definition.reviewerVariant ?? definition).reviewer).map(definition => definition.kind));
+export const DEFAULT_REVIEW_POOL: readonly string[] = Object.freeze(ADAPTERS.filter(definition => (definition.reviewerVariant ?? definition).reviewer?.defaultPool === true).map(definition => definition.kind));
 
 /** Native quota handoff platform names, distinct from per-delivery recall injection policy. */
 export const QUOTA_HANDOFF_PLATFORMS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
@@ -77,7 +84,11 @@ export function definitionOf(id: string, instances?: KindMap): AdapterDefinition
   const kind = kindOf(id, instances);
   const definition = kind === undefined ? undefined : definitions.get(kind);
   // #223: only a declared extra (never the builtin id) with start_mode "headless" runs as the kind's reviewer variant.
-  return definition?.reviewerVariant && kind !== id && ownField(ownField(instances, id), "start_mode") === "headless" ? definition.reviewerVariant : definition;
+  const declaration = ownField(instances, id), roles = ownField(declaration, "roles");
+  const reviewerOnly = Array.isArray(roles) && !types.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
+  const variant = definition?.reviewerVariant;
+  const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
+  return variant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" && fresh ? variant : definition;
 }
 export function familyOf(id: string, instances?: KindMap): string | undefined {
   return definitionOf(id, instances)?.family;
@@ -125,6 +136,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
+    ["reviewer", definition.reviewer !== undefined],
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field) throw new Error(`${field} is restricted to fixed builtin adapter definitions`);
@@ -133,8 +145,8 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
 /** Ordered catalog projections consumed by generic core hosts. */
 export const STARTABLE_PEERS = SUPPORTED_PEERS;
 export type SupportedPeer = typeof SUPPORTED_PEERS[number];
-export function isSupportedPeer(peer: unknown): peer is SupportedPeer { return typeof peer === "string" && definitionOf(peer) !== undefined; }
-export function isStartablePeer(peer: unknown): peer is SupportedPeer { return typeof peer === "string" && definitionOf(peer)?.start.conductorStartable === true; }
+export function isSupportedPeer(peer: unknown): peer is SupportedPeer { return typeof peer === "string" && ADAPTERS.some(definition => definition.kind === peer); }
+export function isStartablePeer(peer: unknown): peer is SupportedPeer { return isSupportedPeer(peer) && definitionOf(peer)?.start.conductorStartable === true; }
 
 /** Body-free browser metadata, derived from the same native participation and managed-tool contracts. */
 export const ADAPTER_DISPLAY = Object.fromEntries(ADAPTERS.map(adapter => [adapter.kind, {

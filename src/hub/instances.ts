@@ -7,6 +7,7 @@ export interface InstanceConfig {
   roles?: string[];
   start_mode?: StartForm;
   permission_mode?: PermissionMode;
+  review_mode?: "fresh";
   worktree?: string;
 }
 export type InstancesConfig = Readonly<Record<string, InstanceConfig>>;
@@ -48,15 +49,24 @@ export function validateInstances(raw: unknown): InstancesConfig {
   for (const [id, descriptor] of Object.entries(declarations)) {
     if (!PEER_ID.test(id) || RESERVED.has(id) || definitionOf(id)) return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
     const path = `instances.${id}`, entry = fields(descriptor.value, path);
-    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree"].includes(key))) return fail(path, "unsupported field");
+    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode"].includes(key))) return fail(path, "unsupported field");
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
     const definition = definitionOf(kind), prefix = `${kind}-`;
     if (!definition) return fail(`${path}.kind`, "unknown native kind");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length))) return fail(path, "id must be <kind>-<name>");
+    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+    const reviewer = (definition.reviewerVariant ?? definition).reviewer;
+    const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
+    if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer)) return fail(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
+    const freshReviewer = reviewerOnly && !!reviewer && (reviewer.declaration === "automatic" || entry.review_mode?.value === "fresh");
+    if (definition.routing?.reviewOnly && !freshReviewer) return fail(path, "a review-only kind requires headless roles exactly [\"reviewer\"]");
+    if (freshReviewer && entry.worktree) return fail(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
+    if (freshReviewer && entry.permission_mode) return fail(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
     // #450 I3: a channel-plugin kind (Claude) runs only in the person's terminal, so it reviews or plans and never owns writes.
     const channel = definition.identity.mcp === "channel-plugin";
-    if (!channel && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp))) return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
+    const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
+    if (!channel && !unavailableReviewer && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp))) return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
     if (channel) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       // #223: a headless one is the kind's reviewer variant, one fresh hub-run session per review request.
@@ -68,7 +78,7 @@ export function validateInstances(raw: unknown): InstancesConfig {
         if (!declared.length || declared.some(role => role !== "reviewer" && role !== "planner")) return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
       }
     }
-    const value: InstanceConfig = { kind };
+    const value: InstanceConfig = { kind, ...(entry.review_mode ? { review_mode: "fresh" as const } : {}) };
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }
     if (entry.start_mode) {
       if (entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "I2 extra instances require headless mode");

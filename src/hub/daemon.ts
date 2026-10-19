@@ -27,7 +27,7 @@ import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
-import { ADAPTERS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
+import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
 import { definitionOf as instanceDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
 import { effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
@@ -64,7 +64,9 @@ import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
-import { reviewDiff, ClaudePrintPeer } from "../adapters/claude-print.ts";
+import { ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
+import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
+import { reviewDiff } from "../adapters/claude-print.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
@@ -185,7 +187,7 @@ export interface HubConfig {
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
-  review: { adaptive: boolean; min_reviews: number };
+  review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean };
   /** After an unplanned stop, start Kimi, Pi and the local worker again with their recorded sessions (issue #37). */
   recovery: { auto_resume_after_crash: boolean };
   /** Per peer, the hub-tool capabilities it has (issue #39); a peer not listed has all of them. */
@@ -604,6 +606,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   const loadedConfig = opts.config ?? loadConfig(opts.cwd);
+  reviewerPoolConfig(loadedConfig.review, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS);
   const lifecycleConfig = loadSdlc(opts.cwd, VERSION);
   // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
   const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
@@ -615,6 +618,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const channelPeers = [...ADAPTERS.filter(definition => definition.identity.mcp === "channel-plugin").map(definition => definition.kind), ...channelExtras];
   const executionRoots = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string }>();
+  const reviewerUnavailable = new Map<string, string>();
   const roles = { ...loadedConfig.roles };
   const permissionModesFromInstances: Record<string, PermissionMode> = {};
   const startModesFromInstances: PeerStartConfig = {};
@@ -1339,12 +1343,12 @@ export async function startDaemon(opts: DaemonOptions) {
     reviewOnly: reviewOnlyPeer,
     // #223: a headless reviewer's verdict holds only while the same child it started with still runs for that task.
     reviewAuthority: (by, task) => {
-      if (definitionOf(by)?.start.daemonPort !== "claude-print") return undefined;
-      const peer = bus.peers.get(by) as ClaudePrintPeer | undefined, token = peer?.reviewToken(task);
+      if (!definitionOf(by)?.reviewer) return undefined;
+      const peer = bus.peers.get(by) as ReviewerPrintPeer | undefined, token = peer?.reviewToken(task);
       return () => token !== undefined && bus.peers.get(by) === peer && peer?.reviewToken(task) === token ? undefined : `no review of task #${task} is running for ${by}`;
     },
     // #223 R4: fresh only when the verdict comes from a reviewer session the hub started for this task's review.
-    reviewContext: (by, task) => definitionOf(by)?.start.daemonPort === "claude-print" && (bus.peers.get(by) as ClaudePrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
+    reviewContext: (by, task) => !!definitionOf(by)?.reviewer && (bus.peers.get(by) as ReviewerPrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
     // reload cannot turn a canonical reviewer process into an isolated implementation owner.
     ownerIsolation: () => Object.fromEntries(extraIds.map(id => {
@@ -1438,7 +1442,7 @@ export async function startDaemon(opts: DaemonOptions) {
     recordCohort: (c) => event({ type: "cohort", ...c }),
     // The trace holds peer names and numbers only (never task text): it is the inputs a later check of the prediction needs.
     recordSplit: (task, p, where) => event({ type: "split", task, where, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
-    failing: () => bus.failingPeers(),
+    failing: () => ({ ...bus.failingPeers(), ...Object.fromEntries(reviewerUnavailable) }),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
   relevantNotice = (peer, env) => {
@@ -3290,7 +3294,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     const stopNotice = definitionOf(peer)?.cli.stopNotice?.(owner instanceof WsPeer ? "tui" : !owner ? startMode(peer) : "headless", owner);
     if (stopNotice) return { ok: false, error: stopNotice };
-    if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer || owner instanceof ClaudePrintPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
+    if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer || owner instanceof ReviewerPrintPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
     if (owner instanceof PiPeer && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
     if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ${startCommand(peer)} before stopping it` };
     if (starting.has(peer) || requestedPeerStops.has(peer) || permissionChanges.has(peer)) return { ok: false, error: "peer lifecycle or permission change is in progress; wait for ahub status before retrying" };
@@ -3354,6 +3358,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void, executionCwd: string): Promise<Record<string, unknown>> {
     const adapter = definitionOf(peer);
+    if (adapter?.reviewer?.unavailable) return { ok: false, error: adapter.reviewer.unavailable };
     const preflight = adapter?.start.preflight?.({ instance: peer, form: args.mode });
     if (preflight) return { ok: false, error: preflight };
     if (adapter?.attach?.admission && !declarations[peer]) {
@@ -3848,24 +3853,39 @@ export async function startDaemon(opts: DaemonOptions) {
       await local.start();
       return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
     }
-    if (adapter?.start.daemonPort === "claude-print") {
-      // #223 R3: one fresh `claude -p` session per review request; idle with no process between reviews.
+    if (adapter?.reviewer) {
+      const backend = adapter.reviewer.backend;
+      if (!backend || !adapter.start.create) return { ok: false, error: "reviewer has no verified runtime" };
+      // #519: each backend proves isolation before admission, then starts one fresh child per review.
       if (existing?.state === "busy") return { ok: false, error: `${peer} is reviewing; retry when it is idle` };
       if (existing) { mute(existing); await existing.stop(); }
-      const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["claude-print"]({
-        cwd: executionCwd,
+      const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["reviewer-print"]({
+        backend, cwd: executionCwd,
         mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
         systemPrompt: sessionRoleContract(peer),
         watchdogMs: config.watchdog_ms,
-        privatePaths: [...(config.pii?.paths ?? []), ...config.local.deny],
+        privatePaths: [opts.stateDir, ...(config.pii?.paths ?? []), ...config.local.deny],
         facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(executionCwd, path, config.pii?.paths ?? [], true), nameable: tasks.nameable }),
         verdictSince: (task, since) => board.get(task)?.history.some(h => h.by === peer && h.at >= since && (h.event === "approved" || h.event === "changes_requested")) === true,
         onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
+        onUnavailable: (failure, current) => {
+          const attached = () => current() && bus.peers.get(peer) === reviewer;
+          if (!attached()) return;
+          if (failure.cause === "start_failed") reviewerUnavailable.set(peer, "reviewer isolation unavailable; restart after checking the verified CLI and isolation requirements");
+          return tasks.retryReviewer(failure.task, peer, failure, attached).then(() => undefined);
+        },
         log,
-      }) }) as ClaudePrintPeer;
+      }) }) as ReviewerPrintPeer;
+      try { await reviewer.start(); }
+      catch {
+        await reviewer.stop().catch(() => {});
+        const reason = "reviewer isolation unavailable; inspect the verified CLI version and isolation requirements";
+        reviewerUnavailable.set(peer, reason);
+        return { ok: false, error: reason };
+      }
+      reviewerUnavailable.delete(peer);
       executionOwners.set(peer, { owner: reviewer, cwd: executionCwd });
       bus.add(reviewer);
-      await reviewer.start();
       return { ok: true };
     }
     return { ok: false, error: `unknown peer "${peer}"` };
@@ -4736,6 +4756,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (cancelled) return cancelled;
       if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
       if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
+      if ((extraIds.some(id => !!definitionOf(id)?.reviewer) || config.review.pool !== undefined) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_pool"))) return "target lacks reviewer_pool; fresh review-only variants and pool policy cannot be preserved";
       return undefined;
     };
     const checkTarget = msg.op === "prepare" || msg.op === "commit" || msg.op === "inspect" && msg.targetFeatures !== undefined;
