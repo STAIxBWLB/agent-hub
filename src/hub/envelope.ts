@@ -14,7 +14,7 @@ export interface Envelope {
   kind: Kind;
   priority: Priority;
   body: string; // agent conclusions only, never tool noise
-  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; backlog?: number[]; supervision?: boolean; supervisionKey?: string; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[] };
+  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; reviewRevision?: string; taskOffer?: number; taskCancelled?: number; taskRecipient?: "owner" | "reviewer" | "planner"; backlog?: number[]; supervision?: boolean; supervisionKey?: string; boundedCheck?: string; budgetResume?: string; budgetResumeMoves?: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]; budgetResumeEarlier?: string[] };
   /** The body must not be shown outside its recipients: console tail and log print a stub instead (PII tasks). */
   private?: boolean;
   ts: number;

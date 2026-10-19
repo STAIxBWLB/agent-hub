@@ -1,3 +1,4 @@
+import type { ReviewerBackend, ReviewerPrintOptions } from "./reviewer-print.ts";
 import type { SettingDef } from "../hub/settings.ts";
 import type { Addon } from "../hub/tooling.ts";
 import type { RecoveryContinuityBookmark } from "../hub/recovery-continuity.ts";
@@ -16,7 +17,7 @@ import type { PiOptions } from "./pi.ts";
 import type { ClaudePrintOptions } from "./claude-print.ts";
 
 export type StartForm = "tui" | "headless";
-export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print";
+export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print";
 
 /** Existing buildLaunch inputs plus the startup-bound instance and project identity. */
 export interface LaunchContext {
@@ -55,7 +56,8 @@ export type DaemonPorts =
   | { jcode: JcodeOptions }
   | { pi: PiOptions }
   | { local: LocalOptions }
-  | { claudePrint: ClaudePrintOptions };
+  | { claudePrint: ClaudePrintOptions }
+  | { reviewerPrint: ReviewerPrintOptions };
 
 export interface CreateContext<Ports extends DaemonPorts = DaemonPorts> {
   instance: string;
@@ -264,7 +266,9 @@ export interface AdapterDefinition {
   hooks?: Partial<NativeHooks>;
   /** #223: what a declared headless reviewer-only instance of this kind runs as. Fixed builtins only. */
   reviewerVariant?: AdapterDefinition;
+  /** Fixed host backend; runtime isolation proof is required before bus admission. */
+  reviewer?: { backend?: ReviewerBackend; defaultPool: boolean; unavailable?: string; declaration: "automatic" | "explicit" };
 }
 
 /** Explicit project declarations, passed by the bound host. No process-global instance registration. */
-export type KindMap = Readonly<Record<string, { readonly kind: string }>>;
+export type KindMap = Readonly<Record<string, { readonly kind: string; readonly roles?: readonly string[]; readonly start_mode?: "tui" | "headless"; readonly review_mode?: "fresh" }>>;

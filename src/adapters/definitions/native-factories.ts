@@ -39,9 +39,25 @@ export function createLocal(ctx: CreateContext): PeerAdapter {
 }
 
 export function createClaudeReviewer(ctx: CreateContext): PeerAdapter {
+  if ("reviewerPrint" in ctx.daemon) {
+    const { ClaudePrintPeer } = require("../claude-print.ts") as typeof import("../claude-print.ts");
+    return new ClaudePrintPeer(ctx.instance, ctx.daemon.reviewerPrint);
+  }
   if (!("claudePrint" in ctx.daemon)) throw new Error("Claude reviewer requires its print transport options");
   const { ClaudePrintPeer } = require("../claude-print.ts") as typeof import("../claude-print.ts");
   return new ClaudePrintPeer(ctx.instance, ctx.daemon.claudePrint);
+}
+
+export function createCodexReviewer(ctx: CreateContext): PeerAdapter {
+  if (!("reviewerPrint" in ctx.daemon)) throw new Error("Codex reviewer requires its fresh print transport options");
+  const config = ctx.kindConfig as { codex_bin?: string };
+  return createReviewer({ ...ctx, daemon: { reviewerPrint: { ...ctx.daemon.reviewerPrint, command: ctx.daemon.reviewerPrint.command ?? [config.codex_bin ?? "codex"] } } });
+}
+
+export function createReviewer(ctx: CreateContext): PeerAdapter {
+  if (!("reviewerPrint" in ctx.daemon)) throw new Error("Reviewer requires its fresh print transport options");
+  const { ReviewerPrintPeer } = require("../reviewer-print.ts") as typeof import("../reviewer-print.ts");
+  return new ReviewerPrintPeer(ctx.instance, ctx.daemon.reviewerPrint);
 }
 
 /** Preserve existing transport option types and object identity; selection stays host-owned. */
@@ -51,5 +67,6 @@ export const DAEMON_PORTS = {
   "owned-acp": (options: Extract<DaemonPorts, { jcode: unknown }>["jcode"]) => ({ jcode: options }),
   "pi-rpc": (options: Extract<DaemonPorts, { pi: unknown }>["pi"]) => ({ pi: options }),
   "local-worker": (options: Extract<DaemonPorts, { local: unknown }>["local"]) => ({ local: options }),
+  "reviewer-print": (options: Extract<DaemonPorts, { reviewerPrint: unknown }>["reviewerPrint"]) => ({ reviewerPrint: options }),
   "claude-print": (options: Extract<DaemonPorts, { claudePrint: unknown }>["claudePrint"]) => ({ claudePrint: options }),
 } satisfies Record<DaemonEngine, unknown>;

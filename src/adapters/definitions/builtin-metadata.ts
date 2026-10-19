@@ -1,3 +1,4 @@
+import { claudeReviewerBackend, CODEX_REVIEWER_VARIANT, KIMI_REVIEWER_VARIANT } from "./reviewer-variants.ts";
 import { kimiAcpCommand } from "./native-daemon-kimi.ts";
 import { claudeRecoveryLaunch, kimiRecoveryLaunch, claudeRetainedTerminalNotice, piRetainedTerminalNotice, codexRetainedTerminalNotice, codexRosterReturnNotice, jcodeStartPreflight, claudeObservedVersion, codexObservedVersion } from "./native-daemon-policy.ts";
 import { piConfigSchema, localConfigSchema, piRoutingSchema, localRoutingSchema, PI_SETTINGS, PI_RESTART_REASONS, LOCAL_RESTART_REASONS, piEffectiveConfig } from "./native-config-policy.ts";
@@ -65,7 +66,7 @@ const CLAUDE_REVIEWER_VARIANT: AdapterDefinition = {
   identity: { mcp: "env" },
   permission: { modes: {}, unmanaged: "each review runs read-only (Read, Grep, Glob) and may call only hub_review and hub_task_show" },
   session: { idField: "sessionId", currentId: () => undefined, freshOnRestore: true, launchKind: "claude-print", crashPlan: () => ({ resume: {}, how: "claude reviewer: starts again; every review runs in a new session" }) },
-  turnEnd: "adapter", budget: { account: "claude" }, routing: { reviewOnly: true },
+  turnEnd: "adapter", budget: { account: "claude" }, routing: { reviewOnly: true }, reviewer: { backend: claudeReviewerBackend, defaultPool: true, declaration: "automatic" },
   cli: { command: "claude", startWords: () => ["claude"] }, display: CLAUDE_DISPLAY,
 };
 
@@ -88,6 +89,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     reviewerVariant: CLAUDE_REVIEWER_VARIANT,
   },
   {
+    reviewerVariant: CODEX_REVIEWER_VARIANT,
     api: 1, kind: "codex", displayName: "Codex", family: "codex", transport: "codex-appserver",
     roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createCodex, daemonPort: "codex-appserver", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: codexNativeLaunch, version: codexObservedVersion, ...CODEX_LAUNCH_POLICY, conductorStartable: true,
@@ -101,6 +103,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     cli: { command: "codex", retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] }, display: CODEX_DISPLAY, hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic },
   },
   {
+    reviewerVariant: KIMI_REVIEWER_VARIANT,
     api: 1, kind: "kimi", displayName: "Kimi Code", family: "kimi", transport: "acp",
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: ctx => compatibilityLaunch("kimi", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },

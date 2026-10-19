@@ -1,6 +1,7 @@
+import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import type { HubConfig } from "./daemon.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked } from "./config-trust.ts";
-import { ADAPTERS, SUPPORTED_PEERS, PLANNER_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
+import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, SUPPORTED_PEERS, PLANNER_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { CLASSES } from "./board.ts";
 import { permissionDefaults } from "./permission-mode.ts";
 import { peerStartConfig, terminalTemplate } from "./start-mode.ts";
@@ -138,7 +139,7 @@ const schema: Record<string, Check> = {
   peers: (v, k) => { map(block({ start_mode: words(["tui", "headless"]) }), START_MODE_PEERS)(v, k); peerStartConfig(v); },
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
   limits: block({ sender_per_min: number(0), pair_per_min: number(0), important_per_hour: number(0), repeat_window_s: number(0) }),
-  review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true) }), recovery: block({ auto_resume_after_crash: bool }),
+  review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true), pool: v => { reviewerPoolConfig({ pool: v }, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS); }, rerotate: bool }), recovery: block({ auto_resume_after_crash: bool }),
   capabilities: map(strings), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
 };
 export function validateRawConfig(raw: unknown, declarations?: InstancesConfig): asserts raw is Record<string, unknown> {

@@ -1935,3 +1935,19 @@ hub instance stays running with its queue and pauses intact. Record the source
 head, terminal and daemon readbacks separately before claiming AC5 native smoke.
 
 For the guarded CLI leg, edit a disposable untracked WIP limit, run `ahub settings reload`, inspect its complete before -> after preview, decline and verify the running limit is retained. Repeat and confirm y, then verify the same instance and queue/pause state. Record this separately from the scripted CLI fixture; the token proves freshness within console authority, and the CLI supplies the person-presence checks.
+
+
+## Reviewer pool native legs (#519, 2026-10-19)
+
+Native account/model acceptance is **UNVERIFIED**. See [reviewer isolation evidence](verification/2026-10-19-reviewer-isolation.md) for the exact source/version pins and offline probes. Those probes used temporary fixtures and no model prompt, account login or credential copy. Fake-CLI tests and CI are separate host-contract evidence. Existing #223 Claude behavior is retained without a new live Claude claim.
+
+Complete these legs in a disposable project with authorized accounts after source integration and exact-head CI:
+
+- Declare headless Claude and Codex reviewer-only instances, adding `review_mode: "fresh"` to Codex. Claude retains the automatic #223 declaration. For Codex, select the proved 0.146.0 binary and verify its runtime isolation receipt before a model turn; a 0.163.0 PATH executable must remain unavailable.
+- Submit a small public change with a pinned reviewed head. Confirm a different-family reviewer, fresh native session, expected read-only policy, the fixed two hub tools and a verdict carrying `reviewContext: fresh`, `reviewerFamily` and `reviewerReason`. Confirm builder done narrative is absent from both prompt and `hub_task_show`.
+- Request a delta review and confirm the same eligible independent reviewing family receives a new session with prior findings. After an earlier same-family fallback, a newly available independent family still takes precedence. Exercise configured re-rotation separately. Stop or exhaust one reviewer and confirm the pure routing walk chooses the next eligible candidate; no failed start or child ending without a saved verdict becomes approval. Check the next candidate even when the missing verdict followed a vendor quota error; no text-based quota classifier is assumed.
+- Make all pool candidates unavailable and confirm a blocked review awaiting planner/person action. Then test a different fresh session in same-family fallback only when no other family can run. Verify stale-child, changed-head and private-review verdict refusals.
+- Verify compatibility separately: a Codex/Kimi headless reviewer-role declaration without `review_mode` keeps its native app-server/ACP behavior and existing worktree/permission options, and stays outside the fresh pool. An explicit fresh declaration must refuse an unsupported backend without downgrading.
+- Keep Kimi and agy out of the default pool. Explicitly requesting either currently yields unavailable and a skip, not a model launch or pass. No Kimi/agy launch code is included in #229. Their follow-up #533 (hub task #234) needs strict MCP/config, private-read, write-denial and fresh-session receipts before native smoke can count; the future agy launcher belongs in `src/adapters/agy/`.
+
+Record source head, exact executable version/hash, isolation receipt, task/head identities, route walk, distinct native session evidence and persisted verdict separately. Do not record credentials or raw transport environments. Codex sandboxed shell must not be described as Claude's Read/Grep/Glob-only whitelist. Network policy is configured disabled; no network-denial probe or native LLM isolation result has been recorded by this investigation.
