@@ -5307,6 +5307,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // context), `post` after it (its effect, and the readback of what went in before), `stop` when its turn ends.
         // The hook never shows an error: on any failure the answer is just empty.
         if (!c.peer || c.role === "console") return void reply({ t: "facts", ok: false, error: "facts are for a peer" });
+        if (definitionOf(c.peer)?.hooks?.factsHook) return void reply({ t: "facts", ok: false, error: "managed native hooks require native_facts" });
         const phase: "session" | "start" | "pre" | "post" | "stop" = ["session", "start", "post", "stop"].includes(msg.phase) ? msg.phase : "pre";
         const tool = typeof msg.tool === "string" ? msg.tool.slice(0, 64) : "";
         const input = msg.input && typeof msg.input === "object" && !Array.isArray(msg.input) ? msg.input : {};

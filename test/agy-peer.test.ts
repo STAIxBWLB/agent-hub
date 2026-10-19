@@ -74,6 +74,8 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     expect((await facts("PreInvocation", { workspacePaths: [root, otherRoot] })).ok).toBe(false);
     expect(daemon.bus.peers.get("agy")?.state).toBe("idle");
     expect((await facts("PreInvocation")).ok).toBe(true); expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+    for (const phase of ["stop", "start", "session", "pre", "post"]) expect((await tools.request({ t: "facts", phase })).ok).toBe(false);
+    expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
     expect((await facts("Stop", { fullyIdle: false, terminationReason: "NO_TOOL_CALL" })).ok).toBe(false);
     writeFileSync(transcript, JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete" }) + "\n");
     expect((await facts("Stop", { fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
