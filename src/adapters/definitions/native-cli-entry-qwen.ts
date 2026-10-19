@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
 export async function runQwenEntry(ctx: NativeCliEntryContext): Promise<void> {
@@ -15,7 +16,7 @@ export async function runQwenEntry(ctx: NativeCliEntryContext): Promise<void> {
   const hub = await connect();
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
     const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...(one["--model"] ? { model: one["--model"] } : {}), ...(one["--session-id"] ? { sessionId: one["--session-id"] } : {}) }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35_000);
     if (!reply.ok) fail(reply.error);
     console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); use ahub say @${peer} and the console for approvals`);

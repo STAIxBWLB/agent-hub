@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
 export async function runLocalEntry(ctx: NativeCliEntryContext): Promise<void> {
@@ -9,7 +10,7 @@ export async function runLocalEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (args.some((a, i) => i % 2 === 0 && !["--route", "--model"].includes(a))) fail("usage: ahub local [--route <id> | --model <id>]");
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok) fail(res.error);

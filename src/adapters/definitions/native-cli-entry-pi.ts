@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import { parsePiFlags } from "./native-cli-pi.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
@@ -24,7 +25,7 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
     const hub = await connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35_000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "pi start refused");
@@ -40,7 +41,7 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (recovering && before?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
   const res = await hub.request({ t: "start", peer, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok) fail(res.error);

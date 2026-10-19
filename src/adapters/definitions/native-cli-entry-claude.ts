@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -15,7 +16,7 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
     const hub = await ctx.connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
       const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (res.ok !== true) fail(String(res.error ?? `${peer} was not started`));
     } finally { hub.close(); }

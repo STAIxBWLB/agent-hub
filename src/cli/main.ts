@@ -40,7 +40,7 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, retainedLaunchWarning, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
+import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
 import { configureKimiMcp } from "./kimi-mcp.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
@@ -862,7 +862,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, recoveryLock, processSignature,
         buildLaunch, claudeObservationHooks, recordClaudeLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings,
         nativeLaunchEnv, runClaudeLaunch, childEnv, qwenSessionId, configureJcodeMcp, configureKimiMcp,
-        buildKimiTuiLaunch, startModeOf, retainedLaunchWarning: (status, peer, definition) => retainedLaunchWarning(status, peer, definition) },
+        buildKimiTuiLaunch, startModeOf },
     };
     return entry.execute(context);
   }])),

@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import { resolve } from "node:path";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
@@ -18,7 +19,7 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
     const rostered = rosterInStatus(snapshot, "jcode");
     if (rostered === undefined) fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
     if (!rostered) fail("jcode is off roster; add it with ahub roster add jcode");
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, "jcode", ctx.definition); if (warning) console.error(warning);
+    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition); if (warning) console.error(warning);
     // The daemon verifies the entry against its own bundle; fall back to this CLI's copy only for a hub that reports none.
     const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked) console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");

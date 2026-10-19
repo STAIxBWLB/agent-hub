@@ -12,19 +12,7 @@ import type { InstancesConfig } from "../hub/instances.ts";
 import { kimiAcpCommand } from "../adapters/definitions/native-daemon-kimi.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
-/** Explain a retained launch setting using only metadata from the selected adapter definition. */
-export function retainedLaunchWarning(status: unknown, peer: string, definition: import("../adapters/registry-types.ts").AdapterDefinition): string | undefined {
-  const keys = definition.cli.launchConfigKeys;
-  const retained = (status as { retainedConfig?: unknown } | undefined)?.retainedConfig;
-  if (!keys?.length || !Array.isArray(retained)) return;
-  const pending = retained.flatMap(row => {
-    if (!row || typeof row !== "object") return [];
-    const key = (row as { key?: unknown }).key;
-    return typeof key === "string" && keys.some(candidate => key === candidate || key.startsWith(`${candidate}.`)) ? [key] : [];
-  });
-  const unique = [...new Set(pending)];
-  return unique.length ? `ahub: config retained: ${unique.join(", ")}; starting ${peer} with the running value; run ahub settings reload to apply the file's value` : undefined;
-}
+export { retainedLaunchWarning } from "../adapters/definitions/native-cli-retained.ts";
 
 /** Consume only ahub's selector, never native arguments after the passthrough delimiter. */
 export function instanceLaunchArguments(command: string, raw: readonly string[], instances?: InstancesConfig): { instance?: string; args: string[]; hubStarted?: true } {

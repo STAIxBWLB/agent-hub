@@ -8234,6 +8234,22 @@ var init_reviewer_variants = __esm(() => {
   };
 });
 
+// src/adapters/definitions/native-cli-retained.ts
+function retainedLaunchWarning(status, peer, definition) {
+  const keys = definition.cli.launchConfigKeys;
+  const retained = status?.retainedConfig;
+  if (!keys?.length || !Array.isArray(retained))
+    return;
+  const pending = retained.flatMap((row) => {
+    if (!row || typeof row !== "object")
+      return [];
+    const key = row.key;
+    return typeof key === "string" && keys.some((candidate) => key === candidate || key.startsWith(`${candidate}.`)) ? [key] : [];
+  });
+  const unique = [...new Set(pending)];
+  return unique.length ? `ahub: config retained: ${unique.join(", ")}; starting ${peer} with the running value; run ahub settings reload to apply the file's value` : undefined;
+}
+
 // src/hub/claude-state.ts
 function claudeStateFile(base, peer) {
   return peer.includes("-") && PEER2.test(peer) ? `${base}.${peer}.json` : `${base}.json`;
@@ -8256,7 +8272,7 @@ async function runClaudeEntry(ctx) {
     const hub = await ctx.connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
       const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
@@ -8338,7 +8354,7 @@ async function runCodexEntry(ctx) {
     await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
@@ -8359,6 +8375,7 @@ async function runCodexEntry(ctx) {
     console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
 }
+var init_native_cli_entry_codex = () => {};
 
 // src/hub/status-roster.ts
 function rosterInStatus(status, peer) {
@@ -8398,7 +8415,7 @@ async function runJcodeEntry(ctx) {
       fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
     if (!rostered)
       fail("jcode is off roster; add it with ahub roster add jcode");
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, "jcode", ctx.definition);
+    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition);
     if (warning)
       console.error(warning);
     const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve10(cliDir, "../../plugins/agent-hub/server.js"));
@@ -8435,7 +8452,7 @@ async function runQwenEntry(ctx) {
   const hub = await connect();
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
     if (warning)
       console.error(warning);
     const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
@@ -8446,6 +8463,7 @@ async function runQwenEntry(ctx) {
     hub.close();
   }
 }
+var init_native_cli_entry_qwen = () => {};
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
 import { resolve as resolve11 } from "path";
@@ -8474,7 +8492,7 @@ async function runKimiEntry(ctx) {
     const hub = await connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35000);
@@ -8494,7 +8512,7 @@ async function runKimiEntry(ctx) {
         fail("cannot read kimi's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
       if (!rostered)
         fail("kimi is off roster; add it with ahub roster add kimi");
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
       const owner = snapshot?.peers?.[peer];
@@ -8520,7 +8538,7 @@ async function runKimiEntry(ctx) {
       process.exit(result.status ?? 1);
     }
     const snapshot = (await hub.request({ t: "status" })).status;
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
     if (warning)
       console.error(warning);
     const owner = snapshot?.peers?.[peer];
@@ -8604,7 +8622,7 @@ async function runPiEntry(ctx) {
     const hub = await connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35000);
@@ -8623,7 +8641,7 @@ async function runPiEntry(ctx) {
     await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
   const res = await hub.request({ t: "start", peer, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
@@ -8660,7 +8678,7 @@ async function runLocalEntry(ctx) {
     fail("usage: ahub local [--route <id> | --model <id>]");
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
@@ -8669,14 +8687,18 @@ async function runLocalEntry(ctx) {
     fail(res.error);
   console.log(res.already ? `${peer} is already attached` : `${peer} attached on ${res.model}. Give it work with: ahub say @${peer} "..."`);
 }
+var init_native_cli_entry_local = () => {};
 
 // src/adapters/definitions/native-cli-entry.ts
 var builtinCliEntries;
 var init_native_cli_entry = __esm(() => {
   init_native_cli_entry_claude();
+  init_native_cli_entry_codex();
   init_native_cli_entry_jcode();
+  init_native_cli_entry_qwen();
   init_native_cli_entry_kimi();
   init_native_cli_entry_pi();
+  init_native_cli_entry_local();
   builtinCliEntries = Object.freeze([
     { command: "claude", lifecycleAdmission: true, execute: runClaudeEntry },
     { command: "codex", lifecycleAdmission: true, execute: runCodexEntry },

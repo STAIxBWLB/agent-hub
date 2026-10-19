@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
 export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
@@ -20,7 +21,7 @@ export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (recovering && !ctx.instance && before?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok) fail(res.error);

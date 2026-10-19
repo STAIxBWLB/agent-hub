@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
@@ -21,7 +22,7 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
     const hub = await connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35_000);
       if (!reply.ok) fail(reply.error);
       return console.log(reply.already ? "kimi is already attached" : `kimi: opened a terminal running ${reply.command}; it attaches pull-only when its TUI is ready`);
@@ -34,7 +35,7 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
       const rostered = rosterInStatus(snapshot, peer);
       if (rostered === undefined) fail("cannot read kimi's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
       if (!rostered) fail("kimi is off roster; add it with ahub roster add kimi");
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
       const owner = snapshot?.peers?.[peer];
       if (owner && !["offline"].includes(owner.state) && !owner.pullOnly) fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
       const admission = await hub.request({ t: "start", peer, args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
@@ -54,7 +55,7 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
       process.exit(result.status ?? 1);
     }
     const snapshot = (await hub.request({ t: "status" })).status;
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
     const owner = snapshot?.peers?.[peer];
     if (owner?.pullOnly && owner.state !== "offline") fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance) configureKimiMcp(cwd, stateDir, resolve(cliDir, "../../plugins/agent-hub/server.js"), "headless");
