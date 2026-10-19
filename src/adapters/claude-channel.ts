@@ -86,6 +86,7 @@ const TERMINAL_CLOSES: Record<number, string> = {
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
+  4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session",
 };
 /** Another session attached under this peer id. Unlike the other closes this one ends on its own, so the
@@ -97,7 +98,7 @@ const INBOX_CAP = 200;
 /**
  * Whether a live session holds this peer id, per the daemon's own status file. The hub gives the id to
  * whoever said hello last, so reconnecting blind would evict the session that just took it and the two
- * would trade the peer forever. No readable status means no live hub holds it, and a connect can only fail.
+ * would trade the peer forever. This file is advisory: a standby hello also checks live ownership at the daemon.
  */
 function peerHeld(): boolean {
   try {
@@ -243,6 +244,8 @@ async function connectLoop(): Promise<void> {
     let closeReason: string | undefined;
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsMode ? "tools" : "peer", peer: peerId, ...(toolsMode ? {} : { channel }),
+        ...(!toolsMode && process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
+        ...(!toolsMode && standingBy ? { standby: true } : {}),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => {
         if (msg.t === "queued") {

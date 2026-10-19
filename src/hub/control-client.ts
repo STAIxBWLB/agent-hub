@@ -18,6 +18,10 @@ export interface Hello {
   peer?: string;
   /** `peer` only: false when the session cannot show channel pushes; its queue then waits for `inbox` (issue #205). */
   channel?: boolean;
+  /** Managed Claude launch identity; absent for plain or pre-daemon sessions. */
+  launchId?: string;
+  /** Reclaim after replacement, never an intentional initial takeover. */
+  standby?: boolean;
   projectId?: string;
   instanceId?: string;
   projectRoot?: string;
