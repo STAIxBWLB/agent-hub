@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.36
+bun add -g github:STAIxBWLB/agent-hub#v0.12.37
 ahub setup
 ```
 
@@ -30,15 +30,15 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to 0.12.36
+## Upgrading to 0.12.37
 
-Restart Claude sessions after upgrading: each keeps the plugin server it started with, and `hub_review` now takes `coverage`. Every review request for a non-private task with a commit carries a review brief the hub builds from that commit: reviewable files, excluded ones (`linguist-generated` in `.gitattributes`, lockfiles, binaries) and rules from `REVIEW.md` or an `ahub-review-rules` attribute, read at the merge base. `ahub review brief <id>` prints it (#520).
+Restart Claude sessions after upgrading: each keeps the plugin server it started with, and the planner gets the release-train tools (`hub_release_new`, `hub_release_assign`, `hub_release_configure`, `hub_release_cut`, `hub_release_report`); the person uses `ahub sdlc train report|configure|cut` (#481 S11). A due date asks for a cut review and never clears unfinished work; a cut freezes scope and publishes nothing. See [release scheduling](operations.md#planner-release-scheduling).
 
-WIP admission now applies in every lifecycle mode, `off` included: an owner at its WIP limit (default one open task per peer) cannot accept or claim another task, while a redo of its own sent-back work keeps its slot. Raise it with `ahub settings set tasks.wip_limits.<peer> N` (applies at the next admission); a limit of 0 refuses every new acceptance for that peer (#481 S9).
+Reviews can rotate across fresh Claude and Codex reviewer sessions (#519). Declare headless reviewer-only instances in `.agenthub/config.local.json`; Codex joins only with `review_mode: "fresh"` and an installed Codex 0.146.0 (select it with `codex_bin` when PATH resolves another version). A headless reviewer instance without `review_mode` keeps its native behavior and stays out of the pool. Kimi has no fresh reviewer yet (#533). agy will not be a reviewer: it is planned as an implementer peer (#485) and is not in this release. Naming either in `review.pool` shows an unavailable skip in `ahub route explain`, never a review. Once a train is active or frozen, or `review.pool` is set or fresh reviewer instances are declared, `ahub upgrade` refuses a target release without that support, so an older release cannot take the project over. See [fresh reviewer pool](operations.md#fresh-reviewer-pool-519).
 
-Only in `enforce`: build work needs the person's `ahub sdlc accept <task> --issue <n>` and a current plan review (`hub_plan_review`, or `ahub sdlc plan-review`); an approval must account for every reviewable path of the brief; and a review request waits for the PR head, green required checks and answered bot threads. `advise` reports the same gaps; `off` adds none (#481, #520).
+Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-If the daemon refused a Jcode or Kimi TUI entry as stale because the CLI on PATH and the running hub came from different installs, run `ahub jcode --mode headless` or `ahub kimi` again (#502). For a second Claude session as reviewer or planner, or a headless Claude reviewer, see [instances](operations.md#additional-headless-peer-instances). A Claude session whose transcript passed 32 MiB no longer stays busy after its turns end (#517).
+The hub now pins `@staix/agent-mem` 0.4.0 and opens a split memory home through its shards (#534). Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is not split-aware yet and reports a mismatch for every correctly bound hub on a split home (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
