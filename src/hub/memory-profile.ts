@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  CandidateStore, MemoryStore, realPath, memoryHome, resolveProfile,
+  CandidateStore, MemoryStore, realPath, memoryHome, openShardStore, readShardedSelection, resolveProfile, resolveShardProfile,
   type BoundProfile, type ProfileInput, type StoreOptions,
 } from "@staix/agent-mem";
 import packageJson from "../../package.json";
@@ -39,6 +39,10 @@ function assertLoadedAgentMem(): void {
 }
 export const MEMORY_PROFILE_UNAVAILABLE = "memory profile unavailable; inspect the selector and generation state, run ahub memory profile-check; use amem migrate --deactivate only to stop using the selected generation";
 const UNAVAILABLE = MEMORY_PROFILE_UNAVAILABLE;
+/** agent-mem#15 T2: a split marker that is not active (captured, malformed) is never read as an empty or legacy store. */
+export const MEMORY_SPLIT_INCOMPLETE = "memory home has a curated split that is not active; finish it with amem migrate --shards --resume, then restart the hub";
+/** Hub memory options: the project key selects this project's shard once the home is split. */
+export type ProfileMemoryOptions = StoreOptions & { project?: string };
 
 /** No handle was opened; distinct from an unavailable, still-bound handle. */
 export interface UnboundMemoryProfileReceipt {
@@ -70,7 +74,24 @@ function canonicalHome(path: string): string {
 }
 function sameProfile(a: BoundProfile, b: BoundProfile): boolean {
   return a.home === b.home && a.dir === b.dir && a.kind === b.kind
-    && a.generation === b.generation && a.selectorRevision === b.selectorRevision;
+    && a.generation === b.generation && a.selectorRevision === b.selectorRevision
+    && !!a.sharded === !!b.sharded && a.shardKey === b.shardKey && !!a.shardUser === !!b.shardUser;
+}
+const splitMarked = (home: string) => existsSync(join(home, "shards.json"));
+/** Refuse an inactive split before any shard read, so the remedy names resume rather than the generic profile check. */
+function assertActiveSplit(home: string): void {
+  try { readShardedSelection(home); } catch { throw new Error(MEMORY_SPLIT_INCOMPLETE); }
+}
+/**
+ * The one profile a binding may hold: this project's shard on a split home, the selected profile otherwise.
+ * ponytail: the entry fence re-checks the project shard only; the user overlay shares its selection and selector
+ * revision, so its own seal or machine drift goes unchecked. Add resolveShardProfile(home, { user: true }) if needed.
+ */
+function currentProfile(home: string, project: string | undefined): BoundProfile {
+  if (!splitMarked(home)) return resolveProfile(home);
+  assertActiveSplit(home);
+  if (!project) throw new Error(UNAVAILABLE);
+  return resolveShardProfile(home, { project });
 }
 function homeFor(opts: Pick<StoreOptions, "home">): string {
   return canonicalHome(opts.home === undefined ? memoryHome() : join(canonicalHome(opts.home), "memory"));
@@ -95,14 +116,17 @@ export class MemoryProfileBinding {
   readonly explicitProfile: ProfileInput;
   private readonly options: Pick<StoreOptions, "home">;
   private readonly directMemoryDir: string | undefined;
+  /** The shard key on a split home; unused on an unsplit one. */
+  private readonly project: string | undefined;
   private unavailable = false;
 
-  constructor(opts: StoreOptions = {}, private readonly onUnavailable?: (neutralReason: string) => void, directMemoryDir?: string) {
+  constructor(opts: ProfileMemoryOptions = {}, private readonly onUnavailable?: (neutralReason: string) => void, directMemoryDir?: string) {
     assertLoadedAgentMem();
     this.options = { home: opts.home };
     this.directMemoryDir = directMemoryDir;
+    this.project = opts.project;
     this.home = directMemoryDir === undefined ? homeFor(this.options) : canonicalHome(directMemoryDir);
-    this.profile = Object.freeze({ ...resolveProfile(this.home) });
+    this.profile = Object.freeze({ ...currentProfile(this.home, this.project) });
     this.explicitProfile = this.profile.kind === "shared-v1" ? "shared-v1" : Object.freeze({ generation: this.profile.generation! });
   }
 
@@ -110,7 +134,7 @@ export class MemoryProfileBinding {
     if (this.unavailable) throw new Error(UNAVAILABLE);
     try {
       const currentHome = this.directMemoryDir === undefined ? homeFor(this.options) : canonicalHome(this.directMemoryDir);
-      const current = resolveProfile(currentHome);
+      const current = currentProfile(currentHome, this.project);
       if (currentHome !== this.home || !sameProfile(current, this.profile)) throw new Error(UNAVAILABLE);
     } catch {
       this.invalidate();
@@ -149,12 +173,27 @@ export class MemoryProfileBinding {
   }
 }
 
-export function openProfileMemory(opts: StoreOptions = {}, onUnavailable?: (neutralReason: string) => void): {
+export function openProfileMemory(opts: ProfileMemoryOptions = {}, onUnavailable?: (neutralReason: string) => void): {
   store: MemoryStore; binding: MemoryProfileBinding;
 } {
-  const binding = new MemoryProfileBinding(opts, onUnavailable);
-  binding.assertCurrent();
-  const raw = new MemoryStore({ ...opts, profile: binding.explicitProfile });
+  const { project, ...storeOptions } = opts;
+  const home = homeFor(opts);
+  let raw: MemoryStore, binding: MemoryProfileBinding;
+  if (splitMarked(home)) {
+    // agent-mem#15 T2: a plain MemoryStore refuses a split home. The shard store opens this project's shard (created on
+    // first use) with the user shard as its overlay; the binding is resolved after it, since a new shard has no seal yet.
+    assertActiveSplit(home);
+    if (!project) throw new Error(UNAVAILABLE);
+    // The canonical memory directory the binding resolves: a lexical home (a symlinked AGENTHUB_HOME or memory dir)
+    // would give the shard a different profile.home and dir than the binding compares against.
+    raw = openShardStore({ ...storeOptions, home: undefined, memoryDir: home, project });
+    try { binding = new MemoryProfileBinding(opts, onUnavailable); }
+    catch (error) { raw.close(); throw error; }
+  } else {
+    binding = new MemoryProfileBinding(opts, onUnavailable);
+    binding.assertCurrent();
+    raw = new MemoryStore({ ...storeOptions, profile: binding.explicitProfile });
+  }
   try {
     binding.assertCurrent();
     if (!sameProfile(raw.profile, binding.profile)) throw new Error(UNAVAILABLE);
@@ -172,7 +211,7 @@ export function openProfileMemory(opts: StoreOptions = {}, onUnavailable?: (neut
 export function bindProfileMemory(store: MemoryStore, onUnavailable?: (neutralReason: string) => void): {
   store: MemoryStore; binding: MemoryProfileBinding;
 } {
-  const binding = new MemoryProfileBinding({}, onUnavailable, store.profile.home);
+  const binding = new MemoryProfileBinding({ project: store.profile.shardKey }, onUnavailable, store.profile.home);
   binding.assertCurrent();
   if (!sameProfile(store.profile, binding.profile)) throw new Error(UNAVAILABLE);
   return { store, binding };

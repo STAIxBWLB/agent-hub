@@ -98,10 +98,10 @@ test("binding an injected store uses its direct canonical home and rejects misma
 
 
 test("loaded core attestation rejects mismatched, unknown, or foreign package metadata", () => {
-  expect(AGENT_MEM_VERSION).toBe("0.3.1");
-  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: "0.3.1" })).toBe("0.3.1");
-  for (const metadata of [undefined, {}, { name: "@staix/agent-mem", version: "0.2.0" }, { name: "@staix/agent-mem", version: "0.3.0" },
-    { name: "foreign-package", version: "0.3.1" }, { name: "@staix/agent-mem", version: "unknown" }]) {
+  expect(AGENT_MEM_VERSION).toBe("0.4.0");
+  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: "0.4.0" })).toBe("0.4.0");
+  for (const metadata of [undefined, {}, { name: "@staix/agent-mem", version: "0.2.0" }, { name: "@staix/agent-mem", version: "0.3.0" }, { name: "@staix/agent-mem", version: "0.3.1" },
+    { name: "foreign-package", version: "0.4.0" }, { name: "@staix/agent-mem", version: "unknown" }]) {
     expect(() => assertAgentMemVersion(metadata)).toThrow();
   }
 });
