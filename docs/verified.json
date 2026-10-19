@@ -154,7 +154,8 @@
         "src/hub/instance-config.ts",
         "src/hub/instance-execution.ts",
         "src/hub/usage.ts",
-        "src/hub/claude-state.ts"
+        "src/hub/claude-state.ts",
+        "src/hub/memory-profile.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -196,7 +197,10 @@
         "src/hub/settled-roles.ts",
         "src/adapters/definitions/builtin-metadata.ts",
         "src/hub/bus.ts",
-        "src/hub/review-brief.ts"
+        "src/hub/review-brief.ts",
+        "src/hub/reviewer-pool.ts",
+        "src/hub/reviewer-pool-config.ts",
+        "src/hub/release-admission.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
