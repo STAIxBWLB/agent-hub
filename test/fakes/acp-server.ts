@@ -166,6 +166,8 @@ async function prompt(id: number, text: string) {
     return send({ jsonrpc: "2.0", id, result: { stopReason: "max_turn_requests" } });
   }
   if (text.includes("SLOW")) {
+    // #542 D4: a tool call that starts and then runs silently, like a long bash gate.
+    if (text.includes("TOOL_SLOW")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "tool_call", toolCallId: "tc9", title: "bash", kind: "execute", status: "in_progress" } } });
     if (text.includes("ACK_SLOW")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "started" } } } });
     const cancelled = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), 10_000);

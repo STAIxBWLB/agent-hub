@@ -1201,3 +1201,29 @@ test("ACP mode acknowledgement cannot outpace cancellation gate release",async()
  class Peer extends AcpPeer{nativeActivity=false;protected override touch(){super.touch();if(this.state==="busy")this.nativeActivity=true}expire(){this.onWatchdog()}}
  const peer=new Peer("kimi",{cmd:[...FAKE,"--cancel-held","--mode-after-cancel","--batch-cancel-mode"],cwd:process.cwd(),cancelWaitMs:150});await peer.start();try{await peer.deliver([newEnvelope("user","CANCEL_WAIT",{to:["kimi"]})]);await until(()=>peer.nativeActivity);peer.expire();expect(peer.state).toBe("busy");await peer.setPermissionMode("ask");expect(peer.state).toBe("idle");}finally{await peer.stop()}
 });
+
+// #542 D4/AC4: a started, unfinished tool call is running work, not silence; past its own ceiling the turn is cancelled.
+test("an open tool call keeps the turn past the watchdog and is cancelled past the tool ceiling, naming the tool", async () => {
+  class ToolPeer extends AcpPeer {
+    nativeActivity = false;
+    protected override touch(): void { super.touch(); if (this.state === "busy") this.nativeActivity = true; }
+    expireWatchdog(): void { this.onWatchdog(); }
+  }
+  const logs: string[] = [], receipts: { id: string; state: string }[] = [];
+  const acp = new ToolPeer("jcode", { cmd: [...FAKE, "--mode-after-cancel"], cwd: process.cwd(), watchdogMs: 60_000, toolCeilingMs: 60_000, log: line => logs.push(line) });
+  acp.onDelivery = r => receipts.push(r);
+  const realNow = Date.now;
+  try {
+    await acp.start();
+    await acp.deliver([newEnvelope("user", "TOOL_SLOW", { to: ["jcode"] })], "d-tool");
+    await until(() => acp.nativeActivity); // the tool_call announcement was consumed
+    acp.expireWatchdog(); // a watchdog period of silence inside the open tool call
+    expect(acp.state).toBe("busy");
+    expect(receipts.some(r => r.state === "needs_review")).toBe(false);
+    Date.now = () => realNow() + 61_000; // the tool has now been silent past its ceiling
+    acp.expireWatchdog();
+    expect(receipts.at(-1)).toMatchObject({ id: "d-tool", state: "needs_review" });
+    expect(acp.state).toBe("offline");
+    expect(logs.some(line => line.includes("open tool call (bash)") && line.includes("tool ceiling"))).toBe(true);
+  } finally { Date.now = realNow; await acp.stop(); }
+});

@@ -253,7 +253,10 @@ durable delivery goes offline with `needs_review`; on a bus without a journal, t
 stays busy until the cancelled prompt reports, then drains on idle. After the 30 s bound
 without a report it goes offline with queued work retained, never idle. Cancelled results
 and errors are discarded; an error during that wait leaves one log line. Other adapters
-keep their cancellation rules (`turn/interrupt` for Codex). Queues drain in order only
+keep their cancellation rules (`turn/interrupt` for Codex). An ACP tool call announced
+and not yet `completed` or `failed` is running work, not silence: it keeps the turn alive
+up to a 30 min tool ceiling (never below `watchdog_ms`), past which the cancel above runs
+with a log line naming the open tool (#542 D4). Queues drain in order only
 when the adapter is idle. Delivery is at-least-once with
 idempotency by `id`: a failed delivery returns to the queue head and is retried after 1 s, and
 after 3 failures it is reported as undeliverable on the console so one envelope cannot block a
