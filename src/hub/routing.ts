@@ -1,3 +1,4 @@
+import { selectReviewerPool, type ReviewerPoolSelection } from "./reviewer-pool.ts";
 import { ADAPTERS, definitionOf, kindOf, familyOf } from "../adapters/registry.ts";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -288,6 +289,8 @@ export const peerEntry = <T>(map: Readonly<Record<string, T>> | undefined, peer:
 export type RoutingRefusalCode = "instance" | "family" | "tests" | "spec" | "roster" | "pull-only" | "not-attached" | "excluded" | "owner-admission" | "offline" | "paused" | "failing" | "pii" | "policy";
 export interface RoutingRefusal { peer: PeerId; role: "owner" | "reviewer"; code: RoutingRefusalCode; reason: string }
 export interface Assignment {
+  reviewSelection?: ReviewerPoolSelection;
+  reviewBlocked?: true;
   /** A same-family reviewer was chosen only because no other family was eligible. */
   sameFamilyFallback?: true;
   /** #223 R5: the planner reviews because the declared reviewer-only instance was not eligible. */
@@ -309,7 +312,7 @@ export interface Assignment {
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
 export function assign(
-  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state" | "title" | "detail" | "refs" | "external">>,
+  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state" | "title" | "detail" | "refs" | "external" | "id" | "sdlc" | "history">>,
   states: Record<PeerId, PeerState>,
   routing: Routing,
   opts: InstanceRoutingOptions & {
@@ -324,6 +327,7 @@ export function assign(
     pullOnly?: PeerId[];
     namedOwner?: PeerId;
     namedReviewer?: PeerId;
+    reviewPool?: { pool: readonly string[]; rerotate?: boolean; failed?: readonly string[]; required?: boolean };
     candidates?: PeerId[];
     notReviewer?: PeerId;
     waitsFor?: number[];
@@ -364,6 +368,8 @@ export function assign(
   const refusals = new Map<string, RoutingRefusal>();
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
+    const unavailable = role === "reviewer" ? definitionOf(peer, opts.instances)?.reviewer?.unavailable : undefined;
+    if (unavailable) return deny("policy", unavailable);
     if (role === "owner" && opts.capabilities && !pii) {
       const caps = peerEntry(opts.capabilities, peer);
       if (needsTests && !caps?.tests) return deny("tests", `missing tests: ${caps?.testsReason ?? "capability unavailable"}`);
@@ -462,6 +468,8 @@ export function assign(
   let reviewer: PeerId | undefined;
   let sameFamilyFallback = false;
   let plannerFallback = false;
+  let reviewSelection: ReviewerPoolSelection | undefined;
+  let reviewBlocked = false;
   if (task.class !== "review") {
     if (pii) trace.push("reviewer: user (pii: no second on-prem peer; ahub review <id> <verdict>)");
     else {
@@ -475,7 +483,30 @@ export function assign(
       const sameFamily = (peer: PeerId) => ownerFamily !== undefined && familyOf(peer, opts.instances) === ownerFamily;
       const independent = ownerFamily === undefined ? [] : automatic.filter(peer => peer !== reviewOwner && !blocked(peer, "reviewer") && !sameFamily(peer));
       const named = opts.namedReviewer;
-      if (named !== undefined && named !== reviewOwner && !blocked(named, "reviewer") && sameFamily(named) && independent.length) {
+      const declaredPool = opts.reviewPool && named === undefined ? Object.keys(opts.instances ?? {}).flatMap(id => {
+        const roles = peerEntry(opts.roles, id), definition = definitionOf(id, opts.instances);
+        const kind = kindOf(id, opts.instances), family = familyOf(id, opts.instances);
+        if (roles?.length !== 1 || roles[0] !== "reviewer" || !definition?.routing?.reviewOnly || !kind || !family) return [];
+        const reason = id === reviewOwner ? "is the owner" : definition.reviewer?.unavailable ?? blocked(id, "reviewer")
+          ?? (states[id] === "paused" ? "paused" : undefined)
+          ?? peerEntry(opts.held, id)
+          ?? ((peerEntry(opts.quota, id)?.headroom ?? Infinity) <= 0 ? "quota exhausted" : undefined);
+        return [{ id, kind, family, ...(reason === undefined ? {} : { blocked: reason }) }];
+      }) : [];
+      if (declaredPool.length || opts.reviewPool?.required && named === undefined) {
+        for (const candidate of declaredPool) if (!opts.reviewPool!.pool.includes(candidate.kind)) trace.push(`  reviewer pool candidate ${candidate.id} (${candidate.family}): unavailable skip: ${candidate.blocked ?? "kind outside configured pool"}`);
+        const last = task.history?.findLast(entry => entry.event === "changes_requested");
+        const continuityFamily = last && "reviewerFamily" in last && typeof last.reviewerFamily === "string" ? last.reviewerFamily : last ? familyOf(last.by, opts.instances) : undefined;
+        const pr = task.sdlc?.pr;
+        const seed = typeof pr === "number" && Number.isSafeInteger(pr) && pr > 0 ? pr : task.id ?? 0;
+        reviewSelection = selectReviewerPool({ pool: opts.reviewPool!.pool, candidates: declaredPool, seed, implementerFamily: ownerFamily, continuityFamily, rerotate: opts.reviewPool!.rerotate, failed: opts.reviewPool!.failed });
+        for (const row of reviewSelection.walk) trace.push(row.id ? `  reviewer pool candidate ${row.id} (${row.family}): ${row.reason}` : `  reviewer pool kind ${row.kind}: ${row.reason}`);
+        reviewer = reviewSelection.reviewer ?? "user";
+        if (reviewSelection.blocked) {
+          reviewBlocked = true;
+          trace.push("blocked: no reviewer can run");
+        }
+      } else if (named !== undefined && named !== reviewOwner && !blocked(named, "reviewer") && sameFamily(named) && independent.length) {
         const reason = `same family as ${reviewOwner}; eligible other-family reviewer available`;
         refusals.set(`reviewer:${named}`, { peer: named, role: "reviewer", code: "family", reason });
         trace.push(`  reviewer candidate ${named}: skipped, ${reason}`);
@@ -505,7 +536,7 @@ export function assign(
   const piBackend = policy?.pi_backend;
   if (owner && definitionOf(owner, opts.instances)?.routing?.trace === "route") trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
   if (owner && definitionOf(owner, opts.instances)?.routing?.trace === "backend") trace.push(`${definitionOf(owner, opts.instances)!.routing!.backendLabel} decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
-  return { ...(sameFamilyFallback ? { sameFamilyFallback: true as const } : {}), ...(plannerFallback ? { plannerFallback: true as const } : {}), ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
+  return { ...(reviewSelection ? { reviewSelection } : {}), ...(reviewBlocked ? { reviewBlocked: true as const } : {}), ...(sameFamilyFallback ? { sameFamilyFallback: true as const } : {}), ...(plannerFallback ? { plannerFallback: true as const } : {}), ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
 }
 
 /**

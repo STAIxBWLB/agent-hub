@@ -3547,6 +3547,30 @@ A missing
 `peer_instances` feature on an old daemon or upgrade target requires a supporting
 version before launching or restoring extras.
 
+### Fresh reviewer pool (#519)
+
+The source extension rotates fresh headless reviewers across Claude and Codex. Declare reviewer-only instances with explicit headless mode in `.agenthub/config.local.json`:
+
+```json
+{
+  "instances": {
+    "claude-review": { "kind": "claude", "roles": ["reviewer"], "start_mode": "headless" },
+    "codex-review": { "kind": "codex", "roles": ["reviewer"], "start_mode": "headless" }
+  },
+  "review": { "pool": ["claude", "codex"], "rerotate": false }
+}
+```
+
+Start them with `ahub claude --as claude-review` and `ahub codex --as codex-review`; stop with `ahub stop <id>`. Fresh variants share the project checkout and refuse a custom worktree or permission mode. Ordinary implementer instances retain their own adapters. The default logical pool order is Claude, Codex as fixed configured kind slots; undeclared/unavailable slots are skipped after modulo without renumbering; `review.rerotate` defaults to false. Pool selection starts at PR number modulo the fixed configured kind count, or task id when there is no PR, then skips the implementer's family and unavailable candidates. Delta review prefers the preceding eligible independent family in a fresh child. A preceding same-family fallback does not outrank a newly available independent family. `ahub route explain` shows the same pure walk.
+
+Codex requires an installed 0.146.0 executable and a passing bounded runtime receipt before its model child starts. Use the existing `codex_bin` setting to select a supported host executable when PATH resolves another version. PATH 0.163.0 has no receipt in this slice and remains unavailable. The producer checks native binary/config stability, strict MCP inventory with only the two hub tools, disabled plugins/hooks and a named filesystem profile. Each launch proves public-read, exact/glob/symlink private-denial and write-denial in temporary fixtures. Its sandboxed shell is filesystem read-only with private paths denied and network configured disabled; it is not Claude's Read/Grep/Glob-only tool whitelist. No credential home is copied.
+
+Kimi and agy are metadata-only unavailable candidates, outside the default pool. A manual pool accepts only registered reviewer kinds (Claude, Codex, Kimi, agy), so local/Pi are refused. An explicit pool without declared candidates blocks for person action; an omitted pool without declarations retains legacy routing. A manual pool may name the unavailable Kimi/agy placeholders; their reason appears as an unavailable skip and they never run or count as approval. All launch/isolation work is deferred to [#533](https://github.com/STAIxBWLB/agent-hub/issues/533), hub task #234; the future agy launcher belongs in `src/adapters/agy/`. Do not substitute plan mode for isolation.
+
+A failed start or any child ending without a saved verdict advances to the remaining eligible candidates; no quota meaning is guessed from text. A same-family fallback is a distinct fresh reviewer session. Exhaustion records `blocked: no reviewer can run` for planner/person action and never auto-approves. Recovery targets must advertise `reviewer_pool` when a pool is explicitly configured or fresh reviewer instances are declared. Verdict history retains `reviewContext` and adds `reviewerFamily` and `reviewerReason` from the host.
+
+These are source contracts pending final integration verification. [Offline isolation evidence](verification/2026-10-19-reviewer-isolation.md) and fake-CLI tests do not prove an account/model review or observed network denial. Native acceptance remains a separate [manual smoke leg](smoke.md#reviewer-pool-native-legs-519-2026-10-19); existing #223 Claude behavior has no new live proof here.
+
 An additional implementer must have an existing registered Git worktree and
 attached branch at `.worktrees/<instance-id>`, named explicitly by `worktree` in
 its declaration. The hub validates it and does not create it in this phase.

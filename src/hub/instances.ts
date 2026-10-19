@@ -54,9 +54,15 @@ export function validateInstances(raw: unknown): InstancesConfig {
     const definition = definitionOf(kind), prefix = `${kind}-`;
     if (!definition) return fail(`${path}.kind`, "unknown native kind");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length))) return fail(path, "id must be <kind>-<name>");
+    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+    const freshReviewer = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer" && !!(definition.reviewerVariant ?? definition).reviewer;
+    if (definition.routing?.reviewOnly && !freshReviewer) return fail(path, "a review-only kind requires headless roles exactly [\"reviewer\"]");
+    if (freshReviewer && entry.worktree) return fail(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
+    if (freshReviewer && entry.permission_mode) return fail(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
     // #450 I3: a channel-plugin kind (Claude) runs only in the person's terminal, so it reviews or plans and never owns writes.
     const channel = definition.identity.mcp === "channel-plugin";
-    if (!channel && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp))) return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
+    const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
+    if (!channel && !unavailableReviewer && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp))) return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
     if (channel) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       // #223: a headless one is the kind's reviewer variant, one fresh hub-run session per review request.

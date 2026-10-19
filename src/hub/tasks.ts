@@ -19,7 +19,7 @@ import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
-import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
+import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -29,7 +29,7 @@ import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.t
 import { realPath } from "./project.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
-import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
+import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
@@ -98,7 +98,7 @@ export interface TasksDeps {
   /** Optional persisted task/run execution limits (issue #102). */
   executionBudget?: ExecutionBudget;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
-  review?: { adaptive: boolean; min_reviews: number };
+  review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean };
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
   capabilities?: () => Record<PeerId, PeerCapabilities>;
   repository?: string;
@@ -364,7 +364,7 @@ export class Tasks {
             if (finding.step === 2 || !planners.length) this.releaseNotice(text);
             for (const peer of planners) this.releaseNotice(`task #${task.id}: sweep notice unavailable`, () => this.sweepNotice(task, peer, `${text} Check the board and assign, re-plan or cancel it.`, "planner"));
           } else {
-            const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class) });
+            const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class, task) });
             this.releaseNotice(`${text} Owner reassignment suggestion: ${admission.owner ?? "no eligible peer"}.`);
             if (admission.owner && config.auto_reassign && this.sweepAvailable(admission.owner)) {
               try { await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [admission.owner], event: "reassigned", reason: "idle", note: "ready-unassigned idle sweep" }); }
@@ -375,7 +375,7 @@ export class Tasks {
         }
         const responsible = finding.kind === "review-pending" ? task.reviewer! : task.owner!;
         if (responsible !== USER && !this.sweepAvailable(responsible)) continue;
-        if (finding.step === 3 && finding.kind !== "review-pending" && config.auto_reassign && this.plannerPullRecord(task)?.pull && !assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), responsible], excludeOwners: this.plannerFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).owner) continue;
+        if (finding.step === 3 && finding.kind !== "review-pending" && config.auto_reassign && this.plannerPullRecord(task)?.pull && !assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), responsible], excludeOwners: this.plannerFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) }).owner) continue;
         const title = this.publicTitle(task);
         const message = `Task ${title}: ${finding.kind}, idle escalation ${finding.step}/3.`;
         // Only identifiers, kind and step are kept in the ladder event. A crash after this write and before publish
@@ -391,7 +391,7 @@ export class Tasks {
           }
         } else {
           const reviewer = finding.kind === "review-pending";
-          const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), responsible], excludeOwners: finding.kind !== "review-pending" && this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], waitsFor: this.waitsFor(task), ...(reviewer ? { candidates: [], notReviewer: task.owner ?? undefined } : {}), ...this.weights(task.class) });
+          const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.excluded(task), responsible], excludeOwners: finding.kind !== "review-pending" && this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], waitsFor: this.waitsFor(task), ...(reviewer ? { candidates: [], notReviewer: task.owner ?? undefined } : {}), ...this.weights(task.class, task) });
           const candidate = reviewer ? a.reviewer : a.owner;
           this.passedOver(task, a);
           this.d.notify(`${message} ${reviewer ? "Reviewer" : "Owner"} reassignment suggestion: ${candidate ?? "no eligible peer"}.`);
@@ -463,6 +463,10 @@ export class Tasks {
       ...(h.supersededBy === undefined ? {} : { supersededBy: screenHistoryText(h.supersededBy, "supersession", h.withheld) }),
       ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
       ...(h.owner === undefined ? {} : { owner: h.owner }),
+      ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
+      ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
+      ...(h.reviewBlocked ? { reviewBlocked: true } : {}),
+      ...(h.reviewerFailure ? { reviewerFailure: { peer: screenHistoryText(h.reviewerFailure.peer, "reviewer"), cause: h.reviewerFailure.cause, ...(h.reviewerFailure.head ? { head: screenHistoryText(h.reviewerFailure.head, "review head") } : {}) } } : {}),
       ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
@@ -474,11 +478,13 @@ export class Tasks {
   resultLine(task: Task): string {
     const base = `task #${task.id}: ${task.state}, owner ${task.owner ?? "none"}, reviewer ${task.reviewer ?? "none"}`;
     const noReview = task.class !== "review" && !task.reviewer && OPEN.includes(task.state) && !this.waitsFor(task).length
-      ? this.noReviewer(assign(task, this.states(), this.d.routing(), { candidates: task.owner ? [task.owner] : [], notReviewer: task.owner ?? undefined, ...this.weights(task.class) }))
+      ? this.noReviewer(assign(task, this.states(), this.d.routing(), { candidates: task.owner ? [task.owner] : [], notReviewer: task.owner ?? undefined, ...this.weights(task.class, task) }))
       : undefined;
     const held = task.owner ? peerEntry(this.d.held?.(), task.owner) : undefined;
     const holdText = held ? `${task.owner}'s queue is held (${held}); it receives the task once the hold is resolved` : undefined;
-    return [base, noReview, holdText].filter(Boolean).join("; ");
+    const request = task.history.findLast(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event));
+    const poolBlocked = task.state === "in_review" && task.reviewer === USER && request?.reviewBlocked ? "blocked: no reviewer can run" : undefined;
+    return [base, noReview, poolBlocked, holdText].filter(Boolean).join("; ");
   }
 
   private states(): Record<PeerId, PeerState> {
@@ -548,7 +554,33 @@ export class Tasks {
     const held = this.d.held?.();
     const workload = this.instanceRouting();
     const peers = workload.instances ? [...new Set([...ADAPTERS.map(adapter => adapter.kind), ...Object.keys(workload.instances), ...this.d.bus.peers.keys()])] : ADAPTERS.map(adapter => adapter.kind);
-    return { ...workload, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => definitionOf(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    return { ...workload, reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => definitionOf(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+  }
+
+  private reviewHead(task: Task): string | undefined { return task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; }
+
+  private reviewPoolOptions(task: Task) {
+    const head = this.reviewHead(task);
+    const round = task.state === "in_review" ? task.history.slice(task.history.findLastIndex(entry => entry.event === "done") + 1) : [];
+    const failed = [...new Set(round.flatMap(entry => entry.reviewerFailure?.head === head && entry.reviewerFailure ? [entry.reviewerFailure.peer] : []))];
+    return { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, failed, required: this.d.review?.pool !== undefined };
+  }
+
+  private manuallyNamedReviewer(task: Task): boolean {
+    const event = task.history.findLast(entry => ["reviewer changed", "assigned", "reassigned", "escalated"].includes(entry.event));
+    return event?.event === "reviewer changed" && event.reason === "manual";
+  }
+
+  private poolReview(task: Task, refs?: TaskRefs): Assignment | undefined {
+    if (this.manuallyNamedReviewer(task) || this.isPii(task) || task.class === "review") return undefined;
+    const draft = { ...task, refs: { ...task.refs, ...cleanRefs(refs) } };
+    const selection = assign(draft, this.states(), this.d.routing(), { ...this.weights(task.class, draft), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
+    return selection.reviewSelection ? selection : undefined;
+  }
+
+  private reviewMetadata(assignment?: Assignment): ReviewerHistory {
+    const choice = assignment?.reviewSelection;
+    return { ...(choice?.family ? { reviewerFamily: choice.family } : {}), ...(choice?.reason ? { reviewerReason: choice.reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}) };
   }
 
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
@@ -563,10 +595,10 @@ export class Tasks {
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
-  private weights(cls: TaskClass) {
+  private weights(cls: TaskClass, task?: Task) {
     const now = Date.now();
     const quota = this.d.quota?.();
-    return { ...this.health(), now, demoted: this.demoted(cls, now), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
+    return { ...this.health(), ...(task ? { reviewPool: this.reviewPoolOptions(task) } : {}), now, demoted: this.demoted(cls, now), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
   /**
@@ -696,7 +728,7 @@ export class Tasks {
     const states = this.states();
     const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved && !this.excluded(task).includes(task.reserved) ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
+    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved && !this.excluded(task).includes(task.reserved) ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
@@ -1612,7 +1644,7 @@ export class Tasks {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
       if (isClosedTaskState(task.state)) return [...workflow, `task ${this.publicTitle(task)} (${task.state}): closed; not routed`];
-      const a = assign(task, this.states(), routing, { exclude: this.excluded(task), excludeOwners: this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], waitsFor: this.waitsFor(task), ...this.weights(task.class) });
+      const a = assign(task, this.states(), routing, { exclude: this.excluded(task), excludeOwners: this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
       // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
       return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, ...(task.profileClass ? [`profile class ${profileTaskLabel(task)}`] : []), ...(task.role ? [`task role ${task.role} (guidance only)`] : []), "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
@@ -1665,6 +1697,7 @@ export class Tasks {
 
   /** Why the task will approve directly at done: no reviewer could be picked, and who was skipped (issue #92). */
   private noReviewer(a: Assignment): string {
+    if (a.reviewBlocked) return "blocked: no reviewer can run";
     const skipped = a.trace.flatMap((l) => {
       const m = /^ {2}reviewer candidate (\S+): skipped, (.*)$/.exec(l);
       return m ? [`${m[1]} (${m[2]})`] : [];
@@ -1680,7 +1713,9 @@ export class Tasks {
 
   private assignmentNote(note: string, assignment: Assignment): string {
     const tagged = assignment.sameFamilyFallback ? `${note}; sameFamilyFallback=true` : note;
-    return assignment.plannerFallback ? `${tagged}; reviewer=planner (fallback)` : tagged;
+    const pool = assignment.reviewSelection;
+    const recorded = pool ? `${tagged}; reviewerFamily=${pool.family ?? "none"}; reviewerReason=${pool.reason ?? pool.blocked}` : tagged;
+    return assignment.plannerFallback ? `${recorded}; reviewer=planner (fallback)` : recorded;
   }
 
   /** A later move to another owner means the caller's assignment was superseded, so its success tail is not authoritative. */
@@ -1716,7 +1751,7 @@ export class Tasks {
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
+    const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
 
     if (waits.length) {
       this.releaseNotice(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
@@ -1739,7 +1774,7 @@ export class Tasks {
     // A person's explicit assign replaces an agent's reservation (#207). Only a refusal keeps the owner it moves away from
     // out for good: a reviewer's rejections or an escalation by hand, never the hub's own move after a failed delivery.
     const lasting = opts.event === "escalated" && task.owner && (opts.reason === "rejections" || opts.reason === "manual");
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a), { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) }, opts.expectedFlowRevision);
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a), { ...this.reviewMetadata(a), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) }, opts.expectedFlowRevision);
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -2742,14 +2777,16 @@ export class Tasks {
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
   private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness): Promise<Task> {
-    let reviewer = task.reviewer, reviewEvidence: PrEvidence | undefined;
+    let selection = this.poolReview(task, refs);
+    let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
       task = this.need(task.id, false, true);
       this.mine(task, by, "owner", true);
       // In every mode: another done may have landed during the readback.
       if (task.state === "in_review" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
-      reviewer = task.reviewer;
+      selection = this.poolReview(task, refs);
+      reviewer = selection?.reviewer ?? task.reviewer;
     }
     // A delayed local check needs a new readback; the immediate done path already admitted before effects.
     if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
@@ -2759,9 +2796,11 @@ export class Tasks {
       this.mine(task, by, "owner");
       if (task.history.length !== observed.history.length || task.state === "in_review" || isClosedTaskState(task.state)) throw new Error("task changed during review admission");
     }
+    selection = this.poolReview(task, refs);
+    reviewer = selection?.reviewer ?? task.reviewer;
     const reviewCost: ReviewCost | undefined = reviewer && task.plan && (task.plan.review || task.plan.ci)
       ? { ...cleanCostPlan(task.plan), ...(admission?.ready && admission.head ? { head: admission.head } : {}) } : undefined;
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined, ...(reviewCost ? { reviewCost } : {}) });
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined, ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -2909,7 +2948,30 @@ export class Tasks {
     catch { projection = "(document projection unavailable)"; }
     const brief = this.briefText(task);
     const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
+    this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(task.history.length) }, ...(this.isPii(task) ? { private: true } : {}) }));
+  }
+
+  /** Host-only failure report, bound to the exact review request and its still-current child generation. */
+  async retryReviewer(id: number, failedPeer: PeerId, failure: { head?: string; flowRevision?: number; cause: "start_failed" | "quota" | "no_verdict" }, current: () => boolean): Promise<Task> {
+    if (!failure || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || !/^[a-z][a-z0-9-]{0,63}$/.test(failedPeer) || !Number.isSafeInteger(failure.flowRevision) || failure.flowRevision! < 1 || failure.head !== undefined && !/^[a-f0-9]{7,40}$/i.test(failure.head)) throw new PreEffectToolRefusal("invalid reviewer failure binding");
+    const valid = () => {
+      const task = this.need(id, false, true);
+      if (!current() || task.state !== "in_review" || task.reviewer !== failedPeer || task.history.length !== failure.flowRevision || this.reviewHead(task) !== failure.head || this.isPii(task) || this.manuallyNamedReviewer(task)) throw new PreEffectToolRefusal("reviewer failure is no longer current");
+      return task;
+    };
+    const before = valid();
+    const admission = await this.reviewRequestAdmission(before, undefined, true, before.owner ?? USER);
+    const task = valid();
+    const options = this.reviewPoolOptions(task);
+    const selection = assign(task, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), reviewPool: { ...options, failed: [...options.failed, failedPeer] } });
+    if (!selection.reviewSelection) throw new PreEffectToolRefusal("no declared reviewer pool can receive the fallback");
+    const reviewer = selection.reviewer ?? USER;
+    valid();
+    const next = this.d.board.update(task.id, HUB, "reviewer unavailable", { reviewer }, this.assignmentNote(`reviewer unavailable: ${failure.cause}`, selection), { ...this.reviewMetadata(selection), reviewerFailure: { peer: failedPeer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } }, failure.flowRevision);
+    this.releaseNotice(`task ${this.publicTitle(next)}: former review request withdrawal incomplete`, () => this.withdrawRoleRequest(task, next, "reviewer"));
+    if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)}: blocked: no reviewer can run; the planner or person must review`);
+    else this.releaseNotice(`task ${this.publicTitle(next)}: fallback review request unavailable`, () => this.sendReview(next, reviewer, "", admission));
+    return next;
   }
 
   /** #520: the rendered review brief of a non-PII task's commit, or why there is none; empty without a commit. */
@@ -2989,7 +3051,11 @@ export class Tasks {
     }
     const pii = this.isPii(task);
     const reviewContext = by === USER ? undefined : this.d.reviewContext?.(by, task.id);
-    const flag = { withheld: withheld || undefined, ...(reviewContext ? { reviewContext } : {}) };
+    const poolRequest = task.history.findLast(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event));
+    const family = by === USER ? undefined : familyOf(by, this.d.instances?.());
+    const reviewerFamily = poolRequest?.reviewerFamily === family ? family : undefined;
+    const reviewerReason = reviewerFamily ? poolRequest?.reviewerReason : undefined;
+    const flag = { withheld: withheld || undefined, ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
       if (next.owner) {
@@ -3117,7 +3183,7 @@ export class Tasks {
     if (role === "reviewer") {
       if (!OPEN.includes(task.state) && task.state !== "in_review") throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: its reviewer can no longer change`);
       this.ready(task, preEffect);
-      const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
+      const a = assign(task, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class, task) });
       if (a.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)(`cannot name ${peer} as reviewer: ${a.trace.filter(line => line.includes("reviewer") || line.includes("pii")).join("; ")}`);
       const admission = task.state === "in_review" ? await this.reviewRequestAdmission(task, undefined, preEffect, by) : undefined;
       // Every runtime authority check precedes the final write, including revocations during the metadata await.
@@ -3129,7 +3195,7 @@ export class Tasks {
       }
       if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster`);
       this.requireCapabilities(current, peer, role, preEffect);
-      const eligible = assign(current, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(current.owner ? { notReviewer: current.owner } : {}), ...this.weights(current.class) });
+      const eligible = assign(current, this.states(), this.d.routing(), { candidates: [], namedReviewer: peer, ...(current.owner ? { notReviewer: current.owner } : {}), ...this.weights(current.class, current) });
       if (eligible.reviewer !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)("reviewer is no longer eligible");
       const next = this.d.board.update(task.id, by, "reviewer changed", { reviewer: peer }, this.assignmentNote(`named reviewer ${peer}`, a), { reason: "manual" }, expectedFlowRevision);
       if (next.state === "in_review" && task.reviewer && task.reviewer !== peer) {
@@ -3181,7 +3247,7 @@ export class Tasks {
     const routing = this.d.routing();
     return this.d.board.list().filter(task => !isClosedTaskState(task.state) && (task.owner === peer || task.reviewer === peer)).map(task => {
       const owner = task.owner === peer;
-      const weights = this.weights(task.class);
+      const weights = this.weights(task.class, task);
       const pii = this.isPii(task);
       const candidates = owner ? relayCandidates(routing.classes[task.class]?.peers ?? [], pii, { ...this.instanceRouting(), states: this.states() }) : [];
       const a = assign(task, this.states(), routing, { ...weights, offRoster: [...(weights.offRoster ?? []), peer], exclude: [peer], excludeOwners: owner && this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], candidates, ...(owner ? { waitsFor: this.waitsFor(task) } : task.owner ? { notReviewer: task.owner } : {}) });
@@ -3205,7 +3271,7 @@ export class Tasks {
       if (task.owner === peer && (OPEN.includes(task.state) || roster && task.state === "in_review")) {
         const pii = this.isPii(task);
         const candidates = relayCandidates(routing.classes[task.class]?.peers ?? [], pii, { ...this.instanceRouting(), states: this.states() });
-        if (this.plannerPullRecord(task)?.pull && !assign(task, this.states(), routing, { candidates, exclude: [...this.excluded(task), peer], excludeOwners: this.plannerFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).owner) continue;
+        if (this.plannerPullRecord(task)?.pull && !assign(task, this.states(), routing, { candidates, exclude: [...this.excluded(task), peer], excludeOwners: this.plannerFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) }).owner) continue;
         // Budget keeps its original release/unassign behaviour for ordinary work. Roster changes the state in
         // assignOwner's same owner write only after routing has found somebody to take it.
         const back = !roster && task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
@@ -3226,13 +3292,13 @@ export class Tasks {
         }
         moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
       } else if (task.reviewer === peer && !isClosedTaskState(task.state)) {
-        const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
+        const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class, task) });
         const reviewer = a.reviewer && a.reviewer !== peer && a.reviewer !== task.owner ? a.reviewer : null;
         if (roster && !reviewer) {
           this.releaseNotice(`task ${this.publicTitle(task)}: its reviewer ${peer} is off roster and nobody else can review; the reviewer stays ${peer}; use ahub review ${task.id}`);
           continue;
         }
-        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote(why, a));
+        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote(why, a), this.reviewMetadata(a));
         moved.push({ id: task.id, title: this.publicTitle(task), to: reviewer, role: "reviewer" });
         if (next.state === "in_review" && reviewer && reviewer !== USER) {
           if (roster) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, `(${peer} was reviewing this and is off roster.)`));

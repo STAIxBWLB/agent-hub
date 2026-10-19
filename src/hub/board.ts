@@ -1,3 +1,4 @@
+import type { ReviewerPoolReason } from "./reviewer-pool.ts";
 import type { GitHubSource } from "./github-import.ts";
 import { Database } from "bun:sqlite";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
@@ -56,7 +57,19 @@ export interface HistoryEntry {
   reviewCost?: ReviewCost;
   /** #223 R4: on a verdict, whether the reviewer's context was new for it; set by the hub, never by the reviewer. */
   reviewContext?: "fresh" | "continuing";
+  reviewerFamily?: string;
+  reviewerReason?: ReviewerPoolReason;
+  reviewBlocked?: true;
+  reviewerFailure?: { peer: string; head?: string; cause: "start_failed" | "quota" | "no_verdict" };
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
+}
+export type ReviewerHistory = Pick<HistoryEntry, "reviewerFamily" | "reviewerReason" | "reviewBlocked" | "reviewerFailure">;
+function reviewerHistory(extra: ReviewerHistory): ReviewerHistory {
+  const id = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value);
+  if (extra.reviewerFamily !== undefined && !id(extra.reviewerFamily) || extra.reviewerReason !== undefined && !["rotation", "implementer skip", "unavailable skip", "same-family fallback"].includes(extra.reviewerReason) || extra.reviewBlocked !== undefined && extra.reviewBlocked !== true) throw new Error("invalid reviewer metadata");
+  const failure = extra.reviewerFailure;
+  if (failure && (!id(failure.peer) || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || failure.head !== undefined && !/^[a-f0-9]{7,40}$/i.test(failure.head))) throw new Error("invalid reviewer failure metadata");
+  return { ...(extra.reviewerFamily ? { reviewerFamily: extra.reviewerFamily } : {}), ...(extra.reviewerReason ? { reviewerReason: extra.reviewerReason } : {}), ...(extra.reviewBlocked ? { reviewBlocked: true } : {}), ...(failure ? { reviewerFailure: { peer: failure.peer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } } : {}) };
 }
 export interface Task extends PlanningFields {
   offer?: TaskOffer;
@@ -289,7 +302,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld" | "reviewCost" | "reviewContext"> = {}, expectedFlowRevision?: number): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld" | "reviewCost" | "reviewContext" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -304,7 +317,8 @@ export class Board {
       if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
     }
     if (patch.state === "backlog" && taskHasStarted(task) && !untouchedReturn) throw new Error(`task #${id}: started work cannot return to backlog`);
-    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}) }];
+    const reviewMetadata = reviewerHistory(extra);
+    const history = [...task.history, { at: Date.now(), by, event, ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));
