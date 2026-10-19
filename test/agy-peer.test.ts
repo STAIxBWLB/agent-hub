@@ -42,6 +42,12 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
   let peer: ControlClient | undefined;
   try {
     expect((await tools.request({ t: "native_hook_launch", op: "begin", peer: "agy" })).ok).toBe(false);
+    let pushClient: ControlClient | undefined;
+    let pushRefused = false;
+    try { pushClient = await ControlClient.connect(stateDir, { role: "peer", peer: "agy", channel: true }); }
+    catch { pushRefused = true; }
+    finally { pushClient?.close(); }
+    expect(pushRefused).toBe(true);
     const admission = await person.request({ t: "native_hook_launch", op: "begin", peer: "agy" }); expect(admission.ok).toBe(true);
     peer = await ControlClient.connect(stateDir, { role: "peer", peer: "agy", channel: false });
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");

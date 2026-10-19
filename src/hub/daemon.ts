@@ -5037,6 +5037,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
       } else {
         c.peer = String(msg.peer ?? "claude");
+        if (definitionOf(c.peer)?.transport === "ws-pull" && msg.channel !== false) return sock.close(4403, "this native peer supports pull-only attachment; use hub_inbox");
         const kimiPull = !!definitionOf(c.peer)?.attach?.admission && (kimiSessionMode ?? startMode(c.peer)) === "tui" && msg.channel === false;
         if (!PEER_ID.test(c.peer) || (RESERVED_IDS.has(c.peer) && !kimiPull)) return sock.close(4403, definitionOf(c.peer)?.attach?.admission?.reservedRefusal ?? "peer id is reserved or malformed");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
