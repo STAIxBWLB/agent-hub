@@ -7,6 +7,11 @@ import { PreEffectToolRefusal } from "./tool-refusal.ts";
 
 export type { DeliveryReceipt } from "./peers.ts";
 
+export interface PublishResult {
+  targets: PeerId[];
+  dropped?: "hop" | "fyi";
+}
+
 export type BusEvent =
   | { t: "envelope"; env: Envelope; dropped?: "hop" | "fyi" }
   | { t: "overflow"; env: Envelope; peer: PeerId }
@@ -699,8 +704,13 @@ export class Bus {
 
   /** Returns the peers the envelope was accepted for, including durable deferred notices. */
   publish(env: Envelope): PeerId[] {
+    return this.publishResult(env).targets;
+  }
+
+  /** Publication outcome distinguishes a policy drop from an empty audience. */
+  publishResult(env: Envelope): PublishResult {
     if (this.storageError) throw new Error("delivery journal unavailable");
-    if (this.seen.has(env.id) || this.deferredHub.has(env.id)) return [];
+    if (this.seen.has(env.id) || this.deferredHub.has(env.id)) return { targets: [] };
     if (this.recoveryHeld && (this.deferHub || this.replayingHub) && env.from === HUB && env.priority !== "fyi" && env.hop <= MAX_HOP) {
       if (this.deferredHub.size >= MAX_DEFERRED_HUB) throw new RecoveryDeferredHubError();
       const targets = this.audience(env);
@@ -708,21 +718,21 @@ export class Bus {
       this.deferredHub.set(copy.id, copy);
       try { this.persist(); }
       catch (error) { this.deferredHub.delete(copy.id); throw error; }
-      return targets;
+      return { targets };
     }
     return this.publishNow(env);
   }
 
-  private publishNow(env: Envelope): PeerId[] {
+  private publishNow(env: Envelope): PublishResult {
     if (this.storageError) throw new Error("delivery journal unavailable");
-    if (this.seen.has(env.id)) return [];
+    if (this.seen.has(env.id)) return { targets: [] };
     this.seen.set(env.id, env);
     if (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
 
     // fyi is for the record (console now, task board from M4), never worth an agent's turn.
     const dropped = env.hop > MAX_HOP ? "hop" : env.priority === "fyi" ? "fyi" : undefined;
     this.emit({ t: "envelope", env, ...(dropped ? { dropped } : {}) });
-    if (dropped) { this.persist(); return []; }
+    if (dropped) { this.persist(); return { targets: [], dropped }; }
 
     const hushed = this.hushed(env);
     if (hushed.length) this.emit({ t: "quiet", env, peers: hushed.map((h) => h.peer), reason: hushed[0]!.reason });
@@ -757,7 +767,7 @@ export class Bus {
     }
     const offRoster = targets.filter(id => !this.isRostered(id));
     if (offRoster.length) this.emit({ t: "off_roster", env, peers: offRoster });
-    return targets;
+    return { targets };
   }
 
   isRostered(peer: PeerId): boolean { return this.opts.rostered?.(peer) ?? true; }
