@@ -22,6 +22,7 @@ async function doctor(served: string[], inventoryFails = false) {
     writeFileSync(wrapper, `const original = fetch; globalThis.fetch = ((input, init) => String(input).startsWith("http://127.0.0.1:${gateway.port}/") ? original(input, init) : Promise.resolve(new Response("fixture unavailable", {status:503}))); await import(${JSON.stringify(cli)});`);
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, AGENTHUB_HOME: join(root, "home"), AMEM_HOME: join(root, "mem"), PATH: `${join(root, "bin")}:${process.env.PATH}`, OMNIROUTE_API_KEY: "fixture" };
     for (const marker of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "AGENTHUB_DELIVERY_ONLY", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_OMNIROUTE_URL"]) delete env[marker];
+    env.AGENTHUB_OMNIROUTE_URL = `http://127.0.0.1:${gateway.port}/v1`;
     const child = Bun.spawn([process.execPath, wrapper, "doctor", "--json"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(code, stderr).toBe(0);
