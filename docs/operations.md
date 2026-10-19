@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.37 and control protocol 16. Live verification
+This guide describes ahub 0.12.39 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -405,7 +405,7 @@ Launch that peer with `ahub claude` for channel pushes, or select `codex` in
 observes `hub_status`, moves stalled work and obtains review before reporting
 results and open decisions. It does not implement the tasks it handed out.
 `hub_peer_start` starts a peer in the start mode a person set for it (see
-"Start modes"): local and headless Kimi, Pi or Codex start at once; for a
+"Start modes"): local and headless Kimi, Pi, Codex or Jcode start at once; for a
 TUI peer the hub opens a terminal running the fixed `ahub <peer>` command,
 after validating it through the shared launcher planner, and when it cannot
 open one the call fails with that command for the person to run. The
@@ -1477,7 +1477,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | --- | --- | --- | --- |
 | Permissions | `permission.<peer>` (the mode now) | the running hub only | at once |
 | Permissions | `permission_modes.<peer>` (the default mode) | `config.local.json` | next peer start |
-| Start | `peers.pi.start_mode`, `peers.codex.start_mode`, `peers.kimi.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
+| Start | `peers.pi.start_mode`, `peers.codex.start_mode`, `peers.kimi.start_mode`, `peers.jcode.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
 | Start | `pi.auto_start` | `config.local.json` | next startup/recovery auto-start decision; never starts a peer merely on reload |
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled` | `config.local.json` | live, without disturbing an active turn |
@@ -1558,6 +1558,7 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
 | codex | `tui` (`ahub codex`) | `peers.codex.start_mode: headless`: a hub-made start runs the app-server only |
 | claude | `tui` (`ahub claude`) | none |
 | kimi | `tui`, pull-only (`ahub kimi`) | `ahub kimi --mode headless`, or `peers.kimi.start_mode: headless` |
+| jcode (optional) | `tui` on the hub-owned ACP session (`ahub jcode`) | `ahub jcode --mode headless`, or `peers.jcode.start_mode: headless` |
 | local | headless (hub-native) | not applicable |
 
 - **You type the command:** `ahub pi` opens Pi's TUI in that terminal.
@@ -1755,6 +1756,12 @@ the system marks it `needs_review`. Establish evidence before choosing
 disconnects, cancellation, and partial effects are uncertain; do not replay
 them automatically.
 
+For an ACP peer (headless Kimi, Qwen, Jcode) a tool call that was announced and
+has not completed or failed counts as running work, not silence: the inactivity
+watchdog (`watchdog_ms`) keeps the turn alive up to a 30 min tool ceiling (never
+below `watchdog_ms`) since the peer's last output, then cancels the turn as
+before and logs which open tool call was silent (#542).
+
 After the inactivity watchdog cancels a Codex turn, a late acceptance, answer or
 completion from that turn is dropped and never reaches a later audience; its
 delivery is held as `needs_review`. When the cancelled turn has no verified
@@ -1786,6 +1793,21 @@ but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
   waits; the plain session stands by. The other way round, a plain session
   started while an `ahub claude` session holds the peer stands by and attaches
   only after that session leaves.
+
+### Replaced or ended Claude sessions (#551)
+
+A replaced session says it is standing by. Its reconnect requests cannot reclaim
+an attached or claiming peer, even if its status-file read missed that holder. A
+channel-capable session may still replace a pull-only holder once its claim has
+finished. Starting a new session intentionally keeps the newest-hello behavior.
+
+A plugin carrying an older launch id than this daemon's current per-peer Claude
+launch is refused with close 4430. It stops reconnecting, and hub tools report that
+the launch ended. Start a new session with `ahub claude`, or use a plain session
+with the tools and `hub_inbox`. A session with no launch id, or a hub with no
+current launch record, keeps the existing behavior. The marker alone cannot
+prove that a nested host loaded this specific MCP server as a channel; the
+bridge currently receives no positive per-server activation signal.
 
 ### Claude channel sessions while busy (#493)
 
@@ -1982,21 +2004,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.37), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.39), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.37 ahub upgrade --to 0.12.37 --dry-run
-bunx --package @staix/agent-hub@0.12.37 ahub upgrade --to 0.12.37 --yes
+bunx --package @staix/agent-hub@0.12.39 ahub upgrade --to 0.12.39 --dry-run
+bunx --package @staix/agent-hub@0.12.39 ahub upgrade --to 0.12.39 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.37 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.39 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -2028,14 +2050,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.37 --dry-run
+ahub upgrade --to 0.12.39 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.37 --yes
+ahub upgrade --to 0.12.39 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]

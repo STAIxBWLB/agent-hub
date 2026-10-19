@@ -456,12 +456,12 @@ class BasePeer {
     this._state = next;
     this.onState?.(next);
   }
-  touch() {
+  touch(ms = this.watchdogMs) {
     this.clearWatchdog();
     this.timer = setTimeout(() => {
       if (this._state === "busy")
         this.onWatchdog();
-    }, this.watchdogMs);
+    }, ms);
     this.timer.unref?.();
   }
   onWatchdog() {
@@ -2551,13 +2551,14 @@ function jsonObject(text) {
     return;
   }
 }
-var HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, RpcTimeoutError, AcpPeer;
+var HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, RpcTimeoutError, AcpPeer;
 var init_acp = __esm(() => {
   init_envelope();
   init_kimi_native();
   init_qwen_native();
   init_qwen_native();
   init_child_process();
+  TOOL_CEILING_MS = 30 * 60000;
   RpcTimeoutError = class RpcTimeoutError extends Error {
   };
   AcpPeer = class AcpPeer extends BasePeer {
@@ -2575,6 +2576,8 @@ var init_acp = __esm(() => {
     toolInputs = new Map;
     toolText = new Map;
     toolTitles = new Map;
+    openTools = new Map;
+    lastSignAt = 0;
     primed = false;
     turn = 0;
     stopping = false;
@@ -2793,6 +2796,7 @@ var init_acp = __esm(() => {
       this.deliveryAccepted = false;
       this.promptActivity = false;
       this.chunks = [];
+      this.openTools.clear();
       this.activityOpen = true;
       this.activityPrivate = envs.some((env) => env.private === true);
       try {
@@ -2894,6 +2898,21 @@ ${renderDigest(envs, false)}` }] });
         this.clearWatchdog();
         return;
       }
+      if (this.openTools.size) {
+        const ceiling = Math.max(this.watchdogMs, this.opts.toolCeilingMs ?? TOOL_CEILING_MS);
+        const remaining = ceiling - (Date.now() - this.lastSignAt);
+        if (remaining > 0) {
+          this.touch(Math.min(this.watchdogMs, remaining));
+          return;
+        }
+        try {
+          this.activityPrivate ||= this.opts.isPrivateTurn?.() === true;
+        } catch {
+          this.activityPrivate = true;
+        }
+        const tools = this.activityPrivate ? "a tool call" : [...new Set(this.openTools.values())].map((title) => JSON.stringify(activityText(title).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").slice(0, 80))).join(", ");
+        this.opts.log?.(`[${this.id}] open tool call (${tools}) silent past the ${Math.round(ceiling / 60000)} min tool ceiling; cancelling the turn`);
+      }
       this.endActivity("watchdog cancelled", true);
       const cancelledTurn = this.turn;
       this.cancelPermissions();
@@ -2967,8 +2986,10 @@ ${renderDigest(envs, false)}` }] });
       } catch {
         return;
       }
-      if (this.state === "busy" && !this.cancelWait)
+      if (this.state === "busy" && !this.cancelWait) {
+        this.lastSignAt = Date.now();
         this.touch();
+      }
       if (msg.method === "session/update") {
         if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId)
           return;
@@ -2999,7 +3020,11 @@ ${renderDigest(envs, false)}` }] });
           if (text)
             this.toolText.set(u.toolCallId, text);
           if (u.status === "completed" || u.status === "failed")
-            this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId);
+            this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId), this.openTools.delete(u.toolCallId);
+          else if (u.sessionUpdate === "tool_call" || this.openTools.has(u.toolCallId))
+            this.openTools.set(u.toolCallId, this.toolTitles.get(u.toolCallId) ?? "tool");
+          while (this.openTools.size > TOOL_INPUT_CAP)
+            this.openTools.delete(this.openTools.keys().next().value);
           for (const map of [this.toolInputs, this.toolText, this.toolTitles])
             while (map.size > TOOL_INPUT_CAP)
               map.delete(map.keys().next().value);
@@ -18205,7 +18230,7 @@ init_spec_read();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.38",
+  version: "0.12.39",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
@@ -27172,6 +27197,7 @@ var TERMINAL_CLOSES = {
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
+  4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session"
 };
 var HELD_CLOSE = 4000;
@@ -27316,6 +27342,8 @@ async function connectLoop() {
         role: toolsMode ? "tools" : "peer",
         peer: peerId,
         ...toolsMode ? {} : { channel },
+        ...!toolsMode && process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
+        ...!toolsMode && standingBy ? { standby: true } : {},
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });
       client.onPush = (msg) => {

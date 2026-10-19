@@ -157,13 +157,16 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   Claude Code restarts. State in `.agenthub/state/` (pid, status.json, sqlite, logs).
 - `plugins/agent-hub`: Claude Code plugin. Its MCP server is the channel; it reconnects to
   the daemon over the control WS with backoff, except after a close no retry can fix: 4401,
-  4403, 4409 and 4426. It then stays detached and its tools report why. Close 4000 (another
+  4403, 4409, 4430 (ended launch) and 4426. It then stays detached and its tools report why. Close 4000 (another
   session attached as the same peer; the newest hello wins, whatever order the session-start
   recalls finish in) is not one of them (amended, issue #30): that session stands by, and
   reconnects only once `status.json` reports the peer offline and not `claiming`, so it never
   evicts the session holding the id - nor one whose hello is still finishing its preface - and
   the two cannot trade it back and forth. The daemon writes the status file at the claim, before
-  the preface, so the arriving session is visible for that window. Its tools say it is standing by
+  the preface, so the arriving session is visible for that window. A retry after 4000
+  carries `standby: true`; the daemon checks its actual attached or claiming sockets
+  before allowing a reclaim, even when the status file was missing, stale or unreadable.
+  The push-over-pull exception below remains, but never displaces a pending claim. Its tools say it is standing by
   until it has the peer again. It exits when its host closes stdin. Exposes tools `hub_send`,
   `hub_inbox` (fallback drain), `hub_task_*`, `hub_review`, `hub_remember`, `hub_checkpoint`.
 - Codex adapter: spawns `codex app-server --listen ws://127.0.0.1:<port>`, runs a
@@ -284,7 +287,10 @@ durable delivery goes offline with `needs_review`; on a bus without a journal, t
 stays busy until the cancelled prompt reports, then drains on idle. After the 30 s bound
 without a report it goes offline with queued work retained, never idle. Cancelled results
 and errors are discarded; an error during that wait leaves one log line. Other adapters
-keep their cancellation rules (`turn/interrupt` for Codex). Queues drain in order only
+keep their cancellation rules (`turn/interrupt` for Codex). An ACP tool call announced
+and not yet `completed` or `failed` is running work, not silence: it keeps the turn alive
+up to a 30 min tool ceiling (never below `watchdog_ms`), past which the cancel above runs
+with a log line naming the open tool (#542 D4). Queues drain in order only
 when the adapter is idle. Delivery is at-least-once with
 idempotency by `id`: a failed delivery returns to the queue head and is retried after 1 s, and
 after 3 failures it is reported as undeliverable on the console so one envelope cannot block a
@@ -1833,10 +1839,12 @@ push `accepted` and show none of them.
   - A readback (a native turn citing the pushed id) would hold every first
     delivery until the model chose to answer, and a session that never answers
     would look the same as one that never rendered.
-  - The existing launch identity (`AGENTHUB_INSTANCE_ID`, `AGENTHUB_LAUNCH_ID`)
-    is not used: `ahub claude` sets it only when a daemon is already running at
-    launch, so an `ahub claude` started before `ahub up` would lose pushes it
-    can show.
+  - Launch fencing (#551): peer hello carries `AGENTHUB_LAUNCH_ID` when present.
+    A Claude-channel hello that differs from this daemon instance's recorded
+    per-peer `claude-launch.json` is refused before claiming, with terminal close
+    4430. The plugin stops reconnecting and its tools explain how to start a new
+    session. An absent launch id or absent current launch record keeps the prior
+    behavior, including `ahub claude` started before `ahub up`.
   - Limits: the marker is inherited by the session's own shell children, so a
     plain `claude` started inside an `ahub claude` session reads as
     channel-capable (it also inherits the peer id and takes the peer over); so
@@ -1847,6 +1855,17 @@ push `accepted` and show none of them.
     installed plugin server in the same process also sees
     `AGENTHUB_CHANNEL=1`. A session started with the flag by hand reads as
     tools-only and is pointed to `ahub claude`.
+- Channel activation ceiling (#551 D2): the MCP server observes its inherited
+  environment and the host's `initialize` client information/capabilities through
+  the SDK. The current bridge contract has no positive signal that this specific
+  server was selected by the host's channel flag. Advertising the server's own
+  `experimental["claude/channel"]` capability is not host activation evidence;
+  client name/version and an inherited environment marker cannot establish it
+  either. Therefore a nested host inheriting the current launch id and channel
+  marker remains indistinguishable here. Do not invent a client capability or
+  infer activation from successful notification writes. The stale-launch fence
+  blocks obsolete launch identities; no-marker sessions remain pull-only. A
+  positive per-server host activation signal would permit tightening this rule.
 - Tools-only attach: the server declares tools only, sends `channel: false` in
   its `peer` hello and lists `hub_inbox` but not `hub_delivery_done`. It never
   reports `accepted`: a `deliver` it is handed anyway goes back as a

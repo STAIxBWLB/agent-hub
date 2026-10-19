@@ -541,6 +541,10 @@ class WsPeer extends BasePeer {
   get channelHeld(): boolean {
     return (!!this.sock && !this.pullOnly) || (this.claiming && !this.claimedPullOnly);
   }
+  /** Status-file observations are advisory; a replaced client cannot evict a live socket or pending claim. */
+  standbyHeld(pullOnly: boolean): boolean {
+    return this.claiming || (!!this.sock && this.sock.readyState === WebSocket.OPEN && (pullOnly || !this.pullOnly));
+  }
   /** A hello that has not finished its preface yet. The peer reads as offline until then, and a session standing by
    *  for the id must not take it from a claimant that is still arriving. */
   get claiming(): boolean {
@@ -5075,11 +5079,20 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!PEER_ID.test(c.peer) || (RESERVED_IDS.has(c.peer) && !kimiPull)) return sock.close(4403, definitionOf(c.peer)?.attach?.admission?.reservedRefusal ?? "peer id is reserved or malformed");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
+        if (definitionOf(c.peer)?.transport === "claude-channel" && msg.launchId !== undefined) {
+          let currentLaunch: unknown;
+          try {
+            const launch = JSON.parse(readFileSync(join(opts.stateDir, claudeStateFile("claude-launch", c.peer)), "utf8"));
+            if (launch.instanceId === instanceId && typeof launch.launchId === "string" && launch.launchId) currentLaunch = launch.launchId;
+          } catch { /* No current launch evidence: retain plain/pre-daemon attachment compatibility. */ }
+          if (currentLaunch !== undefined && msg.launchId !== currentLaunch) return sock.close(4430, "Claude launch ended; start a new session with ahub claude");
+        }
         let peer = bus.peers.get(c.peer);
         if (kimiPull && peer instanceof AcpPeer && peer.state === "offline") peer = undefined;
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
         const ws = peer;
+        if (msg.standby === true && ws.standbyHeld(msg.channel === false)) return sock.close(4000, "another session holds or is claiming this peer");
         // Without pushes it stands by, as a replaced session does, and never strands a channel session's deliveries.
         if (msg.channel === false && ws.channelHeld) return sock.close(4000, "a session with channel pushes holds this peer");
         preparedSessionRoles.delete(c.peer); // an external transport has no receipt for this daemon's native preamble
