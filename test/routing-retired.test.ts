@@ -85,3 +85,10 @@ test("#553 retired table extensions are not interpreted as active routing option
   expect(routing.max_switch_prefill_tokens).toBeGreaterThan(0);
   expect(routing.retired).toHaveLength(2);
 });
+
+
+test("#553 arbitrary legacy route ids survive the overlay and use the fixed fallback", () => {
+  const routing = parseRouting(base + '[classes.implement]\npeers=["local"]\n[routes.coding]\ntype="passthrough"\n', parseOverlay('[classes.implement]\nroute="coding"\n'));
+  expect(routing.classes.implement?.route).toBe("coding");
+  expect(assign({ class: "implement", signals: [] }, { local: "idle" }, routing)).toMatchObject({ owner: "local", fixedModel: "coding" });
+});
