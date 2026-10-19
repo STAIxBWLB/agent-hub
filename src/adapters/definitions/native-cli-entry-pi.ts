@@ -22,6 +22,8 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
     if (Object.keys(flags).length) fail("Pi's TUI needs a terminal, and these options are not passed to one the hub opens: run this in a terminal, or add --mode headless");
     const hub = await connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35_000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "pi start refused");
@@ -36,6 +38,8 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const before = readControl(stateDir);
   if (recovering && before?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
   const res = await hub.request({ t: "start", peer, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok) fail(res.error);

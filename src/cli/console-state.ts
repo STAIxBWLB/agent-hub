@@ -22,6 +22,7 @@ export interface ConsoleState {
   settingsRows?: SettingRow[]; settingsKnown?: boolean; settingsUndo?: string; settingsProblem?: string;
   settingsEdit?: SettingsEdit; settingsSequence?: number;
   pendingRestart?: { key: string; reason: string }[];
+  retainedConfig?: { key: string; reason: string }[];
   features?: readonly string[];
   /** Older embedding callers omit choices and retain the original STAI/off toggle. */
   petChoices?: readonly CharacterId[]; petCharacter?: CharacterId; petSize?: PetSize; petGlyphs?: "ascii" | "blocks";
@@ -893,6 +894,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (p.toolsOnly) summary.push(span(definitionOf(id)?.attach?.pullOnlyForms?.includes("tui") ? ` pull-only, read ${typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never"}` : " tools-only: ahub claude", "attention"));
   }
   if (s.pendingRestart?.length) summary.push(span(`${summary.length ? " | " : ""}restart pending: ${s.pendingRestart.map(row => row.key).join(", ")}`, "attention"));
+  if (s.retainedConfig?.length) summary.push(span(`${summary.length ? " | " : ""}config retained: ${s.retainedConfig.map(row => row.key).join(", ")}; run ahub settings reload`, "attention"));
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");
   if (quotas) summary.push(span(`${summary.length ? " | " : ""}${quotas}`));
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
@@ -947,6 +949,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       const info = s.settingsProblem ?? (!s.settingsKnown ? "settings loading..." : row?.restartReason ?? row?.note ?? row?.label ?? "Settings");
       lines.push(...wrap(info, columns).slice(0, 2).map(text => [span(text, s.settingsProblem ? "failure" : "info")]));
       if (s.pendingRestart?.length) lines.push(fitLine([span(`pending restart: ${s.pendingRestart.map(row => `${row.key}: ${row.reason}`).join("; ")}`, "attention")], columns));
+      if (s.retainedConfig?.length) {
+        lines.push(fitLine([span(`config retained: ${s.retainedConfig.map(row => row.key).join(", ")}; run ahub settings reload`, "attention")], columns));
+        for (const pending of s.retainedConfig) lines.push(fitLine([span(`${pending.key}: ${pending.reason}`, "attention")], columns));
+      }
     }
     if (s.panel === 3) {
       const done = progress.total ? Math.floor(progress.counts.approved * 20 / progress.total) : 0;

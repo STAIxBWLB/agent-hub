@@ -69,7 +69,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
   turnEnd: "adapter",
   budget: { account: "qwen" },
   capabilities: { watch: true },
-  cli: { command: "qwen", startWords: () => ["qwen"] },
+  cli: { command: "qwen", launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
   display: QWEN_DISPLAY,
   hooks: { agentIdentity: init => { qwenNativeIdentity("qwen", true, init); }, recallPlatform: "qwen" },
 };

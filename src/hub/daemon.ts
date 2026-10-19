@@ -683,6 +683,17 @@ export async function startDaemon(opts: DaemonOptions) {
   let configRevision = 0;
   let reloadConfirmation: { token: string; fingerprint: string; revision: number; keys: string[] } | undefined;
   let pendingRestart: { key: string; reason: string }[] = [];
+  let retainedConfig: { key: string; reason: string }[] = [];
+  function retainedLaunchConfig(peer: string): Record<string, unknown> | undefined {
+    const keys = definitionOf(peer, declarations)?.cli.launchConfigKeys ?? [];
+    const pending = retainedConfig.filter(row => keys.some(key => row.key === key || row.key.startsWith(`${key}.`)));
+    if (!pending.length) return;
+    return Object.fromEntries(pending.map(row => [row.key, valueAt(config, row.key.split("."))]));
+  }
+  const includeRetainedLaunchConfig = (peer: string, result: Record<string, unknown>): Record<string, unknown> => {
+    const values = retainedLaunchConfig(peer);
+    return values ? { ...result, retainedLaunchConfig: values } : result;
+  };
   let lastReloadFailure: string | undefined;
   let reloadDebounce: ReturnType<typeof setTimeout> | undefined;
   let configWatchPending = false;
@@ -2643,6 +2654,7 @@ export async function startDaemon(opts: DaemonOptions) {
     version: VERSION,
     pluginBundle: SERVER_JS,
     pendingRestart,
+    retainedConfig,
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
@@ -4110,7 +4122,7 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       attention: attentionStatus.attentionInput,
       pet,
-      status: { peers: peerView, pendingRestart, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
+      status: { peers: peerView, pendingRestart, retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
@@ -4360,6 +4372,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
+      retainedConfig = prepared.rejected.map(({ key, reason }) => ({ key: sanitize(key).slice(0, 160), reason: sanitize(reason).slice(0, 1200) }));
       storedConfigCache = undefined;
       if (beforeConductor && (beforeConductor !== conductorPeer(config.roles) || config.conductor.feed === "off")) {
         bus.revokeSupervision(beforeConductor); supervision.resetPending(beforeConductor); budgetFeedSeen.clear();
@@ -4368,7 +4381,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (prepared.guarded.length) reloadConfirmation = { token: randomUUID(), fingerprint, revision: configRevision, keys: prepared.guarded };
       const refusal = prepared.rejected.map(item => `${item.key}: ${item.reason}`).join("; ");
       const failure = refusal ? `${fingerprint}:${refusal}` : undefined;
-      if (failure && lastReloadFailure !== failure) { try { notify(`configuration keys retained: ${sanitize(refusal).slice(0, 1200)}`); } catch { log("configuration keys retained; notice unavailable"); } }
+      if (failure && lastReloadFailure !== failure) { try { notify(`config retained: ${retainedConfig.map(item => item.key).join(", ")}; run ahub settings reload`); } catch { log("configuration retained notice unavailable"); } }
       lastReloadFailure = failure;
       writeStatus();
       const applied = [...changes.filter(change => change.applies !== "restart").map(change => change.key), ...routingChanges.filter(key => configApply(key).applies !== "restart")];
@@ -4404,7 +4417,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
     catch { return {}; }
   }
-  function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[] } {
+  function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[]; retainedConfig: { key: string; reason: string }[] } {
     const stored = storedConfig();
     // What the loader would say about the files as they are: an overlay that does not parse, or one that no longer
     // merges (it names a route routing.toml dropped), leaves the last good policy in force, and the rows say why.
@@ -4423,7 +4436,7 @@ export async function startDaemon(opts: DaemonOptions) {
     });
     const undo = pendingUndo(opts.stateDir);
     const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it makes that peer the only planner; agents cannot change it.`;
-    return { pendingRestart, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
+    return { pendingRestart, retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
   const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false, reason?: string) => {
@@ -5458,7 +5471,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.
         if (c.role !== "console") return void reply({ ok: false, error: "peer_start is a console command; use hub_peer_start with the conductor role" });
-        void hubStart(msg.peer, "the console").then(reply, (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
+        void hubStart(msg.peer, "the console").then(result => reply(includeRetainedLaunchConfig(String(msg.peer), result)), (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
         return;
       case "peer_stop":
         if (c.role !== "console") return void reply({ ok: false, error: "peer_stop is a console command; the person runs ahub stop in a terminal" });
@@ -5472,7 +5485,7 @@ export async function startDaemon(opts: DaemonOptions) {
           .catch((e: Error) => ({ ok: false, error: e.message }))
           .then((r) => {
             if (!r.ok) log(`start ${msg.peer} failed: ${r.error}`);
-            reply({ t: "started", ...r });
+            reply({ t: "started", ...includeRetainedLaunchConfig(String(msg.peer), r) });
           });
         return;
       case "task":

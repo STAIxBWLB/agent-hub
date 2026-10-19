@@ -1,11 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import { definitionOf } from "../src/adapters/registry.ts";
+import { retainedLaunchWarning } from "../src/cli/launch.ts";
+import { renderStatus } from "../src/cli/output.ts";
+import { initialConsoleState, renderConsoleLines } from "../src/cli/console-state.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -32,7 +36,29 @@ test("#542 a retained guarded launch key stays visible until confirmed", async (
   const pending = (await client.request({ t: "status" })).status.retainedConfig;
   expect(pending).toContainEqual(expect.objectContaining({ key: "jcode_cmd", reason: expect.any(String) }));
 
-  const applied = await client.request({ t: "settings_reload", confirm: preview.confirmation.token });
+  unlinkSync(file("config.local.json"));
+  await client.request({ t: "settings_reload" });
+  expect((await client.request({ t: "status" })).status.retainedConfig ?? []).toEqual([]);
+
+  writeFileSync(file("config.local.json"), JSON.stringify({ jcode_cmd: ["jcode", "--model", "new"] }));
+  const confirmedPreview = await client.request({ t: "settings_reload" });
+  expect(confirmedPreview.confirmation?.keys).toContain("jcode_cmd");
+  expect((await client.request({ t: "status" })).status.retainedConfig).toContainEqual(expect.objectContaining({ key: "jcode_cmd" }));
+  const applied = await client.request({ t: "settings_reload", confirm: confirmedPreview.confirmation.token });
   expect(applied.ok).toBe(true);
   expect((await client.request({ t: "status" })).status.retainedConfig ?? []).toEqual([]);
 }, 15_000);
+
+test("#542 retained launch settings warn by adapter metadata and status renders the reload instruction", () => {
+  const status = { retainedConfig: [{ key: "jcode_cmd", reason: "guarded change needs confirmation" }] };
+  const warning = retainedLaunchWarning(status, "jcode", definitionOf("jcode")!);
+  expect(warning).toContain("config retained: jcode_cmd");
+  expect(warning).toContain("starting jcode with the running value");
+  expect(warning).toContain("run ahub settings reload");
+  expect(retainedLaunchWarning(status, "qwen", definitionOf("qwen")!)).toBeUndefined();
+  const lines = renderStatus({ peers: {}, ...status }).flat().map(row => row.text);
+  expect(lines.some(line => line.includes("config retained") && line.includes("jcode_cmd") && line.includes("run ahub settings reload"))).toBe(true);
+  const consoleState = initialConsoleState(); consoleState.retainedConfig = status.retainedConfig;
+  const consoleLines = renderConsoleLines(consoleState, 120).flat().map(row => row.text);
+  expect(consoleLines.some(line => line.includes("config retained") && line.includes("jcode_cmd") && line.includes("run ahub settings reload"))).toBe(true);
+});

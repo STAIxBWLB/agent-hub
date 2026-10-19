@@ -33,6 +33,7 @@ export interface NativeCliEntryContext {
     configureKimiMcp: typeof import("../../cli/kimi-mcp.ts").configureKimiMcp;
     buildKimiTuiLaunch: typeof import("../../cli/launch.ts").buildKimiTuiLaunch;
     startModeOf: typeof import("../../hub/start-mode.ts").startModeOf;
+    retainedLaunchWarning: typeof import("../../cli/launch.ts").retainedLaunchWarning;
   };
 }
 export interface BuiltinCliEntry {
