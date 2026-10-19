@@ -64,6 +64,8 @@ test("owned Jcode daemon and ACP client deliver, resume the exact id and stop wi
   expect(rows.find(row => row.method === "session/load").params.sessionId).toBe("saved-jcode");
   expect(rows.filter(row => row.kind === "rpc").every(row => row.home === home)).toBe(true);
   const server = rows.find(row => row.kind === "serve"); expect(existsSync(server.socket)).toBe(true);
+  // Every owned jcode process opts out of native telemetry (#529).
+  expect(rows.filter(row => row.kind === "rpc" || row.kind === "serve").every(row => row.telemetry === "1")).toBe(true);
   await peer.stop(); expect(existsSync(server.socket)).toBe(false);
   expect(() => process.kill(server.pid, 0)).toThrow();
 });
@@ -164,7 +166,7 @@ test("Jcode doctor probes the full configured wrapper argv with the native JSON 
   const dir = root(), record = join(dir, "version");
   expect(verifiedJcodeCommand([...fake, "--record", record], dir)).toBe(true);
   const row = JSON.parse(readFileSync(record, "utf8").trim());
-  expect(row.args.slice(-3)).toEqual(["--quiet", "version", "--json"]);
+  expect(row.args.slice(-3)).toEqual(["--quiet", "version", "--json"]); expect(row.telemetry).toBe("1");
   expect(row.args).toContain(record);
 });
 

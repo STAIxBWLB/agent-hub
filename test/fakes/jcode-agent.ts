@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 const args = process.argv.slice(2), value = (key: string) => args[args.indexOf(key) + 1];
 const record = args.includes("--record") ? value("--record") : undefined;
 if (args.includes("version")) {
-  if (record) appendFileSync(record, JSON.stringify({ kind: "version", args }) + "\n");
+  if (record) appendFileSync(record, JSON.stringify({ kind: "version", args, telemetry: process.env.JCODE_NO_TELEMETRY }) + "\n");
   console.log(JSON.stringify({ semver: args.includes("--semver") ? value("--semver") : "0.98.1" }));
 } else if (args.includes("serve")) {
   // Native jcode (0.94.0 through 0.98.1, socket.rs debug_socket_path) also binds a debug socket named by replacing
@@ -15,7 +15,7 @@ if (args.includes("version")) {
   const server = createServer(socket => socket.end());
   debug.once("error", () => process.exit(1));
   server.listen(main, () => debug.listen(debugPath, () => {
-    if (record) appendFileSync(record, JSON.stringify({ kind: "serve", pid: process.pid, socket: value("--socket"), home: process.env.JCODE_HOME }) + "\n");
+    if (record) appendFileSync(record, JSON.stringify({ kind: "serve", pid: process.pid, socket: value("--socket"), home: process.env.JCODE_HOME, telemetry: process.env.JCODE_NO_TELEMETRY }) + "\n");
     writeSync(3, "1");
   }));
   process.on("SIGTERM", () => {
@@ -28,7 +28,7 @@ if (args.includes("version")) {
   const send = (message: unknown) => process.stdout.write(JSON.stringify(message) + "\n");
   createInterface({ input: process.stdin }).on("line", line => {
     const msg = JSON.parse(line);
-    if (record) appendFileSync(record, JSON.stringify({ kind: "rpc", method: msg.method, params: msg.params, home: process.env.JCODE_HOME }) + "\n");
+    if (record) appendFileSync(record, JSON.stringify({ kind: "rpc", method: msg.method, params: msg.params, home: process.env.JCODE_HOME, telemetry: process.env.JCODE_NO_TELEMETRY }) + "\n");
     if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentInfo: { name: "jcode", version: args.includes("--version-id") ? value("--version-id") : "0.98.1" }, agentCapabilities: { loadSession: true } } });
     else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: session } });
     else if (msg.method === "session/load") { session = msg.params.sessionId; send({ jsonrpc: "2.0", id: msg.id, result: args.includes("--no-load-echo") ? {} : { sessionId: session } }); }

@@ -2458,7 +2458,7 @@ the queue.
 - A private foreground daemon/socket and ACP client belong to this peer. The global daemon is never adopted or stopped. No automatic update, self-dev or credential copy. The native MCP store must already exist to avoid implicit Codex import.
 - ACP session MCP arrays are ignored natively, so the person launcher manages only agent-hub-jcode, shared:false, in project .jcode/mcp.json. Later override layers, foreign names and links refuse. Daemon starts verify read-only. .jcode is outside scoped grants.
 - Native policy is unmanaged and has no hub sandbox. Hub permission mappings refuse; native quota/consumption are not inferred. Every task mutation stays in Tasks and PII remains at existing redaction/routing boundaries.
-- The private socket name ends in `.sock`: jcode names its debug socket by replacing that suffix (#529).
+- The private socket name ends in `.sock`: jcode names its debug socket by replacing that suffix. Every owned jcode process runs with `JCODE_NO_TELEMETRY=1` (#529).
 - Native ACP load (verified on 0.94.0 and 0.98.1) lacks identity proof. Controlled recovery refuses before effects, crash recovery is manual and a load without an exact echoed id refuses before a prompt or restored claim. Real provider/tool/teardown evidence and comparative measurement remain unverified.
 
 # ACP watch amendment, 2026-10-11 (#286)

@@ -2436,10 +2436,11 @@ function jcodeVersionSupported(version) {
   const v = typeof version === "string" ? release(version) : undefined;
   return !!v && compare(v, release(JCODE_MIN_VERSION)) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)) < 0;
 }
-var JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
+var JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
 var init_jcode = __esm(() => {
   init_acp();
   init_child_process();
+  JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" };
   JcodePeer = class JcodePeer extends AcpPeer {
     jcode;
     root;
@@ -2454,7 +2455,7 @@ var init_jcode = __esm(() => {
       jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
       const root = mkdtempSync(join6(tmpdir(), "ahub-jcode-")), socket = join6(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
-      super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, JCODE_DISABLE_CLAUDE_MCP: "1" }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+      super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
       this.jcode = jcode;
       this.root = root;
       this.socket = socket;
@@ -2468,7 +2469,7 @@ var init_jcode = __esm(() => {
       }
       this.ending = false;
       const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile);
-      const server = spawn3(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", JCODE_DISABLE_CLAUDE_MCP: "1" }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+      const server = spawn3(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
       this.server = server;
       trackGroup(server);
       try {
