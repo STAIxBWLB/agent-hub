@@ -158,3 +158,15 @@ test("optional pool fallback records its blocked walk and planner identity witho
   expect(done.history.at(-1)?.note).toContain("no reviewer can run");
   expect(done.history.at(-1)?.note).toContain("claude-review");
 });
+
+
+test("same-family planner fallback records the same reason in history and note", async () => {
+  const { tasks, task, peers, bus } = await rig({ review: { adaptive: false, min_reviews: 5 }, roles: { codex: ["implementer"], "claude-review": ["reviewer"], "claude-two": ["reviewer"], "codex-review": ["reviewer"], "codex-planner": ["planner", "reviewer"] }, instances: () => ({ "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" }, "codex-planner": { kind: "codex", roles: ["planner", "reviewer"], start_mode: "headless" } }) });
+  for (const id of ["claude-review", "claude-two", "codex-review"]) await peers[id]!.stop();
+  const planner = new Reviewer("codex-planner");
+  bus.add(planner); await planner.start();
+  const done = await tasks.done("codex", task.id, "ready");
+  expect(done).toMatchObject({ reviewer: "codex-planner", state: "in_review" });
+  expect(done.history.at(-1)).toMatchObject({ reviewerFamily: "codex", reviewerReason: "same-family fallback" });
+  expect(done.history.at(-1)?.note).toContain("sameFamilyFallback=true");
+});

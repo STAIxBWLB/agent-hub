@@ -1047,7 +1047,8 @@ function configFiles(cwd, env) {
 }
 function hostCredentialRoots(env, cwd) {
   const home = resolve3(cwd, env.HOME || homedir());
-  const roots = HOST_CREDENTIAL_PATHS.map((entry) => join3(home, entry));
+  const homes = [...new Set([home, credentialCanonicalPath(home)])];
+  const roots = homes.flatMap((base) => HOST_CREDENTIAL_PATHS.map((entry) => join3(base, entry)));
   const configured = HOST_CREDENTIAL_ENV.flatMap((key) => env[key] ? [env[key]] : []);
   if (env.KUBECONFIG)
     configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean));
@@ -1060,14 +1061,28 @@ function hostCredentialRoots(env, cwd) {
   }
   return [...new Set(roots)];
 }
+function credentialCanonicalPath(lexical) {
+  let ancestor = lexical;
+  for (;; ) {
+    try {
+      lstatSync2(ancestor);
+      break;
+    } catch (error) {
+      if (error.code !== "ENOENT" || dirname3(ancestor) === ancestor)
+        throw error;
+      ancestor = dirname3(ancestor);
+    }
+  }
+  return join3(realPath(ancestor), relative(ancestor, lexical));
+}
 function denyCredentialRoots(filesystem, roots, cwd) {
   for (const lexical of roots) {
     if (/[?*\[\]{}]/.test(lexical))
       throw new Error("unverified credential root syntax");
-    const targets = new Set([lexical]);
-    if (existsSync2(lexical))
-      targets.add(realPath(lexical));
+    const targets = new Set([lexical, credentialCanonicalPath(lexical)]);
     for (const target of targets) {
+      if (/[?*\[\]{}]/.test(target))
+        throw new Error("unverified credential root syntax");
       if (inside(cwd, target))
         throw new Error("credential root overlaps checkout");
       filesystem[target] = "deny";

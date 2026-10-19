@@ -581,7 +581,9 @@ export class Tasks {
   private reviewMetadata(assignment?: Assignment): ReviewerHistory {
     const choice = assignment?.reviewSelection;
     const family = choice && assignment?.plannerFallback && assignment.reviewer ? familyOf(assignment.reviewer, this.d.instances?.()) : choice?.family;
-    const reason = choice && assignment?.plannerFallback ? "unavailable skip" as const : choice?.reason;
+    const reason = choice && assignment?.plannerFallback
+      ? assignment.sameFamilyFallback ? "same-family fallback" as const : "unavailable skip" as const
+      : choice?.reason;
     return { ...(family ? { reviewerFamily: family } : {}), ...(reason ? { reviewerReason: reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}) };
   }
 

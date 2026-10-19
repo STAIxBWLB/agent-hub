@@ -69,7 +69,8 @@ const HOST_CREDENTIAL_PATHS = [".config", ".ssh", ".aws", ".azure", ".kube", ".d
 const HOST_CREDENTIAL_ENV = ["XDG_CONFIG_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_HOME", "GEMINI_CLI_HOME", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AZURE_CONFIG_DIR", "DOCKER_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS"] as const;
 function hostCredentialRoots(env: NodeJS.ProcessEnv, cwd: string): string[] {
   const home = resolve(cwd, env.HOME || homedir());
-  const roots: string[] = HOST_CREDENTIAL_PATHS.map(entry => join(home, entry));
+  const homes = [...new Set([home, credentialCanonicalPath(home)])];
+  const roots: string[] = homes.flatMap(base => HOST_CREDENTIAL_PATHS.map(entry => join(base, entry)));
   const configured = HOST_CREDENTIAL_ENV.flatMap(key => env[key] ? [env[key]!] : []);
   if (env.KUBECONFIG) configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean));
   if (configured.length > 64) throw new Error("credential root bound exceeded");
@@ -79,13 +80,26 @@ function hostCredentialRoots(env: NodeJS.ProcessEnv, cwd: string): string[] {
   }
   return [...new Set(roots)];
 }
+/** Resolve absent descendants through the deepest existing ancestor; dangling links refuse admission. */
+function credentialCanonicalPath(lexical: string): string {
+  // Same strict ancestor algorithm as policyRealPath; importing path-policy here would cycle through the registry.
+  let ancestor = lexical;
+  for (;;) {
+    try { lstatSync(ancestor); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || dirname(ancestor) === ancestor) throw error;
+      ancestor = dirname(ancestor);
+    }
+  }
+  return join(realPath(ancestor), relative(ancestor, lexical));
+}
 function denyCredentialRoots(filesystem: Record<string, string>, roots: readonly string[], cwd: string): void {
   for (const lexical of roots) {
     // Native profile keys with glob metacharacters cannot represent these literal host locations safely.
     if (/[?*\[\]{}]/.test(lexical)) throw new Error("unverified credential root syntax");
-    const targets = new Set([lexical]);
-    if (existsSync(lexical)) targets.add(realPath(lexical));
+    const targets = new Set([lexical, credentialCanonicalPath(lexical)]);
     for (const target of targets) {
+      if (/[?*\[\]{}]/.test(target)) throw new Error("unverified credential root syntax");
       if (inside(cwd, target)) throw new Error("credential root overlaps checkout");
       filesystem[target] = "deny"; filesystem[`${target.replace(/\/$/, "")}/**`] = "deny";
     }

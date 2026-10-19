@@ -203,3 +203,29 @@ for (const mode of ["checkout", "glob"] as const) test(`Codex refuses an unsafe 
     f.close();
   }
 });
+
+
+test("Codex denies absent credential descendants through a symlinked HOME and configured root", async () => {
+  const f = fixture(), physical = join(f.root, "physical-home"), alias = join(f.root, "home-alias");
+  mkdirSync(physical); symlinkSync(physical, alias);
+  const values = { HOME: alias, XDG_CONFIG_HOME: join(alias, "nested", "future-config") };
+  const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, values);
+    const result = await codexReviewerBackend.prepare(f.ctx);
+    expect("unavailable" in result).toBe(false);
+    if ("unavailable" in result) return;
+    const profile = Bun.TOML.parse(result.args.find(arg => arg.startsWith("permissions="))!) as { permissions: Record<string, { filesystem: Record<string, string> }> };
+    const filesystem = profile.permissions["ahub-review"]!.filesystem;
+    for (const suffix of [".kube", "nested/future-config"]) {
+      for (const base of [alias, realPath(physical)]) {
+        expect(filesystem[join(base, suffix)]).toBe("deny");
+        expect(filesystem[join(base, suffix, "**")]).toBe("deny");
+      }
+    }
+    await result.cleanup?.();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    f.close();
+  }
+});

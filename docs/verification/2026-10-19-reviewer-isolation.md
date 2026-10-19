@@ -95,3 +95,18 @@ Regressions use a synthetic HOME and configured roots, never real credential con
 ## Review-fix focused gate
 
 After both Important fixes, the related nits and the host-credential correction, pinned Bun 1.4.2 on the remote Linux runner passed 445 tests in 29 affected files (3,164 assertions), TypeScript and generated-bundle freshness. The final native model-free preparation also passed on macOS as described above. All 421 existing seed anchors are unique; runtime seed success is a separate exact-head CI gate. Legacy/frozen tests, the registry baseline and seed manifest remain unchanged. These results do not supply independent approval or native account/model acceptance.
+
+
+## Review correction: canonical credential ancestors
+
+The prior Linux and CI evidence did not expose the developer Mac's default `/var` to `/private/var` TMPDIR alias. Local pinned Bun 1.4.2 reproduced both the existing synthetic-HOME failure and an explicit symlinked-HOME/missing-descendant regression before the fix. Standard names are now joined under both lexical HOME and its canonical deepest existing ancestor; every credential root also resolves its deepest existing ancestor before appending absent components. Both spellings and existing final symlink targets remain denied. Dangling links and unreadable ancestors refuse admission. The adapter keeps this short strict ancestor walk local because importing `path-policy` would introduce a registry cycle.
+
+Privacy ceilings remain explicit: credential roots are derived from the child environment's HOME and configured overrides. If HOME is overridden, the separate account home returned by `os.userInfo().homedir` is not automatically included. The bounded list also does not include shell history/rc files (`.zsh_history`, `.bash_history`, `.zshrc`), `Library/Application Support`, `.pgpass`, `.m2/settings.xml`, `.gradle/gradle.properties` or `.oci`; additional private paths must be declared. This is not a universal private-home sandbox.
+
+`web_search="disabled"` is a requested config value, without effective-turn readback. At the pinned source, managed requirements that prohibit Disabled can make `resolve_web_search_mode_for_turn` select Cached instead. The receipt evidence label `web-search-disabled` records only that configured value. Therefore the flag is not proof that remote cached search is unavailable; the effective Apps feature proof and native filesystem denial evidence do not establish that separate boundary. [Pinned web-search resolution](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/core/src/config/mod.rs#L2979-L3005).
+
+
+Local verification after this correction used pinned Bun 1.4.2 and the unmodified default macOS TMPDIR: 40 tests across `codex-review-isolation` and `reviewer-pool-tasks` passed (166 assertions). A model-free native Codex 0.146.0 preparation also passed under a synthetic symlinked HOME; after the returned profile was built, a new synthetic `.kube/config` was created under the physical HOME and a direct native sandbox cat of that canonical path was denied. The fixture was removed. No account, credential copy, model request or `codex exec` was involved. The named exec-profile-selection and effective web-search ceilings remain unverified as described above.
+
+
+The corrected source then passed the remote Linux focused gate: 447 tests in 29 files (3,176 assertions), TypeScript and pinned Bun 1.4.2 bundle freshness. All 421 existing seed anchors remain unique. Final-head CI is required separately; the local default-TMPDIR result is the developer-Mac regression evidence, not inferred from CI.
