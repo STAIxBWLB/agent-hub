@@ -548,10 +548,18 @@
     {
       "id": "jcode-native-identity",
       "file": "src/adapters/acp.ts",
-      "search": "if (this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version))",
-      "replacement": "if (false && this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version))",
+      "search": "if (expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === \"function\" ? expected.version(version) : version === expected.version)))",
+      "replacement": "if (false && expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === \"function\" ? expected.version(version) : version === expected.version)))",
       "testFile": "test/jcode-peer.test.ts",
-      "testName": "Jcode source identity drift refuses the peer and cleans its owned daemon (#332)"
+      "testName": "Jcode native identity outside the supported range refuses the peer and cleans its owned daemon (#332, #529)"
+    },
+    {
+      "id": "jcode-breaking-version",
+      "file": "src/adapters/jcode.ts",
+      "search": "compare(v, release(JCODE_BREAKING_VERSION)!) < 0",
+      "replacement": "true",
+      "testFile": "test/jcode-peer.test.ts",
+      "testName": "Jcode native identity outside the supported range refuses the peer and cleans its owned daemon (#332, #529)"
     },
     {
       "id": "jcode-load-proof",

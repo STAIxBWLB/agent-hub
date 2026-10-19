@@ -2454,11 +2454,12 @@ the queue.
 
 ## Amendment: optional owned Jcode peer (#332)
 
-- jcode is optional on the roster, default off, with implementer/verifier guidance and no default routing replacement. Its source-pinned native identity is jcode 0.94.0.
+- jcode is optional on the roster, default off, with implementer/verifier guidance and no default routing replacement. Its native identity is jcode from 0.98.0 (the minimum; verified live on 0.98.1) up to, not including, 1.0.0 (the assumed breaking version); the minor is not pinned. Lower the breaking version when a release is shown to break the contract (#529).
 - A private foreground daemon/socket and ACP client belong to this peer. The global daemon is never adopted or stopped. No automatic update, self-dev or credential copy. The native MCP store must already exist to avoid implicit Codex import.
 - ACP session MCP arrays are ignored natively, so the person launcher manages only agent-hub-jcode, shared:false, in project .jcode/mcp.json. Later override layers, foreign names and links refuse. Daemon starts verify read-only. .jcode is outside scoped grants.
 - Native policy is unmanaged and has no hub sandbox. Hub permission mappings refuse; native quota/consumption are not inferred. Every task mutation stays in Tasks and PII remains at existing redaction/routing boundaries.
-- Native 0.94.0 load lacks identity proof. Controlled recovery refuses before effects, crash recovery is manual and a load without an exact echoed id refuses before a prompt or restored claim. Real provider/tool/teardown evidence and comparative measurement remain unverified.
+- The private socket name ends in `.sock`: jcode names its debug socket by replacing that suffix (#529).
+- Native load (0.94.0 through 0.98.1) lacks identity proof. Controlled recovery refuses before effects, crash recovery is manual and a load without an exact echoed id refuses before a prompt or restored claim. Real provider/tool/teardown evidence and comparative measurement remain unverified.
 
 # ACP watch amendment, 2026-10-11 (#286)
 

@@ -17,6 +17,18 @@ export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: s
   return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
     ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"])];
 }
+/** The oldest native release accepted; its ACP, serve and MCP contract was verified live on 0.98.1 (docs/verification). */
+export const JCODE_MIN_VERSION = "0.98.0";
+/** The first native release assumed to break that contract: the next major. Lower it when a release is shown to break. */
+export const JCODE_BREAKING_VERSION = "1.0.0";
+const release = (version: string) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number);
+const compare = (a: number[], b: number[]) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!;
+/** A plain release from JCODE_MIN_VERSION up to, not including, JCODE_BREAKING_VERSION; the minor is not pinned (#529). */
+export function jcodeVersionSupported(version: unknown): boolean {
+  const v = typeof version === "string" ? release(version) : undefined;
+  return !!v && compare(v, release(JCODE_MIN_VERSION)!) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)!) < 0;
+}
+
 /** The wrapper contract preserves every configured prefix argument before the native probe. */
 export function verifiedJcodeCommand(command: string[], cwd: string): boolean {
   const [bin, ...prefix] = command;
@@ -25,7 +37,7 @@ export function verifiedJcodeCommand(command: string[], cwd: string): boolean {
     const result = spawnSync(bin, [...prefix, "--quiet", "version", "--json"], { cwd, env: peerChildEnv("jcode"), encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 });
     if (result.status !== 0) return false;
     const version = JSON.parse(result.stdout);
-    return version.semver === "0.94.0";
+    return jcodeVersionSupported(version.semver);
   } catch { return false; }
 }
 
@@ -41,9 +53,10 @@ export class JcodePeer extends AcpPeer {
   constructor(private readonly jcode: JcodeOptions) {
     if (!isAbsolute(jcode.home)) throw new Error("jcode_home must be an absolute native data path");
     jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
-    const root = mkdtempSync(join(tmpdir(), "ahub-jcode-")), socket = join(root, "s");
+    // The name must end in ".sock": jcode names its debug socket by replacing that suffix, so "s" binds one path twice.
+    const root = mkdtempSync(join(tmpdir(), "ahub-jcode-")), socket = join(root, "j.sock");
     const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
-    super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, JCODE_DISABLE_CLAUDE_MCP: "1" }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: "0.94.0" } });
+    super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, JCODE_DISABLE_CLAUDE_MCP: "1" }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
     this.root = root; this.socket = socket;
   }
 

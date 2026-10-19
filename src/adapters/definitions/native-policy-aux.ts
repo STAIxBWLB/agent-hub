@@ -15,7 +15,7 @@ export function codexCrashPlan(meta: Record<string, unknown>): NativeCrashPlan {
 }
 
 export function jcodeCrashPlan(_meta: Record<string, unknown>): NativeCrashPlan {
-  return { how: "jcode: native 0.94.0 load does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
+  return { how: "jcode: native load (0.94.0 through 0.98.1) does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
 }
 
 export function kimiCrashPlan(meta: Record<string, unknown>): NativeCrashPlan {

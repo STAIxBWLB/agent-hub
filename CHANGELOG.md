@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- `ahub jcode` starts again: the adapter accepts any jcode release from 0.98.0 up to, not including, 1.0.0 (the assumed breaking version), so a jcode minor update no longer refuses the peer; releases before 0.98.0 are refused. The owned daemon's private socket is now named `j.sock`: jcode derives its debug socket by replacing `.sock` in the name, so the old name `s` made both binds one path and `serve` exited on EADDRINUSE with every jcode version. Verified live on 0.94.0 and 0.98.1 (#529).
+
 ## 0.12.36
 
 Reviews get their own reviewers and a hub-built brief: a headless Claude reviewer runs a fresh session per review (#450, #223), every review request carries a review brief with a coverage gate (#520), and a second Claude session can join as a reviewer or planner (#450 I3). The planner reviews plans before work starts, WIP admission applies in every lifecycle mode, a person accepts a task's spec issue (#481 S1, S9), and review and CI costs are governed, with identical-tree CI reuse (#481 S10). A Claude session with a transcript over 32 MiB no longer stays busy forever (#517). Restart Claude sessions after upgrading: each keeps the plugin server it started with.
