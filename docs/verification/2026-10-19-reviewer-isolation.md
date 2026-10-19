@@ -7,6 +7,7 @@ Status: source integration and model-free production-backend admission are verif
 - Planner ruling, 2026-10-19: #229 ships #519 R3-R6 for Claude and Codex only; ship only reviewer profiles with demonstrated isolation. Kimi and agy remain unavailable and outside the default pool until they have a passing isolation receipt. #229 adds unavailable-reason metadata for them and no launch code. All of their launch/isolation/receipt work belongs to [#533](https://github.com/STAIxBWLB/agent-hub/issues/533), hub task #234; the future agy launcher belongs in `src/adapters/agy/`. Failure, missing evidence and quota exhaustion never count as a verdict.
 - The default logical kind order is Claude, Codex, fixed before modulo; undeclared or unavailable slots are skipped without renumbering. An explicit pool may name the registered unavailable Kimi/agy placeholders; local/Pi are refused. An explicit pool with no declarations blocks, while an omitted pool without declarations preserves legacy routing. An unavailable result must be skipped, never treated as approval.
 - Existing #223 Claude behavior is retained. This work adds no new live Claude acceptance proof.
+- Codex/Kimi fresh reviewer declarations require `review_mode: "fresh"`. Existing headless instances with roles `["reviewer"]` but no opt-in retain native transport/worktree/permission behavior and stay outside the fresh pool. Claude keeps #223 automatic selection; agy remains metadata-only unavailable. A failed fresh start never downgrades to a continuing native session.
 
 ## Codex native evidence
 
@@ -67,4 +68,11 @@ This global policy does not enumerate the filesystem on the verified macOS path:
 
 ## Focused verification
 
-Pinned Bun 1.4.2 on the remote Linux runner passed TypeScript, plugin-bundle freshness and 365 tests in 20 affected files (2,883 assertions). The actual macOS Codex 0.146.0 preparation passed again with core deny, explicit paths and nested substring rules. All 421 existing seed anchors remain unique; this static check is not a seeded-runtime result. The PR records the full Ubuntu/macOS and seeded-runtime gate for its exact head. Existing catalog/guard tests, the registry baseline and seed manifest are byte-unchanged.
+Pinned Bun 1.4.2 on the remote Linux runner passed TypeScript, plugin-bundle freshness and 365 tests in 20 affected files (2,883 assertions). The actual macOS Codex 0.146.0 preparation passed again with core deny, explicit paths and nested substring rules. All 421 existing seed anchors remain unique; this static check is not a seeded-runtime result. These focused results predate the compatibility repair and do not establish a successful final-head full gate. Existing catalog/guard tests, the registry baseline and seed manifest are byte-unchanged.
+
+
+## Compatibility repair checkpoint
+
+The full CI run at historical head `4aa64c12` exposed nine failures in unchanged I2 compatibility tests: the original headless Codex/Kimi reviewer-role declaration had been reinterpreted as a fresh variant. That head's 421 seeded guards passed; seed success did not waive the compatibility failures. The repair adds explicit `review_mode: "fresh"` opt-in for Codex/Kimi, preserves existing Claude selection and keeps legacy native reviewer-role instances outside the fresh pool. The native production privacy-profile proof is unchanged by this declaration repair. The repaired head's final full CI gate is pending.
+
+After the explicit-fresh declaration correction, pinned Bun 1.4.2 passed TypeScript, bundle freshness and 381 tests in 24 affected files (3,052 assertions), including every previously failing I2/reload/worktree/revert test. The isolation producer and common child lifecycle are byte-identical to the native-probed implementation. All 421 existing source anchors remain unique. Final full CI for the corrected head remains a separate PR gate.

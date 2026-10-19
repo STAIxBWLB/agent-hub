@@ -19,7 +19,7 @@ class Reviewer extends BasePeer {
 }
 async function rig(extra: Partial<TasksDeps> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-review-pool-tasks-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
-  const instances = { "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" as const }, "claude-two": { kind: "claude", roles: ["reviewer"], start_mode: "headless" as const }, "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless" as const } };
+  const instances = { "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" as const }, "claude-two": { kind: "claude", roles: ["reviewer"], start_mode: "headless" as const }, "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless" as const, review_mode: "fresh" as const } };
   const tasks = new Tasks({ cwd, board, bus, project: "fixture", instances: () => instances, roles: { "claude-review": ["reviewer"], "claude-two": ["reviewer"], "codex-review": ["reviewer"] }, notify: () => {}, review: { adaptive: false, min_reviews: 5, pool: ["claude", "codex"] }, routing: () => parseRouting('[local]\nfixed_model="fixture"\n[classes.summarize]\npeers=["codex"]\n[classes.review]\npeers=["claude", "codex"]\n'), reviewOnly: () => true, ...extra });
   const peers = Object.fromEntries(await Promise.all(["codex", "claude-review", "claude-two", "codex-review"].map(async id => { const peer = new Reviewer(id); bus.add(peer); await peer.start(); return [id, peer] as const; })));
   const task = board.propose("user", { title: "Review implementation", class: "summarize" });
@@ -121,7 +121,7 @@ test("each failed candidate is attempted once per round and final exhaustion rem
 });
 
 test("unavailable-only declarations keep done in human review with an omitted pool setting", async () => {
-  const { tasks, task, bus } = await rig({ instances: () => ({ "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless" } }), roles: { "kimi-review": ["reviewer"] }, review: { adaptive: false, min_reviews: 5 } });
+  const { tasks, task, bus } = await rig({ instances: () => ({ "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }), roles: { "kimi-review": ["reviewer"] }, review: { adaptive: false, min_reviews: 5 } });
   const unavailable = new Reviewer("kimi-review"); bus.add(unavailable); await unavailable.start();
   const done = await tasks.done("codex", task.id, "ready");
   expect(done).toMatchObject({ state: "in_review", reviewer: "user" });

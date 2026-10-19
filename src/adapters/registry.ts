@@ -86,7 +86,9 @@ export function definitionOf(id: string, instances?: KindMap): AdapterDefinition
   // #223: only a declared extra (never the builtin id) with start_mode "headless" runs as the kind's reviewer variant.
   const declaration = ownField(instances, id), roles = ownField(declaration, "roles");
   const reviewerOnly = Array.isArray(roles) && !types.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
-  return definition?.reviewerVariant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" ? definition.reviewerVariant : definition;
+  const variant = definition?.reviewerVariant;
+  const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
+  return variant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" && fresh ? variant : definition;
 }
 export function familyOf(id: string, instances?: KindMap): string | undefined {
   return definitionOf(id, instances)?.family;

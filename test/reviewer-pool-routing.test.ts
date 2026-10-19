@@ -83,7 +83,7 @@ test("an explicitly required pool with no declared reviewer is blocked for the p
 
 test("only unavailable declarations outside the default pool block instead of falling through to auto-approval", () => {
   for (const kind of ["kimi", "agy"]) {
-    const id = `${kind}-review`, declarations = { [id]: { kind, roles: ["reviewer"], start_mode: "headless" } };
+    const id = `${kind}-review`, declarations = { [id]: { kind, roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" as const } };
     const result = assign(work, { codex: "idle", [id]: "idle" }, routing, { candidates: ["codex"], roles: { [id]: ["reviewer"] }, instances: declarations, reviewPool: { pool: ["claude", "codex"] } });
     expect(result).toMatchObject({ reviewer: "user", reviewBlocked: true });
     expect(result.trace.join("\n")).toContain("#533");

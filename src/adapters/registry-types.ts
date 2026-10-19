@@ -267,8 +267,8 @@ export interface AdapterDefinition {
   /** #223: what a declared headless reviewer-only instance of this kind runs as. Fixed builtins only. */
   reviewerVariant?: AdapterDefinition;
   /** Fixed host backend; runtime isolation proof is required before bus admission. */
-  reviewer?: { backend?: ReviewerBackend; defaultPool: boolean; unavailable?: string };
+  reviewer?: { backend?: ReviewerBackend; defaultPool: boolean; unavailable?: string; declaration: "automatic" | "explicit" };
 }
 
 /** Explicit project declarations, passed by the bound host. No process-global instance registration. */
-export type KindMap = Readonly<Record<string, { readonly kind: string; readonly roles?: readonly string[]; readonly start_mode?: "tui" | "headless" }>>;
+export type KindMap = Readonly<Record<string, { readonly kind: string; readonly roles?: readonly string[]; readonly start_mode?: "tui" | "headless"; readonly review_mode?: "fresh" }>>;

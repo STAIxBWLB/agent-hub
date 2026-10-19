@@ -7812,11 +7812,11 @@ var init_reviewer_variants = __esm(() => {
   init_codex_review_isolation();
   init_native_factories();
   init_native_display();
-  codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true }, CODEX_DISPLAY);
+  codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit" }, CODEX_DISPLAY);
   CODEX_REVIEWER_VARIANT = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
-  KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { defaultPool: false, unavailable: "Kimi reviewer unavailable: runtime and isolation verification deferred to #533" }, KIMI_DISPLAY);
+  KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { defaultPool: false, declaration: "explicit", unavailable: "Kimi reviewer unavailable: runtime and isolation verification deferred to #533" }, KIMI_DISPLAY);
   AGY_DEFINITION = {
-    ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, unavailable: "agy reviewer unavailable: native adapter and isolation verification deferred to #533" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
+    ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy reviewer unavailable: native adapter and isolation verification deferred to #533" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
     optional: true
   };
 });
@@ -9073,7 +9073,7 @@ var init_builtin_metadata = __esm(() => {
     turnEnd: "adapter",
     budget: { account: "claude" },
     routing: { reviewOnly: true },
-    reviewer: { backend: claudeReviewerBackend, defaultPool: true },
+    reviewer: { backend: claudeReviewerBackend, defaultPool: true, declaration: "automatic" },
     cli: { command: "claude", startWords: () => ["claude"] },
     display: CLAUDE_DISPLAY
   };
@@ -9548,7 +9548,9 @@ function definitionOf(id, instances) {
   const definition = kind === undefined ? undefined : definitions.get(kind);
   const declaration = ownField(instances, id), roles = ownField(declaration, "roles");
   const reviewerOnly = Array.isArray(roles) && !types.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
-  return definition?.reviewerVariant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" ? definition.reviewerVariant : definition;
+  const variant = definition?.reviewerVariant;
+  const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
+  return variant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" && fresh ? variant : definition;
 }
 function defaultPeerRoles(includeOptional = false) {
   return Object.fromEntries(ROLE_ORDER.filter((peer) => includeOptional || !definitionOf(peer).optional).map((peer) => [peer, [...definitionOf(peer).roles]]));
@@ -16983,7 +16985,7 @@ function validateInstances(raw) {
     if (!PEER_ID.test(id) || RESERVED.has(id) || definitionOf(id))
       return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
     const path = `instances.${id}`, entry = fields(descriptor.value, path);
-    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree"].includes(key)))
+    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode"].includes(key)))
       return fail(path, "unsupported field");
     const kind = entry.kind?.value;
     if (typeof kind !== "string")
@@ -16994,7 +16996,11 @@ function validateInstances(raw) {
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
       return fail(path, "id must be <kind>-<name>");
     const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
-    const freshReviewer = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer" && !!(definition.reviewerVariant ?? definition).reviewer;
+    const reviewer = (definition.reviewerVariant ?? definition).reviewer;
+    const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
+    if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer))
+      return fail(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
+    const freshReviewer = reviewerOnly && !!reviewer && (reviewer.declaration === "automatic" || entry.review_mode?.value === "fresh");
     if (definition.routing?.reviewOnly && !freshReviewer)
       return fail(path, 'a review-only kind requires headless roles exactly ["reviewer"]');
     if (freshReviewer && entry.worktree)
@@ -17019,7 +17025,7 @@ function validateInstances(raw) {
           return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
       }
     }
-    const value = { kind };
+    const value = { kind, ...entry.review_mode ? { review_mode: "fresh" } : {} };
     if (entry.roles) {
       value.roles = roles(entry.roles.value, `${path}.roles`);
       Object.freeze(value.roles);

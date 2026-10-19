@@ -5,8 +5,8 @@ import { assign, parseRouting } from "../src/hub/routing.ts";
 
 const declarations = {
   "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" as const },
-  "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless" as const },
-  "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless" as const },
+  "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless" as const, review_mode: "fresh" as const },
+  "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless" as const, review_mode: "fresh" as const },
   "agy-review": { kind: "agy", roles: ["reviewer"], start_mode: "headless" as const },
 };
 test("reviewer-only headless declarations resolve fixed fresh variants without changing implementer instances", () => {
@@ -73,4 +73,25 @@ test("variant selection requires explicit own reviewer-only roles without execut
   expect(registry.definitionOf("codex-review", { "codex-review": { kind: "codex", start_mode: "headless", roles: ["reviewer", "implementer"] } })).toBe(registry.definitionOf("codex"));
   expect(reads).toBe(0);
 
+});
+
+test("legacy Codex and Kimi reviewer declarations retain native permission and worktree contracts", () => {
+  for (const kind of ["codex", "kimi"]) {
+    const id = `${kind}-legacy`;
+    const declared = validateInstances({ [id]: { kind, roles: ["reviewer"], start_mode: "headless", permission_mode: "never-ask", worktree: ".worktrees/legacy" } });
+    expect(registry.definitionOf(id, declared)).toBe(registry.definitionOf(kind));
+    expect(declared[id]).toMatchObject({ permission_mode: "never-ask", worktree: ".worktrees/legacy" });
+    expect(registry.definitionOf(id, { [id]: { kind, roles: ["reviewer"], start_mode: "headless" } })).toBe(registry.definitionOf(kind));
+  }
+});
+
+test("fresh review mode is literal, explicit and restricted to reviewer-only headless declarations", () => {
+  for (const review_mode of [null, false, "resume", undefined]) {
+    expect(() => validateInstances({ "codex-review": { ...declarations["codex-review"], review_mode } })).toThrow("review_mode");
+  }
+  for (const patch of [{ roles: ["implementer"] }, { roles: ["reviewer", "planner"] }, { start_mode: "tui" }, { start_mode: undefined }]) {
+    expect(() => validateInstances({ "codex-review": { ...declarations["codex-review"], ...patch } })).toThrow("review_mode");
+  }
+  expect(() => validateInstances({ "pi-review": { kind: "pi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } })).toThrow("review_mode");
+  expect(registry.definitionOf("claude-review", validateInstances({ "claude-review": declarations["claude-review"] }))?.reviewer?.declaration).toBe("automatic");
 });
