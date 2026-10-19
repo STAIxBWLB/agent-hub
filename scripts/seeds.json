@@ -3375,7 +3375,7 @@
       "search": "tools:\\n  - mcp__agent-hub__hub_review\\n  - mcp__agent-hub__hub_task_show\\nsubagents: []",
       "replacement": "tools:\\n  - Write\\n  - mcp__agent-hub__hub_review\\n  - mcp__agent-hub__hub_task_show\\nsubagents: []",
       "testFile": "test/kimi-review.test.ts",
-      "testName": "Kimi reviewer shares auth directories but isolates config, prompt and native cwd"
+      "testName": "Kimi reviewer frontmatter permits exactly two MCP tools and no subagents"
     },
     {
       "id": "reviewer-task-mcp-tool-fence",
@@ -3392,6 +3392,46 @@
       "replacement": "!Number.isSafeInteger(args.id)",
       "testFile": "test/reviewer-mcp.test.ts",
       "testName": "reviewer MCP bounds and normalizes string arguments while enforcing the task and tool"
+    },
+    {
+      "id": "reviewer-task-mcp-close",
+      "file": "src/adapters/reviewer-print.ts",
+      "search": "mcp?.close();",
+      "replacement": "void mcp;",
+      "testFile": "test/reviewer-lifecycle-followup.test.ts",
+      "testName": "task MCP closes once after a normal child exit"
+    },
+    {
+      "id": "reviewer-bound-verdict-head",
+      "file": "src/hub/daemon.ts",
+      "search": "&& tasks.reviewBindingCurrent(by,task,binding)",
+      "replacement": "&& true",
+      "testFile": "test/reviewer-running-binding.test.ts",
+      "testName": "running reviewer capability refuses stale head after real Tasks changes while reviewer id stays fixed"
+    },
+    {
+      "id": "kimi-review-ambient-ancestor",
+      "file": "src/adapters/kimi-review.ts",
+      "search": "assertCleanCwdAncestors(join(lexicalRoot, \"workspace\"), join(own, \"workspace\"));",
+      "replacement": "void lexicalRoot;",
+      "testFile": "test/kimi-review.test.ts",
+      "testName": "Kimi refuses private cwd beneath an ambient .git ancestor"
+    },
+    {
+      "id": "kimi-review-current-ancestor",
+      "file": "src/adapters/kimi-review.ts",
+      "search": "assertCleanCwdAncestors(join(lexicalRoot,\"workspace\"),cwd);",
+      "replacement": "void lexicalRoot;",
+      "testFile": "test/kimi-review.test.ts",
+      "testName": "Kimi current fence refuses an ambient ancestor created after preparation"
+    },
+    {
+      "id": "reviewer-declared-kind-modulo",
+      "file": "src/hub/reviewer-pool.ts",
+      "search": "const start = ((seed % declaredKinds.length) + declaredKinds.length) % declaredKinds.length;",
+      "replacement": "const start = ((seed % kinds.length) + kinds.length) % kinds.length;",
+      "testFile": "test/reviewer-pool.test.ts",
+      "testName": "declared rotation gives two actual kinds three selections each across seeds zero through five"
     }
   ]
 }

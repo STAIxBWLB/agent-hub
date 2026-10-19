@@ -81,3 +81,26 @@ test("task MCP cannot expose ambient resources, prompts or arbitrary methods", a
   }
   expect(f.calls).toEqual([]);
 });
+
+test("reviewer MCP acknowledges its host-committed verdict and refuses subsequent calls", async () => {
+  let active=true;
+  const session=createReviewerMcpSession({task:7,current:()=>active,tools,
+    call:async()=>{active=false;return "task #7: approved";}});
+  sessions.push(session);
+  const server=JSON.parse(session.config).mcpServers["agent-hub"];
+  const rpc=async(name:string)=>await json(await fetch(server.url,{method:"POST",headers:{...server.headers,"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:{id:7,verdict:"approved"}}})}));
+  const committed=await rpc("hub_review");
+  expect(committed.error).toBeUndefined();
+  expect(committed.result?.content).toEqual([{type:"text",text:"task #7: approved"}]);
+  expect((await rpc("hub_task_show")).error).toBeDefined();
+});
+
+test("reviewer MCP still refuses read results when authority ends during the host await", async () => {
+  let active=true;
+  const session=createReviewerMcpSession({task:7,current:()=>active,tools,
+    call:async()=>{active=false;return "must not be disclosed";}});
+  sessions.push(session);
+  const server=JSON.parse(session.config).mcpServers["agent-hub"];
+  const result=await json(await fetch(server.url,{method:"POST",headers:{...server.headers,"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_task_show",arguments:{id:7}}})}));
+  expect(result.error).toBeDefined();expect(result.result).toBeUndefined();
+});

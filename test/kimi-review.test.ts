@@ -14,6 +14,8 @@ function fixture(version = "2.2.0") {
   const nativeHome = join(root, "native"), project = join(root, "project");
   for (const dir of [nativeHome, project, join(nativeHome, "credentials"), join(nativeHome, "oauth")]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(nativeHome, "device_id"), "fixture-device");
+  writeFileSync(join(nativeHome, "credentials/kimi-code.json"), "synthetic-credential-canary");
+  writeFileSync(join(nativeHome, "oauth/kimi-code"), "synthetic-oauth-sentinel-canary");
   writeFileSync(join(nativeHome, "config.toml"), 'default_model = "managed-model"\n[providers."managed:kimi-code"]\ntype = "kimi"\nbase_url = "https://api.kimi.ai/coding/v1"\napi_key = ""\n[providers."managed:kimi-code".oauth]\nstorage = "file"\nkey = "oauth/kimi-code"\noauth_host = "https://auth.kimi.ai"\n[providers.ambient]\ntype = "openai"\napi_key = "must-not-copy"\n[models.managed-model]\nprovider = "managed:kimi-code"\nmodel = "kimi-for-coding"\n[models.ambient-model]\nprovider = "ambient"\nmodel = "not-selected"\n');
   writeFileSync(join(nativeHome, "mcp.json"), '{"mcpServers":{"decoy":{}}}');
   const fake = join(root, "fake-kimi.ts"); writeFileSync(fake, `if(process.argv.at(-1)==="--version")console.log(${JSON.stringify(version)});else process.exit(9);`);
@@ -42,15 +44,51 @@ test("Kimi reviewer shares auth directories but isolates config, prompt and nati
   const index = launch.args.indexOf("--agent-file");
   const agent = readFileSync(launch.args[index + 1]!, "utf8");
   expect(agent).toContain("Fixture public task facts");
-  const frontmatter = agent.split("---")[1]!;
-  expect(frontmatter).toContain("mcp__agent-hub__hub_review");
-  expect(frontmatter).toContain("mcp__agent-hub__hub_task_show");
-  expect(frontmatter).not.toMatch(/\b(Read|Write|Bash|Grep|Glob)\b/);
   expect(launch.args).not.toContain("Fixture public task facts");
   expect(launch.isolation.enforcement).toBe("native-policy");
   expect(launch.current?.()).toBe(true);
   await launch.cleanup?.();
   expect(readFileSync(join(f.nativeHome, "device_id"), "utf8")).toBe("fixture-device");
+  expect(readFileSync(join(f.nativeHome, "credentials/kimi-code.json"), "utf8")).toBe("synthetic-credential-canary");
+  expect(readFileSync(join(f.nativeHome, "oauth/kimi-code"), "utf8")).toBe("synthetic-oauth-sentinel-canary");
+});
+
+test("Kimi reviewer frontmatter permits exactly two MCP tools and no subagents", async () => {
+  const f = fixture(), launch = await kimiReviewerBackend.prepare(f.context);
+  expect("unavailable" in launch).toBe(false); if ("unavailable" in launch) return;
+  try {
+    const agent = readFileSync(launch.args[launch.args.indexOf("--agent-file") + 1]!, "utf8");
+    const lines = agent.split("\n"); expect(lines.shift()).toBe("---");
+    const end = lines.indexOf("---"); expect(end).toBeGreaterThan(0);
+    const frontmatter = Bun.YAML.parse(lines.slice(0, end).join("\n")) as { tools: unknown; subagents: unknown };
+    expect(frontmatter.tools).toEqual(["mcp__agent-hub__hub_review", "mcp__agent-hub__hub_task_show"]);
+    expect(frontmatter.subagents).toEqual([]);
+  } finally { await launch.cleanup?.(); }
+});
+
+for (const marker of [".git", ".kimi-code", "AGENTS.md"]) test(`Kimi refuses private cwd beneath an ambient ${marker} ancestor`, async () => {
+  const f = fixture(), temporary = join(f.project, "temporary"); mkdirSync(temporary);
+  // A gitfile and a dangling MCP symlink are still existing ambient marker names.
+  if (marker === ".kimi-code") symlinkSync(join(f.project, "missing-target"), join(f.project, marker));
+  else writeFileSync(join(f.project, marker), "synthetic ambient marker");
+  const previous = process.env.TMPDIR; process.env.TMPDIR = temporary;
+  drops.push(() => { if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous; });
+  const result = await kimiReviewerBackend.prepare(f.context);
+  if (!("unavailable" in result)) drops.push(() => result.cleanup?.());
+  expect(result).toHaveProperty("unavailable");
+  if ("unavailable" in result) expect(result.unavailable).toContain("private cwd ancestor contains ambient configuration");
+});
+
+test("Kimi refuses an ambient lexical ancestor even when TMPDIR resolves through a clean symlink target", async () => {
+  const f = fixture(), lexical = join(f.project, "lexical"), safe = join(f.nativeHome, "clean-temp");
+  mkdirSync(lexical); mkdirSync(safe); writeFileSync(join(lexical, "AGENTS.md"), "synthetic lexical instructions");
+  const link = join(lexical, "temp-link"); symlinkSync(safe, link, "dir");
+  const previous = process.env.TMPDIR; process.env.TMPDIR = link;
+  drops.push(() => { if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous; });
+  const result = await kimiReviewerBackend.prepare(f.context);
+  if (!("unavailable" in result)) drops.push(() => result.cleanup?.());
+  expect(result).toHaveProperty("unavailable");
+  if ("unavailable" in result) expect(result.unavailable).toContain("private cwd ancestor contains ambient configuration");
 });
 
 test("Kimi reviewer refuses unsupported versions and cancelled preparation", async () => {
@@ -116,4 +154,15 @@ test("Kimi malformed config refusal never echoes native configuration values", a
   const result = await kimiReviewerBackend.prepare(f.context);
   expect("unavailable" in result).toBe(true);
   if ("unavailable" in result) expect(result.unavailable).not.toContain("synthetic-private-value");
+});
+
+test("Kimi current fence refuses an ambient ancestor created after preparation", async () => {
+  const f=fixture(), temporary=join(f.project,"temporary");mkdirSync(temporary);
+  const prior=process.env.TMPDIR;process.env.TMPDIR=temporary;
+  drops.push(()=>{if(prior===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=prior;});
+  const result=await kimiReviewerBackend.prepare(f.context);
+  expect("unavailable" in result).toBe(false);if("unavailable" in result)return;
+  drops.push(()=>result.cleanup?.());expect(result.current?.()).toBe(true);
+  writeFileSync(join(f.project,"AGENTS.md"),"synthetic ambient instruction");
+  expect(result.current?.()).toBe(false);
 });

@@ -1332,6 +1332,13 @@ export async function startDaemon(opts: DaemonOptions) {
     if (stopping || recoveryActive()) quota.reasons.push("recovery or shutdown is holding release planning");
     return { at: Date.now(), host: host.admitted && !stopping && !recoveryActive(), quota: quota.quota, idle: quota.idle, reasons: [...(host.reason ? [host.reason] : []), ...quota.reasons, ...quota.notes], close: host.close, current: () => host.current?.() !== false && !stopping && !recoveryActive() && releaseQuotaSnapshot().signature === quota.signature };
   };
+  // Bind both legacy print transports and task-MCP calls to the child's original review request.
+  const runningReviewAuthority = (by: PeerId, task: number): (() => string | undefined) | undefined => {
+    if (!definitionOf(by)?.reviewer) return undefined;
+    const attached=bus.peers.get(by), peer=attached instanceof ReviewerPrintPeer?attached:undefined, token=peer?.reviewToken(task), binding=peer?.reviewBinding(task);
+    return () => token!==undefined && binding!==undefined && bus.peers.get(by)===peer && peer?.reviewToken(task)===token && tasks.reviewBindingCurrent(by,task,binding)
+      ? undefined : `no review of task #${task} is running for ${by} at its bound head and revision`;
+  };
   const tasks: Tasks = new Tasks({
     releaseWindow,
     capabilities: peerCapabilities, repository: memoryRepo,
@@ -1344,11 +1351,7 @@ export async function startDaemon(opts: DaemonOptions) {
     instances: () => declarations,
     reviewOnly: reviewOnlyPeer,
     // #223: a headless reviewer's verdict holds only while the same child it started with still runs for that task.
-    reviewAuthority: (by, task) => {
-      if (!definitionOf(by)?.reviewer) return undefined;
-      const peer = bus.peers.get(by) as ReviewerPrintPeer | undefined, token = peer?.reviewToken(task);
-      return () => token !== undefined && bus.peers.get(by) === peer && peer?.reviewToken(task) === token ? undefined : `no review of task #${task} is running for ${by}`;
-    },
+    reviewAuthority: runningReviewAuthority,
     // #223 R4: fresh only when the verdict comes from a reviewer session the hub started for this task's review.
     reviewContext: (by, task) => !!definitionOf(by)?.reviewer && (bus.peers.get(by) as ReviewerPrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
@@ -2018,7 +2021,10 @@ export async function startDaemon(opts: DaemonOptions) {
     const admittedId = typeof input?.id === "number" && Number.isSafeInteger(input.id) && input.id > 0 ? input.id : undefined;
     taskOpsInFlight++;
     try {
+      const readAuthority=op==="hub_task_show"?runningReviewAuthority(by,Number(input?.id)):undefined;
+      const before=readAuthority?.();if(before)throw new PreEffectToolRefusal(before);
       const text = await taskOpBody(...args);
+      const after=readAuthority?.();if(after)throw new PreEffectToolRefusal(after);
       if (conducted) {
         const proposed = op === "hub_task_propose" ? Number(text.match(/task #(\d+):/)?.[1]) : undefined;
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
@@ -3868,6 +3874,7 @@ export async function startDaemon(opts: DaemonOptions) {
         systemPrompt: sessionRoleContract(peer),
         watchdogMs: config.watchdog_ms,
         privatePaths: [opts.stateDir, ...(config.pii?.paths ?? []), ...config.local.deny],
+        bindingCurrent: (task,binding) => tasks.reviewBindingCurrent(peer,task,binding),
         taskMcp: (task, current) => createReviewerMcpSession({ task, current, tools: [...TASK_TOOLS, ...CONDUCTOR_TOOLS],
           call: (name, args) => taskOp(peer, name, args, true, contextPii(peer)) }),
         admit: env => {

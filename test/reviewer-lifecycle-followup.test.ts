@@ -33,10 +33,10 @@ function launch(root: string, marker: string): ReviewerLaunch {
 
 test("review admission revoked during preparation prevents model spawn and cleans owned preparation", async () => {
   const base = scratch(), marker = join(base, "model-started"), receipts: DeliveryReceipt[] = [];
-  let allowed = true, preparing = false, preparations = 0, reviewRoot: string | undefined;
+  let allowed = true, preparing = false, preparations = 0, reviewRoot: string | undefined, closed = 0;
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const backend: ReviewerBackend = { id: "fixture", prepare: async () => {
+  const backend: ReviewerBackend = { id: "fixture", taskMcp: true, prepare: async () => {
     const root = mkdtempSync(join(base, "private-"));
     if (++preparations > 1) { reviewRoot = root; preparing = true; await held; }
     return launch(root, marker);
@@ -45,6 +45,7 @@ test("review admission revoked during preparation prevents model spawn and clean
   const options: ReviewerPrintOptions & { admit(env: Envelope): boolean } = {
     cwd: base, mcpConfig: "{}", systemPrompt: "fixture", watchdogMs: 5000, backend,
     verdictSince: () => false, admit: () => allowed,
+    taskMcp: () => ({ config: "{}", close: () => { closed++; } }),
   };
   const peer = new ReviewerPrintPeer("fixture-review", options);
   cleanup.push(() => peer.stop("fixture teardown"));
@@ -57,6 +58,7 @@ test("review admission revoked during preparation prevents model spawn and clean
   allowed = false;
   release();
   await until(() => peer.state === "idle");
+  expect(closed).toBe(1);
   expect(existsSync(marker)).toBe(false);
   expect(existsSync(reviewRoot!)).toBe(false);
   expect(peer.reviewToken(71)).toBeUndefined();
@@ -101,8 +103,8 @@ test("unconfirmed group cleanup retains private root until a later successful st
 
 test("running native policy drift revokes authority immediately and stays latched", async () => {
   const base = scratch(), marker = join(base, "policy-model-started"), receipts: DeliveryReceipt[] = [];
-  let current = true, preparations = 0, reviewRoot: string | undefined;
-  const backend: ReviewerBackend = { id: "fixture", prepare: async () => {
+  let current = true, preparations = 0, reviewRoot: string | undefined, closed = 0;
+  const backend: ReviewerBackend = { id: "fixture", taskMcp: true, prepare: async () => {
     const root = mkdtempSync(join(base, "private-"));
     const prepared = launch(root, marker);
     if (++preparations === 1) return prepared;
@@ -110,14 +112,27 @@ test("running native policy drift revokes authority immediately and stays latche
     return { ...prepared, watchCurrent: true, current: () => current,
       command: [process.execPath, "-e", `await new Response(Bun.stdin.stream()).text();await Bun.write(${JSON.stringify(marker)},"ready");setInterval(()=>{},1000);`] };
   } };
-  const peer = new ReviewerPrintPeer("fixture-review", { cwd: base, mcpConfig: "{}", systemPrompt: "fixture", watchdogMs: 5000, backend, verdictSince: () => false });
+  const peer = new ReviewerPrintPeer("fixture-review", { cwd: base, mcpConfig: "{}", systemPrompt: "fixture", watchdogMs: 5000, backend, verdictSince: () => false, taskMcp: () => ({ config: "{}", close: () => { closed++; } }) });
   cleanup.push(() => peer.stop("fixture teardown")); peer.onDelivery = receipt => receipts.push(receipt);
   await peer.start(); await peer.deliver([review()], "native-policy-drift");
   await until(() => existsSync(marker)); expect(peer.reviewToken(71)).toBeDefined();
   current = false; expect(peer.reviewToken(71)).toBeUndefined();
   current = true; expect(peer.reviewToken(71)).toBeUndefined();
   await until(() => peer.state !== "busy");
+  expect(closed).toBe(1);
   expect(existsSync(reviewRoot!)).toBe(false);
   expect(receipts.some(receipt => receipt.state === "needs_review")).toBe(true);
   expect(receipts.some(receipt => receipt.state === "completed")).toBe(false);
+});
+
+
+test("task MCP closes once after a normal child exit", async () => {
+  const base=scratch(), marker=join(base,"normal-child-started");let closed=0;
+  const peer=new ReviewerPrintPeer("fixture-review",{cwd:base,mcpConfig:"{}",systemPrompt:"fixture",watchdogMs:5000,
+    backend:{id:"fixture",taskMcp:true,prepare:async()=>launch(mkdtempSync(join(base,"private-")),marker)},
+    verdictSince:()=>true,taskMcp:()=>({config:"{}",close:()=>{closed++;}})});
+  cleanup.push(()=>peer.stop("fixture teardown"));
+  await peer.start();await peer.deliver([review()],"normal-task-mcp");await until(()=>peer.state==="idle");
+  expect(existsSync(marker)).toBe(true);expect(closed).toBe(1);
+  await peer.stop("person stop after exit");expect(closed).toBe(1);
 });

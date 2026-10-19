@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { realPath } from "../hub/project.ts";
 import type { ReviewerBackend, ReviewerPrepareContext } from "./reviewer-print.ts";
@@ -10,6 +10,24 @@ import type { ReviewerBackend, ReviewerPrepareContext } from "./reviewer-print.t
 const VERSION = "2.2.0", MANAGED = "managed:kimi-code";
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+/** Native discovery can walk above cwd; check lexical aliases as well as the physical temporary root. */
+function assertCleanCwdAncestors(...candidates: readonly string[]): void {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let ancestor = resolve(candidate);
+    for (;;) {
+      if (!seen.has(ancestor)) {
+        seen.add(ancestor);
+        for (const marker of [".git", ".kimi-code", "AGENTS.md"]) {
+          if (lstatSync(join(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
+            throw new Error("private cwd ancestor contains ambient configuration");
+          }
+        }
+      }
+      const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent;
+    }
+  }
+}
 const read = (file: string, limit = 262_144) => {
   const stat = lstatSync(file); if (!stat.isFile() || stat.size > limit) throw new Error("unsupported reviewer file");
   return readFileSync(file, "utf8");
@@ -101,7 +119,9 @@ export const kimiReviewerBackend: ReviewerBackend = {
       if (!sources.every((file, index) => index < 2 ? lstatSync(file).isDirectory() : lstatSync(file).isFile())) throw new Error("native OAuth directories and device identity required");
       const mcp = mcpConfig(context);
       if (Buffer.byteLength(context.input ?? "") > 1_048_576) throw new Error("review facts exceed limit");
-      own = realPath(mkdtempSync(join(tmpdir(), "ahub-kimi-review-")));
+      const lexicalRoot = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "ahub-kimi-review-"));
+      own = realPath(lexicalRoot);
+      assertCleanCwdAncestors(join(lexicalRoot, "workspace"), join(own, "workspace"));
       const root = own, home = join(root, "home"), tool = join(root, "tool"), cwd = join(root, "workspace"), skills = join(root, "empty-skills"), temporary = join(root, "tmp");
       for (const dir of [home, tool, cwd, skills, temporary]) mkdirSync(dir, { mode: 0o700 });
       ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync(sources[index]!, join(tool, name), index < 2 ? "dir" : "file"));
@@ -122,6 +142,7 @@ export const kimiReviewerBackend: ReviewerBackend = {
         stop: child => stopKimiReview(child, [join(sources[1]!, "kimi-code.lock"), join(sources[1]!, `${selected.lock}.lock`)]),
         current: () => {
           try {
+            assertCleanCwdAncestors(join(lexicalRoot,"workspace"),cwd);
             const now = lstatSync(executable);
             return !cleaned && !context.signal.aborted && realPath(sourcePath) === source && now.dev === executableStat.dev && now.ino === executableStat.ino && now.size === executableStat.size && now.mtimeMs === executableStat.mtimeMs && now.ctimeMs === executableStat.ctimeMs && hash(read(sourceConfig)) === hash(original)
               && [configFile, mcpFile, agentFile].every((file, index) => hash(read(file, 2_097_152)) === fingerprints[index])

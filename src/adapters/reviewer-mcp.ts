@@ -67,7 +67,9 @@ export function createReviewerMcpSession(options: ReviewerMcpOptions): ReviewerM
       if (!current()) return error("review authority ended", -32001);
       try {
         const result = await options.call(name, args);
-        if (!current()) return error("review authority ended", -32001);
+        // Tasks.review rechecks its captured authority through its final write. A successful verdict
+        // ends that in_review binding itself; acknowledge its committed result, never fresh reads.
+        if (name !== "hub_review" && !current()) return error("review authority ended", -32001);
         if (Buffer.byteLength(result) > RESULT_CAP) return error("tool result exceeds review limit");
         return reply({ content: [{ type: "text", text: result }] });
       } catch (failure) {

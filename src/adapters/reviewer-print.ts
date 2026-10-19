@@ -62,6 +62,7 @@ export interface ReviewerFailure {
   cause: "start_failed" | "quota" | "no_verdict";
 }
 
+export interface ReviewerReviewBinding { readonly head?: string; readonly flowRevision?: number }
 export interface ReviewerPrintOptions {
   cwd: string;
   command?: readonly string[];
@@ -78,6 +79,7 @@ export interface ReviewerPrintOptions {
   taskMcp?(task: number, current: () => boolean): ReviewerMcpSession;
   /** Synchronous host task/privacy/policy fence, checked again after awaited preparation. */
   admit?(env: Envelope): boolean;
+  bindingCurrent?(task: number, binding: ReviewerReviewBinding): boolean;
 }
 
 // ponytail: 256 KiB per NDJSON frame and 4 MiB stdout per review child. Raise only with measured native receipts.
@@ -106,6 +108,7 @@ export class ReviewerPrintPeer extends BasePeer {
   private childStop: ((child: ChildProcess) => Promise<void>) | undefined;
   private childCleanup: (() => Promise<void>) | undefined;
   private childCurrent: (() => boolean) | undefined;
+  private reviewMcpClose: (() => void) | undefined;
   private activeDeliveryId: string | undefined;
   private batch: ReviewBatch | undefined;
   private preparation: { abort: AbortController; done: Promise<ReviewerLaunch> } | undefined;
@@ -114,6 +117,11 @@ export class ReviewerPrintPeer extends BasePeer {
   /** The task whose review the running child was started for (R4: the hub records `fresh` for its verdict). */
   reviewing: number | undefined;
   private reviewSeq = 0;
+  private runningBinding: { task: number; binding: ReviewerReviewBinding } | undefined;
+  /** Immutable envelope identity of this running child, never the board's later head. */
+  reviewBinding(task: number): ReviewerReviewBinding | undefined {
+    return this.reviewing === task && this.runningBinding?.task === task ? this.runningBinding.binding : undefined;
+  }
   /** Identifies the running child's authority over `task`; a replacement child for the same task gets a new token. */
   reviewToken(task: number): number | undefined {
     if (this.reviewing !== task) return undefined;
@@ -144,6 +152,7 @@ export class ReviewerPrintPeer extends BasePeer {
 
   async stop(reason?: string): Promise<void> {
     this.generation++; // fence before the first await: a late exit settles nothing
+    this.reviewMcpClose?.();
     this.receipt = undefined;
     this.batch = undefined;
     this.preparation?.abort.abort();
@@ -159,6 +168,7 @@ export class ReviewerPrintPeer extends BasePeer {
   private abortReview(reason: "review watchdog timeout" | "review output limit exceeded" | "review policy changed"): void {
     const generation = ++this.generation, batch = this.batch, preparation = this.preparation;
     this.reviewing = undefined;
+    this.reviewMcpClose?.();
     this.receipt = undefined;
     this.clearWatchdog();
     preparation?.abort.abort();
@@ -286,7 +296,12 @@ export class ReviewerPrintPeer extends BasePeer {
     try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
     const input = `${frame(env)}${facts ? `\n\n${facts}` : ""}`;
     let launch: ReviewerLaunch | undefined;
-    const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined) : undefined;
+    const revision=Number(env.refs?.reviewRevision);
+    const binding: ReviewerReviewBinding=Object.freeze({head:env.refs?.commit,flowRevision:Number.isSafeInteger(revision)&&revision>0?revision:undefined});
+    const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task,binding) !== false) : undefined;
+    let mcpClosed=false;
+    const closeMcp=()=>{ if(mcpClosed)return; mcpClosed=true; mcp?.close(); if(this.reviewMcpClose===closeMcp)this.reviewMcpClose=undefined; };
+    this.reviewMcpClose=closeMcp;
     let ownedChild: ChildProcess | undefined, releasing: Promise<void> | undefined;
     let policyTimer: ReturnType<typeof setInterval> | undefined;
     const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
@@ -310,6 +325,7 @@ export class ReviewerPrintPeer extends BasePeer {
       child.once("spawn", () => {
         trackGroup(child);
         if (generation !== this.generation) { child.stdin!.destroy(); return; } // stopped meanwhile: no prompt
+        this.runningBinding={task,binding};
         this.reviewing = task; this.reviewSeq++;
         if (this.childCurrent) policyTimer = setInterval(() => { this.reviewToken(task); }, 100);
         child.stdin!.end(input);
@@ -334,14 +350,14 @@ export class ReviewerPrintPeer extends BasePeer {
         this.touch();
       });
       child.once("exit", code => {
-        if (this.child === child) this.reviewing = undefined; // the verdict authority ends with the leader
+        if (this.child === child) { this.reviewing = undefined; this.runningBinding=undefined; } // the verdict authority ends with the leader
         // The review ends when its whole process group is gone (an MCP server or other descendant may outlive the leader).
         (launch!.stop ? launch!.stop(child) : stopOwnedProcess(child, { group: true })).then(() => { if (this.child === child) { this.child = undefined; this.childStop = undefined; } resolve({ code, quota }); },
           (error: Error) => reject(new GroupCleanupError(error.message)));
       });
     });
     } finally {
-      mcp?.close();
+      closeMcp();
       if (policyTimer) clearInterval(policyTimer);
       try { if (!ownedChild || this.child !== ownedChild) { await release(); if (this.childCleanup === release) this.childCleanup = undefined; } }
       catch { this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`); }
@@ -357,6 +373,7 @@ export class ReviewerPrintPeer extends BasePeer {
   /** Revokes the verdict authority at once, then stops the child; on failure the handle is kept and the error thrown. */
   private async kill(): Promise<void> {
     this.reviewing = undefined;
+    this.runningBinding=undefined;
     const child = this.child;
     if (!child) return;
     await (this.childStop ? this.childStop(child) : stopOwnedProcess(child, { group: true }));

@@ -508,6 +508,7 @@ var init_reviewer_print = __esm(() => {
     childStop;
     childCleanup;
     childCurrent;
+    reviewMcpClose;
     activeDeliveryId;
     batch;
     preparation;
@@ -517,6 +518,10 @@ var init_reviewer_print = __esm(() => {
     }
     reviewing;
     reviewSeq = 0;
+    runningBinding;
+    reviewBinding(task) {
+      return this.reviewing === task && this.runningBinding?.task === task ? this.runningBinding.binding : undefined;
+    }
     reviewToken(task) {
       if (this.reviewing !== task)
         return;
@@ -564,6 +569,7 @@ var init_reviewer_print = __esm(() => {
     }
     async stop(reason) {
       this.generation++;
+      this.reviewMcpClose?.();
       this.receipt = undefined;
       this.batch = undefined;
       this.preparation?.abort.abort();
@@ -580,6 +586,7 @@ var init_reviewer_print = __esm(() => {
     abortReview(reason) {
       const generation = ++this.generation, batch = this.batch, preparation = this.preparation;
       this.reviewing = undefined;
+      this.reviewMcpClose?.();
       this.receipt = undefined;
       this.clearWatchdog();
       preparation?.abort.abort();
@@ -756,7 +763,19 @@ var init_reviewer_print = __esm(() => {
 
 ${facts}` : ""}`;
       let launch;
-      const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined) : undefined;
+      const revision = Number(env.refs?.reviewRevision);
+      const binding = Object.freeze({ head: env.refs?.commit, flowRevision: Number.isSafeInteger(revision) && revision > 0 ? revision : undefined });
+      const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task, binding) !== false) : undefined;
+      let mcpClosed = false;
+      const closeMcp = () => {
+        if (mcpClosed)
+          return;
+        mcpClosed = true;
+        mcp?.close();
+        if (this.reviewMcpClose === closeMcp)
+          this.reviewMcpClose = undefined;
+      };
+      this.reviewMcpClose = closeMcp;
       let ownedChild, releasing;
       let policyTimer;
       const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
@@ -793,6 +812,7 @@ ${facts}` : ""}`;
               child.stdin.destroy();
               return;
             }
+            this.runningBinding = { task, binding };
             this.reviewing = task;
             this.reviewSeq++;
             if (this.childCurrent)
@@ -835,8 +855,10 @@ ${facts}` : ""}`;
             this.touch();
           });
           child.once("exit", (code) => {
-            if (this.child === child)
+            if (this.child === child) {
               this.reviewing = undefined;
+              this.runningBinding = undefined;
+            }
             (launch.stop ? launch.stop(child) : stopOwnedProcess(child, { group: true })).then(() => {
               if (this.child === child) {
                 this.child = undefined;
@@ -847,7 +869,7 @@ ${facts}` : ""}`;
           });
         });
       } finally {
-        mcp?.close();
+        closeMcp();
         if (policyTimer)
           clearInterval(policyTimer);
         try {
@@ -869,6 +891,7 @@ ${facts}` : ""}`;
     }
     async kill() {
       this.reviewing = undefined;
+      this.runningBinding = undefined;
       const child = this.child;
       if (!child)
         return;
@@ -1433,7 +1456,27 @@ import { spawn as spawn3 } from "child_process";
 import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync as mkdtempSync2, readFileSync as readFileSync3, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir2, tmpdir as tmpdir2 } from "os";
-import { basename as basename3, join as join4, resolve as resolve4 } from "path";
+import { basename as basename3, dirname as dirname4, join as join4, resolve as resolve4 } from "path";
+function assertCleanCwdAncestors(...candidates) {
+  const seen = new Set;
+  for (const candidate of candidates) {
+    let ancestor = resolve4(candidate);
+    for (;; ) {
+      if (!seen.has(ancestor)) {
+        seen.add(ancestor);
+        for (const marker of [".git", ".kimi-code", "AGENTS.md"]) {
+          if (lstatSync3(join4(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
+            throw new Error("private cwd ancestor contains ambient configuration");
+          }
+        }
+      }
+      const parent = dirname4(ancestor);
+      if (parent === ancestor)
+        break;
+      ancestor = parent;
+    }
+  }
+}
 function managedConfig(raw) {
   const config = Bun.TOML.parse(raw);
   if (!object2(config.providers) || !object2(config.models) || typeof config.default_model !== "string")
@@ -1588,7 +1631,9 @@ var init_kimi_review = __esm(() => {
         const mcp = mcpConfig(context);
         if (Buffer.byteLength(context.input ?? "") > 1048576)
           throw new Error("review facts exceed limit");
-        own = realPath(mkdtempSync2(join4(tmpdir2(), "ahub-kimi-review-")));
+        const lexicalRoot = mkdtempSync2(join4(process.env.TMPDIR ?? tmpdir2(), "ahub-kimi-review-"));
+        own = realPath(lexicalRoot);
+        assertCleanCwdAncestors(join4(lexicalRoot, "workspace"), join4(own, "workspace"));
         const root = own, home = join4(root, "home"), tool = join4(root, "tool"), cwd = join4(root, "workspace"), skills = join4(root, "empty-skills"), temporary = join4(root, "tmp");
         for (const dir of [home, tool, cwd, skills, temporary])
           mkdirSync2(dir, { mode: 448 });
@@ -1637,6 +1682,7 @@ ${context.input ?? "No review is active; startup self-check only."}
           stop: (child) => stopKimiReview(child, [join4(sources[1], "kimi-code.lock"), join4(sources[1], `${selected.lock}.lock`)]),
           current: () => {
             try {
+              assertCleanCwdAncestors(join4(lexicalRoot, "workspace"), cwd);
               const now = lstatSync3(executable);
               return !cleaned && !context.signal.aborted && realPath(sourcePath) === source && now.dev === executableStat.dev && now.ino === executableStat.ino && now.size === executableStat.size && now.mtimeMs === executableStat.mtimeMs && now.ctimeMs === executableStat.ctimeMs && hash(read(sourceConfig)) === hash(original) && [configFile, mcpFile, agentFile].every((file, index) => hash(read(file, 2097152)) === fingerprints[index]) && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join4(source, name)) === sources[index] && realPath(join4(tool, name)) === sources[index]);
             } catch {
@@ -3235,7 +3281,7 @@ var init_recovery_store = __esm(() => {
 
 // src/pi/session.ts
 import { readFileSync as readFileSync4, openSync, closeSync, fsyncSync, mkdirSync as mkdirSync3 } from "fs";
-import { join as join7, relative as relative2, resolve as resolve5, dirname as dirname4 } from "path";
+import { join as join7, relative as relative2, resolve as resolve5, dirname as dirname5 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
     throw new PiSessionUnresumable("missing", error.message, { cause: error });
@@ -3304,7 +3350,7 @@ var init_permission_mode = __esm(() => {
 
 // src/hub/path-policy.ts
 import { accessSync, constants, lstatSync as lstatSync5, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
-import { dirname as dirname5, isAbsolute as isAbsolute4, join as join8, relative as relative3, resolve as resolve6, sep as sep2 } from "path";
+import { dirname as dirname6, isAbsolute as isAbsolute4, join as join8, relative as relative3, resolve as resolve6, sep as sep2 } from "path";
 function existing(path) {
   try {
     lstatSync5(path);
@@ -3318,7 +3364,7 @@ function existing(path) {
 function policyRealPath(path) {
   let ancestor = path;
   while (!existing(ancestor)) {
-    const parent = dirname5(ancestor);
+    const parent = dirname6(ancestor);
     if (parent === ancestor)
       throw new Error("path cannot be resolved");
     ancestor = parent;
@@ -3346,14 +3392,14 @@ function directAliasTarget(path) {
     }
     let ancestor = target;
     while (!existing(ancestor)) {
-      const parent = dirname5(ancestor);
+      const parent = dirname6(ancestor);
       if (parent === ancestor)
         return;
       ancestor = parent;
     }
     if (!lstatSync5(ancestor).isSymbolicLink())
       return;
-    target = resolve6(dirname5(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
+    target = resolve6(dirname6(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
   return;
 }
@@ -3517,7 +3563,7 @@ var init_path_policy = __esm(() => {
 });
 
 // src/local/deny.ts
-import { basename as basename4, dirname as dirname6 } from "path";
+import { basename as basename4, dirname as dirname7 } from "path";
 function hubWriteRegexes(root, gitDirs = [], moduleGit) {
   const git = hfsFoldedName(".git");
   const re = (s) => `(regex ${sbplString(s)})`;
@@ -3529,7 +3575,7 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit) {
   const modules = moduleGit ? [
     `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
     `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
-    ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname6(d))}/${hfsFoldedName(basename4(d))}$`))
+    ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname7(d))}/${hfsFoldedName(basename4(d))}$`))
   ] : [];
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
@@ -3564,7 +3610,7 @@ var init_deny = __esm(() => {
 import { spawn as spawn7, spawnSync as spawnSync3 } from "child_process";
 import { existsSync as existsSync5, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync4 } from "fs";
 import { homedir as homedir3, tmpdir as tmpdir4 } from "os";
-import { dirname as dirname7, join as join9, resolve as resolve7 } from "path";
+import { dirname as dirname8, join as join9, resolve as resolve7 } from "path";
 function developerDir() {
   const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
@@ -3611,7 +3657,7 @@ function moduleGitDirs(root) {
   walk(modulesRoot, 0);
   const entries = new Set([modulesRoot]);
   for (const d of dirs)
-    for (let p = d;p.length > modulesRoot.length; p = dirname7(p))
+    for (let p = d;p.length > modulesRoot.length; p = dirname8(p))
       entries.add(p);
   return { root: modulesRoot, entries: [...entries] };
 }
@@ -3734,13 +3780,13 @@ var init_sandbox = __esm(() => {
 
 // src/local/tools.ts
 import { lstatSync as lstatSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync5, statSync as statSync3, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname8, join as join10, relative as relative4, resolve as resolve8 } from "path";
+import { dirname as dirname9, join as join10, relative as relative4, resolve as resolve8 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
   const abs = resolve8(root, path);
   let existing = abs;
   while (!lexists(existing))
-    existing = dirname8(existing);
+    existing = dirname9(existing);
   let realExisting;
   try {
     realExisting = realPath(existing);
@@ -3826,7 +3872,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        mkdirSync4(dirname8(file), { recursive: true });
+        mkdirSync4(dirname9(file), { recursive: true });
         writeFileSync3(file, content);
         return `wrote ${a.path}`;
       }
@@ -17414,7 +17460,7 @@ var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassign
 init_child_process();
 init_git();
 import { lstatSync as lstatSync8, statSync as statSync5 } from "fs";
-import { dirname as dirname9, join as join23 } from "path";
+import { dirname as dirname10, join as join23 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
   "permission_modes",

@@ -22,12 +22,18 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
   const kinds = [...new Set(input.pool)];
   const walk: { id: string; kind: string; family: string; reason: string }[] = [];
   if (!kinds.length) return { reviewer: null, walk, blocked: "no reviewer can run" };
+  // A configured kind without any declaration cannot take a modulo share from actual reviewers.
+  // Blocked declarations still own their slot: current availability never changes the denominator.
+  const declaredKinds = kinds.filter(kind => input.candidates.some(candidate => candidate.kind === kind));
+  const undeclared = kinds.filter(kind => !declaredKinds.includes(kind)).map(kind => ({ id: "", kind, family: "", reason: "no declared reviewer" }));
+  const finish = (selection: Omit<ReviewerPoolSelection, "walk">): ReviewerPoolSelection => ({ ...selection, walk: [...walk, ...undeclared] });
+  if (!declaredKinds.length) return finish({ reviewer: null, blocked: "no reviewer can run" });
   const seed = Number.isSafeInteger(input.seed) ? input.seed : 0;
-  const start = ((seed % kinds.length) + kinds.length) % kinds.length;
-  const rotated = [...kinds.slice(start), ...kinds.slice(0, start)];
+  const start = ((seed % declaredKinds.length) + declaredKinds.length) % declaredKinds.length;
+  const rotated = [...declaredKinds.slice(start), ...declaredKinds.slice(0, start)];
   const slots = rotated.flatMap(kind => {
     const declared = input.candidates.filter(candidate => candidate.kind === kind).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-    return declared.length ? declared : [{ id: "", kind, family: "", blocked: "no declared reviewer" }];
+    return declared;
   });
   let ordered = slots;
   // Preserve the rotated order within each family, including sibling instance ids.
@@ -56,7 +62,7 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
     }
     const reason: ReviewerPoolReason = skippedUnavailable ? "unavailable skip" : skippedOwner ? "implementer skip" : "rotation";
     record(candidate, `selected (${continuity && candidate.family === input.continuityFamily ? "continuity" : reason})`);
-    return { reviewer: candidate.id, family: candidate.family, reason, walk };
+    return finish({ reviewer: candidate.id, family: candidate.family, reason });
   }
   // The caller supplies separate fresh reviewer instances; this does not authorize an implementer's own session.
   for (const candidate of ordered) {
@@ -64,7 +70,7 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
     const blocked = unavailable(candidate);
     if (blocked !== undefined) { record(candidate, `unavailable skip: ${blocked}`); continue; }
     record(candidate, "selected (same-family fallback)");
-    return { reviewer: candidate.id, family: candidate.family, reason: "same-family fallback", walk };
+    return finish({ reviewer: candidate.id, family: candidate.family, reason: "same-family fallback" });
   }
-  return { reviewer: null, walk, blocked: "no reviewer can run" };
+  return finish({ reviewer: null, blocked: "no reviewer can run" });
 }
