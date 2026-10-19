@@ -685,7 +685,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let pendingRestart: { key: string; reason: string }[] = [];
   let retainedConfig: { key: string; reason: string }[] = [];
   function retainedLaunchConfig(peer: string): Record<string, unknown> | undefined {
-    const keys = definitionOf(peer, declarations)?.cli.launchConfigKeys ?? [];
+    const keys = definitionOf(peer)?.cli.launchConfigKeys ?? [];
     const pending = retainedConfig.filter(row => keys.some(key => row.key === key || row.key.startsWith(`${key}.`)));
     if (!pending.length) return;
     return Object.fromEntries(pending.map(row => [row.key, valueAt(config, row.key.split("."))]));

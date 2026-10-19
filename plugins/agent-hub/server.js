@@ -51,14 +51,14 @@ function childEnv(source = process.env) {
   delete env.AGENTHUB_DELIVERY_ONLY;
   return env;
 }
-function peerChildEnv(peer2, source = process.env) {
+function peerChildEnv(peer, source = process.env) {
   const env = childEnv(source);
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_SESSION_ID;
   delete env.CODEX_THREAD_ID;
   delete env.AGENTHUB_CHANNEL;
   delete env.AGENTHUB_PEER_ID;
-  env.AGENTHUB_PEER_ID = peer2;
+  env.AGENTHUB_PEER_ID = peer;
   return env;
 }
 function parseProcessTable(text) {
@@ -7333,20 +7333,20 @@ function catalogAssignments(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length > 64)
     throw new Error("catalog_roles must be a bounded peer map");
   const out = Object.create(null);
-  for (const [peer2, ids] of Object.entries(raw)) {
-    if (!PEER.test(peer2) || ["user", "hub", "digest"].includes(peer2) || !Array.isArray(ids) || ids.length > 2 || new Set(ids).size !== ids.length || ids.some((id) => typeof id !== "string" || !ID.test(id)))
+  for (const [peer, ids] of Object.entries(raw)) {
+    if (!PEER.test(peer) || ["user", "hub", "digest"].includes(peer) || !Array.isArray(ids) || ids.length > 2 || new Set(ids).size !== ids.length || ids.some((id) => typeof id !== "string" || !ID.test(id)))
       throw new Error("catalog_roles takes at most two distinct role ids per peer");
-    out[peer2] = [...ids];
+    out[peer] = [...ids];
   }
   return out;
 }
-function selectedRoles(peer2, flow, assignments, catalog) {
-  return (assignments[peer2] ?? []).map((id) => {
+function selectedRoles(peer, flow, assignments, catalog) {
+  return (assignments[peer] ?? []).map((id) => {
     const role = catalog.roles.get(id);
     if (!role)
       throw new Error(`unknown catalog role ${id}`);
-    if (!role.base.some((base) => flow[peer2]?.includes(base)))
-      throw new Error(`${peer2} does not hold a matching base for ${id}`);
+    if (!role.base.some((base) => flow[peer]?.includes(base)))
+      throw new Error(`${peer} does not hold a matching base for ${id}`);
     return role;
   });
 }
@@ -7391,7 +7391,7 @@ function resolveProfile(raw, overrides) {
     throw new Error("unknown profile override field");
   if (!Object.keys(data).length)
     return original;
-  const result = { ...original, classes: { ...original.classes }, plan_keys: [...original.plan_keys], role_text: { ...original.role_text }, catalog_roles: Object.fromEntries(Object.entries(original.catalog_roles).map(([peer2, ids]) => [peer2, [...ids]])), example_checks: [...original.example_checks] };
+  const result = { ...original, classes: { ...original.classes }, plan_keys: [...original.plan_keys], role_text: { ...original.role_text }, catalog_roles: Object.fromEntries(Object.entries(original.catalog_roles).map(([peer, ids]) => [peer, [...ids]])), example_checks: [...original.example_checks] };
   const text = (value, cap) => {
     if (typeof value !== "string" || value.length > cap)
       throw new Error("profile text is missing or oversized");
@@ -7452,12 +7452,12 @@ var init_profiles = __esm(() => {
 });
 
 // src/hub/hub-tools.ts
-function roleContract(peer2, roles = DEFAULT_ROLES, catalog = [], profile = "dev") {
+function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev") {
   const data = profileData(profile);
-  const mine = (roles[peer2] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
+  const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
   if (!mine.length)
     return "";
-  return [`Your roles in this project ("${peer2}"):`, ...mine.map((t) => `- ${t}`), ...data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
+  return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
 `);
 }
 function profileTaskTools(profile = "dev", stages, criteria = false) {
@@ -8235,8 +8235,8 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/hub/claude-state.ts
-function claudeStateFile(base, peer2) {
-  return peer2.includes("-") && PEER2.test(peer2) ? `${base}.${peer2}.json` : `${base}.json`;
+function claudeStateFile(base, peer) {
+  return peer.includes("-") && PEER2.test(peer) ? `${base}.${peer}.json` : `${base}.json`;
 }
 var PEER2;
 var init_claude_state = __esm(() => {
@@ -8249,23 +8249,23 @@ import { join as join13 } from "path";
 import { randomUUID as randomUUID5 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
-  const peer2 = ctx.instance ?? "claude";
+  const peer = ctx.instance ?? "claude";
   if (ctx.hubStarted) {
     if (args.includes("--print-command") || args.includes("--dry-run"))
-      return console.log(JSON.stringify({ peer: peer2, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
+      return console.log(JSON.stringify({ peer, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
     const hub = await ctx.connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
-      const res = await hub.request({ t: "start", peer: peer2, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+      const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (res.ok !== true)
-        fail(String(res.error ?? `${peer2} was not started`));
+        fail(String(res.error ?? `${peer} was not started`));
     } finally {
       hub.close();
     }
-    return console.log(`${peer2} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer2})`);
+    return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
   }
   const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -8278,7 +8278,7 @@ async function runClaudeEntry(ctx) {
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await recordTerminalLaunch(peer2, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
+    const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
     if (!terminal)
       process.env.AGENTHUB_LAUNCH_ID = randomUUID5();
   }
@@ -8291,14 +8291,14 @@ async function runClaudeEntry(ctx) {
   const facts = claudeObservationHooks(projectConfig(), { script: join13(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync6(join13(stateDir, claudeStateFile("claude-launch", peer2)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync6(join13(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
   const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join13(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
     if (control?.instanceId) {
-      launchRecord = { ...ctx.instance ? { peer: peer2 } : {}, instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
+      launchRecord = { ...ctx.instance ? { peer } : {}, instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
       recordClaudeLaunch(stateDir, launchRecord);
       cleanupStaleClaudeSettings(stateDir, previousLaunch);
     }
@@ -8306,7 +8306,7 @@ async function runClaudeEntry(ctx) {
       console.error(launch.warning);
     const env = nativeLaunchEnv("claude", childEnv());
     if (ctx.instance)
-      env.AGENTHUB_PEER_ID = peer2;
+      env.AGENTHUB_PEER_ID = peer;
     result = await runClaudeLaunch(launch, { cwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...launchRecord ? { record: launchRecord } : {} });
   } finally {
     cleanupClaudeSettings(stateDir, launch.settingsFile);
@@ -8321,7 +8321,7 @@ var init_native_cli_entry_claude = __esm(() => {
 
 // src/adapters/definitions/native-cli-entry-codex.ts
 async function runCodexEntry(ctx) {
-  const peer2 = ctx.instance ?? "codex";
+  const peer = ctx.instance ?? "codex";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, exec } = ctx;
   const { launcherPreview, buildLaunch, recoveryLock, readControl, recordTerminalLaunch } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -8331,17 +8331,17 @@ async function runCodexEntry(ctx) {
       fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)");
     }
   }
-  const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer2, proxyUrl: "pending" });
+  const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: "pending" });
   const recovering = !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
   const before = readControl(stateDir);
   if (recovering && !ctx.instance && before?.instanceId)
-    await recordTerminalLaunch(peer2, cwd, stateDir, before.instanceId);
+    await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
-  const res = await hub.request({ t: "start", peer: peer2, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+  const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
     fail(res.error);
@@ -8352,20 +8352,20 @@ async function runCodexEntry(ctx) {
   }
   const control = readControl(stateDir);
   if ((!recovering || ctx.instance) && control?.instanceId)
-    await recordTerminalLaunch(peer2, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
+    await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
   const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer2, proxyUrl: res.proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning)
     console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
 }
 
 // src/hub/status-roster.ts
-function rosterInStatus(status, peer2) {
+function rosterInStatus(status, peer) {
   const rows = status?.roster;
   if (!Array.isArray(rows))
     return;
-  const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer2);
+  const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
   return typeof row?.on === "boolean" ? row.on : undefined;
 }
 function bundleInStatus(status) {
@@ -8398,7 +8398,7 @@ async function runJcodeEntry(ctx) {
       fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
     if (!rostered)
       fail("jcode is off roster; add it with ahub roster add jcode");
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
+    const warning = ctx.helpers.retainedLaunchWarning(snapshot, "jcode", ctx.definition);
     if (warning)
       console.error(warning);
     const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve10(cliDir, "../../plugins/agent-hub/server.js"));
@@ -8416,7 +8416,7 @@ var init_native_cli_entry_jcode = () => {};
 
 // src/adapters/definitions/native-cli-entry-qwen.ts
 async function runQwenEntry(ctx) {
-  const peer2 = ctx.instance ?? "qwen";
+  const peer = ctx.instance ?? "qwen";
   const { args, cwd, stateDir, unattendedEnv, connect, fail, takeFlags } = ctx;
   const { launcherPreview } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -8435,13 +8435,13 @@ async function runQwenEntry(ctx) {
   const hub = await connect();
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
     if (warning)
       console.error(warning);
-    const reply = await hub.request({ t: "start", peer: peer2, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
+    const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
     if (!reply.ok)
       fail(reply.error);
-    console.log(reply.already ? `${peer2} is already attached` : `${peer2} attached (headless); use ahub say @${peer2} and the console for approvals`);
+    console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); use ahub say @${peer} and the console for approvals`);
   } finally {
     hub.close();
   }
@@ -8451,7 +8451,7 @@ async function runQwenEntry(ctx) {
 import { resolve as resolve11 } from "path";
 import { spawnSync as spawnSync4 } from "child_process";
 async function runKimiEntry(ctx) {
-  const peer2 = ctx.instance ?? "kimi";
+  const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
   const { launcherPreview, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -8473,10 +8473,10 @@ async function runKimiEntry(ctx) {
     const hub = await connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
-      const reply = await hub.request({ t: "peer_start", peer: peer2 }, 35000);
+      const reply = await hub.request({ t: "peer_start", peer }, 35000);
       if (!reply.ok)
         fail(reply.error);
       return console.log(reply.already ? "kimi is already attached" : `kimi: opened a terminal running ${reply.command}; it attaches pull-only when its TUI is ready`);
@@ -8488,18 +8488,18 @@ async function runKimiEntry(ctx) {
   try {
     if (mode === "tui") {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const rostered = rosterInStatus(snapshot, peer2);
+      const rostered = rosterInStatus(snapshot, peer);
       if (rostered === undefined)
         fail("cannot read kimi's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
       if (!rostered)
         fail("kimi is off roster; add it with ahub roster add kimi");
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
-      const owner = snapshot?.peers?.[peer2];
+      const owner = snapshot?.peers?.[peer];
       if (owner && !["offline"].includes(owner.state) && !owner.pullOnly)
         fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
-      const admission = await hub.request({ t: "start", peer: peer2, args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+      const admission = await hub.request({ t: "start", peer, args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (!admission.ok)
         fail(admission.error);
       const runningCommand = admission.retainedLaunchConfig?.kimi_cmd;
@@ -8519,18 +8519,18 @@ async function runKimiEntry(ctx) {
       process.exit(result.status ?? 1);
     }
     const snapshot = (await hub.request({ t: "status" })).status;
-    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+    const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
     if (warning)
       console.error(warning);
-    const owner = snapshot?.peers?.[peer2];
+    const owner = snapshot?.peers?.[peer];
     if (owner?.pullOnly && owner.state !== "offline")
       fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance)
       configureKimiMcp(cwd, stateDir, resolve11(cliDir, "../../plugins/agent-hub/server.js"), "headless");
-    const res = await hub.request({ t: "start", peer: peer2, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+    const res = await hub.request({ t: "start", peer, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     if (!res.ok)
       fail(res.error);
-    console.log(res.already ? `${peer2} is already attached` : `${peer2} attached (headless). Talk to it with: ahub say @${peer2} "..."`);
+    console.log(res.already ? `${peer} is already attached` : `${peer} attached (headless). Talk to it with: ahub say @${peer} "..."`);
   } finally {
     hub.close();
   }
@@ -8580,7 +8580,7 @@ function piConductorStartArgs(args) {
 
 // src/adapters/definitions/native-cli-entry-pi.ts
 async function runPiEntry(ctx) {
-  const peer2 = ctx.instance ?? "pi";
+  const peer = ctx.instance ?? "pi";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, execWithEnv } = ctx;
   const { launcherPreview, startModeOf, recoveryLock, readControl, recordTerminalLaunch } = ctx.helpers;
   if (args.includes("--headless") && !args.includes("--mode"))
@@ -8602,10 +8602,10 @@ async function runPiEntry(ctx) {
     const hub = await connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
-      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+      const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
       if (warning)
         console.error(warning);
-      const reply = await hub.request({ t: "peer_start", peer: peer2 }, 35000);
+      const reply = await hub.request({ t: "peer_start", peer }, 35000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "pi start refused");
         fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_start"/i.test(error) ? `${error}; upgrade the running hub, or run ahub pi --mode headless` : error);
@@ -8618,13 +8618,13 @@ async function runPiEntry(ctx) {
   const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
   const before = readControl(stateDir);
   if (recovering && before?.instanceId)
-    await recordTerminalLaunch(peer2, cwd, stateDir, before.instanceId);
+    await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
-  const res = await hub.request({ t: "start", peer: peer2, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+  const res = await hub.request({ t: "start", peer, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
     fail(res.error);
@@ -8637,16 +8637,16 @@ async function runPiEntry(ctx) {
     delete launchEnv.AGENTHUB_UNATTENDED;
     const control = readControl(stateDir);
     if (!recovering && control?.instanceId)
-      await recordTerminalLaunch(peer2, cwd, stateDir, control.instanceId);
+      await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId);
     return execWithEnv(launch.cmd, launch.args, launchEnv);
   }
-  console.log(res.already ? `${peer2} is already attached` : `${peer2} attached (headless). Talk to it with: ahub say @${peer2} "..."`);
+  console.log(res.already ? `${peer} is already attached` : `${peer} attached (headless). Talk to it with: ahub say @${peer} "..."`);
 }
 var init_native_cli_entry_pi = () => {};
 
 // src/adapters/definitions/native-cli-entry-local.ts
 async function runLocalEntry(ctx) {
-  const peer2 = ctx.instance ?? "local";
+  const peer = ctx.instance ?? "local";
   const { args, connect, fail } = ctx;
   const opt = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] ?? fail(`${flag} needs a value`) : undefined;
   for (const flag of ["--route", "--model"])
@@ -8658,14 +8658,14 @@ async function runLocalEntry(ctx) {
     fail("usage: ahub local [--route <id> | --model <id>]");
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
-  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer2, ctx.definition);
+  const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
-  const res = await hub.request({ t: "start", peer: peer2, args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+  const res = await hub.request({ t: "start", peer, args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
     fail(res.error);
-  console.log(res.already ? `${peer2} is already attached` : `${peer2} attached on ${res.model}. Give it work with: ahub say @${peer2} "..."`);
+  console.log(res.already ? `${peer} is already attached` : `${peer} attached on ${res.model}. Give it work with: ahub say @${peer} "..."`);
 }
 
 // src/adapters/definitions/native-cli-entry.ts
@@ -9113,16 +9113,16 @@ var init_native_policy_aux = __esm(() => {
 });
 
 // src/adapters/definitions/native-recovery-continuity.ts
-function piRecoveryContinuity(peer2, binding) {
-  const sessionId = binding?.sessionId ?? peer2.sessionId;
+function piRecoveryContinuity(peer, binding) {
+  const sessionId = binding?.sessionId ?? peer.sessionId;
   if (!sessionId)
     throw new Error("Pi recorded session unavailable; archive continuity bookmark was not written");
-  const backend = binding?.backend ?? peer2.args?.backend;
+  const backend = binding?.backend ?? peer.args?.backend;
   return { pi: {
     sessionId,
-    sessionFile: binding?.sessionFile ?? peer2.sessionFile ?? peer2.args?.sessionFile,
+    sessionFile: binding?.sessionFile ?? peer.sessionFile ?? peer.args?.sessionFile,
     ...backend === "auto" || backend === "dgx" || backend === "mlx" ? { backend } : {},
-    model: binding?.model ?? peer2.args?.model
+    model: binding?.model ?? peer.args?.model
   } };
 }
 
@@ -9346,7 +9346,7 @@ var rolloutState = (binding) => {
 }, transcriptState = (binding) => {
   const state = recordedFileState(checkedSessionPath(binding, "transcript"));
   return state === "unknown" ? "unknown" : state === "found";
-}, startupArgs = (peer2) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer2.args?.[key] === "string" ? [[key, peer2.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object4 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
+}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object4 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
 var init_native_recovery = __esm(() => {
   init_events();
   init_recovery_session_file();
@@ -9389,15 +9389,15 @@ var init_native_recovery = __esm(() => {
       ...binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId]
     ],
     personFresh: false,
-    restoreArgs: (peer2) => {
-      const args = startupArgs(peer2);
-      if (typeof peer2.args?.mode !== "string")
+    restoreArgs: (peer) => {
+      const args = startupArgs(peer);
+      if (typeof peer.args?.mode !== "string")
         args.mode = "headless";
-      const file = peer2.sessionFile ?? peer2.args?.sessionFile;
+      const file = peer.sessionFile ?? peer.args?.sessionFile;
       if (typeof file === "string")
         args["session-file"] = file;
-      else if (peer2.sessionId)
-        args["session-id"] = peer2.sessionId;
+      else if (peer.sessionId)
+        args["session-id"] = peer.sessionId;
       return args;
     },
     crashIdentity: (row) => {
@@ -9409,22 +9409,22 @@ var init_native_recovery = __esm(() => {
   };
   KIMI_RECOVERY_SESSION = {
     legacyHeadlessArgv: { file: "src/hub/start-mode.ts", exportName: "START_MODE_PEERS", argv: ["--mode", "headless"] },
-    restoreArgs: (peer2) => {
-      const args = startupArgs(peer2);
+    restoreArgs: (peer) => {
+      const args = startupArgs(peer);
       delete args.mode;
       return args;
     },
-    recoveryRefusal: (peer2, phase = "plan") => peer2.args?.mode === "tui" ? phase === "restore" ? "Kimi's pull-only terminal cannot be restored as a headless worker; end it in that terminal and make a new recovery plan" : "kimi: its pull-only terminal has no automatic restore; end it in that terminal, then make a new recovery plan (its session is not resumed by the hub)" : undefined
+    recoveryRefusal: (peer, phase = "plan") => peer.args?.mode === "tui" ? phase === "restore" ? "Kimi's pull-only terminal cannot be restored as a headless worker; end it in that terminal and make a new recovery plan" : "kimi: its pull-only terminal has no automatic restore; end it in that terminal, then make a new recovery plan (its session is not resumed by the hub)" : undefined
   };
   LOCAL_RECOVERY_SESSION = { restoreArgs: startupArgs };
   JCODE_RECOVERY_SESSION = {
     legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Jcode; end it and make a new plan, or choose a supporting target; runtimes unchanged" },
     recoveryRefusal: (_peer, phase = "plan") => phase === "restore" ? undefined : "jcode: source-pinned native load cannot prove conversation identity; end the peer and make a new recovery plan before effects",
-    restoreArgs: (peer2) => ({ ...startupArgs(peer2), ...peer2.sessionId ? { "session-id": peer2.sessionId } : {}, ...peer2.args?.providerProfile ? { "provider-profile": peer2.args.providerProfile } : {} })
+    restoreArgs: (peer) => ({ ...startupArgs(peer), ...peer.sessionId ? { "session-id": peer.sessionId } : {}, ...peer.args?.providerProfile ? { "provider-profile": peer.args.providerProfile } : {} })
   };
   QWEN_RECOVERY_SESSION = {
     legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged" },
-    restoreArgs: (peer2) => ({ ...startupArgs(peer2), ...peer2.sessionId ? { "session-id": peer2.sessionId } : {} })
+    restoreArgs: (peer) => ({ ...startupArgs(peer), ...peer.sessionId ? { "session-id": peer.sessionId } : {} })
   };
 });
 
@@ -9484,8 +9484,8 @@ function compatibilityLaunch(kind, ctx) {
   };
 }
 function sessionId(field) {
-  return (peer2) => {
-    const value = peer2.recoveryMetadata?.()[field];
+  return (peer) => {
+    const value = peer.recoveryMetadata?.()[field];
     return typeof value === "string" && value ? value : undefined;
   };
 }
@@ -9921,8 +9921,8 @@ var init_qwen = __esm(() => {
     },
     session: {
       idField: "sessionId",
-      currentId: (peer2) => {
-        const sessionId = peer2.recoveryMetadata?.().sessionId;
+      currentId: (peer) => {
+        const sessionId = peer.recoveryMetadata?.().sessionId;
         return typeof sessionId === "string" ? sessionId : undefined;
       },
       ...QWEN_RECOVERY_SESSION,
@@ -10006,7 +10006,7 @@ function definitionOf(id, instances) {
   return variant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" && fresh ? variant : definition;
 }
 function defaultPeerRoles(includeOptional = false) {
-  return Object.fromEntries(ROLE_ORDER.filter((peer2) => includeOptional || !definitionOf(peer2).optional).map((peer2) => [peer2, [...definitionOf(peer2).roles]]));
+  return Object.fromEntries(ROLE_ORDER.filter((peer) => includeOptional || !definitionOf(peer).optional).map((peer) => [peer, [...definitionOf(peer).roles]]));
 }
 function assertDaemonEngine(definition) {
   const engine = definition.start.daemonPort;
@@ -17825,10 +17825,10 @@ class ControlClient {
 
 // src/hub/lifecycle-schema.ts
 init_sdlc();
-async function activeLifecycle(stateDir, peer2, projectRoot, active) {
+async function activeLifecycle(stateDir, peer, projectRoot, active) {
   let client;
   try {
-    client = active ?? await ControlClient.connect(stateDir, { role: "tools", peer: peer2, projectRoot }, 1000);
+    client = active ?? await ControlClient.connect(stateDir, { role: "tools", peer, projectRoot }, 1000);
     const reply = await client.request({ t: "status" }, 1000);
     if (reply.t !== "status" || !reply.status || typeof reply.status !== "object" || Array.isArray(reply.status))
       return;
@@ -26251,10 +26251,10 @@ var INBOX_CAP = 200;
 function peerHeld() {
   try {
     const status = JSON.parse(readFileSync13(join26(stateDir, "status.json"), "utf8"));
-    const peer2 = status.peers?.[peerId];
-    if (channel && peer2?.toolsOnly && !peer2.claiming)
+    const peer = status.peers?.[peerId];
+    if (channel && peer?.toolsOnly && !peer.claiming)
       return false;
-    return !!peer2 && (peer2.state !== "offline" || peer2.claiming === true);
+    return !!peer && (peer.state !== "offline" || peer.claiming === true);
   } catch {
     return false;
   }
