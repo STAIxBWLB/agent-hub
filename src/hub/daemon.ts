@@ -985,7 +985,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // #258: the hub's own store, machine-wide in ~/.agenthub/memory. Entries are filed under the project's memory key (its
   // normalized origin remote, the same on every machine; without one, its path). Fail-open: without it the hub works as before.
   // Daemon start never depends on the memory home: an unresolvable home falls back to the raw key.
-  const memoryProject = (() => { try { return memoryProjectFor(opts.cwd); } catch { return memoryProjectKey(opts.cwd); } })();
+  const memoryProjectRaw = memoryProjectKey(opts.cwd);
+  const memoryProject = (() => { try { return memoryProjectFor(opts.cwd); } catch { return memoryProjectRaw; } })();
   let memoryStore: MemoryStore | undefined;
   let memoryBinding: MemoryProfileBinding | undefined;
   let memoryProblem: string | undefined;
@@ -997,7 +998,7 @@ export async function startDaemon(opts: DaemonOptions) {
     memoryNotice(`hub native memory disabled: ${reason}`);
   };
   if (config.memory.native) {
-    try { const opened = openProfileMemory({ project: memoryProject, ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
+    try { const opened = openProfileMemory({ project: memoryProject, projectKey: memoryProjectRaw, ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
       const m = /#(\d+)@(\d+)$/.exec(key), t = m ? board.get(Number(m[1])) : undefined;
       return t && String(t.created) === m![2] ? [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])] : [];
     }) }, memoryUnavailable); memoryStore = opened.store; memoryBinding = opened.binding; startupCleanup.push(() => opened.store.close()); }

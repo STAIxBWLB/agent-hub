@@ -165,3 +165,19 @@ test("a dangling split marker refuses new opens with the resume remedy and latch
   } finally { store.close(); }
   expect(() => openProfileMemory({ home, project: A })).toThrow(MEMORY_SPLIT_INCOMPLETE);
 });
+
+for (const sharded of [false, true]) test(`an alias added under a running binding latches it unavailable (${sharded ? "split" : "unsplit"} home)`, async () => {
+  const { home, memory } = seeded();
+  const machine = (() => { const s = new MemoryStore({ home }); try { return s.machine.id; } finally { s.close(); } })();
+  if (sharded) await split(memory);
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "hub-memory-late-alias-")));
+  homes.push(cwd);
+  const raw = memoryProjectKey(cwd);
+  const { store, binding } = openProfileMemory({ home, project: memoryProjectFor(cwd, { home }), projectKey: raw });
+  try {
+    expect(() => binding.run(() => store.list({ project: raw }))).not.toThrow();
+    appendAlias(memory, { alias: raw, key: A, actor: "person", machine });
+    expect(() => binding.run(() => store.note(note(raw, "must not write under the superseded key")))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
+    expect(binding.status(store).state).toBe("unavailable");
+  } finally { store.close(); }
+});
