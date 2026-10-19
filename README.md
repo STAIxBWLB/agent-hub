@@ -93,8 +93,10 @@ real upgrades with reattach (#463) and with a managed terminal and cancelled tas
 Before migrating a memory home with `amem`, upgrade every hub using that home to
 0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory
 consumers. Shared v1 remains the default; installing this release does not migrate
-data. The curated shard migration in agent-mem is unreleased; do not run it, because
-this hub does not open memory through shards. See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
+data. The curated shard migration (`amem migrate --shards`, agent-mem 0.4.0) needs
+every hub using that home to run a release that opens memory through shards (#534,
+after 0.12.36); an older hub disables its native memory on a split home. `ahub memory
+profile-check` is not split-aware yet (#536). See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
 
 ## Documentation
 
