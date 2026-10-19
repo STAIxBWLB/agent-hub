@@ -10,6 +10,8 @@ import { definitionOf } from "../src/adapters/registry.ts";
 import { retainedLaunchWarning } from "../src/cli/launch.ts";
 import { renderStatus } from "../src/cli/output.ts";
 import { initialConsoleState, renderConsoleLines } from "../src/cli/console-state.ts";
+import { runClaudeEntry } from "../src/adapters/definitions/native-cli-entry-claude.ts";
+import { definitionOf } from "../src/adapters/registry.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -61,4 +63,24 @@ test("#542 retained launch settings warn by adapter metadata and status renders 
   const consoleState = initialConsoleState(); consoleState.retainedConfig = status.retainedConfig;
   const consoleLines = renderConsoleLines(consoleState, 120).flat().map(row => row.text);
   expect(consoleLines.some(line => line.includes("config retained") && line.includes("jcode_cmd") && line.includes("run ahub settings reload"))).toBe(true);
+});
+
+test("#542 Claude's ordinary launcher does not require a hub connection", async () => {
+  let connections = 0;
+  const context = {
+    args: [], cwd: "/project", stateDir: "/state", cliDir: "/package/src/cli", unattendedEnv: false,
+    definition: definitionOf("claude"), projectConfig: () => ({}),
+    connect: async () => { connections++; throw new Error("unexpected hub connection"); },
+    fail: (message: string): never => { throw new Error(message); },
+    helpers: {
+      launcherPreview: () => ({}), readControl: () => undefined, recordTerminalLaunch: async () => undefined,
+      claudeObservationHooks: () => undefined, buildLaunch: () => ({ cmd: "claude", args: [] }),
+      runClaudeLaunch: async () => { throw new Error("native launcher boundary reached"); },
+      processSignature: () => undefined, recordClaudeLaunch: () => undefined, cleanupStaleClaudeSettings: () => undefined,
+      nativeLaunchEnv: () => ({}), childEnv: () => ({}), cleanupClaudeSettings: () => undefined,
+      retainedLaunchWarning: () => undefined,
+    },
+  } as any;
+  await expect(runClaudeEntry(context)).rejects.toThrow("native launcher boundary reached");
+  expect(connections).toBe(0);
 });
