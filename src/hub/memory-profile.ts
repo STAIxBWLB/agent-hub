@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  CandidateStore, MemoryStore, realPath, memoryHome, openShardStore, readShardedSelection, resolveProfile, resolveShardProfile,
+  CandidateStore, MemoryStore, realPath, memoryHome, memoryProjectKey, openShardStore, readShardedSelection, resolveAlias, resolveProfile, resolveShardProfile,
   type BoundProfile, type ProfileInput, type StoreOptions,
 } from "@staix/agent-mem";
 import packageJson from "../../package.json";
@@ -42,7 +42,7 @@ const UNAVAILABLE = MEMORY_PROFILE_UNAVAILABLE;
 /** agent-mem#15 T2: a split marker that is not active (captured, malformed) is never read as an empty or legacy store. */
 export const MEMORY_SPLIT_INCOMPLETE = "memory home has a curated split that is not active; finish it with amem migrate --shards --resume, then restart the hub";
 /** Hub memory options: the project key selects this project's shard once the home is split. */
-export type ProfileMemoryOptions = StoreOptions & { project?: string };
+export type ProfileMemoryOptions = Omit<StoreOptions, "memoryDir"> & { project?: string };
 
 /** No handle was opened; distinct from an unavailable, still-bound handle. */
 export interface UnboundMemoryProfileReceipt {
@@ -77,7 +77,8 @@ function sameProfile(a: BoundProfile, b: BoundProfile): boolean {
     && a.generation === b.generation && a.selectorRevision === b.selectorRevision
     && !!a.sharded === !!b.sharded && a.shardKey === b.shardKey && !!a.shardUser === !!b.shardUser;
 }
-const splitMarked = (home: string) => existsSync(join(home, "shards.json"));
+// lstat, not exists: a dangling or unreadable marker is still a marker and must fail closed.
+const splitMarked = (home: string) => lstatSync(join(home, "shards.json"), { throwIfNoEntry: false }) !== undefined;
 /** Refuse an inactive split before any shard read, so the remedy names resume rather than the generic profile check. */
 function assertActiveSplit(home: string): void {
   try { readShardedSelection(home); } catch { throw new Error(MEMORY_SPLIT_INCOMPLETE); }
@@ -102,6 +103,14 @@ function receipt(profile: BoundProfile, state: MemoryProfileReceipt["state"], sk
     state, home: profile.home, selectorRevision: profile.selectorRevision, agentMemVersion: AGENT_MEM_VERSION, skippedRows,
     ...(state === "unavailable" ? { error: UNAVAILABLE } : {}),
   };
+}
+
+/**
+ * The project key agent-mem's own CLI binds: memoryProjectKey(cwd) through the person-reviewed alias log of the
+ * canonical memory home. The daemon and `ahub memory`/`ahub goal` use it so both open the same shard and rows.
+ */
+export function memoryProjectFor(cwd: string, opts: Pick<StoreOptions, "home"> = {}): string {
+  return resolveAlias(homeFor(opts), memoryProjectKey(cwd));
 }
 
 /** Inspect selection without constructing a store, index, or candidate sidecar. */

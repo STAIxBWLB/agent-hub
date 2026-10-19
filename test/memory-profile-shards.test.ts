@@ -3,9 +3,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore, migrateShards, type NoteInput } from "@staix/agent-mem";
+import { MemoryStore, appendAlias, memoryProjectKey, migrateShards, openShardStore, type NoteInput } from "@staix/agent-mem";
 import { realPath } from "../src/hub/project.ts";
-import { MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, bindProfileMemory, openProfileMemory } from "../src/hub/memory-profile.ts";
+import { MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, bindProfileMemory, memoryProjectFor, openProfileMemory } from "../src/hub/memory-profile.ts";
 import { memoryCommand } from "../src/cli/memory.ts";
 
 const A = "github.com/example/hub-a", B = "github.com/example/hub-b", C = "github.com/example/hub-new";
@@ -111,4 +111,57 @@ test("ahub memory names the resume remedy on an inactive split instead of the ge
   process.env.AMEM_HOME = memory;
   try { await expect(memoryCommand(["list"], home, { person: true })).rejects.toThrow(MEMORY_SPLIT_INCOMPLETE); }
   finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
+});
+
+/** A cwd whose raw key is aliased to A, as `amem alias add <raw> <A>` would record it. */
+function aliasedCwd(memory: string, machine: string) {
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "hub-memory-alias-cwd-")));
+  homes.push(cwd);
+  const raw = memoryProjectKey(cwd);
+  appendAlias(memory, { alias: raw, key: A, actor: "person", machine });
+  return { cwd, raw };
+}
+
+for (const sharded of [false, true]) test(`the hub binds the alias-resolved project key the amem CLI uses (${sharded ? "split" : "unsplit"} home)`, async () => {
+  const { home, memory, ids } = seeded();
+  const machine = (() => { const s = new MemoryStore({ home }); try { return s.machine.id; } finally { s.close(); } })();
+  if (sharded) await split(memory);
+  const { cwd, raw } = aliasedCwd(memory, machine);
+  expect(raw).not.toBe(A);
+  const project = memoryProjectFor(cwd, { home });
+  expect(project).toBe(A);
+  const { store, binding } = openProfileMemory({ home, project });
+  try {
+    expect(store.get(ids.a, project)?.text).toBe("alpha private contract");
+    const id = binding.run(() => store.note(note(project, "written by the hub under the canonical key")));
+    if (sharded) {
+      // What standalone amem opens for this cwd: the canonical shard, which holds the hub's write.
+      const amem = openShardStore({ home, project: A });
+      try { expect(amem.get(id, A)?.text).toBe("written by the hub under the canonical key"); } finally { amem.close(); }
+    } else expect(store.get(id, A)?.project).toBe(A);
+  } finally { store.close(); }
+});
+
+test("ahub memory reads the alias-resolved project the amem CLI binds", async () => {
+  const { home, memory } = seeded();
+  const machine = (() => { const s = new MemoryStore({ home }); try { return s.machine.id; } finally { s.close(); } })();
+  await split(memory);
+  const { cwd } = aliasedCwd(memory, machine);
+  const previous = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = memory;
+  try { expect(await memoryCommand(["list"], cwd, { person: true })).toContain("alpha private contract"); }
+  finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
+});
+
+test("a dangling split marker refuses new opens with the resume remedy and latches an open unsplit binding", () => {
+  const { home, memory, log } = seeded();
+  const { store, binding } = openProfileMemory({ home, project: A });
+  try {
+    symlinkSync(join(memory, "missing-shards.json"), join(memory, "shards.json"));
+    const before = readFileSync(log);
+    expect(() => binding.run(() => store.note(note(A, "must not append behind a dangling marker")))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
+    expect(binding.status(store).state).toBe("unavailable");
+    expect(readFileSync(log)).toEqual(before);
+  } finally { store.close(); }
+  expect(() => openProfileMemory({ home, project: A })).toThrow(MEMORY_SPLIT_INCOMPLETE);
 });
