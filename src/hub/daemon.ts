@@ -96,7 +96,7 @@ import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts"
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, type DashboardSession } from "./ui.ts";
 import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
-import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
+import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
@@ -5199,8 +5199,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const heldBack = hushed.length > 0 && hushed.length === bus.audience(env).length;
         const refused = c.peer && !heldBack ? admit(admittedEnv, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
-        const targets = bus.publish(env);
+        const { targets, dropped } = bus.publishResult(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
+        if (dropped === "hop") return void reply({ t: "sent", ok: true, targets, dropped, recorded: priority === "fyi",
+          notice: `not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to` });
         if (hushed.length && !targets.length) return void reply({ t: "sent", ok: false, error: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` });
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi", ...(offRoster.length ? { offRoster } : {}), ...(hushed.length ? { hushed: hushed.map((h) => h.peer) } : {}), ...((offRoster.length || hushed.length) ? { notice: [offRoster.length ? `retained off roster for ${offRoster.join(", ")}` : "", hushed.length ? `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` : ""].filter(Boolean).join("; ") } : {}) });
       }

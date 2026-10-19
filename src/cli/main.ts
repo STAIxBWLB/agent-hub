@@ -906,6 +906,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
     if (!res.ok) fail(res.error);
     if (res.recorded) return console.log("recorded only ([FYI]); no peer was interrupted");
+    if (res.dropped === "hop") return console.log(res.notice);
     console.log(paint([{ text: res.targets.length ? `queued for: ${res.targets.join(", ")}` : "no peers attached; nothing delivered" }], false));
     if (typeof res.notice === "string" && res.notice) console.log(paint([{ text: res.notice }], false));
   },
