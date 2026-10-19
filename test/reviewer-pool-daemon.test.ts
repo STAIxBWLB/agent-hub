@@ -70,13 +70,13 @@ test("declared unavailable variants refuse startup and recovery cannot downgrade
   const root = mkdtempSync(join(tmpdir(), "ahub-reviewer-unavailable-")), stateDir = join(root, "state");
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
-    config: { ...DEFAULT_CONFIG, instances: { "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" }, "agy-review": { kind: "agy", roles: ["reviewer"], start_mode: "headless" } },
-      review: { ...DEFAULT_CONFIG.review, pool: ["kimi", "agy"] }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
+    config: { ...DEFAULT_CONFIG, instances: { "agy-review": { kind: "agy", roles: ["reviewer"], start_mode: "headless" } },
+      review: { ...DEFAULT_CONFIG.review, pool: ["agy"] }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
-  for (const peer of ["kimi-review", "agy-review"]) {
-    expect(await console_.request({ t: "start", peer })).toMatchObject({ ok: false, error: expect.stringContaining("#533") });
+  for (const peer of ["agy-review"]) {
+    expect(await console_.request({ t: "start", peer })).toMatchObject({ ok: false, error: expect.stringContaining("agy is an implementer peer (#485)") });
     expect(daemon.bus.stateOf(peer)).toBe("offline");
   }
   const status = (await console_.request({ t: "status" })).status;

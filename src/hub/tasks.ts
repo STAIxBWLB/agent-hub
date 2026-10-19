@@ -2965,6 +2965,13 @@ export class Tasks {
     return task.history.findLastIndex(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event) || OWNERSHIP_EVENTS.has(entry.event)) + 1;
   }
 
+  /** Host-only admission for a queued review after asynchronous native preparation. */
+  reviewBindingCurrent(by: PeerId, id: number, binding: { head?: string; flowRevision?: number }): boolean {
+    const task = this.d.board.get(id);
+    return !!task && task.state === "in_review" && task.reviewer === by && !this.isPii(task)
+      && this.reviewRequestRevision(task) === binding.flowRevision && this.reviewHead(task) === binding.head;
+  }
+
   /** Host-only failure report, bound to the exact review request and its still-current child generation. */
   async retryReviewer(id: number, failedPeer: PeerId, failure: { head?: string; flowRevision?: number; cause: "start_failed" | "quota" | "no_verdict" }, current: () => boolean): Promise<Task> {
     if (!failure || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || !/^[a-z][a-z0-9-]{0,63}$/.test(failedPeer) || !Number.isSafeInteger(failure.flowRevision) || failure.flowRevision! < 1 || failure.head !== undefined && (typeof failure.head !== "string" || text(failure.head) !== failure.head || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head))) throw new PreEffectToolRefusal("invalid reviewer failure binding");

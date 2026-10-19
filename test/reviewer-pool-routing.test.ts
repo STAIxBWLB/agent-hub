@@ -82,14 +82,14 @@ test("an explicitly required pool with no declared reviewer is blocked for the p
 });
 
 test("only unavailable declarations outside the default pool block instead of falling through to auto-approval", () => {
-  for (const kind of ["kimi", "agy"]) {
+  for (const kind of ["agy"]) {
     const id = `${kind}-review`, declarations = { [id]: { kind, roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" as const } };
     const result = assign(work, { codex: "idle", [id]: "idle" }, routing, { candidates: ["codex"], roles: { [id]: ["reviewer"] }, instances: declarations, reviewPool: { pool: ["claude", "codex"] } });
     expect(result).toMatchObject({ reviewer: "user", reviewBlocked: true });
-    expect(result.trace.join("\n")).toContain("#533");
+    expect(result.trace.join("\n")).toContain("agy is an implementer peer (#485)");
     const named = assign(work, { codex: "idle", [id]: "idle" }, routing, { candidates: ["codex"], roles: { [id]: ["reviewer"] }, instances: declarations, namedReviewer: id });
     expect(named.reviewer).toBeUndefined();
-    expect(named.trace.join("\n")).toContain("#533");
+    expect(named.trace.join("\n")).toContain("agy is an implementer peer (#485)");
   }
 });
 

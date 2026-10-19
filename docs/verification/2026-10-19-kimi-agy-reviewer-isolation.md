@@ -1,0 +1,220 @@
+# Kimi and agy reviewer isolation (#533)
+
+## Status
+
+Task #234 implements the Kimi reviewer and task-bound in-process MCP. The person moved agy to implementer work under #485; its retained reviewer slot is unavailable as `agy is an implementer peer (#485)`. Kimi is available only on receipt-covered 2.2.0 when runtime preparation passes, otherwise unavailable with a reason. Authenticated fresh verdicts and the complete-collector measurements below are recorded separately from the original aggregate collector failure and its account-free GET reproduction. The reviewer accepted that error as a collector fault, not reviewer-isolation failure; the exact old request method was not retained. Verdict prose was scrubbed, so finding quality is not claimed. Actual interactive-TUI coexistence and print token-usage measurement remain separate ceilings. Earlier holds and kernel probes are historical, not active requirements or relabelled passes. The review-fix revision and its pending final gate are recorded at the end.
+
+## Earlier hold ruling (2026-10-19, superseded)
+
+Continue R0 OAuth-isolation research only. No static-API-key provider mode, launch code or production changes are authorized. Both variants remain unavailable with their existing route-explanation reasons. Earlier dummy-key/local-provider receipts below are account-free historical isolation controls, not an approved production auth path.
+
+The remaining Kimi question is a review-length OAuth credential path without a refresh-token copy or broader home/Keychain access, while the person's TUI stays attached on the same account. The remaining agy questions are a narrow 1.4.2 OAuth credential/egress contract and authorization of its local listeners. Do not refresh, copy or widen a real credential to investigate them. Report a proved narrow path, or the bounded evidence that prevents proving one, for the next ruling. The host-owned two-tool broker remains a direction to investigate; it must not receive the full hub control token.
+
+## Superseding implementation rulings (2026-10-19)
+
+The person replaced the kernel-sandbox requirement with native execution-time policy. Kimi uses `kimi -p`/stream-json, private HOME/tool config/clean cwd/empty skills, and an exact two-hub-tool agent. Its private tool home symlinks the native `credentials/` and `oauth/` directories, plus `device_id`; it never copies a credential file or disables native OAuth locking. Shared refresh uses Kimi's own locking, re-read and atomic rename. Stop/timeout must allow SIGTERM grace while the shared OAuth lock is present. Interruption during refresh can still require re-login; that residual is accepted.
+
+Agy retains the person's real HOME and native Keychain/OAuth handling, with a fresh temporary workspace, `excludeDefaultComponents` agent, disabled slash commands, and no built-in read/write/shell tools. Exactly one marked hub-owned project entry at `~/.gemini/config/projects/agent-hub-fresh-review.json` is authorized, selected by `--project`. It grants the two hub MCP operations and denies write/command/URL operations. Exclusive creation and refusal of unmarked or aliased state protect other projects/settings. User hooks and plugin MCP may still load; hooks may observe the prompt. The native loopback listeners and native per-review conversation history are accepted residuals. Never resume history; delete only the owned workspace. No speculative history cleanup or other personal `.gemini` edits are authorized. Agy receipts therefore report `strictMcp:false`, `ephemeral:false`, fresh invocation and native-policy enforcement honestly.
+
+The current Claude transport was found to use the stdio plugin bundle, whose ControlClient reads the full control token; it is not a reusable task-scoped in-process MCP server. New variants therefore receive a dedicated in-process two-tool MCP session, bound to one task and the running child generation. It does not read a full control token or accept caller-selected peers/roles. Existing Claude/Codex transports are unchanged.
+
+## Shared-directory native OAuth race receipt
+
+At 08:38 UTC on 2026-10-19, `test/fakes/kimi-oauth-race.ts` ran installed Kimi 2.2.0 against a fake OAuth host and fake Anthropic model. Two concurrent print processes represented reviewer and TUI, with separate private homes and directory symlinks to shared synthetic credentials/locks/device identity. The native flow, not a hub refresh implementation, performed rotation.
+
+| Phase | Cumulative refresh requests | Cumulative successful model requests |
+| --- | --- | --- |
+| Expired generation 0 | 1 | 2 |
+| Host atomic-expired generation 1 | 2 | 4 |
+| Already-fresh reuse | 2 | 6 |
+
+Both owned invocations were active during each refresh. No stale-token/401 or unexpected request occurred; credential targets remained regular files, shared directory symlinks retained their targets, locks were released and owned groups/temp trees were removed. This proves the concurrent native fixture, not an attached interactive TUI or a live account. Command: pinned Bun runs `test/fakes/kimi-oauth-race.ts --binary <installed-kimi> --receipt <new-output.json>` under serialized native admission.
+
+## Agy dedicated-project native control
+
+Installed agy 1.4.2 was tested under synthetic HOME with the marked project JSON and `--project`: only `hub_task_show` and `hub_review` reached the fixture MCP; a third MCP operation was auto-denied. Baseline and grant-removed controls made zero calls. The custom agent exposed no built-in read/write/shell schemas. Unrelated synthetic project bytes stayed unchanged and owned temporary trees/groups were cleaned. A subsequent broad-global control admitted all four operations, including an ambient server and a third hub operation: project grants are additive over global grants. A structural, read-only check of the person's global grant sources returned only the class `global MCP grant too broad`. No global settings were modified and no agy live-account call followed.
+
+The first portable agy unit run exposed Bun's cached `os.homedir()` behavior: despite synthetic `HOME`, the backend selected the actual home and used the authorized dedicated marked project path. No other personal settings or credentials were touched. The backend now selects `process.env.HOME` explicitly; the fake CLI refuses an unexpected HOME before project writes. No actual native project file was removed by guess. The corrected portable agy tests passed 11/0 before the final scope change. The unshipped backend and fixtures were then removed from this PR; their scratch copies are historical evidence only.
+
+## Implementation check state
+
+The focused Kimi backend/daemon, task-MCP and lifecycle suites passed 24/0 (166 assertions across five files), including four red-first regressions for pre-spawn privacy drift, cleanup before confirmed teardown, managed-model protocol fields and native auth-link retargeting. The expanded focused run passed 59/0 (388 assertions across eleven files), including binding, locked-stop and policy-watch regressions, and typecheck passed. The later expanded run passed 62/0 (407 assertions), including malformed-config/resource-method cases, with typecheck clean. Three mutation seeds passed normal code and detected the specified assertion after introducing a write tool or removing the MCP tool/task fence. Pinned Bun 1.4.2 rebuilt the bundle. The updated registry contract separately passed 9/0, and the fake daemon shared-account pause/resume case passed. Full exact-head CI and a successful live-account review remain unmet. A later check was deferred by host admission (exit 75); deferral is not a passing test.
+
+## Agy native exclusion follow-up, retained for #485
+
+A synthetic-HOME native 1.4.2 run used tight global and selected-project grants, the custom `excludeDefaultComponents:true` agent, and no built-in tools. The positive `hub_task_show` control passed. Explicit `write_to_file` and `run_command` attempts returned unknown-tool results and created no markers; a host control had confirmed the owned cwd was writable.
+
+However, the native schemas still included `list_resources`, `read_resource` and `manage_task` beside `call_mcp_tool`. Valid list/read-resource calls reached an ambient-decoy MCP server, and its synthetic nonce appeared in the next model request despite the tight MCP-call grants. This is a demonstrated resource path, not a conclusion from a schema name or an invalid tool argument. The first harness run had an invalid positive control and is not evidence; the corrected v2 receipt is the recorded result. The run removed its owned groups and temporary files. No real account or personal resource content was used.
+
+Scratch receipts: `r0-agy-project-grants-ambient.json` and `r0-agy-exclusion-attempts-v2.json` under the external `scratchpad/temp/agent-hub-533` evidence directory. The earlier probe observed two native loopback listeners; it did not establish their authentication. The latest person decision moves agy to #485, so no agy reviewer backend, global-admission code, launcher, live-account run or speculative personal-state cleanup ships here. Real-HOME native Keychain handling was the approved direction; no authenticated agy success is claimed by these account-free receipts.
+
+## Initial native metadata receipt
+
+On 2026-10-19 both installed arm64 binaries ran `--version` and `--help` under `/usr/bin/sandbox-exec`, using a new HOME, tool home, cwd and TMPDIR. The profile was built from `src/local/sandbox.ts` in read-only-data mode, with real-home read/write denied, exact native executable reads allowed and writes restricted to owned temporary paths. Network was denied. Children used independent tracked process groups, a 5-second deadline and a 64 KiB combined output cap; cleanup was confirmed.
+
+| Tool | Reported version | Installed binary SHA-256 |
+| --- | --- | --- |
+| kimi | 2.2.0 | `dab42ead275f8a49e9ce30a6263f614fce5926455bed103d0d16940655619bf5` |
+| agy | 1.4.2 | `74935642426b5bb1fcf07a5555f847c478f4517dd002c72b9c98159cb773b932` |
+
+Before CLI execution, a fixed shell read a synthetic project canary successfully, then attempted a new project file, an existing-file overwrite and a hardlink into the writable temporary directory. All three mutations were denied, the new file stayed absent and the canary stayed unchanged. This preliminary check does not replace a final production-profile probe or cover arbitrary preexisting aliases.
+
+Real Kimi config/MCP/plugin registry, the real project's Kimi MCP file and documented agy/Gemini config locations were hashed by the host before/after the probe. Configuration contents were never printed or staged. The canonical aggregate digest of logical IDs, presence and SHA-256 values was `1bf6927f9f77ea0f82556314e1d44156074771b88e0dd2ae596fd3999cbc645c` both times. Temporary roots were removed; no child remained.
+
+## Account-free native MCP receipt
+
+At 07:24-07:26 UTC on 2026-10-19, each installed binary completed a fresh session against a host-owned loopback fake model and a fixture stdio MCP server. The server returned synthetic data and never connected to the live hub. All credentials were fixed fixture strings. Each tool used its own new HOME, tool home, cwd and TMPDIR; the real home remained kernel-denied. Only the fake model port was allowed outbound. Real configuration hashes remained unchanged, and each temporary home/session tree and owned process group was removed after exit.
+
+Kimi used `KIMI_CODE_HOME`, the `KIMI_MODEL_*` static OpenAI-provider overrides, an explicit agent Markdown file and an empty `--skills-dir`. Its agent tools list contained exactly `mcp__agent-hub__hub_review` and `mcp__agent-hub__hub_task_show`. The native model request exposed exactly those two function schemas on all three requests. Two synthetic model tool calls reached the fixture MCP server, in order: `hub_task_show`, then `hub_review`; both results returned to the next model request. The final native output was `R0_OK`, followed by a session resume hint. The hint demonstrates persistence inside the temporary home; it does not authorize a resume. Kimi's watcher startup needed an additional `mach-lookup` grant for `com.apple.FSEvents`; without it startup failed before any model request.
+
+Agy used private `~/.gemini/antigravity-cli/settings.json` with `modelProvider: gemini`, a dummy `GEMINI_API_KEY` and a loopback `GOOGLE_GEMINI_BASE_URL`. Its sole MCP entry was in private `~/.gemini/config/mcp_config.json`. Without explicit MCP permissions, the native child discovered the fixture server but auto-denied the first MCP call, despite exiting with code zero. With exactly `mcp(agent-hub/hub_review)` and `mcp(agent-hub/hub_task_show)` in `permissions.allow`, both calls reached the fixture server and completed. No dangerous permission-skipping flag was used. Agy sends MCP arguments as JSON strings; a production boundary must normalize bounded JSON and still validate arguments. Its model schemas include native write/command tools, so the kernel profile remains the write boundary. Agy needs both loopback bind and inbound permission for its internal ephemeral listener; outbound permission alone fails at startup. This startup requirement does not prove the listener's production security or authorize general loopback access.
+
+A separate account-free native-tool probe deliberately exposed the write tool: Kimi `Write` and agy `write_to_file` each attempted a fresh project file and an existing-file overwrite. Valid native calls reached the filesystem and returned permission-denied errors; neither file mutation occurred. An earlier Kimi attempt used the wrong `file_path` field and was rejected by schema validation; that attempt is not counted as a kernel refusal. The corrected probe used `path`. Agy had an explicit synthetic-project `write_file` allow rule, so its permission prompt was not the boundary. Both children exited zero after the fake model acknowledged the refusals, which also shows why exit zero alone cannot establish task success.
+
+Agy listener ownership was observed while the fake model response was held: the native agy process owned two `127.0.0.1` TCP listening sockets and no separate process in its owned group. No authentication conclusion is drawn from this observation.
+
+These receipts establish private-home startup, successful MCP round trips and preliminary native-tool mutation refusal. The following positive controls establish the tested ambient-source exclusions. Authenticated account compatibility and the final broker/profile remain unproved.
+
+## Kimi ambient-source positive control
+
+A synthetic ambient HOME/tool home and synthetic trusted project were populated with user, root-project, cwd-project and installed-plugin MCP decoys. The plugin had a skill description nonce and a `UserPromptSubmit` hook writing an owned marker. In the ambient native positive control, all four decoy servers received `initialize` and `tools/list`, the model request contained the plugin skill description, and the hook marker appeared. This establishes that the fixtures were active rather than malformed or hidden only by a tool whitelist.
+
+The isolated native leg switched both HOME and KIMI_CODE_HOME, used a clean cwd, explicit empty skills directory and explicit agent file, and denied reads of the synthetic project's two MCP config files. The same configured ambient sources remained present. No decoy connection, skill description or hook marker appeared. Both legs returned through the local fake model, preserved real configuration hashes, and removed their temporary home/session tree after verified group teardown. This proves these source exclusions for the preliminary R0 profile; final production broker/profile receipts remain required.
+
+## Agy ambient-source positive control
+
+A synthetic ambient HOME and project held distinct user/project MCP entries, hooks and skills. A local synthetic plugin contained its own MCP entry, hook and skill and was installed with native `agy plugin install` inside the same synthetic HOME and sandbox. The install completed with one MCP server, one hook and one skill processed. The ambient native run initialized and listed tools from all three MCP sources, and all three hook markers appeared. The isolated native leg switched to a fresh HOME and clean cwd, did not reuse imported plugin/config/cache state, disabled slash commands, and denied reads of the synthetic project's `.agents` tree. No decoy connection or hook marker appeared. A follow-up captured `systemInstruction`: the ambient model requests contained all three skill-description nonces, while the isolated leg contained none. Installation output alone was not counted as proof of model disclosure.
+
+## Auth and listener evidence boundary
+
+Host inspection of only the configured Kimi OAuth slot confirmed file storage and the expected token field names. No token value was printed, staged or supplied to a native child. The snapshot was not valid beyond a ten-minute review deadline. It was not refreshed or copied. Pinned source supports a non-refresh static access-token provider, but managed protocol/header compatibility and real service acceptance remain unverified. Missing/expired snapshots must be unavailable, rather than triggering login or independently refreshing a copy while the person's TUI may refresh the same account.
+
+Agy's private-home Gemini API-key mode is proven only with a fixture key/local provider. The person's existing settings use the native account mode. Historical Keychain service reports for 1.0.0 and desktop language-server CSRF flags do not prove 1.4.2 CLI auth or listener protection. No Keychain access was granted or attempted. Neither broad `*.googleapis.com` egress nor a copied native OAuth token is justified by the receipts.
+
+## Native OAuth follow-up under the hold ruling
+
+At 08:19 UTC on 2026-10-19, installed Kimi 2.2.0 ran four bounded native OAuth cases under the same private-HOME/Seatbelt restrictions. This probe did not set any static API-key provider or `KIMI_MODEL_*` override. A private provider of type `kimi` used its native file-backed OAuth reference and an Anthropic-protocol local model endpoint. Its synthetic credential record contained an invented access token, positive expiry and token metadata, with `refresh_token` omitted. No actual credential was read, refreshed or copied for this probe. The only network destination was the host-owned fake endpoint; launching `/usr/bin/open` was denied.
+
+| Synthetic native OAuth case | Native result | Model requests | OAuth refresh requests | Synthetic token unchanged |
+| --- | --- | --- | --- | --- |
+| Fresh (7,200 seconds remaining; `expires_in: 7200`) | Exit 0, `R0_OAUTH_OK` | 1 | 0 | Yes |
+| Inside refresh threshold (60 seconds remaining) | Exit 1, missing refresh token | 0 | 0 | Yes |
+| Expired | Exit 1, missing refresh token | 0 | 0 | Yes |
+| Fresh token, model returns 401 | Exit 1, missing refresh token | 1 | 0 | Yes |
+
+The successful native request used `x-api-key` to carry the synthetic OAuth access token, as selected by the native Anthropic requester. That header does not turn this fixture into a static provider: credentials were resolved through the native OAuth reference, and the forced-401 case entered OAuth recovery. In the threshold, expired and forced-401 cases the OAuth lock-target sentinel file appeared only under the private tool home; the transient lock directory is its `.lock` sibling. No refresh request followed. Real configuration hashes remained unchanged in all cases, owned groups were reaped, and the complete temporary home/session tree was deleted. The cases were short probes, not a ten-minute authenticated review or TUI coexistence test.
+
+Pinned Kimi source explains the result: omitted refresh fields become empty; fresh credentials return before lock/refresh; the refresh threshold is `max(300, expires_in / 2)` seconds; forced refresh and missing refresh credentials fail before the refresh network operation. A review-length admission would therefore need `expires_at - now` greater than the entire review deadline plus that threshold and clock margin. Checking only that expiry exceeds the deadline is insufficient. Zero/unknown expiry cannot be used to claim freshness. [Token decoding](https://github.com/MoonshotAI/kimi-code/blob/472192c34c1efad89a369870eff0da0b708ce9bb/packages/oauth/src/types.ts#L84), [threshold and refresh ordering](https://github.com/MoonshotAI/kimi-code/blob/472192c34c1efad89a369870eff0da0b708ce9bb/packages/oauth/src/oauth-manager.ts#L303), [401 recovery](https://github.com/MoonshotAI/kimi-code/blob/472192c34c1efad89a369870eff0da0b708ce9bb/packages/agent-core-v2/src/human/credentials/credentials.ts#L21).
+
+This establishes a version-specific synthetic access-only OAuth candidate, not a documented dedicated access-only mode or a real-account path. Sharing the real JSON read-only would expose its refresh token too, so it is not an acceptable substitute. No CLI credential IPC or guarantee that a TUI refresh preserves the snapshot's validity has been established. A host-only projection of access fields into a private OAuth record could be assessed in a later ruling; no such real projection is authorized or performed here.
+
+## Bounded agy OAuth and listener investigation
+
+The official 1.4.2 tag resolves to `86a5bdda81a063d707ac4ab87fb72f7dfe30ab67`. Its complete, untruncated public tree contains documentation, issue templates and examples, not the native OAuth/listener implementation. The current authentication documentation describes OS-keyring silent sign-in, browser/SSH OAuth and enterprise ADC, without a version-applicable access-only credential/profile interface. [Tagged tree](https://github.com/google-antigravity/antigravity-cli/tree/86a5bdda81a063d707ac4ab87fb72f7dfe30ab67), [official authentication contract](https://antigravity.google/docs/install).
+
+As checked on 2026-10-19, upstream auth-profile request [#381](https://github.com/google-antigravity/antigravity-cli/issues/381), subscription-headless request [#1194](https://github.com/google-antigravity/antigravity-cli/issues/1194), and local-service-authentication request [#965](https://github.com/google-antigravity/antigravity-cli/issues/965) remain open. They are requests from users, not maintainer confirmation that every narrow path is impossible. A maintainer describes the shared token source used during refresh in 1.2.9 in [#1091](https://github.com/google-antigravity/antigravity-cli/issues/1091); this does not establish an isolated, no-refresh contract for 1.4.2. Enterprise network allowlists similarly do not prove a minimal consumer-subscription endpoint set.
+
+No supported narrow 1.4.2 OAuth path or authenticated local-listener contract was established within this public-source and credential-free probe boundary. In particular, exact-port discovery cannot prove the client authenticates the service, that another local client is rejected, or that reconnect/rebind/IPv6 changes fail closed. These are unresolved requirements, not a finding that agy is vulnerable. No real-account native run, Keychain lookup, login, credential export, broad egress or listener privilege expansion was attempted under the hold ruling.
+
+The next decision needs either a version-applicable supported contract covering those boundaries or separately authorized, bounded evidence gathering that does not refresh, copy or widen real credentials. Neither production availability nor impossibility is claimed.
+
+## Primary-source constraints
+
+Kimi print mode forwards `--agent-file` and explicit `--skills-dir`; ACP bootstrap does not forward those options. MCP startup merges config sources, and even untrusted-project diagnostics can try to read project MCP files. An isolated clean native cwd and kernel denial of ambient files must therefore be proved. OAuth refresh storage/locking must preserve the person's TUI; copying a refresh token into a separate home is not accepted as coexistence evidence. [Pinned Kimi source](https://github.com/MoonshotAI/kimi-code/tree/472192c34c1efad89a369870eff0da0b708ce9bb).
+
+Agy's headless workspace writes are automatically allowed and its plan mode is a prompt prefix. Its own sandbox is not the reviewer read-only guarantee. Account-free inventory can use the documented Gemini provider setting, dummy key and local base URL, but installed-version behavior must be observed. [Headless](https://antigravity.google/docs/cli/headless), [authentication/provider configuration](https://antigravity.google/docs/install), [GitHub's pinned private-home harness](https://github.com/github/gh-aw/blob/8c885156117f098a280fb75c0f47f750a566ff3e/actions/setup/js/agy_harness.cjs).
+
+A whole-process sandbox cannot give an ordinary MCP child access to the full hub `control-token`: token holders can select other control roles. A fixed, revocable, task-bound two-tool broker outside the sandbox is the agreed direction. The broker itself receives only the two host-bound operations and never the full control token; no broker implementation is included in R0.
+
+## Historical strict-isolation requirements, superseded by the native-policy ruling
+
+- Final broker inventory/self-check, including refused unknown MCP tools and malformed arguments.
+- Final-profile ambient-source exclusion and immutable host-owned broker/config files (R0 ambient-source controls passed for both installed tools).
+- Final production-profile target read and mutation refusals, preexisting alias checks, private/credential denial and model-only network.
+- Exact auth source and safe refresh behavior, without whole-home access.
+- Session/home cleanup after success, failure and timeout; real config hashes unchanged.
+- Kimi TUI identity/project MCP byte parity and shared-account quota fanout.
+
+No runtime availability claim is made until these receipts pass.
+
+## Earlier R0 gate state (historical)
+
+This is an R0 evidence report, not a feature-completion or availability receipt. No launcher, registry, daemon, spec contract or default pool was changed. Full tests, typecheck, mutation seeds and exact-head CI have not run for an implementation. One agy skill-disclosure probe was refused before execution by resource admission (exit 75, another heavyweight process). After a fresh process read confirmed that process had exited, one admitted follow-up completed and established the three skill-description positive/negative controls. The deferral itself is not counted as a test result. Auth-scope and native-listener questions were sent to the planner before production work.
+
+
+## Kimi quota observation ceiling
+
+Kimi 2.2.0 print stream-json forwards no token-count or terminal usage event. The native internal status event is not forwarded by the print writer. The backend therefore reports no invented usage. Existing account-level quota/manual pauses still bind all declared Kimi account members; the optional token soft limit can only reflect actual measurements available from other supported sources. [Print event dispatch](https://github.com/MoonshotAI/kimi-code/blob/472192c34c1efad89a369870eff0da0b708ce9bb/apps/kimi-code/src/cli/v2/run-v2-print.ts#L681), [JSON writer](https://github.com/MoonshotAI/kimi-code/blob/472192c34c1efad89a369870eff0da0b708ce9bb/apps/kimi-code/src/cli/prompt-render.ts#L149).
+
+
+## Single live Kimi attempt, incomplete
+
+At 09:27 UTC on 2026-10-19, one authorized native-account invocation ran against an independent disposable git fixture and scratch hub, not the person's project board. The public fixture deliberately returned subtraction from an addition function. The host managed-config projection and native Kimi 2.2.0 version probe passed, and one fresh running-child authority was observed. The version probe does not exercise native agent parsing, session creation or OAuth readiness. The child ended after approximately 1.9 seconds without a verdict; the scratch task remained `in_review`. This is not a successful authenticated review or a defect-finding pass. Native stderr/prose was intentionally not retained by that harness, so an auth, quota, CLI or model failure cannot be distinguished from this receipt. No retry, re-login, manual refresh or credential repair was attempted.
+
+The native config, user MCP and canonical project MCP SHA-256 values were identical before/after. Both owned reviewer preparation roots, the scratch daemon and fixture root were removed after teardown. No actual attached Kimi TUI was running; the concurrent fake-OAuth native TUI stand-in remains the only coexistence race evidence. Receipt: external `scratchpad/temp/agent-hub-533/live-kimi-review-20261019.json`, producer source `9f548261333b8d820fd8ff7604083160e526dcd9`. A later source-only registry/test change does not supply the missing live verdict. A bounded diagnostic follow-up or a confirmed account window was requested from the planner; live acceptance remains open.
+
+The pinned registry expectations changed intentionally with the #533 amendment: Kimi now resolves its native-policy/task-MCP factory and joins the default pool; agy alone retains unavailable metadata with its #485 reason. The legacy non-fresh Kimi transport, ordinary implementer selection and agy ownership refusals remain tested. These are changed contract assertions, not a relaxed guard.
+
+
+## Authorized diagnostic follow-up, weekly quota refusal
+
+The planner authorized one bounded diagnostic invocation after the incomplete live attempt. It repeated the disposable scratch setup with at most 64 KiB of combined stdout/stderr captured privately, plus the native exit status. Native Kimi exited 1. The classified cause is quota/rate limit, supported by the minimal redacted line: `error: failed to run prompt: provider.auth_error: 403 You've reached your weekly (7-day) usage limit. Your quota will reset when the current 7-day window ends.` The response supplied no exact reset timestamp. No auth-expiry or argument failure is inferred.
+
+Only 586 diagnostic bytes were captured; authentication fields, bearer/cookie/device identifiers and opaque values were scrubbed before reporting. Raw diagnostic state was removed with the owned root after classification. Configuration/MCP hashes remained identical, both reviewer roots were removed and daemon teardown completed. There was no re-login, manual refresh, credential repair or additional invocation in the same quota window. The first failed-run receipt is retained as historical evidence, not rewritten as a pass. A single live-verdict rerun waits for a confirmed new quota window. External receipt: `diagnostic-live-kimi-review-20261019.json`.
+
+The first exact-head CI stopped at a new test's optional `variant.budget` access. That test now uses the optional type correctly; typecheck and the two affected registry/daemon files passed 10/0 afterward. Full CI must run again on the corrected head; the earlier passing focused count is not a full-gate receipt.
+
+
+## Post-topup live verdict and receipt coverage
+
+After the person enabled additional Kimi usage, exactly one authorized account invocation ran on PR #539 head `b957a28375ae995abf0b0a106564ed65c7fa8d96`. Native Kimi exited 0 after 39.4 seconds. One running-child authority and one actual `changes_requested` verdict were recorded with `reviewContext: fresh`, `reviewerFamily: kimi` and `reviewerReason: rotation`, against the unchanged fixture head `ed5ed6bc9db3b054f8b1faefe790c8d2df73adee`. The task returned to `in_progress` through the normal reopen after changes requested. No quota refusal occurred.
+
+The verdict text was scrubbed, so this proves transport and a fresh verdict, not the quality of the finding. The extra lexical predicate was false and is now recorded as `advisory: false (note scrubbed, not attributable)`; it is excluded from execution pass/fail and was not changed to true. The original failed harness receipt remains byte-for-byte preserved. The lineage-bound advisory receipt separates the accepted transport result from incomplete observational coverage. No additional account invocation was made.
+
+| Live-receipt item | Evidence and limit |
+| --- | --- |
+| No canary write; project tree byte-identical and no canary file | Not collected before teardown. The fixture commit stayed unchanged, but there was no working-tree byte snapshot or explicit canary-absence check. The deleted fixture cannot now establish this. No kernel sandbox is claimed. |
+| Only hub MCP server and its two tools | The current backend produces only the task-bound hub server and exact-two-tool agent; the receipt records its policy metadata. Earlier native R0 model disclosure showed exactly two tools. The account-run runtime inventory was not retained, so producer metadata is not presented as that observation. |
+| Decoys absent | Earlier R0 native positive/negative controls are retained above with their original isolation-profile limit. This account invocation did not collect live decoy connection counters, so the earlier control is not relabelled as the final no-Seatbelt account run. |
+| No session files retained | Observed: both owned reviewer preparation roots, scratch daemon and fixture root were removed after teardown; the reviewer was offline. |
+| Real configuration hashes unchanged | Observed: native config, user MCP and canonical project MCP before/after SHA-256 values were identical; the worktree MCP file stayed absent. |
+
+The accepted fresh-verdict result therefore does not fill the listed collection gaps. They were reported to the reviewer before marking ready, as requested; no second call is authorized to fill them. The producer files and raw native output were already removed. External receipts are `live-kimi-post-topup-20261019.json` (original) and `live-kimi-post-topup-20261019-advisory.json` (original SHA-256 lineage, advisory false and explicit coverage matrix). The harness source now treats model wording as advisory without a new account run.
+
+Exact-head CI `39230896104` at the tested source head was green: Ubuntu `4262 pass`, macOS `4316 pass`, both `0 fail` and `check: OK`, plus all 424 mutation guards across four shards. These gate results do not substitute for uncollected native observations.
+
+
+## Complete-collector live run, 2026-10-19
+
+The person authorized exactly one further live invocation after the collectors were proved account-free. The normal fake Kimi CLI passed every required observation with `advisory: false`. Each of the three decoy detectors first saw one direct local positive-control request and was reset. A negative fake then deliberately contacted the user decoy: it recorded one request and failed the final decoy fence despite a valid fresh verdict and all other checks passing. These are account-free controls, not relabelled R0 native observations.
+
+The subsequent single live invocation used PR source head `50c2f9358ddbe7a27a2bfb33198329c896e24a59` and installed Kimi 2.2.0. It exited 0 after 35.754 seconds and recorded one fresh `changes_requested` verdict for fixture head `6a3dbdcb59681e14fbfb79e1ab39011d6a1b4984`, with family `kimi` and rotation reason. Verdict prose was scrubbed; its quality is not proved and the false lexical advisory is not a gate. No further live invocation followed.
+
+| Required live item | New observation before teardown |
+| --- | --- |
+| Project tree byte parity and no canary | Before/after tree hash was `eaa1f231c7ec278b121eb25720cf77a8b4017343dc5fb90e4610b081e3e85326`. The bounded lstat snapshot included every file's bytes/hash, directory modes and symlink targets outside `.git`. Both status replies were `?? .kimi-code/mcp.json`, the intentionally planted decoy. HEAD matched the fixture head and explicit `AHUB_REVIEW_CANARY` absence checks were true before/after. This is end-state parity, not proof against write-then-restore or `.git` metadata writes. |
+| Hub runtime inventory and calls | The host-side server fetch observer recorded one authenticated, matching-id `tools/list` response containing exactly `hub_review` and `hub_task_show`, then successful matching-id, same-task calls to `hub_task_show` and `hub_review`. It checked JSON-RPC errors and `result.isError`, not just HTTP 200. It retained no headers, arguments or result prose. This is hub-side inventory, not a capture of every native model schema. |
+| User/project/plugin decoys absent | The synthetic ambient HOME/tool home, project `.kimi-code/mcp.json`, and enabled local-path plugin manifest/registry each referenced an independent owned decoy server. Their detector positive controls were each 1 before reset; all three request counters stayed 0 through confirmed daemon teardown. Counters observe HTTP/MCP requests, not raw TCP SYNs. Real user/plugin/project config was not edited. Managed-only config was projected by the production backend; the synthetic ambient tool home linked the same real credential/lock directories and device identity without token reads or copies. |
+| No session files retained | Both private reviewer roots and the complete owned scratch tree were removed after daemon/child teardown; the reviewer was offline. |
+| Unchanged real config hashes | Captured real paths were fixed before switching to synthetic ambient source paths. Native config, user MCP and canonical project MCP hashes were identical before/after. The source-worktree MCP file stayed absent. |
+
+The original aggregate harness result is still **failed**: it also recorded one generic `bounded hub MCP observation failed` entry and therefore failed its completeness assertion, despite all required observations above being present. Its error entry did not retain method/status metadata, so the actual extra request cannot be attributed. It is not reported as a production failure or silently changed to pass.
+
+An account-free fake CLI adding a normal `GET /mcp` reproduced that exact extra error: the observer tried to parse the empty GET body as JSON after the fixed server refused it. A corrected observer records non-POST 405 transport refusals separately; the same fake GET control then passed with the required observations intact. This establishes a collector false-positive path, not retrospective proof of which request caused the live entry. No new live call was made after that fix. The original receipt and producer source hashes remain preserved for review.
+
+External receipts under `scratchpad/temp/agent-hub-533`: `complete-kimi-fake-positive.json`, `complete-kimi-fake-negative.json`, `complete-kimi-live-20261019.json`, `complete-kimi-fake-get-repro.json`, and `complete-kimi-fake-get-fixed.json`. `complete-kimi-harness-source.json` pins the four original producer files. The earlier incomplete and advisory receipts remain historical; this new table supplies their previously missing measurements without rewriting them. The last production-source change remains the code tested by exact-head CI `39230896104`; later commits change only this verification report, and their final-head gate is tracked separately.
+
+
+## Review follow-up at source 70fe6825
+
+Independent review requested the following host-only fixes; no additional Kimi account invocation was made.
+
+- P1: each running print child now keeps its immutable envelope head/review revision. Both task-MCP current checks and the daemon's captured verdict-authority closure recheck `Tasks.reviewBindingCurrent`. Legacy print `hub_task_show` is fenced before and after its host await as well. Real daemon/Tasks tests reproduced stale head and same-reviewer revision access before the fix; they now refuse reads and approvals over both transports with unchanged history. A lifecycle-head replacement is also covered.
+- A successful host-committed verdict ends its own in-review binding. Its existing acknowledgement may return, while subsequent calls and read results after lost authority remain refused; a red-first acknowledgement regression and a read-result control cover this distinction.
+- M1: close spies cover normal exit, admission revocation during preparation and native-policy abort. The abort case initially observed zero closes at settlement; explicit idempotent revocation now closes before abort/stop settlement. A dropped-close mutation is detected.
+- M2/M3: credential and OAuth fixture files survive cleanup. Parsed YAML tools must equal exactly the two hub names and subagents must be empty. The mutation adds native Kimi `Write`, not an invented identifier.
+- M4: stop fixtures record actual SIGTERM, verify elapsed locked grace, prove incomplete stops preserve the child, and cover lock removal during grace and no-lock group teardown.
+- M5/M6: rotation takes the modulo over kinds with declared candidates, retaining blocked declared kinds and appending undeclared trace slots afterward. Seeds 0 through 5 split two declared kinds 3/3. Three pinned old-contract expectations changed with the planner's spec amendment. Smoke, area notes and the spec consistently describe receipt-covered Kimi availability and the remaining native ceilings.
+- M7: preparation refuses lexical or physical private-cwd ancestors containing `.git`, `.kimi-code` or `AGENTS.md`, including gitfiles and dangling markers. The current fence repeats the check if a marker appears after preparation. Four initial ancestor regressions and the late-marker regression failed before their fixes.
+
+Validation: pinned Bun 1.4.2 focused tests passed `87 pass`, `0 fail`, 624 assertions across 11 files, and TypeScript was clean. Six selected mutation guards passed unmodified code and failed their named assertion after changing the write allowlist, MCP close, captured daemon binding, initial/current ancestor guards or declared-kind denominator. All 429 manifest anchors are unique. The 0.12.37 plugin bundle was regenerated. The new exact-head CI remains the completion gate; the earlier source-head CI and native receipts are preserved as historical evidence, not claimed for a changed tree. The connector thread will be answered with the pushed fix and final gate result.

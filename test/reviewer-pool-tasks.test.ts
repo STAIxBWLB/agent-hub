@@ -121,12 +121,12 @@ test("each failed candidate is attempted once per round and final exhaustion rem
 });
 
 test("unavailable-only declarations keep done in human review with an omitted pool setting", async () => {
-  const { tasks, task, bus } = await rig({ instances: () => ({ "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }), roles: { "kimi-review": ["reviewer"] }, review: { adaptive: false, min_reviews: 5 } });
-  const unavailable = new Reviewer("kimi-review"); bus.add(unavailable); await unavailable.start();
+  const { tasks, task, bus } = await rig({ instances: () => ({ "agy-review": { kind: "agy", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }), roles: { "agy-review": ["reviewer"] }, review: { adaptive: false, min_reviews: 5 } });
+  const unavailable = new Reviewer("agy-review"); bus.add(unavailable); await unavailable.start();
   const done = await tasks.done("codex", task.id, "ready");
   expect(done).toMatchObject({ state: "in_review", reviewer: "user" });
   expect(done.history.at(-1)?.reviewBlocked).toBe(true);
-  expect(tasks.explain(task.id).join("\n")).toContain("#533");
+  expect(tasks.explain(task.id).join("\n")).toContain("agy is an implementer peer (#485)");
 });
 
 test("retry accepts bounded free-text commit refs and ignores unrelated bookkeeping", async () => {
