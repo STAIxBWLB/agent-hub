@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import { parsePiFlags } from "./native-cli-pi.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
@@ -12,8 +13,9 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
   }
   const flags = parsePiFlags(args, fail);
+  const acceptedMode = ctx.helpers.readControl(stateDir)?.startModes?.[peer];
   // #269: with no flag, Pi's start mode decides, and that is its TUI unless a person set headless.
-  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "pi")) };
+  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "pi")) };
   if (ctx.instance && options.mode !== "headless") fail("extra Pi instances require headless mode");
   if (flags.mode === undefined && options.mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY)) {
     // The default asked for the TUI and there is no terminal here (the console's command line, a script): the hub
@@ -22,6 +24,8 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
     if (Object.keys(flags).length) fail("Pi's TUI needs a terminal, and these options are not passed to one the hub opens: run this in a terminal, or add --mode headless");
     const hub = await connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35_000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "pi start refused");
@@ -36,6 +40,8 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const before = readControl(stateDir);
   if (recovering && before?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
   const res = await hub.request({ t: "start", peer, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok) fail(res.error);

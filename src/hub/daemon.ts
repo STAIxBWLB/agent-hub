@@ -25,7 +25,7 @@ import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
-import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
+import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
@@ -97,7 +97,7 @@ import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts"
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, type DashboardSession } from "./ui.ts";
 import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
-import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
+import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
@@ -695,6 +695,28 @@ export async function startDaemon(opts: DaemonOptions) {
   let configRevision = 0;
   let reloadConfirmation: { token: string; fingerprint: string; revision: number; keys: string[] } | undefined;
   let pendingRestart: { key: string; reason: string }[] = [];
+  let retainedConfig: { key: string; reason: string }[] = [];
+  function retainedConfigAfterReload(sources: ConfigSources, fileConfig: HubConfig, rejected: readonly { key: string; reason: string }[], scope?: string): { key: string; reason: string }[] {
+    const rows = new Map<string, string>();
+    if (scope) for (const row of retainedConfig) {
+      if (row.key === scope) continue;
+      const route = row.key.startsWith("routing."), path = (route ? row.key.slice(8) : row.key).split(".");
+      const current = valueAt(route ? sources.routing : fileConfig, path), accepted = valueAt(route ? desiredRouting : desiredConfig, path);
+      if (JSON.stringify(current) !== JSON.stringify(accepted)) rows.set(row.key, row.reason);
+    }
+    for (const row of rejected) rows.set(sanitize(row.key).slice(0, 160), sanitize(row.reason).slice(0, 1200));
+    return [...rows].map(([key, reason]) => ({ key, reason })).sort((left, right) => left.key.localeCompare(right.key));
+  }
+  function retainedLaunchConfig(peer: string): Record<string, unknown> | undefined {
+    const keys = definitionOf(peer)?.cli.launchConfigKeys ?? [];
+    const pending = retainedConfig.filter(row => keys.some(key => row.key === key || row.key.startsWith(`${key}.`)));
+    if (!pending.length) return;
+    return Object.fromEntries(pending.map(row => [row.key, valueAt(config, row.key.split("."))]));
+  }
+  const includeRetainedLaunchConfig = (peer: string, result: Record<string, unknown>): Record<string, unknown> => {
+    const values = retainedLaunchConfig(peer);
+    return values ? { ...result, retainedLaunchConfig: values } : result;
+  };
   let lastReloadFailure: string | undefined;
   let reloadDebounce: ReturnType<typeof setTimeout> | undefined;
   let configWatchPending = false;
@@ -2657,6 +2679,8 @@ export async function startDaemon(opts: DaemonOptions) {
     version: VERSION,
     pluginBundle: SERVER_JS,
     pendingRestart,
+    retainedConfig,
+    startModes: Object.fromEntries(START_MODE_PEERS.map(peer => [peer, startModeOf(config.peers, peer, declarations)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
@@ -4124,7 +4148,7 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       attention: attentionStatus.attentionInput,
       pet,
-      status: { peers: peerView, pendingRestart, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
+      status: { peers: peerView, pendingRestart, retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
@@ -4374,6 +4398,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
+      retainedConfig = retainedConfigAfterReload(sources, prepared.fileConfig, prepared.rejected, scope);
       storedConfigCache = undefined;
       if (beforeConductor && (beforeConductor !== conductorPeer(config.roles) || config.conductor.feed === "off")) {
         bus.revokeSupervision(beforeConductor); supervision.resetPending(beforeConductor); budgetFeedSeen.clear();
@@ -4382,7 +4407,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (prepared.guarded.length) reloadConfirmation = { token: randomUUID(), fingerprint, revision: configRevision, keys: prepared.guarded };
       const refusal = prepared.rejected.map(item => `${item.key}: ${item.reason}`).join("; ");
       const failure = refusal ? `${fingerprint}:${refusal}` : undefined;
-      if (failure && lastReloadFailure !== failure) { try { notify(`configuration keys retained: ${sanitize(refusal).slice(0, 1200)}`); } catch { log("configuration keys retained; notice unavailable"); } }
+      if (failure && lastReloadFailure !== failure) { try { notify(`config retained: ${retainedConfig.map(item => item.key).join(", ")}; run ahub settings reload`); } catch { log("configuration retained notice unavailable"); } }
       lastReloadFailure = failure;
       writeStatus();
       const applied = [...changes.filter(change => change.applies !== "restart").map(change => change.key), ...routingChanges.filter(key => configApply(key).applies !== "restart")];
@@ -4418,7 +4443,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
     catch { return {}; }
   }
-  function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[] } {
+  function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[]; retainedConfig: { key: string; reason: string }[] } {
     const stored = storedConfig();
     // What the loader would say about the files as they are: an overlay that does not parse, or one that no longer
     // merges (it names a route routing.toml dropped), leaves the last good policy in force, and the rows say why.
@@ -4437,7 +4462,7 @@ export async function startDaemon(opts: DaemonOptions) {
     });
     const undo = pendingUndo(opts.stateDir);
     const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it makes that peer the only planner; agents cannot change it.`;
-    return { pendingRestart, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
+    return { pendingRestart, retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
   const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false, reason?: string) => {
@@ -5189,8 +5214,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const heldBack = hushed.length > 0 && hushed.length === bus.audience(env).length;
         const refused = c.peer && !heldBack ? admit(admittedEnv, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
-        const targets = bus.publish(env);
+        const { targets, dropped } = bus.publishResult(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
+        if (dropped === "hop") return void reply({ t: "sent", ok: true, targets, dropped, recorded: priority === "fyi",
+          notice: `not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to` });
         if (hushed.length && !targets.length) return void reply({ t: "sent", ok: false, error: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` });
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi", ...(offRoster.length ? { offRoster } : {}), ...(hushed.length ? { hushed: hushed.map((h) => h.peer) } : {}), ...((offRoster.length || hushed.length) ? { notice: [offRoster.length ? `retained off roster for ${offRoster.join(", ")}` : "", hushed.length ? `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` : ""].filter(Boolean).join("; ") } : {}) });
       }
@@ -5528,7 +5555,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.
         if (c.role !== "console") return void reply({ ok: false, error: "peer_start is a console command; use hub_peer_start with the conductor role" });
-        void hubStart(msg.peer, "the console").then(reply, (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
+        void hubStart(msg.peer, "the console").then(result => reply(includeRetainedLaunchConfig(String(msg.peer), result)), (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
         return;
       case "peer_stop":
         if (c.role !== "console") return void reply({ ok: false, error: "peer_stop is a console command; the person runs ahub stop in a terminal" });
@@ -5542,7 +5569,7 @@ export async function startDaemon(opts: DaemonOptions) {
           .catch((e: Error) => ({ ok: false, error: e.message }))
           .then((r) => {
             if (!r.ok) log(`start ${msg.peer} failed: ${r.error}`);
-            reply({ t: "started", ...r });
+            reply({ t: "started", ...includeRetainedLaunchConfig(String(msg.peer), r) });
           });
         return;
       case "task":

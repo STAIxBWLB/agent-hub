@@ -279,6 +279,8 @@ export interface AdapterDefinition {
   };
   cli: {
     command: string;
+    /** Configuration leaves that select this peer's next native launch command or provider profile. */
+    launchConfigKeys?: readonly string[];
     /** Restrictions only; core identity remains authoritative. */
     authority?: "person" | "conductor";
     personOnlyFlags?: readonly string[];

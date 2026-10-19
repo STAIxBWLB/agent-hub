@@ -408,7 +408,7 @@ function renderSettings(settings, roster = []) {
     }
   });
   const reloadSlot = settingSlots.get('$reload'), reloadSupported = Array.isArray(settings.pendingRestart);
-  const reloadSignature = JSON.stringify([settings.pendingRestart, managerMode && !snapshotValid]);
+  const reloadSignature = JSON.stringify([settings.pendingRestart, settings.retainedConfig, managerMode && !snapshotValid]);
   if (reloadSlot && reloadSlot.signature !== reloadSignature) {
     reloadSlot.signature = reloadSignature; reloadSlot.node.replaceChildren();
     if (reloadSupported) {
@@ -416,6 +416,11 @@ function renderSettings(settings, roster = []) {
       if (settings.pendingRestart.length) {
         reloadSlot.node.append(el('p', 'Pending restart', 'label'));
         for (const pending of settings.pendingRestart) reloadSlot.node.append(el('p', pending.key + ': ' + pending.reason, 'meta'));
+      }
+      if (Array.isArray(settings.retainedConfig) && settings.retainedConfig.length) {
+        reloadSlot.node.append(el('p', 'Config retained', 'label'));
+        for (const pending of settings.retainedConfig) reloadSlot.node.append(el('p', pending.key + ': ' + pending.reason, 'meta'));
+        reloadSlot.node.append(el('p', 'Run ahub settings reload to review and apply these values.', 'meta'));
       }
     }
   }
