@@ -119,6 +119,7 @@ import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type Contex
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
 import { looksSecret, DEFAULT_LEASE_MS, extractNodes, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
+import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, type MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
@@ -979,7 +980,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
   // #258: the hub's own store, machine-wide in ~/.agenthub/memory. Entries are filed under the project's memory key (its
   // normalized origin remote, the same on every machine; without one, its path). Fail-open: without it the hub works as before.
-  const memoryProject = memoryProjectFor(opts.cwd);
+  // Daemon start never depends on the memory home: an unresolvable home falls back to the raw key.
+  const memoryProject = (() => { try { return memoryProjectFor(opts.cwd); } catch { return memoryProjectKey(opts.cwd); } })();
   let memoryStore: MemoryStore | undefined;
   let memoryBinding: MemoryProfileBinding | undefined;
   let memoryProblem: string | undefined;
