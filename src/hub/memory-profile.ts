@@ -82,7 +82,11 @@ const splitMarked = (home: string) => existsSync(join(home, "shards.json"));
 function assertActiveSplit(home: string): void {
   try { readShardedSelection(home); } catch { throw new Error(MEMORY_SPLIT_INCOMPLETE); }
 }
-/** The one profile a binding may hold: this project's shard on a split home, the selected profile otherwise. */
+/**
+ * The one profile a binding may hold: this project's shard on a split home, the selected profile otherwise.
+ * ponytail: the entry fence re-checks the project shard only; the user overlay shares its selection and selector
+ * revision, so its own seal or machine drift goes unchecked. Add resolveShardProfile(home, { user: true }) if needed.
+ */
 function currentProfile(home: string, project: string | undefined): BoundProfile {
   if (!splitMarked(home)) return resolveProfile(home);
   assertActiveSplit(home);
@@ -180,7 +184,9 @@ export function openProfileMemory(opts: ProfileMemoryOptions = {}, onUnavailable
     // first use) with the user shard as its overlay; the binding is resolved after it, since a new shard has no seal yet.
     assertActiveSplit(home);
     if (!project) throw new Error(UNAVAILABLE);
-    raw = openShardStore({ ...storeOptions, project });
+    // The canonical memory directory the binding resolves: a lexical home (a symlinked AGENTHUB_HOME or memory dir)
+    // would give the shard a different profile.home and dir than the binding compares against.
+    raw = openShardStore({ ...storeOptions, home: undefined, memoryDir: home, project });
     try { binding = new MemoryProfileBinding(opts, onUnavailable); }
     catch (error) { raw.close(); throw error; }
   } else {

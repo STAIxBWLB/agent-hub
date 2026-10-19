@@ -9033,12 +9033,39 @@ var init_registry = __esm(() => {
   }));
 });
 
+// node_modules/@staix/agent-mem/src/memory/screen.ts
+var init_screen = () => {};
+
 // node_modules/@staix/agent-mem/src/memory/mutation.ts
 var init_mutation = () => {};
 
 // node_modules/@staix/agent-mem/src/memory/home.ts
 var init_home = __esm(() => {
   init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/search-fts.ts
+var init_search_fts = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/generation.ts
+var init_generation = __esm(() => {
+  init_mutation();
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard.ts
+var init_shard = __esm(() => {
+  init_generation();
+});
+
+// node_modules/@staix/agent-mem/src/memory/capture.ts
+var init_capture = __esm(() => {
+  init_screen();
+  init_platform();
+  init_home();
+  init_shard();
+  init_store();
+  init_search_fts();
 });
 
 // node_modules/@staix/agent-mem/src/memory/ops-contract.ts
@@ -9078,7 +9105,7 @@ function blocked(op) {
     fixtures: [`deny-${op}`]
   });
 }
-var text3, id2, utc, strings, base, identity = "sha256(canonical complete payload without id), first 32 hex; schema, at and machine participate; replay INSERT OR IGNORE", crash = "complete newline is authoritative; append precedes derived-index refresh; incomplete tail waits; refresh/rebuild recovers a complete append", v1, V1_OPS, OP_CONTRACTS, generationId, authoredHash, canonicalUtc, pruneRequired, PRUNE_GENERATION_CONTRACT, GENERATION_OP_CONTRACTS;
+var text3, id2, utc, strings, base, identity = "sha256(canonical complete payload without id), first 32 hex; schema, at and machine participate; replay INSERT OR IGNORE", crash = "complete newline is authoritative; append precedes derived-index refresh; incomplete tail waits; refresh/rebuild recovers a complete append", v1, V1_OPS, OP_CONTRACTS, generationId, authoredHash, canonicalUtc, pruneRequired, PRUNE_GENERATION_CONTRACT, VAULT_LINK_GENERATION_CONTRACT, GENERATION_OP_CONTRACTS;
 var init_ops_contract = __esm(() => {
   text3 = { type: "string" };
   id2 = { type: "string", format: "id" };
@@ -9182,13 +9209,37 @@ var init_ops_contract = __esm(() => {
     crashBoundary: "fsync exact local sealed plan, mutation fence, revalidate proofs/policy, append+fsync complete row then refresh; per-row atomicity; retry skips durable IDs; incomplete own tail completes only from identical persisted-plan prefix; mismatched tail refuses",
     fixtures: ["test/generation-prune.test.ts#only explicit note expires or demote settle by values can prove expiry", "test/generation-prune.test.ts#exact-entry reducer waits for witnesses and cannot be reversed by clock or later deadlines", "test/generation-prune.test.ts#prune partitions private target or basis locally and public attestations bind only public rows", "test/generation-prune.test.ts#prune row shape hashes canonical time ordering placement and byte bounds are strict"]
   });
-  GENERATION_OP_CONTRACTS = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT });
-});
-
-// node_modules/@staix/agent-mem/src/memory/generation.ts
-var init_generation = __esm(() => {
-  init_mutation();
-  init_platform();
+  VAULT_LINK_GENERATION_CONTRACT = Object.freeze({
+    status: "truth-changing",
+    implemented: true,
+    generationOnly: true,
+    targetSemantics: "exact-entry-v1",
+    validator: "validateVaultLinkRow",
+    validation: ["exact string-valued keys; no additional fields; canonical UTC and bounded metadata", "id is canonical complete payload hash excluding id", "bound generation and local authored machine segment must match", "projection requires exact full target id and authored row hash in the same project"],
+    payloadVersion: "agent-mem.vault-link/v1",
+    required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"],
+    payloadSchema: { version: 1, required: ["schema", "op", "generation", "id", "at", "machine", "actor", "placement", "target", "rowHash", "project", "path"], additionalProperties: false, maxUtf8Bytes: 4096, fields: {
+      schema: { type: "string", values: ["agent-mem.vault-link/v1"] },
+      op: { type: "string", values: ["vault_link"] },
+      generation: generationId,
+      id: generationId,
+      at: canonicalUtc,
+      machine: { type: "string", pattern: "^[a-f0-9]{16}$" },
+      actor: { type: "string", values: ["person"] },
+      placement: { type: "string", values: ["local"] },
+      target: generationId,
+      rowHash: authoredHash,
+      project: { type: "string" },
+      path: { type: "string" }
+    } },
+    immutableTargets: "full exact note id and SHA-256 of the complete canonical authored row; project must match; no aliases, promotion ancestry or replacements",
+    placement: "generation local segment only; vault paths are machine-local metadata and never sync; shard migration carries the row to its exact target owner",
+    precedence: "append-only links suppress only their witnessed exact entry from future candidates; independent replacement ids survive; malformed or missing witnesses cannot suppress",
+    identity: "sha256(canonical complete vault-link payload excluding id), first 32 hex; generation, target id, full witness hash and path participate",
+    crashBoundary: "mutation fence and exact id/hash recheck; refuse an incomplete prior tail; append+fsync then derived refresh; complete rows replay, incomplete tails require person inspection",
+    fixtures: ["test/vault.test.ts#vault links refuse shared-v1 and bind exact generation entries, survive rebuild, and never touch v1 logs", "test/vault.test.ts#vault link validation rejects changed payload hashes, foreign generation and public placement", "test/vault.test.ts#vault links retain their exact target through curated shard migration"]
+  });
+  GENERATION_OP_CONTRACTS = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT, vault_link: VAULT_LINK_GENERATION_CONTRACT });
 });
 
 // node_modules/@staix/agent-mem/src/memory/bridge.ts
@@ -9199,6 +9250,11 @@ var init_bridge = __esm(() => {
   init_store();
 });
 
+// node_modules/@staix/agent-mem/src/memory/shard-bridge.ts
+var init_shard_bridge = __esm(() => {
+  init_bridge();
+});
+
 // node_modules/@staix/agent-mem/src/memory/prune.ts
 var init_prune = __esm(() => {
   init_generation();
@@ -9207,22 +9263,47 @@ var init_prune = __esm(() => {
 
 // node_modules/@staix/agent-mem/src/memory/generation-index.ts
 var init_generation_index = __esm(() => {
+  init_shard();
+  init_shard_bridge();
   init_generation();
   init_bridge();
   init_prune();
   init_store();
 });
 
+// node_modules/@staix/agent-mem/src/memory/migrate.ts
+var init_migrate = __esm(() => {
+  init_bridge();
+  init_mutation();
+  init_platform();
+  init_generation();
+});
+
+// node_modules/@staix/agent-mem/src/memory/reader-lease.ts
+var open;
+var init_reader_lease = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  open = new Map;
+});
+
 // node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
 var init_store = __esm(() => {
   init_platform();
+  init_screen();
   init_mutation();
   init_home();
+  init_search_fts();
+  init_shard();
+  init_capture();
   init_ops_contract();
   init_generation();
   init_generation_index();
   init_bridge();
+  init_migrate();
+  init_reader_lease();
   DEFAULT_TTL_MS = 14 * 24 * 3600000;
   UNSETTLED_MS = 180 * 24 * 3600000;
   DEFAULT_LEASE_MS = 4 * 3600000;
@@ -16157,7 +16238,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.3.1"
+    "@staix/agent-mem": "0.4.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -16206,8 +16287,21 @@ init_roles();
 init_path_policy();
 
 // node_modules/@staix/agent-mem/src/index.ts
+init_search_fts();
 init_store();
+init_capture();
+init_shard();
 
+// node_modules/@staix/agent-mem/src/memory/catalog.ts
+init_home();
+init_shard();
+init_generation();
+init_capture();
+init_store();
+// node_modules/@staix/agent-mem/src/memory/capacity.ts
+init_home();
+init_capture();
+var METRICS_MAX_BYTES = 64 * 1024;
 // node_modules/@staix/agent-mem/src/memory/sync.ts
 init_platform();
 init_mutation();
@@ -16222,6 +16316,16 @@ var zero = "0".repeat(40);
 // node_modules/@staix/agent-mem/src/memory/import.ts
 init_platform();
 init_store();
+init_shard();
+
+// node_modules/@staix/agent-mem/src/memory/work-lists.ts
+init_generation();
+init_mutation();
+init_platform();
+init_screen();
+init_shard();
+init_store();
+var forbidden = new Set(["__proto__", "constructor", "prototype"]);
 // node_modules/@staix/agent-mem/src/memory/project.ts
 init_platform();
 
@@ -16240,16 +16344,69 @@ var COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
 // node_modules/@staix/agent-mem/src/index.ts
 init_ops_contract();
 init_generation();
-
-// node_modules/@staix/agent-mem/src/memory/migrate.ts
-init_bridge();
-init_mutation();
-init_platform();
-init_generation();
-
-// node_modules/@staix/agent-mem/src/index.ts
+init_migrate();
 init_prune();
 
+// node_modules/@staix/agent-mem/src/memory/shard-migration.ts
+init_bridge();
+init_generation();
+init_generation_index();
+init_prune();
+init_mutation();
+init_platform();
+init_reader_lease();
+init_shard();
+init_store();
+init_migrate();
+var USER2 = Symbol("shared-user-shard");
+// node_modules/@staix/agent-mem/src/mcp.ts
+var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength });
+var limit = { type: "integer", minimum: 1, maximum: 100 };
+var object3 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
+var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
+  name,
+  description,
+  inputSchema,
+  annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
+});
+var MCP_TOOLS = [
+  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object3({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
+  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object3({ id: string(80) }, ["id"])),
+  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object3({ id: string(80), since: string(40), limit })),
+  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object3({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
+  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object3({ list: string(200), includeClosed: { type: "boolean" } })),
+  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object3({ list: string(200), fields: {
+    type: "object",
+    minProperties: 1,
+    maxProperties: 64,
+    additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 }
+  } }, ["list", "fields"]), false),
+  tool2("amem_remember", "Propose a general memory candidate for person acceptance. Never writes directly to curated notes.", object3({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] } }, ["text"]), false),
+  tool2("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object3({ limit })),
+  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object3({}))
+];
+// node_modules/@staix/agent-mem/src/mcp-memory.ts
+init_capture();
+init_generation();
+init_home();
+init_platform();
+
+// node_modules/@staix/agent-mem/src/memory/policy.ts
+init_screen();
+init_platform();
+var MAX_BYTES = 256 * 1024;
+var MAX_STRING_BYTES = 16 * 1024;
+var flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
+
+// node_modules/@staix/agent-mem/src/mcp-memory.ts
+init_reader_lease();
+init_search_fts();
+init_shard();
+init_store();
+
+// node_modules/@staix/agent-mem/src/memory/vault.ts
+init_generation();
+init_generation();
 // src/hub/routing.ts
 init_registry();
 init_board();
@@ -19766,7 +19923,7 @@ function bucketFor(state, inst) {
   return bucket;
 }
 var handoff;
-var open = [];
+var open2 = [];
 var memo = {
   alloc(_inst, payload, empty) {
     const bucket = handoff;
@@ -19775,7 +19932,7 @@ var memo = {
     handoff = undefined;
     const entry = { value: empty, issues: null };
     bucket.set(payload.value, entry);
-    open.push(entry);
+    open2.push(entry);
     return empty;
   },
   guard(inst) {
@@ -19846,10 +20003,10 @@ var memo = {
           return payload;
         }
         handoff = bucket;
-        const depth = open.length;
+        const depth = open2.length;
         const result = base(payload, ctx);
         handoff = undefined;
-        const entry = open.length > depth ? open.pop() : undefined;
+        const entry = open2.length > depth ? open2.pop() : undefined;
         if (result instanceof Promise) {
           return result.then((r) => {
             if (entry)
@@ -22004,7 +22161,7 @@ var ZodString = /* @__PURE__ */ $constructor("ZodString", (inst, def) => {
     return this.check(_isoDuration(ZodISODuration, params));
   }
 });
-function string2(params) {
+function string3(params) {
   return _string(ZodString, params);
 }
 var ZodStringFormat = /* @__PURE__ */ $constructor("ZodStringFormat", (inst, def) => {
@@ -22287,7 +22444,7 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object4(shape, params) {
+function object5(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -22352,7 +22509,7 @@ function record3(keyType, valueType, params) {
   if (!valueType || !valueType._zod) {
     return new ZodRecord({
       type: "record",
-      keyType: string2(),
+      keyType: string3(),
       valueType: keyType,
       ...normalizeParams(valueType)
     });
@@ -22626,56 +22783,56 @@ var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION = "2.0";
 var AssertObjectSchema = custom((v) => v !== null && (typeof v === "object" || typeof v === "function"));
-var ProgressTokenSchema = union([string2(), number2().int()]);
-var CursorSchema = string2();
+var ProgressTokenSchema = union([string3(), number2().int()]);
+var CursorSchema = string3();
 var TaskCreationParamsSchema = looseObject({
   ttl: number2().optional(),
   pollInterval: number2().optional()
 });
-var TaskMetadataSchema = object4({
+var TaskMetadataSchema = object5({
   ttl: number2().optional()
 });
-var RelatedTaskMetadataSchema = object4({
-  taskId: string2()
+var RelatedTaskMetadataSchema = object5({
+  taskId: string3()
 });
 var RequestMetaSchema = looseObject({
   progressToken: ProgressTokenSchema.optional(),
   [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
 });
-var BaseRequestParamsSchema = object4({
+var BaseRequestParamsSchema = object5({
   _meta: RequestMetaSchema.optional()
 });
 var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
   task: TaskMetadataSchema.optional()
 });
 var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
-var RequestSchema = object4({
-  method: string2(),
+var RequestSchema = object5({
+  method: string3(),
   params: BaseRequestParamsSchema.loose().optional()
 });
-var NotificationsParamsSchema = object4({
+var NotificationsParamsSchema = object5({
   _meta: RequestMetaSchema.optional()
 });
-var NotificationSchema = object4({
-  method: string2(),
+var NotificationSchema = object5({
+  method: string3(),
   params: NotificationsParamsSchema.loose().optional()
 });
 var ResultSchema = looseObject({
   _meta: RequestMetaSchema.optional()
 });
-var RequestIdSchema = union([string2(), number2().int()]);
-var JSONRPCRequestSchema = object4({
+var RequestIdSchema = union([string3(), number2().int()]);
+var JSONRPCRequestSchema = object5({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
 var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
-var JSONRPCNotificationSchema = object4({
+var JSONRPCNotificationSchema = object5({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
 var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
-var JSONRPCResultResponseSchema = object4({
+var JSONRPCResultResponseSchema = object5({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
@@ -22692,12 +22849,12 @@ var ErrorCode;
   ErrorCode[ErrorCode["InternalError"] = -32603] = "InternalError";
   ErrorCode[ErrorCode["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
 })(ErrorCode || (ErrorCode = {}));
-var JSONRPCErrorResponseSchema = object4({
+var JSONRPCErrorResponseSchema = object5({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema.optional(),
-  error: object4({
+  error: object5({
     code: number2().int(),
-    message: string2(),
+    message: string3(),
     data: unknown().optional()
   })
 }).strict();
@@ -22712,35 +22869,35 @@ var JSONRPCResponseSchema = union([JSONRPCResultResponseSchema, JSONRPCErrorResp
 var EmptyResultSchema = ResultSchema.strict();
 var CancelledNotificationParamsSchema = NotificationsParamsSchema.extend({
   requestId: RequestIdSchema.optional(),
-  reason: string2().optional()
+  reason: string3().optional()
 });
 var CancelledNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/cancelled"),
   params: CancelledNotificationParamsSchema
 });
-var IconSchema = object4({
-  src: string2(),
-  mimeType: string2().optional(),
-  sizes: array(string2()).optional(),
+var IconSchema = object5({
+  src: string3(),
+  mimeType: string3().optional(),
+  sizes: array(string3()).optional(),
   theme: _enum(["light", "dark"]).optional()
 });
-var IconsSchema = object4({
+var IconsSchema = object5({
   icons: array(IconSchema).optional()
 });
-var BaseMetadataSchema = object4({
-  name: string2(),
-  title: string2().optional()
+var BaseMetadataSchema = object5({
+  name: string3(),
+  title: string3().optional()
 });
 var ImplementationSchema = BaseMetadataSchema.extend({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
-  version: string2(),
-  websiteUrl: string2().optional(),
-  description: string2().optional()
+  version: string3(),
+  websiteUrl: string3().optional(),
+  description: string3().optional()
 });
-var FormElicitationCapabilitySchema = intersection(object4({
+var FormElicitationCapabilitySchema = intersection(object5({
   applyDefaults: boolean2().optional()
-}), record3(string2(), unknown()));
+}), record3(string3(), unknown()));
 var ElicitationCapabilitySchema = preprocess((value) => {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     if (Object.keys(value).length === 0) {
@@ -22748,10 +22905,10 @@ var ElicitationCapabilitySchema = preprocess((value) => {
     }
   }
   return value;
-}, intersection(object4({
+}, intersection(object5({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
-}), record3(string2(), unknown()).optional()));
+}), record3(string3(), unknown()).optional()));
 var ClientTasksCapabilitySchema = looseObject({
   list: AssertObjectSchema.optional(),
   cancel: AssertObjectSchema.optional(),
@@ -22773,21 +22930,21 @@ var ServerTasksCapabilitySchema = looseObject({
     }).optional()
   }).optional()
 });
-var ClientCapabilitiesSchema = object4({
-  experimental: record3(string2(), AssertObjectSchema).optional(),
-  sampling: object4({
+var ClientCapabilitiesSchema = object5({
+  experimental: record3(string3(), AssertObjectSchema).optional(),
+  sampling: object5({
     context: AssertObjectSchema.optional(),
     tools: AssertObjectSchema.optional()
   }).optional(),
   elicitation: ElicitationCapabilitySchema.optional(),
-  roots: object4({
+  roots: object5({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ClientTasksCapabilitySchema.optional(),
-  extensions: record3(string2(), AssertObjectSchema).optional()
+  extensions: record3(string3(), AssertObjectSchema).optional()
 });
 var InitializeRequestParamsSchema = BaseRequestParamsSchema.extend({
-  protocolVersion: string2(),
+  protocolVersion: string3(),
   capabilities: ClientCapabilitiesSchema,
   clientInfo: ImplementationSchema
 });
@@ -22795,28 +22952,28 @@ var InitializeRequestSchema = RequestSchema.extend({
   method: literal("initialize"),
   params: InitializeRequestParamsSchema
 });
-var ServerCapabilitiesSchema = object4({
-  experimental: record3(string2(), AssertObjectSchema).optional(),
+var ServerCapabilitiesSchema = object5({
+  experimental: record3(string3(), AssertObjectSchema).optional(),
   logging: AssertObjectSchema.optional(),
   completions: AssertObjectSchema.optional(),
-  prompts: object4({
+  prompts: object5({
     listChanged: boolean2().optional()
   }).optional(),
-  resources: object4({
+  resources: object5({
     subscribe: boolean2().optional(),
     listChanged: boolean2().optional()
   }).optional(),
-  tools: object4({
+  tools: object5({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ServerTasksCapabilitySchema.optional(),
-  extensions: record3(string2(), AssertObjectSchema).optional()
+  extensions: record3(string3(), AssertObjectSchema).optional()
 });
 var InitializeResultSchema = ResultSchema.extend({
-  protocolVersion: string2(),
+  protocolVersion: string3(),
   capabilities: ServerCapabilitiesSchema,
   serverInfo: ImplementationSchema,
-  instructions: string2().optional()
+  instructions: string3().optional()
 });
 var InitializedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/initialized"),
@@ -22826,12 +22983,12 @@ var PingRequestSchema = RequestSchema.extend({
   method: literal("ping"),
   params: BaseRequestParamsSchema.optional()
 });
-var ProgressSchema = object4({
+var ProgressSchema = object5({
   progress: number2(),
   total: optional(number2()),
-  message: optional(string2())
+  message: optional(string3())
 });
-var ProgressNotificationParamsSchema = object4({
+var ProgressNotificationParamsSchema = object5({
   ...NotificationsParamsSchema.shape,
   ...ProgressSchema.shape,
   progressToken: ProgressTokenSchema
@@ -22850,14 +23007,14 @@ var PaginatedResultSchema = ResultSchema.extend({
   nextCursor: CursorSchema.optional()
 });
 var TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-var TaskSchema = object4({
-  taskId: string2(),
+var TaskSchema = object5({
+  taskId: string3(),
   status: TaskStatusSchema,
   ttl: union([number2(), _null3()]),
-  createdAt: string2(),
-  lastUpdatedAt: string2(),
+  createdAt: string3(),
+  lastUpdatedAt: string3(),
   pollInterval: optional(number2()),
-  statusMessage: optional(string2())
+  statusMessage: optional(string3())
 });
 var CreateTaskResultSchema = ResultSchema.extend({
   task: TaskSchema
@@ -22870,14 +23027,14 @@ var TaskStatusNotificationSchema = NotificationSchema.extend({
 var GetTaskRequestSchema = RequestSchema.extend({
   method: literal("tasks/get"),
   params: BaseRequestParamsSchema.extend({
-    taskId: string2()
+    taskId: string3()
   })
 });
 var GetTaskResultSchema = ResultSchema.merge(TaskSchema);
 var GetTaskPayloadRequestSchema = RequestSchema.extend({
   method: literal("tasks/result"),
   params: BaseRequestParamsSchema.extend({
-    taskId: string2()
+    taskId: string3()
   })
 });
 var GetTaskPayloadResultSchema = ResultSchema.loose();
@@ -22890,19 +23047,19 @@ var ListTasksResultSchema = PaginatedResultSchema.extend({
 var CancelTaskRequestSchema = RequestSchema.extend({
   method: literal("tasks/cancel"),
   params: BaseRequestParamsSchema.extend({
-    taskId: string2()
+    taskId: string3()
   })
 });
 var CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-var ResourceContentsSchema = object4({
-  uri: string2(),
-  mimeType: optional(string2()),
-  _meta: record3(string2(), unknown()).optional()
+var ResourceContentsSchema = object5({
+  uri: string3(),
+  mimeType: optional(string3()),
+  _meta: record3(string3(), unknown()).optional()
 });
 var TextResourceContentsSchema = ResourceContentsSchema.extend({
-  text: string2()
+  text: string3()
 });
-var Base64Schema = string2().refine((val) => {
+var Base64Schema = string3().refine((val) => {
   try {
     atob(val);
     return true;
@@ -22914,27 +23071,27 @@ var BlobResourceContentsSchema = ResourceContentsSchema.extend({
   blob: Base64Schema
 });
 var RoleSchema = _enum(["user", "assistant"]);
-var AnnotationsSchema = object4({
+var AnnotationsSchema = object5({
   audience: array(RoleSchema).optional(),
   priority: number2().min(0).max(1).optional(),
   lastModified: datetime2({ offset: true }).optional()
 });
-var ResourceSchema = object4({
+var ResourceSchema = object5({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
-  uri: string2(),
-  description: optional(string2()),
-  mimeType: optional(string2()),
+  uri: string3(),
+  description: optional(string3()),
+  mimeType: optional(string3()),
   size: optional(number2()),
   annotations: AnnotationsSchema.optional(),
   _meta: optional(looseObject({}))
 });
-var ResourceTemplateSchema = object4({
+var ResourceTemplateSchema = object5({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
-  uriTemplate: string2(),
-  description: optional(string2()),
-  mimeType: optional(string2()),
+  uriTemplate: string3(),
+  description: optional(string3()),
+  mimeType: optional(string3()),
   annotations: AnnotationsSchema.optional(),
   _meta: optional(looseObject({}))
 });
@@ -22951,7 +23108,7 @@ var ListResourceTemplatesResultSchema = PaginatedResultSchema.extend({
   resourceTemplates: array(ResourceTemplateSchema)
 });
 var ResourceRequestParamsSchema = BaseRequestParamsSchema.extend({
-  uri: string2()
+  uri: string3()
 });
 var ReadResourceRequestParamsSchema = ResourceRequestParamsSchema;
 var ReadResourceRequestSchema = RequestSchema.extend({
@@ -22976,21 +23133,21 @@ var UnsubscribeRequestSchema = RequestSchema.extend({
   params: UnsubscribeRequestParamsSchema
 });
 var ResourceUpdatedNotificationParamsSchema = NotificationsParamsSchema.extend({
-  uri: string2()
+  uri: string3()
 });
 var ResourceUpdatedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/resources/updated"),
   params: ResourceUpdatedNotificationParamsSchema
 });
-var PromptArgumentSchema = object4({
-  name: string2(),
-  description: optional(string2()),
+var PromptArgumentSchema = object5({
+  name: string3(),
+  description: optional(string3()),
   required: optional(boolean2())
 });
-var PromptSchema = object4({
+var PromptSchema = object5({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
-  description: optional(string2()),
+  description: optional(string3()),
   arguments: optional(array(PromptArgumentSchema)),
   _meta: optional(looseObject({}))
 });
@@ -23001,45 +23158,45 @@ var ListPromptsResultSchema = PaginatedResultSchema.extend({
   prompts: array(PromptSchema)
 });
 var GetPromptRequestParamsSchema = BaseRequestParamsSchema.extend({
-  name: string2(),
-  arguments: record3(string2(), string2()).optional()
+  name: string3(),
+  arguments: record3(string3(), string3()).optional()
 });
 var GetPromptRequestSchema = RequestSchema.extend({
   method: literal("prompts/get"),
   params: GetPromptRequestParamsSchema
 });
-var TextContentSchema = object4({
+var TextContentSchema = object5({
   type: literal("text"),
-  text: string2(),
+  text: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string2(), unknown()).optional()
+  _meta: record3(string3(), unknown()).optional()
 });
-var ImageContentSchema = object4({
+var ImageContentSchema = object5({
   type: literal("image"),
   data: Base64Schema,
-  mimeType: string2(),
+  mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string2(), unknown()).optional()
+  _meta: record3(string3(), unknown()).optional()
 });
-var AudioContentSchema = object4({
+var AudioContentSchema = object5({
   type: literal("audio"),
   data: Base64Schema,
-  mimeType: string2(),
+  mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string2(), unknown()).optional()
+  _meta: record3(string3(), unknown()).optional()
 });
-var ToolUseContentSchema = object4({
+var ToolUseContentSchema = object5({
   type: literal("tool_use"),
-  name: string2(),
-  id: string2(),
-  input: record3(string2(), unknown()),
-  _meta: record3(string2(), unknown()).optional()
+  name: string3(),
+  id: string3(),
+  input: record3(string3(), unknown()),
+  _meta: record3(string3(), unknown()).optional()
 });
-var EmbeddedResourceSchema = object4({
+var EmbeddedResourceSchema = object5({
   type: literal("resource"),
   resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string2(), unknown()).optional()
+  _meta: record3(string3(), unknown()).optional()
 });
 var ResourceLinkSchema = ResourceSchema.extend({
   type: literal("resource_link")
@@ -23051,45 +23208,45 @@ var ContentBlockSchema = union([
   ResourceLinkSchema,
   EmbeddedResourceSchema
 ]);
-var PromptMessageSchema = object4({
+var PromptMessageSchema = object5({
   role: RoleSchema,
   content: ContentBlockSchema
 });
 var GetPromptResultSchema = ResultSchema.extend({
-  description: string2().optional(),
+  description: string3().optional(),
   messages: array(PromptMessageSchema)
 });
 var PromptListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/prompts/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ToolAnnotationsSchema = object4({
-  title: string2().optional(),
+var ToolAnnotationsSchema = object5({
+  title: string3().optional(),
   readOnlyHint: boolean2().optional(),
   destructiveHint: boolean2().optional(),
   idempotentHint: boolean2().optional(),
   openWorldHint: boolean2().optional()
 });
-var ToolExecutionSchema = object4({
+var ToolExecutionSchema = object5({
   taskSupport: _enum(["required", "optional", "forbidden"]).optional()
 });
-var ToolSchema = object4({
+var ToolSchema = object5({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
-  description: string2().optional(),
-  inputSchema: object4({
+  description: string3().optional(),
+  inputSchema: object5({
     type: literal("object"),
-    properties: record3(string2(), AssertObjectSchema).optional(),
-    required: array(string2()).optional()
+    properties: record3(string3(), AssertObjectSchema).optional(),
+    required: array(string3()).optional()
   }).catchall(unknown()),
-  outputSchema: object4({
+  outputSchema: object5({
     type: literal("object"),
-    properties: record3(string2(), AssertObjectSchema).optional(),
-    required: array(string2()).optional()
+    properties: record3(string3(), AssertObjectSchema).optional(),
+    required: array(string3()).optional()
   }).catchall(unknown()).optional(),
   annotations: ToolAnnotationsSchema.optional(),
   execution: ToolExecutionSchema.optional(),
-  _meta: record3(string2(), unknown()).optional()
+  _meta: record3(string3(), unknown()).optional()
 });
 var ListToolsRequestSchema = PaginatedRequestSchema.extend({
   method: literal("tools/list")
@@ -23099,15 +23256,15 @@ var ListToolsResultSchema = PaginatedResultSchema.extend({
 });
 var CallToolResultSchema = ResultSchema.extend({
   content: array(ContentBlockSchema).default([]),
-  structuredContent: record3(string2(), unknown()).optional(),
+  structuredContent: record3(string3(), unknown()).optional(),
   isError: boolean2().optional()
 });
 var CompatibilityCallToolResultSchema = CallToolResultSchema.or(ResultSchema.extend({
   toolResult: unknown()
 }));
 var CallToolRequestParamsSchema = TaskAugmentedRequestParamsSchema.extend({
-  name: string2(),
-  arguments: record3(string2(), unknown()).optional()
+  name: string3(),
+  arguments: record3(string3(), unknown()).optional()
 });
 var CallToolRequestSchema = RequestSchema.extend({
   method: literal("tools/call"),
@@ -23117,7 +23274,7 @@ var ToolListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/tools/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ListChangedOptionsBaseSchema = object4({
+var ListChangedOptionsBaseSchema = object5({
   autoRefresh: boolean2().default(true),
   debounceMs: number2().int().nonnegative().default(300)
 });
@@ -23131,32 +23288,32 @@ var SetLevelRequestSchema = RequestSchema.extend({
 });
 var LoggingMessageNotificationParamsSchema = NotificationsParamsSchema.extend({
   level: LoggingLevelSchema,
-  logger: string2().optional(),
+  logger: string3().optional(),
   data: unknown()
 });
 var LoggingMessageNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/message"),
   params: LoggingMessageNotificationParamsSchema
 });
-var ModelHintSchema = object4({
-  name: string2().optional()
+var ModelHintSchema = object5({
+  name: string3().optional()
 });
-var ModelPreferencesSchema = object4({
+var ModelPreferencesSchema = object5({
   hints: array(ModelHintSchema).optional(),
   costPriority: number2().min(0).max(1).optional(),
   speedPriority: number2().min(0).max(1).optional(),
   intelligencePriority: number2().min(0).max(1).optional()
 });
-var ToolChoiceSchema = object4({
+var ToolChoiceSchema = object5({
   mode: _enum(["auto", "required", "none"]).optional()
 });
-var ToolResultContentSchema = object4({
+var ToolResultContentSchema = object5({
   type: literal("tool_result"),
-  toolUseId: string2().describe("The unique identifier for the corresponding tool call."),
+  toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
   content: array(ContentBlockSchema).default([]),
-  structuredContent: object4({}).loose().optional(),
+  structuredContent: object5({}).loose().optional(),
   isError: boolean2().optional(),
-  _meta: record3(string2(), unknown()).optional()
+  _meta: record3(string3(), unknown()).optional()
 });
 var SamplingContentSchema = discriminatedUnion("type", [TextContentSchema, ImageContentSchema, AudioContentSchema]);
 var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
@@ -23166,19 +23323,19 @@ var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
   ToolUseContentSchema,
   ToolResultContentSchema
 ]);
-var SamplingMessageSchema = object4({
+var SamplingMessageSchema = object5({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
-  _meta: record3(string2(), unknown()).optional()
+  _meta: record3(string3(), unknown()).optional()
 });
 var CreateMessageRequestParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   messages: array(SamplingMessageSchema),
   modelPreferences: ModelPreferencesSchema.optional(),
-  systemPrompt: string2().optional(),
+  systemPrompt: string3().optional(),
   includeContext: _enum(["none", "thisServer", "allServers"]).optional(),
   temperature: number2().optional(),
   maxTokens: number2().int(),
-  stopSequences: array(string2()).optional(),
+  stopSequences: array(string3()).optional(),
   metadata: AssertObjectSchema.optional(),
   tools: array(ToolSchema).optional(),
   toolChoice: ToolChoiceSchema.optional()
@@ -23188,109 +23345,109 @@ var CreateMessageRequestSchema = RequestSchema.extend({
   params: CreateMessageRequestParamsSchema
 });
 var CreateMessageResultSchema = ResultSchema.extend({
-  model: string2(),
-  stopReason: optional(_enum(["endTurn", "stopSequence", "maxTokens"]).or(string2())),
+  model: string3(),
+  stopReason: optional(_enum(["endTurn", "stopSequence", "maxTokens"]).or(string3())),
   role: RoleSchema,
   content: SamplingContentSchema
 });
 var CreateMessageResultWithToolsSchema = ResultSchema.extend({
-  model: string2(),
-  stopReason: optional(_enum(["endTurn", "stopSequence", "maxTokens", "toolUse"]).or(string2())),
+  model: string3(),
+  stopReason: optional(_enum(["endTurn", "stopSequence", "maxTokens", "toolUse"]).or(string3())),
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
 });
-var BooleanSchemaSchema = object4({
+var BooleanSchemaSchema = object5({
   type: literal("boolean"),
-  title: string2().optional(),
-  description: string2().optional(),
+  title: string3().optional(),
+  description: string3().optional(),
   default: boolean2().optional()
 });
-var StringSchemaSchema = object4({
+var StringSchemaSchema = object5({
   type: literal("string"),
-  title: string2().optional(),
-  description: string2().optional(),
+  title: string3().optional(),
+  description: string3().optional(),
   minLength: number2().optional(),
   maxLength: number2().optional(),
   format: _enum(["email", "uri", "date", "date-time"]).optional(),
-  default: string2().optional()
+  default: string3().optional()
 });
-var NumberSchemaSchema = object4({
+var NumberSchemaSchema = object5({
   type: _enum(["number", "integer"]),
-  title: string2().optional(),
-  description: string2().optional(),
+  title: string3().optional(),
+  description: string3().optional(),
   minimum: number2().optional(),
   maximum: number2().optional(),
   default: number2().optional()
 });
-var UntitledSingleSelectEnumSchemaSchema = object4({
+var UntitledSingleSelectEnumSchemaSchema = object5({
   type: literal("string"),
-  title: string2().optional(),
-  description: string2().optional(),
-  enum: array(string2()),
-  default: string2().optional()
+  title: string3().optional(),
+  description: string3().optional(),
+  enum: array(string3()),
+  default: string3().optional()
 });
-var TitledSingleSelectEnumSchemaSchema = object4({
+var TitledSingleSelectEnumSchemaSchema = object5({
   type: literal("string"),
-  title: string2().optional(),
-  description: string2().optional(),
-  oneOf: array(object4({
-    const: string2(),
-    title: string2()
+  title: string3().optional(),
+  description: string3().optional(),
+  oneOf: array(object5({
+    const: string3(),
+    title: string3()
   })),
-  default: string2().optional()
+  default: string3().optional()
 });
-var LegacyTitledEnumSchemaSchema = object4({
+var LegacyTitledEnumSchemaSchema = object5({
   type: literal("string"),
-  title: string2().optional(),
-  description: string2().optional(),
-  enum: array(string2()),
-  enumNames: array(string2()).optional(),
-  default: string2().optional()
+  title: string3().optional(),
+  description: string3().optional(),
+  enum: array(string3()),
+  enumNames: array(string3()).optional(),
+  default: string3().optional()
 });
 var SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-var UntitledMultiSelectEnumSchemaSchema = object4({
+var UntitledMultiSelectEnumSchemaSchema = object5({
   type: literal("array"),
-  title: string2().optional(),
-  description: string2().optional(),
+  title: string3().optional(),
+  description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object4({
+  items: object5({
     type: literal("string"),
-    enum: array(string2())
+    enum: array(string3())
   }),
-  default: array(string2()).optional()
+  default: array(string3()).optional()
 });
-var TitledMultiSelectEnumSchemaSchema = object4({
+var TitledMultiSelectEnumSchemaSchema = object5({
   type: literal("array"),
-  title: string2().optional(),
-  description: string2().optional(),
+  title: string3().optional(),
+  description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object4({
-    anyOf: array(object4({
-      const: string2(),
-      title: string2()
+  items: object5({
+    anyOf: array(object5({
+      const: string3(),
+      title: string3()
     }))
   }),
-  default: array(string2()).optional()
+  default: array(string3()).optional()
 });
 var MultiSelectEnumSchemaSchema = union([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema]);
 var EnumSchemaSchema = union([LegacyTitledEnumSchemaSchema, SingleSelectEnumSchemaSchema, MultiSelectEnumSchemaSchema]);
 var PrimitiveSchemaDefinitionSchema = union([EnumSchemaSchema, BooleanSchemaSchema, StringSchemaSchema, NumberSchemaSchema]);
 var ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   mode: literal("form").optional(),
-  message: string2(),
-  requestedSchema: object4({
+  message: string3(),
+  requestedSchema: object5({
     type: literal("object"),
-    properties: record3(string2(), PrimitiveSchemaDefinitionSchema),
-    required: array(string2()).optional()
+    properties: record3(string3(), PrimitiveSchemaDefinitionSchema),
+    required: array(string3()).optional()
   })
 });
 var ElicitRequestURLParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   mode: literal("url"),
-  message: string2(),
-  elicitationId: string2(),
-  url: string2().url()
+  message: string3(),
+  elicitationId: string3(),
+  url: string3().url()
 });
 var ElicitRequestParamsSchema = union([ElicitRequestFormParamsSchema, ElicitRequestURLParamsSchema]);
 var ElicitRequestSchema = RequestSchema.extend({
@@ -23298,7 +23455,7 @@ var ElicitRequestSchema = RequestSchema.extend({
   params: ElicitRequestParamsSchema
 });
 var ElicitationCompleteNotificationParamsSchema = NotificationsParamsSchema.extend({
-  elicitationId: string2()
+  elicitationId: string3()
 });
 var ElicitationCompleteNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/elicitation/complete"),
@@ -23306,24 +23463,24 @@ var ElicitationCompleteNotificationSchema = NotificationSchema.extend({
 });
 var ElicitResultSchema = ResultSchema.extend({
   action: _enum(["accept", "decline", "cancel"]),
-  content: preprocess((val) => val === null ? undefined : val, record3(string2(), union([string2(), number2(), boolean2(), array(string2())])).optional())
+  content: preprocess((val) => val === null ? undefined : val, record3(string3(), union([string3(), number2(), boolean2(), array(string3())])).optional())
 });
-var ResourceTemplateReferenceSchema = object4({
+var ResourceTemplateReferenceSchema = object5({
   type: literal("ref/resource"),
-  uri: string2()
+  uri: string3()
 });
-var PromptReferenceSchema = object4({
+var PromptReferenceSchema = object5({
   type: literal("ref/prompt"),
-  name: string2()
+  name: string3()
 });
 var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
   ref: union([PromptReferenceSchema, ResourceTemplateReferenceSchema]),
-  argument: object4({
-    name: string2(),
-    value: string2()
+  argument: object5({
+    name: string3(),
+    value: string3()
   }),
-  context: object4({
-    arguments: record3(string2(), string2()).optional()
+  context: object5({
+    arguments: record3(string3(), string3()).optional()
   }).optional()
 });
 var CompleteRequestSchema = RequestSchema.extend({
@@ -23332,15 +23489,15 @@ var CompleteRequestSchema = RequestSchema.extend({
 });
 var CompleteResultSchema = ResultSchema.extend({
   completion: looseObject({
-    values: array(string2()).max(100),
+    values: array(string3()).max(100),
     total: optional(number2().int()),
     hasMore: optional(boolean2())
   })
 });
-var RootSchema = object4({
-  uri: string2().startsWith("file://"),
-  name: string2().optional(),
-  _meta: record3(string2(), unknown()).optional()
+var RootSchema = object5({
+  uri: string3().startsWith("file://"),
+  name: string3().optional(),
+  _meta: record3(string3(), unknown()).optional()
 });
 var ListRootsRequestSchema = RequestSchema.extend({
   method: literal("roots/list"),

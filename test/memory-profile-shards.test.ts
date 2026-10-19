@@ -1,11 +1,12 @@
 // #237 (agent-mem#15 T2 host prerequisite): the hub opens a split memory home through openShardStore.
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, migrateShards, type NoteInput } from "@staix/agent-mem";
 import { realPath } from "../src/hub/project.ts";
 import { MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, bindProfileMemory, openProfileMemory } from "../src/hub/memory-profile.ts";
+import { memoryCommand } from "../src/cli/memory.ts";
 
 const A = "github.com/example/hub-a", B = "github.com/example/hub-b", C = "github.com/example/hub-new";
 const homes: string[] = [];
@@ -87,4 +88,27 @@ test("a split marker that appears under an open unsplit binding latches it unava
     expect(() => binding.run(() => store.note(note(A, "must not append")))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
     expect(binding.status(store).state).toBe("unavailable");
   } finally { store.close(); }
+});
+
+test("a split home reached through a symlink opens the same shard the binding resolves", async () => {
+  const { home, memory, ids } = seeded();
+  const link = join(realPath(mkdtempSync(join(tmpdir(), "hub-memory-link-"))), "home");
+  homes.push(join(link, ".."));
+  symlinkSync(home, link);
+  await split(memory);
+  const { store, binding } = openProfileMemory({ home: link, project: A });
+  try {
+    expect(store.profile).toMatchObject({ sharded: true, shardKey: A, home: memory });
+    expect(store.get(ids.a, A)?.text).toBe("alpha private contract");
+    expect(binding.status(store).state).toBe("ready");
+  } finally { store.close(); }
+});
+
+test("ahub memory names the resume remedy on an inactive split instead of the generic profile refusal", async () => {
+  const { home, memory } = seeded();
+  writeFileSync(join(memory, "shards.json"), '{"schema":"agent-mem.shards/v1","phase":"captured"}');
+  const previous = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = memory;
+  try { await expect(memoryCommand(["list"], home, { person: true })).rejects.toThrow(MEMORY_SPLIT_INCOMPLETE); }
+  finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
 });
