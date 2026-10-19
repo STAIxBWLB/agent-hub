@@ -1298,7 +1298,6 @@ export async function startDaemon(opts: DaemonOptions) {
   const releaseQuotaSnapshot = () => {
     const headroom = budget.headroom(), rows = [...bus.peers].filter(([, peer]) => peer.state !== "offline");
     const reasons: string[] = [];
-    if (!rows.length) reasons.push("peer quota window unavailable: no attached peers");
     for (const [id] of rows) {
       const definition = definitionOf(id), account = definition?.budget?.account ?? id;
       if (manualPaused.has(id) || budget.record(account)) reasons.push(`${id}: paused quota window`);
@@ -1307,7 +1306,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!reading || !Number.isFinite(reading.headroom)) reasons.push(`${id}: quota window unknown or stale`);
       else if (reading.headroom <= 1 - config.budget.gate) reasons.push(`${id}: quota window below release headroom`);
     }
-    const idle = rows.length > 0 && rows.every(([, peer]) => peer.state === "idle");
+    const idle = rows.every(([, peer]) => peer.state === "idle");
     return { quota: reasons.length === 0, idle, reasons, signature: JSON.stringify({ gate: config.budget.gate, rows: rows.map(([id, peer]) => [id, peer.state]), headroom, paused: rows.map(([id]) => manualPaused.has(id)), records: Object.entries(budget.status()).map(([peer, row]) => [peer, row.paused?.since, row.paused?.resetsAt]) }) };
   };
   const releaseWindow = async () => {
