@@ -1,9 +1,10 @@
+import { personEnv } from "../src/hub/child-process.ts";
 import { createServer, createConnection } from "node:net";
 import { basename, dirname } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JCODE_BREAKING_VERSION, JCODE_MIN_VERSION, JcodePeer, jcodeCommand, jcodeVersionSupported, verifiedJcodeCommand } from "../src/adapters/jcode.ts";
@@ -197,4 +198,89 @@ test("pre-marker Jcode entries stay stale read-only until configure adds the del
   writeFileSync(file, before); expect(configureJcodeMcp(dir, state, bundle).changed).toBe(true);
   expect(JSON.parse(readFileSync(file, "utf8")).mcpServers[JCODE_MCP_NAME].env.AGENTHUB_DELIVERY_ONLY).toBe("true");
   expect(jcodeMcpReady(dir, state, bundle)).toBe(true);
+});
+
+
+test("only a console can resolve the same owned Jcode launch, and a new session waits for its native save (#464)", async () => {
+  const dir = root(), stateDir = join(dir, "state"), home = join(dir, "home");
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+  const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, jcode_cmd: [...fake, "--save-native-session"], jcode_home: home, roster: { jcode: true },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  cleanups.push(() => daemon.stop());
+  const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
+  expect((await consoleClient.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true);
+  const waiting = await consoleClient.request({ t: "native_tui_launch", peer: "jcode" });
+  expect(waiting.ok).toBe(true);
+  expect(waiting.state).toBe("waiting");
+  expect(waiting.binding).toMatchObject({ sessionId: "jcode-s1" });
+  expect(waiting.launch).toBeUndefined();
+  expect(existsSync(join(home, "sessions", "jcode-s1.json"))).toBe(false);
+  const toolsClient = await ControlClient.connect(stateDir, { role: "tools", peer: "jcode" }); cleanups.push(() => toolsClient.close());
+  const denied = await toolsClient.request({ t: "native_tui_launch", peer: "jcode" });
+  expect(denied.ok).toBe(false); expect(denied.launch).toBeUndefined(); expect(denied.binding).toBeUndefined();
+  const stale = await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: { ...waiting.binding as object, launchId: "stale" } });
+  expect(stale.ok).toBe(false); expect(stale.launch).toBeUndefined();
+  const peer = daemon.bus.peers.get("jcode")!;
+  await peer.deliver([newEnvelope("user", "fixture", { to: ["jcode"] })]);
+  await until(() => existsSync(join(home, "sessions", "jcode-s1.json")) && peer.state === "idle");
+  const ready = await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding });
+  expect(ready.ok).toBe(true); expect(ready.state).toBe("ready"); expect(ready.binding).toEqual(waiting.binding);
+  expect(ready.launch.args).toContain("--resume"); expect(ready.launch.args).not.toContain("acp"); expect(ready.launch.args).not.toContain("connect");
+  expect(ready.launch.env).toEqual({ JCODE_HOME: home, JCODE_SOCKET: ready.launch.env.JCODE_SOCKET, JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" });
+  expect(JSON.stringify((await consoleClient.request({ t: "status" })).status)).not.toContain(ready.launch.env.JCODE_SOCKET);
+  const frontend = await consoleClient.request({ t: "peer_start", peer: "jcode" });
+  expect(frontend.ok).toBe(false); expect(frontend.command).toBe("ahub jcode --mode tui");
+  expect(frontend.already).toBeUndefined(); expect(frontend.launch).toBeUndefined();
+  const file = join(home, "sessions", "jcode-s1.json");
+  writeFileSync(file, JSON.stringify({ id: "another", messages: [] }));
+  expect((await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding })).ok).toBe(false);
+  writeFileSync(file, "{}"); truncateSync(file, 32 * 1024 * 1024 + 1);
+  expect((await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding })).ok).toBe(false);
+  rmSync(file); mkdirSync(file);
+  expect((await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding })).ok).toBe(false);
+  rmSync(file, { recursive: true }); symlinkSync(join(home, "mcp.json"), file);
+  expect((await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding })).ok).toBe(false);
+  await peer.stop();
+  expect((await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding })).ok).toBe(false);
+});
+
+
+test("the actual person CLI waits for native persistence and executes the TUI with Jcode identity while ACP stays alive (#464)", async () => {
+  const dir = root(), stateDir = join(dir, ".agenthub", "state"), home = join(dir, "home"), record = join(dir, "record");
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}"); mkdirSync(join(dir, ".agenthub"));
+  expect(Bun.spawnSync(["git", "init", "--quiet", dir], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).exitCode).toBe(0);
+  const command = [...fake, "--save-native-session", "--record", record];
+  const config = { ...DEFAULT_CONFIG, jcode_cmd: command, jcode_home: home, roster: { jcode: true },
+    memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } };
+  writeFileSync(join(dir, ".agenthub", "config.json"), JSON.stringify(config));
+  const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  cleanups.push(() => daemon.stop());
+  const main = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(dir, "person-cli.ts");
+  writeFileSync(wrapper, `Object.defineProperty(process.stdin, "isTTY", { value: true });
+Object.defineProperty(process.stdout, "isTTY", { value: true });
+process.argv = [process.execPath, ${JSON.stringify(main)}, "--project", ${JSON.stringify(dir)}, "jcode"];
+await import(${JSON.stringify(main)});
+`);
+  const env = personEnv({ ...process.env, HOME: home });
+  for (const name of ["AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete env[name];
+  const child = Bun.spawn([process.execPath, wrapper], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
+  cleanups.push(async () => { if (child.exitCode === null) child.kill(); await child.exited; });
+  let stdout = "";
+  const output = (async () => { for await (const chunk of child.stdout) stdout += Buffer.from(chunk).toString(); })();
+  const errors = new Response(child.stderr).text();
+  await until(() => stdout.includes("jcode's TUI opens after its first hub turn; send it work, or Ctrl-C") || child.exitCode !== null);
+  if (child.exitCode !== null) { await output; expect(await errors).toBe(""); }
+  expect(stdout).toContain("jcode's TUI opens after its first hub turn; send it work, or Ctrl-C");
+  const rows = () => readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(rows().some(row => row.kind === "tui")).toBe(false);
+  const peer = daemon.bus.peers.get("jcode")!;
+  await peer.deliver([newEnvelope("user", "fixture", { to: ["jcode"] })]);
+  expect(await child.exited).toBe(0); await output; expect(await errors).toBe("");
+  const tui = rows().find(row => row.kind === "tui");
+  expect(tui.peer).toBe("jcode"); expect(tui.home).toBe(home); expect(tui.telemetry).toBe("1");
+  expect(tui.args).toContain("--resume"); expect(tui.args).not.toContain("acp");
+  expect(tui.socket).toBe(rows().find(row => row.kind === "serve").socket);
+  expect(peer.state).toBe("idle"); expect(existsSync(tui.socket)).toBe(true);
 });

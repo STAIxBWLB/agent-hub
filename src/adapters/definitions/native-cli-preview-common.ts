@@ -14,6 +14,7 @@ export interface NativePreviewHelpers {
   childEnv: typeof import("../../hub/child-process.ts").childEnv;
   startModeOf: typeof import("../../hub/start-mode.ts").startModeOf;
   kimiMcpPlan: typeof import("../../cli/kimi-mcp.ts").kimiMcpPlan;
+  jcodeTuiCommand: typeof import("../jcode.ts").jcodeTuiCommand;
   jcodeCommand: typeof import("../jcode.ts").jcodeCommand;
   qwenSessionId: typeof import("../../hub/crash.ts").qwenSessionId;
   relayModelIds: typeof import("../../models/relay.ts").relayModelIds;

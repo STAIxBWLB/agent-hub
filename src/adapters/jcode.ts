@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
@@ -17,6 +17,45 @@ export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: s
   return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
     ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"])];
 }
+export interface JcodeTuiBinding { launchId: string; sessionId: string }
+export type JcodeTuiState = { state: "waiting"; binding: JcodeTuiBinding } |
+  { state: "ready"; binding: JcodeTuiBinding; launch: { cmd: string; args: string[]; env: NodeJS.ProcessEnv } };
+
+export function jcodeTuiCommand(command: string[], socket: string, sessionId: string, model?: string, profile?: string): string[] {
+  if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
+  return [...command, "--socket", socket, "--resume", sessionId, "--no-update", "--no-selfdev",
+    ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : [])];
+}
+
+/** Read native persistence only. Never synthesize a native session or send a save-inducing prompt. */
+function savedSession(home: string, id: string): boolean {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("invalid native session identity");
+  const directory = join(home, "sessions"), info = lstatSync(directory, { throwIfNoEntry: false });
+  if (!info) return false;
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("unsafe native session directory");
+  const file = join(directory, `${id}.json`), entry = lstatSync(file, { throwIfNoEntry: false });
+  if (!entry) return false;
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("unsafe native session proof");
+  let fd: number;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  try {
+    const before = fstatSync(fd);
+    // ponytail: bound native persistence proof to 32 MiB; larger conversations need a native saved-session API.
+    if (!before.isFile() || before.nlink !== 1 || before.size > 32 * 1024 * 1024) throw new Error("unsafe native session proof");
+    if (!before.size) return false;
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) { const n = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!n) return false; offset += n; }
+    const after = fstatSync(fd);
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) return false;
+    let data: unknown;
+    try { data = JSON.parse(bytes.toString("utf8")); } catch { return false; }
+    if (!data || typeof data !== "object" || (data as { id?: unknown }).id !== id || !Array.isArray((data as { messages?: unknown }).messages)) throw new Error("native saved session identity is unproven");
+    return true;
+  } finally { closeSync(fd); }
+}
+
 /** Set on every owned jcode process: no Claude MCP import, and no native telemetry (jcode-telemetry-core is_enabled, #529). */
 const JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" } as const;
 /** The oldest native release accepted; its ACP, serve and MCP contract was verified live on 0.98.1 (docs/verification). */
@@ -45,6 +84,8 @@ export function verifiedJcodeCommand(command: string[], cwd: string): boolean {
 
 /** Both processes are ours. The user's global daemon and its sockets are never stopped. */
 export class JcodePeer extends AcpPeer {
+  private readonly launchId = crypto.randomUUID();
+  private socketIdentity: { dev: number; ino: number } | undefined;
   private readonly root: string;
   private readonly socket: string;
   private server: ChildProcess | undefined;
@@ -79,6 +120,8 @@ export class JcodePeer extends AcpPeer {
         ready.once("data", () => { clearTimeout(timer); server.off("exit", fail); if (lstatSync(this.socket, { throwIfNoEntry: false })?.isSocket()) resolve(); else reject(new Error("Jcode readiness has no private socket")); });
       });
       server.once("exit", () => { if (!this.ending && this.server === server) void this.stop("Jcode owned daemon disconnected").catch(() => {}); });
+      const identity = lstatSync(this.socket);
+      this.socketIdentity = { dev: identity.dev, ino: identity.ino };
       await super.start();
     } catch (error) { await this.stop().catch(() => {}); throw error; }
   }
@@ -118,6 +161,20 @@ export class JcodePeer extends AcpPeer {
       super.setState("offline");
     }
     if (failure) throw failure;
+  }
+  tuiLaunch(expected?: JcodeTuiBinding, options: { model?: string; providerProfile?: string; sessionId?: string } = {}): JcodeTuiState {
+    const sessionId = super.recoveryMetadata().sessionId;
+    const socket = lstatSync(this.socket, { throwIfNoEntry: false });
+    if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline" ||
+      !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string") throw new Error("owned Jcode launch is unavailable");
+    const binding = { launchId: this.launchId, sessionId };
+    if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId)) throw new Error("Jcode launch changed");
+    if ((options.sessionId !== undefined && options.sessionId !== sessionId) ||
+      (options.model !== undefined && options.model !== this.jcode.launchModel) ||
+      (options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile)) throw new Error("Jcode launch options differ from its running session");
+    if (!savedSession(this.jcode.home, sessionId)) return { state: "waiting", binding };
+    const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
+    return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...JCODE_OWNED_ENV } } };
   }
   override recoveryMetadata(): Record<string, unknown> {
     return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: "jcode", mode: "headless", ...(this.jcode.launchModel ? { model: this.jcode.launchModel } : {}), ...(this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {}) } };

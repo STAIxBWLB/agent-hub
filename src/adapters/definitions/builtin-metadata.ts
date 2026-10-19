@@ -22,8 +22,8 @@ type CompatibilityKind = "claude" | "codex" | "kimi" | "pi" | "local" | "jcode";
  * Preserve CLI-wrapper argv plans for definitions that still declare them and the frozen A1 compatibility export.
  * Native startup and daemon factories are supplied separately by the runtime definitions.
  */
-function compatibilityLaunch(kind: CompatibilityKind, ctx: LaunchContext): LaunchPlan {
-  const mode = kind === "kimi" || kind === "pi" ? ["--mode", ctx.form] : [];
+function compatibilityLaunch(kind: CompatibilityKind, ctx: LaunchContext, explicitMode = false): LaunchPlan {
+  const mode = explicitMode || kind === "kimi" || kind === "pi" ? ["--mode", ctx.form] : [];
   const unattended = ctx.unattended && (kind === "claude" || kind === "codex") ? ["--unattended"] : [];
   const args = [ctx.entrypoint, "--project", ctx.projectRoot, kind, ...mode, ...unattended,
     ...(ctx.model && !ctx.userArgs.includes("--model") ? ["--model", ctx.model] : []), ...ctx.userArgs];
@@ -145,13 +145,13 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   {
     api: 1, kind: "jcode", displayName: "Jcode", family: "jcode", transport: "acp",
     roles: implementerRoles, optional: true, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: false },
-    start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: ctx => compatibilityLaunch("jcode", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, explicitHeadlessMode: true, launch: ctx => compatibilityLaunch("jcode", ctx, true), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "project-file" },
     permission: { modes: {}, unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
       ask: "no verified hub mode mapping; native policy only", "ask-when-needed": "no verified hub mode mapping; native policy only", "never-ask": "no verified hub mode mapping; native policy only" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", budget: { account: "jcode" },
     // Jcode has no dedicated CSS swatch today: retain peer-palette.ts's existing 'other' fallback.
-    cli: { command: "jcode", authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: () => ["jcode"] }, display: JCODE_DISPLAY, hooks: { recallPlatform: "jcode" },
+    cli: { command: "jcode", authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: mode => ["jcode", "--mode", mode] }, display: JCODE_DISPLAY, hooks: { recallPlatform: "jcode" },
   },
 ] satisfies AdapterDefinition[]);
 

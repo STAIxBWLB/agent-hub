@@ -263,7 +263,7 @@ export function compareRegistryBaseline(actual: readonly BaselineEntry[], baseli
 export const REGISTRY_COMPATIBILITY_PROBES = [
   { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", count: 5, reason: "cross-release source probe" },
   { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 3, reason: "cross-release source probe" },
-  { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 3, reason: "cross-release source probe" },
+  { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 4, reason: "cross-release source probe" },
 ] as const;
 
 /** Keep compatibility evidence visible and separate from the native policy baseline. */

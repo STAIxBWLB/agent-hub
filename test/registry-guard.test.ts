@@ -36,7 +36,7 @@ function inventory() {
     expect(split.compatibility.map(({ file, symbol, count, reason }) => ({ file, symbol, count, reason }))).toEqual([
       { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", count: 5, reason: "cross-release source probe" },
       { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 3, reason: "cross-release source probe" },
-      { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 3, reason: "cross-release source probe" },
+      { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 4, reason: "cross-release source probe" },
     ]);
     cached = { baseline, sources, actual: groupRegistrySites(split.policy) };
   }
