@@ -255,8 +255,8 @@ function exec(bin: string, argv: string[], tool?: "claude" | "codex" | "kimi", e
   process.exit(res.status ?? 1);
 }
 
-function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv, executionCwd = cwd): never {
-  const env: NodeJS.ProcessEnv = { ...nativeLaunchEnv(selectedInstance ?? "pi", extra, declaredInstances), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv, peer: string, executionCwd = cwd): never {
+  const env: NodeJS.ProcessEnv = { ...nativeLaunchEnv(peer, extra, declaredInstances), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_UNATTENDED;
   const res = spawnSync(bin, argv, { cwd: executionCwd, stdio: "inherit", env });
@@ -854,11 +854,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (selectedInstance && !args.includes("--print-command") && !args.includes("--dry-run")) {
       const hub = await nativeConnect(); hub.close();
     }
-    const context: NativeCliEntryContext = { args, cwd, stateDir, cliDir: import.meta.dir, unattendedEnv, definition: entry.definition,
+    const context: NativeCliEntryContext = { args, cwd, stateDir, cliDir: import.meta.dir, unattendedEnv, person: caller.role === "console", definition: entry.definition,
       ...(selectedInstance ? { instance: selectedInstance } : {}), ...(nativeSelection.hubStarted ? { hubStarted: true as const } : {}),
       projectConfig, connect: nativeConnect, fail,
       exec: (bin, argv, tool) => exec(bin, argv, tool, context.executionCwd),
-      execWithEnv: (bin, argv, env) => execWithEnv(bin, argv, env, context.executionCwd), takeFlags,
+      execWithEnv: (bin, argv, env) => execWithEnv(bin, argv, env, selectedInstance ?? entry.command, context.executionCwd), takeFlags,
       helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, recoveryLock, processSignature,
         buildLaunch, claudeObservationHooks, recordClaudeLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings,
         nativeLaunchEnv, runClaudeLaunch, childEnv, qwenSessionId, configureJcodeMcp, configureKimiMcp,

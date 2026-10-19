@@ -3104,7 +3104,7 @@ ${renderDigest(envs, false)}` }] });
 
 // src/adapters/jcode.ts
 import { spawn as spawn6, spawnSync as spawnSync2 } from "child_process";
-import { existsSync as existsSync4, lstatSync as lstatSync4, mkdtempSync as mkdtempSync3, rmSync as rmSync3 } from "fs";
+import { closeSync, constants, existsSync as existsSync4, fstatSync, lstatSync as lstatSync4, mkdtempSync as mkdtempSync3, openSync, readSync, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { isAbsolute as isAbsolute3, join as join5 } from "path";
 function jcodeCommand(command, kind, socket, cwd, model, profile) {
@@ -3124,6 +3124,72 @@ function jcodeCommand(command, kind, socket, cwd, model, profile) {
     ...kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"]
   ];
 }
+function jcodeTuiCommand(command, socket, sessionId, model, profile) {
+  if (!command.length || command.some((word) => typeof word !== "string" || !word))
+    throw new Error("jcode_cmd must name an executable argv");
+  return [
+    ...command,
+    "--socket",
+    socket,
+    "--resume",
+    sessionId,
+    "--no-update",
+    "--no-selfdev",
+    ...model ? ["--model", model] : [],
+    ...profile ? ["--provider-profile", profile] : []
+  ];
+}
+function savedSession(home, id) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id))
+    throw new Error("invalid native session identity");
+  const directory = join5(home, "sessions"), info = lstatSync4(directory, { throwIfNoEntry: false });
+  if (!info)
+    return false;
+  if (!info.isDirectory() || info.isSymbolicLink())
+    throw new Error("unsafe native session directory");
+  const file = join5(directory, `${id}.json`), entry = lstatSync4(file, { throwIfNoEntry: false });
+  if (!entry)
+    return false;
+  if (!entry.isFile() || entry.isSymbolicLink())
+    throw new Error("unsafe native session proof");
+  let fd;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return false;
+    throw error;
+  }
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || before.size > 32 * 1024 * 1024)
+      throw new Error("unsafe native session proof");
+    if (!before.size)
+      return false;
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const n = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (!n)
+        return false;
+      offset += n;
+    }
+    const after = fstatSync(fd);
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
+      return false;
+    let data;
+    try {
+      data = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      return false;
+    }
+    if (!data || typeof data !== "object" || data.id !== id || !Array.isArray(data.messages))
+      throw new Error("native saved session identity is unproven");
+    return true;
+  } finally {
+    closeSync(fd);
+  }
+}
 function jcodeVersionSupported(version) {
   const v = typeof version === "string" ? release(version) : undefined;
   return !!v && compare(v, release(JCODE_MIN_VERSION)) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)) < 0;
@@ -3135,6 +3201,8 @@ var init_jcode = __esm(() => {
   JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" };
   JcodePeer = class JcodePeer extends AcpPeer {
     jcode;
+    launchId = crypto.randomUUID();
+    socketIdentity;
     root;
     socket;
     server;
@@ -3149,6 +3217,7 @@ var init_jcode = __esm(() => {
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
       super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
       this.jcode = jcode;
+      this.jcode = { ...jcode, command: [...jcode.command] };
       this.root = root;
       this.socket = socket;
     }
@@ -3187,6 +3256,8 @@ var init_jcode = __esm(() => {
           if (!this.ending && this.server === server)
             this.stop("Jcode owned daemon disconnected").catch(() => {});
         });
+        const identity = lstatSync4(this.socket);
+        this.socketIdentity = { dev: identity.dev, ino: identity.ino };
         await super.start();
       } catch (error) {
         await this.stop().catch(() => {});
@@ -3252,6 +3323,21 @@ var init_jcode = __esm(() => {
       if (failure)
         throw failure;
     }
+    tuiLaunch(expected, options = {}) {
+      const sessionId = super.recoveryMetadata().sessionId;
+      const socket = lstatSync4(this.socket, { throwIfNoEntry: false });
+      if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline" || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
+        throw new Error("owned Jcode launch is unavailable");
+      const binding = { launchId: this.launchId, sessionId };
+      if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId))
+        throw new Error("Jcode launch changed");
+      if (options.sessionId !== undefined && options.sessionId !== sessionId || options.model !== undefined && options.model !== this.jcode.launchModel || options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile)
+        throw new Error("Jcode launch options differ from its running session");
+      if (!savedSession(this.jcode.home, sessionId))
+        return { state: "waiting", binding };
+      const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
+      return { state: "ready", binding, launch: { cmd, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...JCODE_OWNED_ENV } } };
+    }
     recoveryMetadata() {
       return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: "jcode", mode: "headless", ...this.jcode.launchModel ? { model: this.jcode.launchModel } : {}, ...this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {} } };
     }
@@ -3299,7 +3385,7 @@ var init_recovery_store = __esm(() => {
 });
 
 // src/pi/session.ts
-import { readFileSync as readFileSync4, openSync, closeSync, fsyncSync, mkdirSync as mkdirSync3 } from "fs";
+import { readFileSync as readFileSync4, openSync as openSync2, closeSync as closeSync2, fsyncSync, mkdirSync as mkdirSync3 } from "fs";
 import { join as join7, relative as relative2, resolve as resolve5, dirname as dirname5 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
@@ -3368,7 +3454,7 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants, lstatSync as lstatSync5, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
+import { accessSync, constants as constants2, lstatSync as lstatSync5, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
 import { dirname as dirname6, isAbsolute as isAbsolute4, join as join8, relative as relative3, resolve as resolve6, sep as sep2 } from "path";
 function existing(path) {
   try {
@@ -3423,7 +3509,7 @@ function directAliasTarget(path) {
   return;
 }
 function aliasScope(dir, lexical, actual, includeParents, budget) {
-  accessSync(dir, constants.R_OK);
+  accessSync(dir, constants2.R_OK);
   const handle = opendirSync(dir);
   let matched = false;
   try {
@@ -7243,7 +7329,7 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash5 } from "crypto";
-import { constants as constants2, closeSync as closeSync2, fstatSync, lstatSync as lstatSync7, openSync as openSync2, readSync, readdirSync as readdirSync2 } from "fs";
+import { constants as constants3, closeSync as closeSync3, fstatSync as fstatSync2, lstatSync as lstatSync7, openSync as openSync3, readSync as readSync2, readdirSync as readdirSync2 } from "fs";
 import { join as join12 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
@@ -7291,24 +7377,24 @@ function parseRole(text, stem, layer) {
   return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash5("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
-  const fd = openSync2(file, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
+  const fd = openSync3(file, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
   try {
-    const before = fstatSync(fd);
+    const before = fstatSync2(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 8192)
       throw new Error("role must be a bounded regular file");
     const bytes = Buffer.alloc(8193);
     let length = 0, n = 0;
-    while ((n = readSync(fd, bytes, length, bytes.length - length, null)) > 0) {
+    while ((n = readSync2(fd, bytes, length, bytes.length - length, null)) > 0) {
       length += n;
       if (length > 8192)
         throw new Error("role exceeds file cap");
     }
-    const after = fstatSync(fd);
+    const after = fstatSync2(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size)
       throw new Error("role changed during read");
     return bytes.subarray(0, length).toString("utf8");
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
 }
 function loadRoleCatalog(cwd) {
@@ -8254,7 +8340,7 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync3, constants as constants3, fstatSync as fstatSync2, lstatSync as lstatSync8, openSync as openSync3, readSync as readSync2 } from "fs";
+import { closeSync as closeSync4, constants as constants4, fstatSync as fstatSync3, lstatSync as lstatSync8, openSync as openSync4, readSync as readSync3 } from "fs";
 import { homedir as homedir4 } from "os";
 import { isAbsolute as isAbsolute5, join as join13, relative as relative5 } from "path";
 import { createHash as createHash6 } from "crypto";
@@ -8303,8 +8389,8 @@ function readAgyTranscript(session, transcript) {
       if (lstatSync8(cursor).isSymbolicLink())
         return empty;
     }
-    fd = openSync3(transcript, constants3.O_RDONLY | constants3.O_NOFOLLOW);
-    const stat = fstatSync2(fd);
+    fd = openSync4(transcript, constants4.O_RDONLY | constants4.O_NOFOLLOW);
+    const stat = fstatSync3(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
     const cap = 4 * 1024 * 1024;
@@ -8313,7 +8399,7 @@ function readAgyTranscript(session, transcript) {
       const buffer = Buffer.alloc(stat.size - from);
       let bytes = 0;
       while (bytes < buffer.length) {
-        const count = readSync2(fd, buffer, bytes, buffer.length - bytes, from + bytes);
+        const count = readSync3(fd, buffer, bytes, buffer.length - bytes, from + bytes);
         if (!count)
           break;
         bytes += count;
@@ -8346,7 +8432,7 @@ function readAgyTranscript(session, transcript) {
     return empty;
   } finally {
     if (fd !== undefined)
-      closeSync3(fd);
+      closeSync4(fd);
   }
 }
 var EVENTS, UUID, record3 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
@@ -8461,7 +8547,7 @@ function bundleInStatus(status) {
 
 // src/cli/agy-mcp.ts
 import { randomUUID as randomUUID5 } from "crypto";
-import { closeSync as closeSync4, fstatSync as fstatSync3, lstatSync as lstatSync9, mkdirSync as mkdirSync6, openSync as openSync4, readFileSync as readFileSync6, renameSync, rmdirSync, unlinkSync, writeFileSync as writeFileSync4 } from "fs";
+import { closeSync as closeSync5, fstatSync as fstatSync4, lstatSync as lstatSync9, mkdirSync as mkdirSync6, openSync as openSync5, readFileSync as readFileSync6, renameSync, rmdirSync, unlinkSync, writeFileSync as writeFileSync4 } from "fs";
 import { isAbsolute as isAbsolute6, join as join14, resolve as resolve10 } from "path";
 import { isDeepStrictEqual } from "util";
 function object4(value) {
@@ -8712,11 +8798,11 @@ function atomicWrite(path, bytes, expected, plan) {
   let tempIdentity;
   try {
     verifyPluginDirectory(plan, path);
-    fd = openSync4(temporary, "wx", 384);
-    const tempStat = fstatSync3(fd);
+    fd = openSync5(temporary, "wx", 384);
+    const tempStat = fstatSync4(fd);
     tempIdentity = { dev: tempStat.dev, ino: tempStat.ino };
     writeFileSync4(fd, bytes);
-    closeSync4(fd);
+    closeSync5(fd);
     fd = undefined;
     verifyPluginDirectory(plan, path);
     if (!identityMatches(path, expected))
@@ -8728,7 +8814,7 @@ function atomicWrite(path, bytes, expected, plan) {
     return { dev: stat.dev, ino: stat.ino };
   } finally {
     if (fd !== undefined)
-      closeSync4(fd);
+      closeSync5(fd);
     try {
       const current = lstatSync9(temporary, { throwIfNoEntry: false });
       if (current && tempIdentity && current.dev === tempIdentity.dev && current.ino === tempIdentity.ino)
@@ -9108,22 +9194,89 @@ var init_native_cli_entry_codex = () => {};
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
 import { resolve as resolve12 } from "path";
+async function waitForJcodeTui(hub, fail, signal, options, first) {
+  let binding = first?.binding, announced = false, current = first;
+  while (!signal.aborted) {
+    if (!current) {
+      const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
+      if (signal.aborted)
+        return;
+      if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state))
+        fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
+      current = reply;
+    }
+    if (binding && (binding.launchId !== current.binding.launchId || binding.sessionId !== current.binding.sessionId))
+      fail("Jcode launch changed while waiting");
+    binding = current.binding;
+    if (current.state === "ready")
+      return current;
+    if (!announced) {
+      console.log(WAITING);
+      announced = true;
+    }
+    await new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 200);
+      signal.addEventListener("abort", finish, { once: true });
+      if (signal.aborted)
+        finish();
+    });
+    current = undefined;
+  }
+}
 async function runJcodeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, connect, fail, takeFlags } = ctx;
-  const { launcherPreview, qwenSessionId, configureJcodeMcp } = ctx.helpers;
-  if (args.includes("--print-command") || args.includes("--dry-run")) {
+  const { launcherPreview, qwenSessionId, configureJcodeMcp, readControl, startModeOf } = ctx.helpers;
+  const print = args.includes("--print-command");
+  if (args.includes("--dry-run") || print) {
+    if (!print || args.includes("--dry-run") || !ctx.person) {
+      try {
+        return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
+      } catch {
+        fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)");
+      }
+    }
+  }
+  const { one, rest } = takeFlags(args.filter((arg) => arg !== "--print-command"), ["--mode", "--model", "--provider-profile", "--session-id"], []);
+  if (rest.length || one["--mode"] !== undefined && !["headless", "tui"].includes(one["--mode"]))
+    fail("usage: ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>]");
+  if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"]))
+    fail("invalid Jcode session identity");
+  const control = readControl(stateDir);
+  const mode = one["--mode"] ?? (ctx.instance ? "headless" : control?.startModes?.jcode ?? startModeOf(ctx.projectConfig().peers, "jcode"));
+  if (print && (mode === "headless" || !control?.features?.includes("native_tui_launch"))) {
     try {
       return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
     } catch {
-      fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)");
+      return fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)");
     }
   }
-  const { one, rest } = takeFlags(args, ["--mode", "--model", "--provider-profile", "--session-id"], []);
-  if (rest.length || one["--mode"] !== undefined && one["--mode"] !== "headless")
-    fail("usage: ahub jcode [--mode headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>]");
-  if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"]))
-    fail("invalid Jcode session identity");
-  const hub = await connect();
+  if (mode === "tui" && !ctx.person)
+    fail("Jcode's private TUI is person-only; run ahub jcode in your terminal");
+  const hub = await connect(), abort = new AbortController;
+  let interrupted = false;
+  const interruptedWait = () => {
+    if (abort.signal.aborted && !interrupted)
+      fail("hub connection closed while waiting for Jcode; retry from a terminal");
+    return abort.signal.aborted;
+  };
+  const interrupt = () => {
+    interrupted = true;
+    abort.abort();
+    hub.close();
+    process.exitCode = 130;
+  };
+  process.once("SIGINT", interrupt);
+  const oldClose = hub.onClose;
+  hub.onClose = (code, reason) => {
+    if (!abort.signal.aborted)
+      abort.abort();
+    oldClose?.(code, reason);
+  };
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
     const rostered = rosterInStatus(snapshot, "jcode");
@@ -9134,17 +9287,60 @@ async function runJcodeEntry(ctx) {
     const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition);
     if (warning)
       console.error(warning);
+    const options = { model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] };
+    if (print) {
+      if (!hub.features.includes("native_tui_launch") || mode !== "tui")
+        return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
+      const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
+      if (!reply.ok || reply.state !== "ready")
+        fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
+      return console.log(JSON.stringify(reply.launch, null, 2));
+    }
+    if (mode === "tui") {
+      if (!hub.features.includes("native_tui_launch"))
+        fail("the running hub does not support Jcode TUI launch; upgrade it before retrying");
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        if (one["--mode"] || Object.values(options).some((value) => value !== undefined))
+          fail("run ahub jcode with these options in a terminal");
+        const reply = await hub.request({ t: "peer_start", peer: "jcode" });
+        if (!reply.ok)
+          fail(reply.error);
+        console.log(reply.command ?? "Jcode terminal requested");
+        return;
+      }
+    }
     const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve12(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
-    const reply = await hub.request({ t: "start", peer: "jcode", args: { mode: "headless", model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
+    const reply = await hub.request({ t: "start", peer: "jcode", args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
+    if (interruptedWait())
+      return;
     if (!reply.ok)
       fail(reply.error);
-    console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox");
+    if (mode === "headless") {
+      console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox");
+      return;
+    }
+    const ready = await waitForJcodeTui(hub, fail, abort.signal, options);
+    if (interruptedWait() || !ready)
+      return;
+    const instanceId = typeof snapshot?.instanceId === "string" ? snapshot.instanceId : undefined;
+    if (!instanceId)
+      return fail("cannot bind Jcode's terminal to the running hub");
+    await ctx.helpers.recordTerminalLaunch("jcode", cwd, stateDir, instanceId);
+    const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
+    if (interruptedWait())
+      return;
+    if (!confirmed.ok || confirmed.state !== "ready")
+      fail("Jcode launch changed before its terminal opened");
+    ctx.execWithEnv(confirmed.launch.cmd, confirmed.launch.args, { ...ctx.helpers.childEnv(), ...confirmed.launch.env });
   } finally {
+    process.removeListener("SIGINT", interrupt);
+    hub.onClose = oldClose;
     hub.close();
   }
 }
+var WAITING = "jcode's TUI opens after its first hub turn; send it work, or Ctrl-C";
 var init_native_cli_entry_jcode = () => {};
 
 // src/adapters/definitions/native-cli-entry-qwen.ts
@@ -9605,23 +9801,23 @@ var init_native_cli_preview_qwen = () => {};
 // src/adapters/definitions/native-cli-preview-jcode.ts
 function previewJcode(ctx) {
   const { args, config } = ctx;
-  const { jcodeCommand, qwenSessionId } = ctx.helpers;
+  const { jcodeCommand, jcodeTuiCommand, qwenSessionId, startModeOf } = ctx.helpers;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
   let envNames = state.envNames;
   let launch;
-  const mode = value("--mode") ?? "headless", model = value("--model"), profile = value("--provider-profile"), session = value("--session-id");
-  if (mode !== "headless")
-    throw new Error("Jcode TUI driving is unverified");
+  const mode = value("--mode") ?? startModeOf(config.peers, "jcode"), model = value("--model"), profile = value("--provider-profile"), session = value("--session-id");
+  if (mode !== "headless" && mode !== "tui")
+    throw new Error("invalid Jcode start mode");
   for (let i = 0;i < args.length; i += 2)
     if (!["--model", "--mode", "--provider-profile", "--session-id"].includes(args[i]) || !args[i + 1])
       throw new Error("unknown Jcode option");
   if (session !== undefined && !qwenSessionId(session))
     throw new Error("invalid Jcode session identity");
-  const cmd = jcodeCommand(nativeCommand(config.jcode_cmd, ["jcode"]), "acp", UNRESOLVED, UNRESOLVED, model ? REDACTED : undefined, profile || config.jcode_provider_profile ? REDACTED : undefined);
+  const cmd = mode === "tui" ? jcodeTuiCommand(nativeCommand(config.jcode_cmd, ["jcode"]), UNRESOLVED, UNRESOLVED, model ? REDACTED : undefined, profile || config.jcode_provider_profile ? REDACTED : undefined) : jcodeCommand(nativeCommand(config.jcode_cmd, ["jcode"]), "acp", UNRESOLVED, UNRESOLVED, model ? REDACTED : undefined, profile || config.jcode_provider_profile ? REDACTED : undefined);
   launch = { cmd: cmd[0], args: cmd.slice(1) };
   unresolved.push({ field: "ownedDaemon", reason: "private daemon/socket and source-pinned native identity verified at start; preview starts nothing" });
   unresolved.push({ field: "hubTools", reason: "project MCP bridge required; native tool-call receipt remains unverified" });
-  return finishPreview(ctx, launch, envNames, unresolved, undefined);
+  return { ...finishPreview(ctx, launch, envNames, unresolved), mode };
 }
 var init_native_cli_preview_jcode = () => {};
 
@@ -9651,7 +9847,7 @@ function kimiAcpCommand(command, model) {
 }
 
 // src/adapters/definitions/native-daemon-policy.ts
-var claudeRecoveryLaunch = (instance) => ({ kind: "claude-channel", peer: instance }), kimiRecoveryLaunch = (instance) => ({ kind: "kimi-tui", peer: instance, mode: "tui" }), claudeRetainedTerminalNotice = (instance) => `Stop ${instance}'s existing work in its retained terminal; removal detaches the hub connection and does not stop that terminal's work.`, piRetainedTerminalNotice = (instance, form) => form === "tui" ? claudeRetainedTerminalNotice(instance) : undefined, codexRetainedTerminalNotice = (_instance, _form, resumeCommand) => `Check codex's existing terminal and stop any remaining work. Its app-server and proxy stay available, but Codex 0.146.0 exits its TUI on disconnect and does not reconnect automatically; after ahub roster add codex, resume the previous session with ${resumeCommand}.`, codexRosterReturnNotice = (resumeCommand) => `Codex 0.146.0 needs a manual return: resume the previous native session with ${resumeCommand}.`, jcodeStartPreflight = (request) => request.form !== undefined && request.form !== "headless" ? "Jcode native TUI driving is unverified; use headless" : undefined, claudeObservedVersion = (context) => context.observedVersion, codexObservedVersion = (context) => context.peer?.version ?? context.observedVersion;
+var claudeRecoveryLaunch = (instance) => ({ kind: "claude-channel", peer: instance }), kimiRecoveryLaunch = (instance) => ({ kind: "kimi-tui", peer: instance, mode: "tui" }), claudeRetainedTerminalNotice = (instance) => `Stop ${instance}'s existing work in its retained terminal; removal detaches the hub connection and does not stop that terminal's work.`, piRetainedTerminalNotice = (instance, form) => form === "tui" ? claudeRetainedTerminalNotice(instance) : undefined, codexRetainedTerminalNotice = (_instance, _form, resumeCommand) => `Check codex's existing terminal and stop any remaining work. Its app-server and proxy stay available, but Codex 0.146.0 exits its TUI on disconnect and does not reconnect automatically; after ahub roster add codex, resume the previous session with ${resumeCommand}.`, codexRosterReturnNotice = (resumeCommand) => `Codex 0.146.0 needs a manual return: resume the previous native session with ${resumeCommand}.`, jcodeStartPreflight = (request) => request.form !== undefined && request.form !== "headless" && request.form !== "tui" ? "invalid Jcode start mode" : undefined, claudeObservedVersion = (context) => context.observedVersion, codexObservedVersion = (context) => context.peer?.version ?? context.observedVersion;
 
 // src/adapters/definitions/native-config-policy.ts
 function piConfigSchema(v) {
@@ -9697,7 +9893,7 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync4, openSync as openSync5, readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
+import { closeSync as closeSync6, constants as constants5, fstatSync as fstatSync5, openSync as openSync6, readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
 import { isAbsolute as isAbsolute7, join as join20, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
@@ -9802,8 +9998,8 @@ function absoluteContinuityPath(value) {
 var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text = (file) => {
   let fd;
   try {
-    fd = openSync5(file, constants4.O_RDONLY | constants4.O_NONBLOCK);
-    const st = fstatSync4(fd);
+    fd = openSync6(file, constants5.O_RDONLY | constants5.O_NONBLOCK);
+    const st = fstatSync5(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
     return readFileSync9(fd, "utf8");
@@ -9811,7 +10007,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
     return;
   } finally {
     if (fd !== undefined)
-      closeSync5(fd);
+      closeSync6(fd);
   }
 }, json = (file) => {
   try {
@@ -10009,7 +10205,7 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync6, existsSync as existsSync7, fstatSync as fstatSync5, openSync as openSync6, readFileSync as readFileSync11, readSync as readSync3 } from "fs";
+import { appendFileSync, closeSync as closeSync7, existsSync as existsSync7, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync11, readSync as readSync4 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync7(file))
     return [];
@@ -10171,8 +10367,8 @@ function claudeWindows(rateLimits) {
 }
 
 // src/adapters/definitions/builtin-metadata.ts
-function compatibilityLaunch(kind, ctx) {
-  const mode = kind === "kimi" || kind === "pi" ? ["--mode", ctx.form] : [];
+function compatibilityLaunch(kind, ctx, explicitMode = false) {
+  const mode = explicitMode || kind === "kimi" || kind === "pi" ? ["--mode", ctx.form] : [];
   const unattended = ctx.unattended && (kind === "claude" || kind === "codex") ? ["--unattended"] : [];
   const args = [
     ctx.entrypoint,
@@ -10408,7 +10604,7 @@ var init_builtin_metadata = __esm(() => {
       optional: true,
       defaultOnRoster: false,
       trust: { onPrem: false, hubSandboxed: false },
-      start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: (ctx) => compatibilityLaunch("jcode", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+      start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, explicitHeadlessMode: true, launch: (ctx) => compatibilityLaunch("jcode", ctx, true), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "project-file" },
       permission: { modes: {}, unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
         ask: "no verified hub mode mapping; native policy only",
@@ -10418,7 +10614,7 @@ var init_builtin_metadata = __esm(() => {
       session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan },
       turnEnd: "adapter",
       budget: { account: "jcode" },
-      cli: { command: "jcode", authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: () => ["jcode"] },
+      cli: { command: "jcode", authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
       display: JCODE_DISPLAY,
       hooks: { recallPlatform: "jcode" }
     }

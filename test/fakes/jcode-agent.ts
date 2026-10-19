@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
-import { writeSync, appendFileSync } from "node:fs";
+import { writeSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 const args = process.argv.slice(2), value = (key: string) => args[args.indexOf(key) + 1];
 const record = args.includes("--record") ? value("--record") : undefined;
@@ -23,6 +23,8 @@ if (args.includes("version")) {
     debug.close();
     server.close(() => setTimeout(() => process.exit(0), args.includes("--exit-delay-ms") ? Number(value("--exit-delay-ms")) : 0));
   });
+} else if (args.includes("--resume") && !args.includes("acp")) {
+  if (record) appendFileSync(record, JSON.stringify({ kind: "tui", args, peer: process.env.AGENTHUB_PEER_ID, home: process.env.JCODE_HOME, socket: process.env.JCODE_SOCKET, telemetry: process.env.JCODE_NO_TELEMETRY }) + "\n");
 } else {
   let session = "jcode-s1";
   const send = (message: unknown) => process.stdout.write(JSON.stringify(message) + "\n");
@@ -33,6 +35,10 @@ if (args.includes("version")) {
     else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: session } });
     else if (msg.method === "session/load") { session = msg.params.sessionId; send({ jsonrpc: "2.0", id: msg.id, result: args.includes("--no-load-echo") ? {} : { sessionId: session } }); }
     else if (msg.method === "session/prompt") {
+      if (args.includes("--save-native-session")) {
+        const directory = join(process.env.JCODE_HOME!, "sessions"); mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, `${session}.json`), JSON.stringify({ id: session, messages: [{ role: "assistant", content: "JCODE_REPLY" }] }));
+      }
       send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: session, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "JCODE_REPLY" } } } });
       send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
       if (args.includes("--exit-after-prompt")) setTimeout(() => process.exit(0), 30);

@@ -16,7 +16,7 @@ export const ADAPTER_API = 1;
 export const KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
 export const OPTIONAL_PEERS = ["qwen", "jcode", "agy"] as const;
 export const SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS] as const;
-export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
+export const START_MODE_PEERS = ["pi", "codex", "kimi", "jcode"] as const;
 export const OFFICE_PEER_ORDER: readonly string[] = KNOWN_PEERS;
 
 

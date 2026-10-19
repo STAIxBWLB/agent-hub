@@ -12,7 +12,7 @@ test("A2 catalog projections retain exact legacy orders and source-probe compati
   expect(KNOWN_PEERS).toEqual(REGISTRY_KNOWN); expect(OPTIONAL_PEERS).toEqual(REGISTRY_OPTIONAL);
   expect(SUPPORTED_PEERS).toEqual(REGISTRY_SUPPORTED); expect(STARTABLE_PEERS).toEqual(REGISTRY_SUPPORTED);
   expect(ADAPTERS.map(definition => definition.kind)).toEqual([...REGISTRY_SUPPORTED]);
-  expect(REGISTRY_DUAL).toEqual(["pi", "codex", "kimi"]); expect(START_MODE_PEERS).toEqual(REGISTRY_DUAL);
+  expect(REGISTRY_DUAL).toEqual(["pi", "codex", "kimi", "jcode"]); expect(START_MODE_PEERS).toEqual(REGISTRY_DUAL);
   expect(PLANNER_PEERS).toEqual(["claude", "codex", "kimi", "qwen", "jcode"]);
   expect(OFFICE_PEER_ORDER).toEqual(REGISTRY_KNOWN);
   const catalog = readFileSync(new URL("../src/hub/peer-catalog.ts", import.meta.url), "utf8");
@@ -51,12 +51,12 @@ test("A2 start and roster projections preserve unknown ids and legacy defaults",
   }
   for (const peer of SUPPORTED_PEERS) {
     expect(isSupportedPeer(peer)).toBe(true); expect(isKnownPeer(peer)).toBe(!(OPTIONAL_PEERS as readonly string[]).includes(peer));
-    expect(startModeOf(undefined, peer)).toBe(["qwen", "jcode", "local"].includes(peer) ? "headless" : "tui");
+    expect(startModeOf(undefined, peer)).toBe(["qwen", "local"].includes(peer) ? "headless" : "tui");
   }
   expect(isSupportedPeer("agy-build", { "agy-build": { kind: "agy", roles: ["implementer"] } })).toBe(true);
   expect(isSupportedPeer("agy-guess")).toBe(false);
   expect(isSupportedPeer("external-build", { "external-build": { kind: "external" } })).toBe(false);
   for (const peer of START_MODE_PEERS) expect(startModeOf({ [peer]: { start_mode: "headless" } }, peer)).toBe("headless");
   expect(startModeOf({ claude: { start_mode: "headless" } }, "claude")).toBe("tui");
-  expect(() => peerStartConfig({ qwen: { start_mode: "headless" } })).toThrow("peers.qwen: only pi and codex and kimi have a start mode");
+  expect(() => peerStartConfig({ qwen: { start_mode: "headless" } })).toThrow("peers.qwen: only pi and codex and kimi and jcode have a start mode");
 });

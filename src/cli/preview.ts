@@ -4,7 +4,7 @@ import { childEnv } from "../hub/child-process.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { instanceLaunchArguments, buildLaunch, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, claudeObservationHooks } from "./launch.ts";
 import { kimiMcpPlan } from "./kimi-mcp.ts";
-import { jcodeCommand } from "../adapters/jcode.ts";
+import { jcodeCommand, jcodeTuiCommand } from "../adapters/jcode.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { relayModelIds } from "../models/relay.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
@@ -24,7 +24,7 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen
   const result = preview({ tool, args, cwd, stateDir, cliDir: import.meta.dir, unattended, config, definition,
     baseEnvNames: Object.keys(childEnv()).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]),
     helpers: { buildLaunch: (native, argv, ctx) => buildLaunch(native, argv, { ...ctx, ...(selected.instance ? { instance: selected.instance } : {}) }), claudeObservationHooks, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, childEnv,
-      startModeOf, kimiMcpPlan, jcodeCommand, qwenSessionId, relayModelIds, buildPiLaunch },
+      startModeOf, kimiMcpPlan, jcodeCommand, jcodeTuiCommand, qwenSessionId, relayModelIds, buildPiLaunch },
   });
   if (!selected.instance) return result;
   return { ...result, instance: selected.instance,

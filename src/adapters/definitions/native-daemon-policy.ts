@@ -12,7 +12,7 @@ export const codexRetainedTerminalNotice = (_instance: string, _form: StartForm 
 export const codexRosterReturnNotice = (resumeCommand: string): string =>
   `Codex 0.146.0 needs a manual return: resume the previous native session with ${resumeCommand}.`;
 export const jcodeStartPreflight = (request: StartRequest): string | undefined =>
-  request.form !== undefined && request.form !== "headless" ? "Jcode native TUI driving is unverified; use headless" : undefined;
+  request.form !== undefined && request.form !== "headless" && request.form !== "tui" ? "invalid Jcode start mode" : undefined;
 export const claudeObservedVersion = (context: VersionContext): string | undefined => context.observedVersion;
 export const codexObservedVersion = (context: VersionContext): string | undefined =>
   (context.peer as { version?: string } | undefined)?.version ?? context.observedVersion;

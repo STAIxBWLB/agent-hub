@@ -11,7 +11,7 @@ export type StartMode = typeof START_MODES[number];
 // ponytail: released coordinators source-probe this exact literal before restoring headless Kimi.
 // Keep it until those readers negotiate the registry capability.
 /** The peers with both forms. Kimi's TUI is pull-only; Claude has only a TUI and local only headless. */
-export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
+export const START_MODE_PEERS = ["pi", "codex", "kimi", "jcode"] as const;
 /** Every peer the hub can start itself. */
 export const STARTABLE_PEERS = SUPPORTED_PEERS;
 export type StartablePeer = typeof STARTABLE_PEERS[number];

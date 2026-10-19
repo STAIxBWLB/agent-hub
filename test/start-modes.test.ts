@@ -342,3 +342,15 @@ test("AC6: starts that arrive together open one terminal, a failed open frees th
   for (const refused of results.filter((r) => r.ok !== true)) expect(refused.error).toContain("a terminal for pi was opened");
   expect(fake.opened).toHaveLength(1);
 }, 20_000);
+
+test("Jcode console starts use the fixed waiting TUI launcher and headless remains an explicit setting (#464)", async () => {
+  const terminal = provider(), fixture = await hub({ roster: { jcode: true } }, terminal.terminal);
+  const opened = await fixture.client.request({ t: "peer_start", peer: "jcode" });
+  expect(opened.ok).toBe(true); expect(opened.mode).toBe("tui"); expect(opened.command).toBe("ahub jcode --mode tui");
+  expect(terminal.opened).toHaveLength(1); expect(terminal.opened[0]!.argv.slice(-3)).toEqual(["jcode", "--mode", "tui"]);
+  expect(fixture.daemon.bus.peers.has("jcode")).toBe(false);
+  const missing = await hub({ roster: { jcode: true } }, provider(false).terminal);
+  const refused = await missing.client.request({ t: "peer_start", peer: "jcode" });
+  expect(refused.ok).toBe(false); expect(refused.command).toBe("ahub jcode --mode tui");
+  expect(refused.error).toContain("headless");
+});
