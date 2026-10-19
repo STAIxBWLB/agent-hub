@@ -562,6 +562,14 @@
       "testName": "Jcode native identity outside the supported range refuses the peer and cleans its owned daemon (#332, #529)"
     },
     {
+      "id": "jcode-no-telemetry",
+      "file": "src/adapters/jcode.ts",
+      "search": "JCODE_NO_TELEMETRY: \"1\"",
+      "replacement": "JCODE_NO_TELEMETRY: \"0\"",
+      "testFile": "test/jcode-peer.test.ts",
+      "testName": "owned Jcode daemon and ACP client deliver, resume the exact id and stop without a global stop command (#332)"
+    },
+    {
       "id": "jcode-load-proof",
       "file": "src/adapters/acp.ts",
       "search": "(this.opts.requireLoadSessionEcho && loaded?.sessionId !== resume)",
