@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.36 and control protocol 16. Live verification
+This guide describes ahub 0.12.37 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -971,13 +971,15 @@ ahub memory forget 1a2b3c4d              # a person's; also promote, demote, sup
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
 
-The exact-pinned `@staix/agent-mem` 0.3.0 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
+The exact-pinned `@staix/agent-mem` 0.4.0 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
 
 The daemon checks its selector at hub operation entry and before candidate/counter writes. It does not hot-switch handles or provide an atomic fence against selection changes during an in-flight core call. Quiesce consumers and close their handles before migration or selection changes; reopen through the supported session-preserving lifecycle afterward. Candidate/counter storage remains `M/candidates.db`, independent of `G`; `amem review` on a generation is still refused. Every running hub using this home needs an authenticated receipt: a matching ready binding, or a generation-capable unbound receipt (`disabled` when native memory is off, `unavailable` when opening failed) proving it holds no memory handle. An unbound daemon and zero running hubs are quiesced for memory; a stale bound handle, unreadable registry or unknown runtime is not ready. Existing JSON memory/goal results remain unchanged; the additive binding receipt belongs to daemon status, profile-check and the decay object. This source integration does not authorize installing a new runtime, migrating real memory, restarting sessions or claiming real-machine sync/capture receipts. Migration/deactivation and their limits belong to [agent-mem](https://github.com/STAIxBWLB/agent-mem); see [the hub profile contract](memory.md#selected-memory-profile).
 
 Run `ahub memory profile-check [--json]` from the person's terminal for the read-only preflight. It identifies live registry owners by signed process identity and authenticated daemon replies, then reports their loaded memory package and bound home/profile. The receipt names the current `AGENTHUB_HOME` registry scope; zero results establish no live daemon in that inventory, not system-wide process absence. Inventory and check separate custom registries too when they share `AMEM_HOME`. A missing or unreadable runtime receipt never counts as a different home or permission to migrate.
 
 Before real migration, first upgrade every hub sharing the home to 0.12.30 or later. Obtain positive ready or unbound/quiesced receipts in every relevant registry; then quiesce consumers and close bound handles before changing the selector. A matching ready handle proves compatibility but is still an open handle. Verify synthetic cross-writes before the separately approved real migration, then reopen through the supported session-preserving lifecycle afterward. Merely installing this release does not authorize migration or provide live capture/device-sync evidence.
+
+A curated split (`amem migrate --shards`) writes `M/shards.json`; from 0.12.37 the hub then opens this project's shard, with the user shard as its overlay, under the alias-resolved project key the `amem` CLI binds (#534, #537). Before splitting, upgrade or stop every hub using the home: a hub on 0.12.36 or earlier does not detect the split and keeps writing the old layout, which reaches the shards only through `amem migrate --shards --resume`. A split that is not active (captured, malformed, or a dangling or unreadable `shards.json`) makes native memory unavailable with that resume command as the remedy. An `amem alias add` that remaps a running hub's key latches its memory unavailable until a restart. `ahub memory profile-check` is not split-aware yet: on a split home it reports a mismatch for every correctly bound hub (#536). See [the shard binding](memory.md#selected-memory-profile).
 
 Managed agents read through `hub_memory_search`, `hub_memory_show` and `hub_memory_graph`, with the server's project identity, the `memory_read` capability and current privacy screening. They cannot supply another project; private turns are refused. The tools bound UTF-8 input/output, screen before counts and truncation, and exclude their arguments/results from hub-managed capture. `hub_memory_correct` has its own `memory_correct` capability and records a screened correction candidate, not a note change. See [the complete memory contract](memory.md) for caps and refusal semantics.
 
@@ -1978,21 +1980,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.36), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.37), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.36 ahub upgrade --to 0.12.36 --dry-run
-bunx --package @staix/agent-hub@0.12.36 ahub upgrade --to 0.12.36 --yes
+bunx --package @staix/agent-hub@0.12.37 ahub upgrade --to 0.12.37 --dry-run
+bunx --package @staix/agent-hub@0.12.37 ahub upgrade --to 0.12.37 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.36 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.37 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -2024,14 +2026,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.36 --dry-run
+ahub upgrade --to 0.12.37 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.36 --yes
+ahub upgrade --to 0.12.37 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -3063,7 +3065,7 @@ that the file is untracked; a dropped value is reported by the settings result.
 
 ## SDLC artifact receipts and gates
 
-The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). S11 release-train governance is implemented in source for the next release. S2-S7 and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
+The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S2-S7 and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
 ## Optional Qwen Code peer
 
 Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
@@ -3096,7 +3098,7 @@ Use ahub roster add jcode, then ahub jcode --mode headless [--model <alias>] [--
 After upgrading to the recipient-retry release, a Jcode project MCP entry written before `AGENTHUB_DELIVERY_ONLY` was added is intentionally stale. Once per project, the person runs `ahub jcode --mode headless` before using conductor/dashboard starts. The launcher rewrites only the owned entry with the delivery-only marker, preserving foreign entries and refusing collisions; recovery relaunches already use this CLI path. Readiness checks never rewrite the file, and an explicit false marker or any other drift remains refused. Until that rewrite, daemon starts keep their actionable stale-entry refusal rather than advertising a retry tool Jcode cannot use.
 
 
-Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or runtime mode mapping is invented. Quota and consumption remain unknown. Supported versions run from 0.98.0 up to, not including, 1.0.0 (#529). Native session/load (verified on 0.94.0 and 0.98.1) cannot prove identity, so attached Jcode blocks controlled recovery before effects and crash recovery asks for deliberate native reopening. A requested load without an echoed identity refuses; no fresh session is presented as restored. Provider/tool/native teardown receipts remain unverified in the pinned contract report.
+Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or runtime mode mapping is invented. Quota and consumption remain unknown. Supported versions run from 0.98.0 up to, not including, 1.0.0 (#529). Every owned jcode process (version probe, daemon, ACP) runs with `JCODE_NO_TELEMETRY=1`. Native session/load (verified on 0.94.0 and 0.98.1) cannot prove identity, so attached Jcode blocks controlled recovery before effects and crash recovery asks for deliberate native reopening. A requested load without an echoed identity refuses; no fresh session is presented as restored. Provider/tool/native teardown receipts remain unverified in the pinned contract report.
 
 # Headless ACP watch (#286)
 
@@ -3549,7 +3551,7 @@ version before launching or restoring extras.
 
 ### Fresh reviewer pool (#519)
 
-The source extension rotates fresh headless reviewers across Claude and Codex. Declare reviewer-only instances with explicit headless mode and the Codex fresh opt-in in `.agenthub/config.local.json`:
+From 0.12.37 reviews can rotate across fresh headless Claude and Codex reviewers. Declare reviewer-only instances with explicit headless mode and the Codex fresh opt-in in `.agenthub/config.local.json`:
 
 ```json
 {
@@ -3565,11 +3567,11 @@ Start them with `ahub claude --as claude-review` and `ahub codex --as codex-revi
 
 Codex requires an installed 0.146.0 executable and a passing bounded runtime receipt before its model child starts. Use the existing `codex_bin` setting to select a supported host executable when PATH resolves another version. PATH 0.163.0 has no receipt in this slice and remains unavailable. The producer checks native binary/config stability, configured MCP inventory with only the two hub tools, effective Apps/plugins/hooks disablement and a named filesystem profile. Apps needs separate feature readback because configured inventory omits runtime connectors. Web search is requested disabled; its effective turn mode is not read back and managed requirements can select Cached (see the verification ceiling). Each launch proves public-read, exact/glob/symlink private-denial, standard host credential denial and write-denial in temporary fixtures. Standard credential and configured tool-home/XDG subtrees are denied independently of project `local.deny`. Its sandboxed shell is filesystem read-only with private paths denied and network configured disabled; it is not Claude's Read/Grep/Glob-only tool whitelist. No credential home is copied.
 
-Kimi and agy are metadata-only unavailable candidates, outside the default pool. A manual pool accepts only registered reviewer kinds (Claude, Codex, Kimi, agy), so local/Pi are refused. An explicit pool without declared candidates blocks for person action; an omitted pool retains legacy routing without declarations and falls back to an eligible planner when fresh candidates are exhausted. The exhausted pool walk remains recorded; without an eligible planner, the person reviews. A manual pool may name the unavailable Kimi/agy placeholders (a Kimi fresh declaration also needs `review_mode: "fresh"`); their reason appears as an unavailable skip and they never run or count as approval. All launch/isolation work is deferred to [#533](https://github.com/STAIxBWLB/agent-hub/issues/533), hub task #234; the future agy launcher belongs in `src/adapters/agy/`. Do not substitute plan mode for isolation.
+Kimi and agy are metadata-only unavailable candidates, outside the default pool. agy will not become a reviewer (person decision, 2026-10-19); it is planned as an implementer peer under [#485](https://github.com/STAIxBWLB/agent-hub/issues/485). A manual pool accepts only registered reviewer kinds (Claude, Codex, Kimi, agy), so local/Pi are refused. An explicit pool without declared candidates blocks for person action; an omitted pool retains legacy routing without declarations and falls back to an eligible planner when fresh candidates are exhausted. The exhausted pool walk remains recorded; without an eligible planner, the person reviews. A manual pool may name the unavailable Kimi/agy placeholders (a Kimi fresh declaration also needs `review_mode: "fresh"`); their reason appears as an unavailable skip and they never run or count as approval. Kimi launch/isolation work is deferred to [#533](https://github.com/STAIxBWLB/agent-hub/issues/533), hub task #234; agy code belongs in `src/adapters/agy/`. Do not substitute plan mode for isolation.
 
 A failed start or any child ending without a saved verdict advances to the remaining eligible candidates; no quota meaning is guessed from text. A same-family fallback is a distinct fresh reviewer session. Exhaustion records `blocked: no reviewer can run`; with no explicit pool the eligible planner fallback is retained, while an explicit pool or absent eligible planner leaves person action. It never auto-approves. A per-review isolation preparation failure excludes that peer from later tasks until a verified restart. Recovery targets must advertise `reviewer_pool` when a pool is explicitly configured or fresh reviewer instances are declared. Verdict history retains `reviewContext` and adds `reviewerFamily` and `reviewerReason` from the host.
 
-These are source contracts pending final integration verification. [Offline isolation evidence](verification/2026-10-19-reviewer-isolation.md) and fake-CLI tests do not prove an account/model review or observed network denial. Native acceptance remains a separate [manual smoke leg](smoke.md#reviewer-pool-native-legs-519-2026-10-19); existing #223 Claude behavior has no new live proof here.
+Fake-CLI tests and CI cover these host contracts. [Offline isolation evidence](verification/2026-10-19-reviewer-isolation.md) and fake-CLI tests do not prove an account/model review or observed network denial. Native acceptance remains a separate [manual smoke leg](smoke.md#reviewer-pool-native-legs-519-2026-10-19); existing #223 Claude behavior has no new live proof here.
 
 An additional implementer must have an existing registered Git worktree and
 attached branch at `.worktrees/<instance-id>`, named explicitly by `worktree` in
@@ -3594,7 +3596,7 @@ CLI checks the saved workspace against the current declaration again before any
 context change or file restoration. Removing the declaration intentionally
 blocks that undo until the identity and workspace can be reviewed.
 
-## Planner release scheduling (unreleased)
+## Planner release scheduling
 
 Use `ahub sdlc train report <release-id>` for scope readiness and recorded release metrics. The planner creates future release rows, activates one train, and assigns tasks through the release-only hub tools. A due date requests a cut review; it never clears unfinished work. Move missed tasks to the next row with a reason, then use `ahub sdlc train cut <release-id> <revision>` from the person's terminal or `hub_release_cut` as the planner. The cut retains a short host admission lease through freeze and defers on held gate slots or unknown/quota-limited peer windows with a real quota source. Accounts without a quota reader (Kimi included when `kimi_tokens_5h` is zero) report `no quota source`; manual and budget-record pauses still defer. It does not run release preparation or publish anything. Schedule bundle/check/docs work under separate heavy admission and retain the person's native verification, authorization and upgrade window. A hotfix records its enumerated cause and keeps every gate.
 

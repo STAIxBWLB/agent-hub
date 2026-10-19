@@ -64,7 +64,7 @@ The acceptance-criteria checklist belongs to the Compliance pass over the same b
 
 ## Delivery and verification state
 
-Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance is implemented in source for the next release. S2-S7 and the native advise-through-merge/release cycle remain pending. Installation, native acceptance and release authorization require separate receipts.
+Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S2-S7 and the native advise-through-merge/release cycle remain pending. Installation, native acceptance and release authorization require separate receipts.
 
 ## Initial commands
 

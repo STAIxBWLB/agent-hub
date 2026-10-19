@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code and Jcode optional)
 share a message bus and a task board per project and one memory on the machine,
 each attached through its own native interface.
 
-Status: 0.12.36, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.37, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -77,25 +77,26 @@ cd <your project> && ahub init && ahub up
 
 After upgrading from 0.12.30 or earlier, run `ahub jcode --mode headless` once in each
 project that uses Jcode to refresh its owned MCP entry before conductor or dashboard
-starts of Jcode. The entry's format is unchanged in 0.12.36; a daemon start that still
+starts of Jcode. The entry's format is unchanged in 0.12.37; a daemon start that still
 reports the entry missing or stale is fixed by the same command, which since 0.12.36
-writes the running hub's own plugin bundle (#502).
+writes the running hub's own plugin bundle (#502). Since 0.12.37 the hub accepts jcode
+0.98.0 or later, below 1.0.0, and no longer 0.94.0 (#529).
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. For local/Pi implementation, opt in to an
 available `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-19-0.12.36.md) for the live legs
+See [release verification](docs/verification/2026-10-19-0.12.37.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
-(#478), a live headless Claude review (#223), and a Claude session over 32 MiB
-(#517).
+(#478), a live headless Claude review (#223), a Claude session over 32 MiB (#517), a
+live fresh Codex review (#519) and a live split of a real memory home (#536).
 
 Before migrating a memory home with `amem`, upgrade every hub using that home to
 0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory
 consumers. Shared v1 remains the default; installing this release does not migrate
 data. The curated shard migration (`amem migrate --shards`, agent-mem 0.4.0) needs
-every hub using that home to run a release that opens memory through shards (#534,
-after 0.12.36). An older hub (0.12.36 or earlier, agent-mem 0.3.1) does not detect the
+every hub using that home to run 0.12.37 or later, which opens memory through shards
+(#534). An older hub (0.12.36 or earlier, agent-mem 0.3.1) does not detect the
 split: it keeps reading and writing the old layout, and its writes reach the shards
 only through `amem migrate --shards --resume`. Upgrade or stop every such hub before
 splitting. `ahub memory profile-check` is not split-aware yet (#536). See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
