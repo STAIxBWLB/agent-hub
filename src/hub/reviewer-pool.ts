@@ -55,7 +55,7 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
       continue;
     }
     const reason: ReviewerPoolReason = skippedUnavailable ? "unavailable skip" : skippedOwner ? "implementer skip" : "rotation";
-    record(candidate, continuity && candidate.family === input.continuityFamily ? "continuity" : reason);
+    record(candidate, `selected (${continuity && candidate.family === input.continuityFamily ? "continuity" : reason})`);
     return { reviewer: candidate.id, family: candidate.family, reason, walk };
   }
   // The caller supplies separate fresh reviewer instances; this does not authorize an implementer's own session.
@@ -63,7 +63,7 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
     if (!candidate.id || input.implementerFamily === undefined || candidate.family !== input.implementerFamily) continue;
     const blocked = unavailable(candidate);
     if (blocked !== undefined) { record(candidate, `unavailable skip: ${blocked}`); continue; }
-    record(candidate, "same-family fallback");
+    record(candidate, "selected (same-family fallback)");
     return { reviewer: candidate.id, family: candidate.family, reason: "same-family fallback", walk };
   }
   return { reviewer: null, walk, blocked: "no reviewer can run" };

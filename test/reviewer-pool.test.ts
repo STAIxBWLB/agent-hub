@@ -75,6 +75,12 @@ test("a missing configured kind is recorded as an unavailable slot before the se
   expect(result).toMatchObject({ reviewer: "alpha-review", family: "alpha", reason: "unavailable skip" });
   expect(result.walk).toEqual([
     { id: "", kind: "beta", family: "", reason: "no declared reviewer" },
-    { id: "alpha-review", kind: "alpha", family: "alpha", reason: "unavailable skip" },
+    { id: "alpha-review", kind: "alpha", family: "alpha", reason: "selected (unavailable skip)" },
   ]);
+});
+
+test("a selected walk entry describes selection rather than a skip", () => {
+  const result = select({ failed: ["alpha-review"] });
+  expect(result.reason).toBe("unavailable skip");
+  expect(result.walk.at(-1)?.reason).toBe("selected (unavailable skip)");
 });

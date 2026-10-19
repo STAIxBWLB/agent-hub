@@ -72,7 +72,7 @@ test("failure callbacks cannot mutate a changed head, revision, authority or pri
     const { tasks, board, task } = await rig();
     const done = await tasks.done("codex", task.id, "ready");
     if (change === "head") board.update(task.id, "user", "lifecycle", { refs: { commit: "b".repeat(40) } });
-    if (change === "revision") board.update(task.id, "user", "answer", {}, "changed");
+    if (change === "revision") board.update(task.id, "user", "reviewer changed", { reviewer: done.reviewer });
     if (change === "private") board.update(task.id, "user", "screened", { signals: ["pii"] });
     let calls = 0;
     const current = () => change !== "authority" && (change !== "after-await" || ++calls === 1);
@@ -127,4 +127,34 @@ test("unavailable-only declarations keep done in human review with an omitted po
   expect(done).toMatchObject({ state: "in_review", reviewer: "user" });
   expect(done.history.at(-1)?.reviewBlocked).toBe(true);
   expect(tasks.explain(task.id).join("\n")).toContain("#533");
+});
+
+test("retry accepts bounded free-text commit refs and ignores unrelated bookkeeping", async () => {
+  const { tasks, board, task } = await rig();
+  const done = await tasks.done("codex", task.id, "ready", { commit: "release candidate for review" });
+  board.update(task.id, "user", "answer", {}, "bookkeeping");
+  const moved = await tasks.retryReviewer(task.id, "claude-review", { head: done.refs.commit, flowRevision: done.history.length, cause: "no_verdict" }, () => true);
+  expect(moved).toMatchObject({ reviewer: "claude-two", state: "in_review" });
+  expect(moved.history.at(-1)?.reviewerFailure?.head).toBe("release candidate for review");
+});
+
+test("retry is bound to its actual review request even when the reviewer and head are unchanged", async () => {
+  const { tasks, board, task } = await rig();
+  const done = await tasks.done("codex", task.id, "ready");
+  board.update(task.id, "user", "reviewer changed", { reviewer: done.reviewer });
+  const before = board.get(task.id);
+  await expect(tasks.retryReviewer(task.id, "claude-review", { head: done.refs.commit, flowRevision: done.history.length, cause: "start_failed" }, () => true)).rejects.toThrow();
+  expect(board.get(task.id)).toEqual(before);
+});
+
+test("optional pool fallback records its blocked walk and planner identity without marking the task blocked", async () => {
+  const { tasks, task, peers, bus } = await rig({ review: { adaptive: false, min_reviews: 5 }, roles: { claude: ["planner", "reviewer"], "claude-review": ["reviewer"], "claude-two": ["reviewer"], "codex-review": ["reviewer"] } });
+  const planner = new Reviewer("claude"); bus.add(planner); await planner.start();
+  for (const id of ["claude-review", "claude-two", "codex-review"]) await peers[id]!.stop();
+  const done = await tasks.done("codex", task.id, "ready");
+  expect(done).toMatchObject({ reviewer: "claude", state: "in_review" });
+  expect(done.history.at(-1)).toMatchObject({ reviewerFamily: "claude", reviewerReason: "unavailable skip" });
+  expect(done.history.at(-1)?.reviewBlocked).toBeUndefined();
+  expect(done.history.at(-1)?.note).toContain("no reviewer can run");
+  expect(done.history.at(-1)?.note).toContain("claude-review");
 });

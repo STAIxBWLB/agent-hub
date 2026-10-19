@@ -92,3 +92,16 @@ test("only unavailable declarations outside the default pool block instead of fa
     expect(named.trace.join("\n")).toContain("#533");
   }
 });
+
+test("optional default pool exhaustion retains an eligible legacy planner fallback", () => {
+  const result = choose({ roles: { ...roles, claude: ["planner", "reviewer"] }, reviewPool: { pool: ["claude"], required: false } }, { ...states, "claude-review": "offline", "claude-two": "offline", "claude-channel": "offline" });
+  expect(result).toMatchObject({ owner: "codex", reviewer: "claude", plannerFallback: true, reviewSelection: { reviewer: null, blocked: "no reviewer can run" } });
+  expect(result.reviewBlocked).toBeUndefined();
+  expect(result.trace).toContain("blocked: no reviewer can run");
+});
+
+test("explicit required pool exhaustion cannot escape to the legacy planner", () => {
+  const result = choose({ roles: { ...roles, claude: ["planner", "reviewer"] }, reviewPool: { pool: ["claude"], required: true } }, { ...states, "claude-review": "offline", "claude-two": "offline" });
+  expect(result).toMatchObject({ reviewer: "user", reviewBlocked: true });
+  expect(result.plannerFallback).toBeUndefined();
+});

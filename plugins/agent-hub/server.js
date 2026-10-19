@@ -977,7 +977,7 @@ import { spawn as spawn2 } from "child_process";
 import { existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync, mkdtempSync, readFileSync as readFileSync2, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { createRequire } from "module";
 import { homedir, tmpdir } from "os";
-import { basename as basename2, dirname as dirname3, isAbsolute as isAbsolute2, join as join3, relative, resolve as resolve3 } from "path";
+import { basename as basename2, delimiter, dirname as dirname3, isAbsolute as isAbsolute2, join as join3, relative, resolve as resolve3 } from "path";
 function codexCoreDenyGlobs(names = DENY_NAMES, segments = DENY_SEGMENTS) {
   if (names.length > 64 || segments.length > 64)
     throw new Error("core deny policy bound exceeded");
@@ -1045,6 +1045,36 @@ function configFiles(cwd, env) {
   }
   return files;
 }
+function hostCredentialRoots(env, cwd) {
+  const home = resolve3(cwd, env.HOME || homedir());
+  const roots = HOST_CREDENTIAL_PATHS.map((entry) => join3(home, entry));
+  const configured = HOST_CREDENTIAL_ENV.flatMap((key) => env[key] ? [env[key]] : []);
+  if (env.KUBECONFIG)
+    configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean));
+  if (configured.length > 64)
+    throw new Error("credential root bound exceeded");
+  for (const entry of configured) {
+    if (Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
+      throw new Error("invalid credential root");
+    roots.push(entry.startsWith("~/") ? resolve3(home, entry.slice(2)) : resolve3(cwd, entry));
+  }
+  return [...new Set(roots)];
+}
+function denyCredentialRoots(filesystem, roots, cwd) {
+  for (const lexical of roots) {
+    if (/[?*\[\]{}]/.test(lexical))
+      throw new Error("unverified credential root syntax");
+    const targets = new Set([lexical]);
+    if (existsSync2(lexical))
+      targets.add(realPath(lexical));
+    for (const target of targets) {
+      if (inside(cwd, target))
+        throw new Error("credential root overlaps checkout");
+      filesystem[target] = "deny";
+      filesystem[`${target.replace(/\/$/, "")}/**`] = "deny";
+    }
+  }
+}
 function resolveCommand(ctx, cwd) {
   const [name = "codex", ...prefix] = ctx.command ?? [];
   const found = isAbsolute2(name) ? name : Bun.which(name);
@@ -1089,6 +1119,16 @@ function inventory(text) {
     return { name: row.name, enabled: row.enabled, type: type === "stdio" ? "stdio" : "http", transport };
   });
 }
+function proveDisabledFeatures(text) {
+  const rows = text.trim().split(/\r?\n/).map((line) => line.trim());
+  if (rows.length > 512)
+    throw new Error("feature inventory bound exceeded");
+  for (const name of ["apps", "plugins", "hooks"]) {
+    const matches = rows.filter((line) => line.split(/\s+/)[0] === name);
+    if (matches.length !== 1 || !new RegExp(`^${name}\\s+stable\\s+false$`).test(matches[0]))
+      throw new Error("effective feature isolation unverified");
+  }
+}
 function ownServer(text) {
   const config = object(JSON.parse(text)), servers = object(config.mcpServers);
   if (Object.keys(servers).length !== 1 || !Object.hasOwn(servers, "agent-hub"))
@@ -1105,13 +1145,16 @@ async function prepare(ctx) {
   let root;
   try {
     const cwd = realPath(ctx.cwd), env = peerChildEnv(ctx.peer), bound = resolveCommand(ctx, cwd);
-    const initialBinary = bound.files.map((file) => `${metadata(file)}:${digest(readFileSync2(file))}`).join(";");
+    const initialBinaryMetadata = bound.files.map(metadata).join(";");
+    const binaryHash = digest(bound.files.map((file) => digest(readFileSync2(file))).join(";"));
+    if (bound.files.map(metadata).join(";") !== initialBinaryMetadata)
+      throw new Error("binary changed while hashing");
     const watched = configFiles(cwd, env), initialConfig = watched.map(metadata).join(";");
     const deadline = performance.now() + 12000;
     const current = () => {
       if (ctx.signal.aborted || watched.map(metadata).join(";") !== initialConfig)
         return false;
-      return bound.files.map((file) => `${metadata(file)}:${digest(readFileSync2(file))}`).join(";") === initialBinary;
+      return bound.files.map(metadata).join(";") === initialBinaryMetadata;
     };
     const run = (args, capture = true, maxBytes = CAP) => new Promise((resolveOutput, reject) => {
       if (ctx.signal.aborted || performance.now() >= deadline) {
@@ -1174,7 +1217,8 @@ async function prepare(ctx) {
     if (Buffer.byteLength(ctx.mcpConfig) > CAP || ctx.privatePaths.length > 128)
       throw new Error("policy bounds exceeded");
     const hub = ownServer(ctx.mcpConfig);
-    const policy = ["--disable", "plugins", "--disable", "hooks", "-c", `projects=${toml({ [cwd]: { trust_level: "untrusted" } })}`];
+    const policy = ["--disable", "plugins", "--disable", "hooks", "--disable", "apps", "-c", 'web_search="disabled"', "-c", `projects=${toml({ [cwd]: { trust_level: "untrusted" } })}`];
+    proveDisabledFeatures(await run(["features", "list", ...policy]));
     const before = inventory(await run(["mcp", "list", "--json", ...policy]));
     if (before.some((row) => row.name === "agent-hub"))
       throw new Error("ambient hub MCP collision");
@@ -1195,6 +1239,12 @@ async function prepare(ctx) {
     root = realPath(mkdtempSync(join3(tmpdir(), "ahub-codex-review-isolation-")));
     const privateFile = join3(root, "private.env"), publicFile = join3(root, "public.txt"), writeFile = join3(root, "write-proof");
     const coreName = join3(root, ".env"), coreStateDir = join3(root, ".agenthub", "state"), coreState = join3(coreStateDir, "private.txt");
+    const fixtureHome = join3(root, "host-home"), hostConfig = join3(fixtureHome, ".config", "gh", "hosts.yml"), hostKube = join3(fixtureHome, ".kube", "config"), hostDocker = join3(fixtureHome, ".docker", "config.json"), hostAlias = join3(root, "host-alias.yml");
+    for (const file of [hostConfig, hostKube, hostDocker]) {
+      mkdirSync(dirname3(file), { recursive: true });
+      writeFileSync(file, "synthetic host credential fixture");
+    }
+    symlinkSync(hostConfig, hostAlias);
     mkdirSync(coreStateDir, { recursive: true });
     writeFileSync(coreName, "core name fixture");
     writeFileSync(coreState, "core state fixture");
@@ -1208,6 +1258,7 @@ async function prepare(ctx) {
     const filesystem = { "/": "read", [privateFile]: "deny", [join3(globRoot, "**", "*.env")]: "deny" };
     for (const glob of codexCoreDenyGlobs())
       filesystem[glob] = "deny";
+    denyCredentialRoots(filesystem, [...hostCredentialRoots(env, cwd), ...hostCredentialRoots({ HOME: fixtureHome }, cwd)], cwd);
     for (const entry of ctx.privatePaths) {
       if (typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
         throw new Error("invalid private path policy");
@@ -1230,15 +1281,19 @@ async function prepare(ctx) {
     }
     const profile = { filesystem, network: { enabled: false } }, permissions = ["-c", `permissions=${toml({ "ahub-review": profile })}`, "-c", 'default_permissions="ahub-review"'];
     await run(["debug", "models", "--bundled", ...policy, ...permissions], false, 4 * 1024 * 1024);
-    const script = 'if /bin/cat "$1" >/dev/null 2>&1; then echo AHUB_CODEX_PUBLIC_READ; fi; if /bin/cat "$2" >/dev/null 2>&1; then exit 12; else echo AHUB_CODEX_PRIVATE_DENIED; fi; if (echo no > "$3") 2>/dev/null; then exit 13; else echo AHUB_CODEX_WRITE_DENIED; fi; if /bin/cat "$4" >/dev/null 2>&1; then exit 14; else echo AHUB_CODEX_GLOB_PRIVATE_DENIED; fi; if /bin/cat "$5" >/dev/null 2>&1; then exit 15; else echo AHUB_CODEX_ALIAS_PRIVATE_DENIED; fi; if /bin/cat "$6" >/dev/null 2>&1; then exit 16; else echo AHUB_CODEX_CORE_NAME_DENIED; fi; if /bin/cat "$7" >/dev/null 2>&1; then exit 17; else echo AHUB_CODEX_CORE_STATE_DENIED; fi';
-    const proof = await run(["sandbox", "-P", "ahub-review", "-C", cwd, ...policy, ...permissions, "/bin/sh", "-c", script, "proof", publicFile, privateFile, writeFile, globFile, alias, coreName, coreState]);
+    const script = 'if /bin/cat "$1" >/dev/null 2>&1; then echo AHUB_CODEX_PUBLIC_READ; fi; if /bin/cat "$2" >/dev/null 2>&1; then exit 12; else echo AHUB_CODEX_PRIVATE_DENIED; fi; if (echo no > "$3") 2>/dev/null; then exit 13; else echo AHUB_CODEX_WRITE_DENIED; fi; if /bin/cat "$4" >/dev/null 2>&1; then exit 14; else echo AHUB_CODEX_GLOB_PRIVATE_DENIED; fi; if /bin/cat "$5" >/dev/null 2>&1; then exit 15; else echo AHUB_CODEX_ALIAS_PRIVATE_DENIED; fi; if /bin/cat "$6" >/dev/null 2>&1; then exit 16; else echo AHUB_CODEX_CORE_NAME_DENIED; fi; if /bin/cat "$7" >/dev/null 2>&1; then exit 17; else echo AHUB_CODEX_CORE_STATE_DENIED; fi; if /bin/cat "$8" >/dev/null 2>&1; then exit 18; else echo AHUB_CODEX_HOST_CONFIG_DENIED; fi; if /bin/cat "$9" >/dev/null 2>&1; then exit 19; else echo AHUB_CODEX_HOST_KUBE_DENIED; fi; if /bin/cat "${10}" >/dev/null 2>&1; then exit 20; else echo AHUB_CODEX_HOST_DOCKER_DENIED; fi; if /bin/cat "${11}" >/dev/null 2>&1; then exit 21; else echo AHUB_CODEX_HOST_ALIAS_DENIED; fi';
+    const proof = await run(["sandbox", "-P", "ahub-review", "-C", cwd, ...policy, ...permissions, "/bin/sh", "-c", script, "proof", publicFile, privateFile, writeFile, globFile, alias, coreName, coreState, hostConfig, hostKube, hostDocker, hostAlias]);
     if (proof.trim() !== `AHUB_CODEX_PUBLIC_READ
 AHUB_CODEX_PRIVATE_DENIED
 AHUB_CODEX_WRITE_DENIED
 AHUB_CODEX_GLOB_PRIVATE_DENIED
 AHUB_CODEX_ALIAS_PRIVATE_DENIED
 AHUB_CODEX_CORE_NAME_DENIED
-AHUB_CODEX_CORE_STATE_DENIED` || existsSync2(writeFile))
+AHUB_CODEX_CORE_STATE_DENIED
+AHUB_CODEX_HOST_CONFIG_DENIED
+AHUB_CODEX_HOST_KUBE_DENIED
+AHUB_CODEX_HOST_DOCKER_DENIED
+AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
       throw new Error("native sandbox isolation unverified");
     if (!current())
       throw new Error("binary or config changed during proof");
@@ -1259,12 +1314,12 @@ AHUB_CODEX_CORE_STATE_DENIED` || existsSync2(writeFile))
       isolation: {
         backend: "codex",
         version: VERSION,
-        binary: `sha256:${digest(initialBinary)}`,
+        binary: `sha256:${binaryHash}`,
         profile: `sha256:${launchProfile}`,
         readOnly: true,
         strictMcp: true,
         ephemeral: true,
-        evidence: ["model-free-mcp-inventory-disabled-ambient", "hub-tools-exact-allowlist", "plugins-and-hooks-disabled", "project-untrusted", "native-public-read-private-deny-write-deny", "native-glob-and-symlink-private-deny", "portable-core-name-and-state-deny", "binary-config-stable", "session-ephemeral"]
+        evidence: ["model-free-mcp-inventory-disabled-ambient", "hub-tools-exact-allowlist", "plugins-and-hooks-disabled", "apps-disabled-effective-feature-readback", "web-search-disabled", "project-untrusted", "native-public-read-private-deny-write-deny", "native-glob-and-symlink-private-deny", "portable-core-name-and-state-deny", "standard-host-credential-roots-denied", "binary-config-stable", "binary-hash-once-metadata-fence", "session-ephemeral"]
       }
     };
   } catch {
@@ -1283,13 +1338,15 @@ var VERSION = "0.146.0", TOOLS, CAP, MAX_SERVERS = 64, digest = (value) => creat
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("invalid metadata");
   return value;
-}, codexReviewerBackend;
+}, HOST_CREDENTIAL_PATHS, HOST_CREDENTIAL_ENV, codexReviewerBackend;
 var init_codex_review_isolation = __esm(() => {
   init_platform();
   init_child_process();
   init_project();
   TOOLS = ["hub_review", "hub_task_show"];
   CAP = 128 * 1024;
+  HOST_CREDENTIAL_PATHS = [".config", ".ssh", ".aws", ".azure", ".kube", ".docker", ".gnupg", ".codex", ".claude", ".kimi", ".kimi-code", ".gemini", ".git-credentials", ".vault-token", "Library/Keychains", ".local/share/keyrings", ".password-store"];
+  HOST_CREDENTIAL_ENV = ["XDG_CONFIG_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_HOME", "GEMINI_CLI_HOME", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AZURE_CONFIG_DIR", "DOCKER_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS"];
   codexReviewerBackend = {
     id: "codex",
     prepare,

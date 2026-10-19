@@ -3867,7 +3867,12 @@ export async function startDaemon(opts: DaemonOptions) {
         facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(executionCwd, path, config.pii?.paths ?? [], true), nameable: tasks.nameable }),
         verdictSince: (task, since) => board.get(task)?.history.some(h => h.by === peer && h.at >= since && (h.event === "approved" || h.event === "changes_requested")) === true,
         onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
-        onUnavailable: (failure, current) => tasks.retryReviewer(failure.task, peer, failure, () => current() && bus.peers.get(peer) === reviewer).then(() => undefined),
+        onUnavailable: (failure, current) => {
+          const attached = () => current() && bus.peers.get(peer) === reviewer;
+          if (!attached()) return;
+          if (failure.cause === "start_failed") reviewerUnavailable.set(peer, "reviewer isolation unavailable; restart after checking the verified CLI and isolation requirements");
+          return tasks.retryReviewer(failure.task, peer, failure, attached).then(() => undefined);
+        },
         log,
       }) }) as ReviewerPrintPeer;
       try { await reviewer.start(); }

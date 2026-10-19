@@ -503,8 +503,16 @@ export function assign(
         for (const row of reviewSelection.walk) trace.push(row.id ? `  reviewer pool candidate ${row.id} (${row.family}): ${row.reason}` : `  reviewer pool kind ${row.kind}: ${row.reason}`);
         reviewer = reviewSelection.reviewer ?? "user";
         if (reviewSelection.blocked) {
-          reviewBlocked = true;
           trace.push("blocked: no reviewer can run");
+          // Optional defaults retain the legacy planner escape when no fresh reviewer can run.
+          const planners = opts.reviewPool?.required ? [] : automatic.filter(peer => peer !== reviewOwner && peerEntry(opts.roles, peer)?.includes("planner") && !definitionOf(peer, opts.instances)?.routing?.reviewOnly && !blocked(peer, "reviewer"));
+          const otherFamily = planners.filter(peer => !sameFamily(peer));
+          const planner = pick(otherFamily.length ? otherFamily : planners, "reviewer", reviewOwner);
+          if (planner) {
+            reviewer = planner;
+            plannerFallback = true;
+            trace.push(`  planner fallback: no declared reviewer-only instance is eligible; ${planner} reviews`);
+          } else reviewBlocked = true;
         }
       } else if (named !== undefined && named !== reviewOwner && !blocked(named, "reviewer") && sameFamily(named) && independent.length) {
         const reason = `same family as ${reviewOwner}; eligible other-family reviewer available`;

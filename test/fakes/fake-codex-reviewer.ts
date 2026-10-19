@@ -6,11 +6,14 @@ const argv = process.argv.slice(2);
 const override = argv.find(value => value.startsWith("mcp_servers="));
 const servers = override ? (Bun.TOML.parse(override) as { mcp_servers: Record<string, Record<string, unknown>> }).mcp_servers : {};
 if (argv[0] === "--version") console.log("codex-cli 0.146.0");
+else if (argv[0] === "features" && argv[1] === "list") {
+  for (const name of ["apps", "plugins", "hooks"]) console.log(`${name} stable ${!argv.some((arg, index) => arg === "--disable" && argv[index + 1] === name)}`);
+}
 else if (argv[0] === "mcp" && argv[1] === "list") console.log(JSON.stringify(Object.entries(servers).map(([name, server]) => ({ name, enabled: server.enabled !== false, transport: { type: "stdio", command: server.command } }))));
 else if (argv[0] === "mcp" && argv[1] === "get") {
   const server = servers["agent-hub"]!;
   console.log(JSON.stringify({ name: "agent-hub", enabled: true, enabled_tools: server.enabled_tools, transport: { type: "stdio", command: server.command, args: server.args, env: server.env } }));
-} else if (argv[0] === "sandbox") console.log("AHUB_CODEX_PUBLIC_READ\nAHUB_CODEX_PRIVATE_DENIED\nAHUB_CODEX_WRITE_DENIED\nAHUB_CODEX_GLOB_PRIVATE_DENIED\nAHUB_CODEX_ALIAS_PRIVATE_DENIED\nAHUB_CODEX_CORE_NAME_DENIED\nAHUB_CODEX_CORE_STATE_DENIED");
+} else if (argv[0] === "sandbox") console.log("AHUB_CODEX_PUBLIC_READ\nAHUB_CODEX_PRIVATE_DENIED\nAHUB_CODEX_WRITE_DENIED\nAHUB_CODEX_GLOB_PRIVATE_DENIED\nAHUB_CODEX_ALIAS_PRIVATE_DENIED\nAHUB_CODEX_CORE_NAME_DENIED\nAHUB_CODEX_CORE_STATE_DENIED\nAHUB_CODEX_HOST_CONFIG_DENIED\nAHUB_CODEX_HOST_KUBE_DENIED\nAHUB_CODEX_HOST_DOCKER_DENIED\nAHUB_CODEX_HOST_ALIAS_DENIED");
 else if (argv[0] === "debug") console.log("{}");
 else if (argv[0] === "exec") {
   const prompt = await new Response(Bun.stdin.stream()).text();
