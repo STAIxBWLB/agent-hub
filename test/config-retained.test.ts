@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon } from "../src/hub/daemon.ts";
@@ -63,6 +63,56 @@ test("#542 retained launch settings warn by adapter metadata and status renders 
   const consoleLines = renderConsoleLines(consoleState, 120).flat().map(row => row.text);
   expect(consoleLines.some(line => line.includes("config retained") && line.includes("jcode_cmd") && line.includes("run ahub settings reload"))).toBe(true);
 });
+
+test("#542 ahub jcode warns about a retained command and starts with the accepted argv", async () => {
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-retained-jcode-"))), stateDir = join(cwd, ".agenthub/state");
+  cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
+  const agent = join(import.meta.dir, "fakes/jcode-agent.ts"), home = join(cwd, "jcode-home");
+  mkdirSync(join(cwd, ".agenthub")); mkdirSync(home);
+  writeFileSync(join(home, "mcp.json"), "{}");
+  const oldRecord = join(cwd, "old-command.jsonl"), pendingRecord = join(cwd, "pending-command.jsonl");
+  const oldCommand = [process.execPath, agent, "--record", oldRecord];
+  const pendingCommand = [process.execPath, agent, "--record", pendingRecord];
+  const configFile = (name: string) => join(cwd, ".agenthub", name);
+  writeFileSync(configFile("config.json"), JSON.stringify({
+    batch_ms: 0, roster: { claude: false, codex: false, kimi: false, qwen: false, jcode: true, pi: false, local: false },
+    memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false },
+    pi: { enabled: false, auto_start: false }, approvals: { notify: false }, snapshots: { enabled: false },
+  }));
+  writeFileSync(configFile("routing.toml"), readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"'));
+  writeFileSync(configFile("config.local.json"), JSON.stringify({ jcode_cmd: oldCommand, jcode_home: home }));
+  const git = (...args: string[]) => {
+    const result = hubGitSync(["-C", cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", ...args], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+  };
+  git("init", "-q"); git("add", "-f", ".agenthub/config.json", ".agenthub/routing.toml"); git("commit", "-qm", "fixture baseline");
+
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0 });
+  cleanup.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
+
+  writeFileSync(configFile("config.local.json"), JSON.stringify({ jcode_cmd: pendingCommand, jcode_home: home }));
+  const reload = await client.request({ t: "settings_reload" });
+  expect(reload.confirmation?.keys).toContain("jcode_cmd");
+  expect((await client.request({ t: "status" })).status.retainedConfig).toContainEqual(expect.objectContaining({ key: "jcode_cmd" }));
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env, HOME: join(cwd, "home"), JCODE_HOME: home, AGENTHUB_HOME: join(cwd, "home"),
+    AGENTHUB_PROJECT_DIR: cwd, AGENTHUB_STATE_DIR: stateDir,
+  };
+  for (const key of Object.keys(env)) if (/^(AGENTHUB_(PEER_ID|CHANNEL|MODE|RECOVERY_OPERATION|INSTANCE_ID|LAUNCH_ID|DELIVERY_ONLY)|CLAUDECODE|CLAUDE_CODE_SESSION_ID|CODEX_THREAD_ID)$/.test(key)) delete env[key];
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "jcode", "--mode", "headless"], { cwd, env, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(code, `${stdout}\n${stderr}`).toBe(0);
+  expect(stderr).toContain("config retained: jcode_cmd");
+  expect(stderr).toContain("starting jcode with the running value");
+  expect(stderr).toContain("run ahub settings reload");
+
+  const rows = readFileSync(oldRecord, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(rows.some((row: { kind?: string; home?: string }) => row.kind === "serve" && row.home === home)).toBe(true);
+  expect(rows.some((row: { kind?: string; method?: string }) => row.kind === "rpc" && row.method === "initialize")).toBe(true);
+  expect(existsSync(pendingRecord)).toBe(false);
+}, 15_000);
 
 test("#542 Claude's ordinary launcher does not require a hub connection", async () => {
   let connections = 0;
