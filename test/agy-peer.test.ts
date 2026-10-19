@@ -70,6 +70,9 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     const facts = (event: string, extra = {}, overrides = {}) => tools.request({ t: "native_facts", event, payload: { ...payload, ...extra }, nativeInstanceId: admission.instanceId, nativeLaunchId: admission.launchId, ...overrides });
     expect((await facts("PreInvocation", {}, { nativeLaunchId: "stale" })).ok).toBe(false);
     expect((await facts("PreInvocation", { workspacePaths: ["/outside"] })).ok).toBe(false);
+    const otherRoot = join(root, "other-workspace"); mkdirSync(otherRoot);
+    expect((await facts("PreInvocation", { workspacePaths: [root, otherRoot] })).ok).toBe(false);
+    expect(daemon.bus.peers.get("agy")?.state).toBe("idle");
     expect((await facts("PreInvocation")).ok).toBe(true); expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
     expect((await facts("Stop", { fullyIdle: false, terminationReason: "NO_TOOL_CALL" })).ok).toBe(false);
     writeFileSync(transcript, JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete" }) + "\n");

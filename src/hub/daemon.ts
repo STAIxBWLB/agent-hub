@@ -5250,7 +5250,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!peer || c.role !== "tools" || !port || msg.nativeInstanceId !== instanceId) return void reply({ ok: false });
         const launch = nativeHookLaunches.get(peer, msg.nativeLaunchId);
         const native = typeof msg.event === "string" ? port.decode(msg.event, msg.payload) : undefined;
-        if (!launch || !native || !native.workspacePaths.some(root => { try { return realPath(root) === realPath(opts.cwd); } catch { return false; } })) return void reply({ ok: false });
+        if (!launch || !native || !native.workspacePaths.every(root => { try { return realPath(root) === realPath(opts.cwd); } catch { return false; } })) return void reply({ ok: false });
         if (launch.session && launch.session !== native.sessionId) return void reply({ ok: false });
         launch.session = native.sessionId;
         const owner = bus.peers.get(peer);
@@ -5276,6 +5276,8 @@ export async function startDaemon(opts: DaemonOptions) {
             void (async () => {
               const deadline = Date.now() + 2000;
               let delay = 5;
+              // ponytail: an unverified Stop may re-read up to 4 MiB per poll within this 2 s wait.
+              // Upgrade: cache unchanged transcript evidence within the wait.
               while (current() && launch.active && launch.turn === turn) {
                 const completion = port.read(native.sessionId, native.transcriptPath).completion;
                 if (completion && completion.index > baseline && completion.id !== launch.completed) {

@@ -5,6 +5,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, w
 import { join } from "node:path";
 import { hubGitSync } from "../hub/git.ts";
 import { KIMI_MCP_FILE } from "./kimi-mcp.ts";
+import { AGY_PLUGIN_FILES } from "./agy-mcp.ts";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
 const BEGIN = "<!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->";
@@ -97,7 +98,11 @@ function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedW
   }
   if (existsSync(join(cwd, KIMI_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", KIMI_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(KIMI_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${KIMI_MCP_FILE}\n`;
   const agyPlugin = ".agents/plugins/agent-hub/";
-  if (existsSync(join(cwd, agyPlugin)) && hubGitSync(["ls-files", "--", agyPlugin], { cwd, encoding: "utf8", timeout: 3000 }).stdout.trim() === "" && !lines.split("\n").includes(agyPlugin)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${agyPlugin}\n`;
+  if (existsSync(join(cwd, agyPlugin))) {
+    const tracked = new Set(hubGitSync(["ls-files", "--", agyPlugin], { cwd, encoding: "utf8", timeout: 3000 }).stdout.trim().split("\n").filter(Boolean));
+    const entries = tracked.size ? AGY_PLUGIN_FILES.filter(file => !tracked.has(file)) : [agyPlugin];
+    for (const entry of entries) if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
+  }
   if (existsSync(join(cwd, JCODE_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", JCODE_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(JCODE_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${JCODE_MCP_FILE}\n`;
   write(ignore, lines, "ignore runtime state and machine-local configuration");
   return changed;

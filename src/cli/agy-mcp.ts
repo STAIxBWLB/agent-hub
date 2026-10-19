@@ -22,6 +22,7 @@ const MANIFEST_FILE = `${PLUGIN_DIR}/plugin.json`;
 const MCP_FILE = `${PLUGIN_DIR}/mcp_config.json`;
 const HOOKS_FILE = `${PLUGIN_DIR}/hooks.json`;
 const FILES = [MANIFEST_FILE, MCP_FILE, HOOKS_FILE] as const;
+export const AGY_PLUGIN_FILES = FILES;
 const EVENTS = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"] as const;
 const MANAGED_DESCRIPTION = "Managed by ahub agy launcher.";
 const MAX_CONFIG_BYTES = 256 * 1024;
